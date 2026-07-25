@@ -11,7 +11,13 @@ export default function Home() {
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
+    if (loading) return;
+    if (!isAuthenticated) {
+      // 根路径不再停留在营销页或岗位同步加载态；认证缺失、失败或超时降级后
+      // 一律进入独立登录页，并在认证完成后安全回到移动工作台。
+      setLocation(createLoginPath("/mobile"));
+      return;
+    }
     setLocation(consumePostLoginReturnPath());
   }, [isAuthenticated, loading, setLocation]);
 
