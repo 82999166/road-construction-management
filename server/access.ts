@@ -56,6 +56,21 @@ export async function assertSuperAdmin(ctx: TrpcContext) {
 }
 
 /**
+ * 已有业务记录的修改、状态流转和结算属于高影响动作。
+ * 该断言供使用自然键幂等写入的业务过程调用，避免没有 `id` 的更新绕过统一 RPC 中间件。
+ */
+export async function assertExistingBusinessRecordChangeAccess(ctx: TrpcContext) {
+  const { user, canAccess } = await getSuperAdminAccess(ctx);
+  if (!canAccess) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "普通管理人员仅可在已授权业务范围内新增和查看数据；修改既有业务记录仅限超级管理员",
+    });
+  }
+  return user;
+}
+
+/**
  * 返回当前用户是否具备 PC 超级管理后台访问资格。
  * 此方法不抛出无权异常，供前端路由守卫在进入后台前完成友好重定向；
  * 真正的业务接口仍必须调用 assertSuperAdmin 作为服务端兜底。
@@ -93,6 +108,11 @@ export async function getEffectiveRoleCodes(ctx: TrpcContext): Promise<string[]>
   const user = requireAuthenticatedUser(ctx);
   if (user.role === "admin") return ["ALL", "SUPER_ADMIN"];
 
+  // 通过系统角色授予的超级管理员，与模板管理员拥有相同的全局业务模块语义。
+  // 不能只在 PC 后台放行，否则该账号会错误地在业务路由中落入普通部门范围。
+  const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+  if (isSuperAdmin) return ["ALL", "SUPER_ADMIN"];
+
   const db = await getDb();
   if (!db) return [];
 
@@ -119,7 +139,8 @@ export async function getEffectiveRoleCodes(ctx: TrpcContext): Promise<string[]>
  */
 export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   const user = requireAuthenticatedUser(ctx);
-  if (user.role === "admin") {
+  const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+  if (isSuperAdmin) {
     return {
       departments: [] as Array<{ id: number; name: string; type: "department" | "project_department" }>,
       moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"] as DepartmentBusinessModule[],
@@ -178,7 +199,8 @@ export async function assertDepartmentBusinessAccess(ctx: TrpcContext, module: D
 /** 返回某个已授权部门业务域下的项目与组织范围；管理员始终拥有完整范围。 */
 async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: DepartmentBusinessModule): Promise<DataScope> {
   const user = requireAuthenticatedUser(ctx);
-  if (user.role === "admin") return toDataScope(user.id, [], true);
+  const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+  if (isSuperAdmin) return toDataScope(user.id, [], true);
 
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -222,7 +244,8 @@ export async function getCurrentDataScope(ctx: TrpcContext) {
   const user = requireAuthenticatedUser(ctx);
   const departmentModule = getRequestedDepartmentModule(ctx);
   if (departmentModule) return getCurrentDepartmentModuleDataScope(ctx, departmentModule);
-  if (user.role === "admin") {
+  const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+  if (isSuperAdmin) {
     return toDataScope(user.id, [], true);
   }
 

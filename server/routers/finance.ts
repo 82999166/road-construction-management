@@ -18,7 +18,7 @@ import {
   assertPurchaseRequestStatusTransition,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSuperAdmin, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
@@ -287,7 +287,7 @@ export const purchasingRouter = router({
   }),
 
   listSuppliers: protectedProcedure.query(async ({ ctx }) => {
-    await assertPurchaseAccess(ctx);
+    await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) return [];
     return db.select().from(suppliers).where(eq(suppliers.status, "active")).orderBy(suppliers.name);
@@ -295,8 +295,7 @@ export const purchasingRouter = router({
 
   /** 保存供应商基础资料；联系方式仅允许以脱敏形式进入本系统。 */
   saveSupplier: protectedProcedure.input(supplierInput).mutation(async ({ ctx, input }) => {
-    const user = requireAuthenticatedUser(ctx);
-    await assertPurchaseAccess(ctx);
+    const user = await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const values = {
@@ -651,6 +650,8 @@ export const financeRouter = router({
     const user = requireAuthenticatedUser(ctx);
     await assertFinanceAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
+    /** 普通管理人员只能创建待结清原始流水，结算或作废属于高影响财务操作。 */
+    if (input.settlementStatus !== "unpaid") await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     await db.insert(financialRecords).values({ recordNo: createBusinessNo("FIN"), projectId: input.projectId, direction: input.direction, category: input.category, amount: String(roundMoney(input.amount)), occurredAt: new Date(input.occurredAt), settlementStatus: input.settlementStatus, sourceType: input.sourceType ?? null, sourceId: input.sourceId ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null });

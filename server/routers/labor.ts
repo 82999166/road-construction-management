@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
 import { decryptSecret, encryptSecret } from "../services/secretVault";
@@ -443,6 +443,7 @@ export const laborRouter = router({
       if (existing?.status === "locked") {
         throw new TRPCError({ code: "CONFLICT", message: "该考勤记录已锁定，不能再编辑" });
       }
+      if (existing) await assertExistingBusinessRecordChangeAccess(ctx);
       const values = {
         workerId: input.workerId,
         projectId: input.projectId,
@@ -521,6 +522,7 @@ export const laborRouter = router({
       if (existing && ["approved", "paid", "void"].includes(existing.status)) {
         throw new TRPCError({ code: "CONFLICT", message: "已审核、已支付或已作废的工资条不可直接修改" });
       }
+      if (existing) await assertExistingBusinessRecordChangeAccess(ctx);
       const values = {
         workerId: input.workerId,
         projectId: input.projectId,

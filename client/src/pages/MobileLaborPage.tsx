@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowLeft,
@@ -76,6 +77,16 @@ function formatDate(value: Date | string | null | undefined) {
   return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
+/** 将日期型返回值稳定转换为业务自然键，避免普通管理人员误将已有考勤提交为更新。 */
+function getBusinessDateText(value: Date | string | null | undefined) {
+  if (!value) return "";
+  if (typeof value === "string") return value.slice(0, 10);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /** 根据工资单状态生成简洁、可读的巧克力主题状态样式。 */
 function getPayrollStatus(status: "draft" | "reviewing" | "approved" | "paid" | "void") {
   const dictionary = {
@@ -138,6 +149,7 @@ export default function MobileLaborPage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const { isSuperAdmin } = useManagementPermissions();
   const [projectId, setProjectId] = useState<number | undefined>();
   const [period, setPeriod] = useState(getCurrentPeriod);
   const [activeTab, setActiveTab] = useState("workers");
@@ -253,9 +265,11 @@ export default function MobileLaborPage() {
 
   /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管页面渲染。 */
   const activeRoleCodes = workbench.data?.user?.roleCodes ?? [];
-  const canApprovePayroll = Boolean(activeRoleCodes.includes("ALL") || activeRoleCodes.includes("ACCOUNTANT"));
-  const canPayPayroll = canPayPayrollFromMobile(activeRoleCodes);
-  const canVoidPayroll = canVoidPayrollFromMobile(activeRoleCodes);
+  const canApprovePayroll = isSuperAdmin && Boolean(activeRoleCodes.includes("ALL") || activeRoleCodes.includes("ACCOUNTANT"));
+  const canPayPayroll = isSuperAdmin && canPayPayrollFromMobile(activeRoleCodes);
+  const canVoidPayroll = isSuperAdmin && canVoidPayrollFromMobile(activeRoleCodes);
+  const existingAttendanceForDraft = Boolean(attendance.data?.some(record => record.workerId === Number(attendanceDraft.workerId) && getBusinessDateText(record.attendanceDate) === attendanceDraft.attendanceDate));
+  const existingPayrollForDraft = Boolean(payroll.data?.some(statement => statement.workerId === Number(payrollDraft.workerId) && statement.period === period));
   const isBusy = workers.isLoading || attendance.isLoading || payroll.isLoading || summary.isLoading;
 
   /** 新建或编辑时仅预填非敏感字段；敏感输入框留空即表示保留既有加密值。 */
@@ -313,6 +327,7 @@ export default function MobileLaborPage() {
   /** 考勤表单以人员日期为幂等键，重复提交会更新未锁定记录。 */
   function submitAttendanceForm() {
     if (!selectedProjectId || !attendanceDraft.workerId) return toast.error("请选择项目与劳务人员");
+    if (!isSuperAdmin && existingAttendanceForDraft) return toast.error("普通管理人员仅可新增考勤，已有考勤记录请联系超级管理员维护");
     saveAttendance.mutate({
       workerId: Number(attendanceDraft.workerId),
       projectId: selectedProjectId,
@@ -329,6 +344,7 @@ export default function MobileLaborPage() {
   function submitPayrollForm() {
     if (!selectedProjectId || !payrollDraft.workerId) return toast.error("请选择项目与劳务人员");
     if (!payrollDraft.payableAmount) return toast.error("请填写应发金额");
+    if (!isSuperAdmin && existingPayrollForDraft) return toast.error("普通管理人员仅可新增工资草稿，已有工资条请联系超级管理员维护");
     savePayroll.mutate({
       workerId: Number(payrollDraft.workerId),
       projectId: selectedProjectId,
@@ -407,7 +423,24 @@ export default function MobileLaborPage() {
                 <div className="flex items-center justify-between print:hidden"><div><h2 className="text-base font-semibold">实名制人员台账</h2><p className="mt-0.5 text-xs text-[#8f7566]">敏感信息仅显示掩码</p></div><Button size="sm" className="bg-[#a85f30] text-white hover:bg-[#8e4b22]" onClick={() => openWorkerDialog()}><Plus className="mr-1 h-4 w-4" />录入人员</Button></div>
                 {isBusy ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">正在同步数据…</div> : null}
                 {!isBusy && !workers.data?.length ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">当前项目尚未录入劳务人员。</div> : null}
-                {workers.data?.map(worker => { const identityStatus = getIdentityVerificationStatus(worker.identityVerificationStatus); return <Card key={worker.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{worker.realName}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${identityStatus.className}`}>{identityStatus.label}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${worker.attendanceStatus === "active" ? "bg-[#e6f1e4] text-[#47754d]" : worker.attendanceStatus === "left" ? "bg-[#eee8e2] text-[#806e60]" : "bg-[#f8ead8] text-[#94603a]"}`}>{worker.attendanceStatus === "active" ? "在场" : worker.attendanceStatus === "left" ? "已退场" : "待进场"}</span></div><p className="mt-1 text-xs text-[#8f7566]">{worker.teamName || "未分班组"} · 进场 {formatDate(worker.entryDate)}</p></div><div className="flex items-center gap-2 print:hidden"><button aria-label={`管理${worker.realName}证照`} className="grid h-8 w-8 place-items-center rounded-lg bg-[#f7ead8] text-[#975227] active:scale-95" onClick={() => openCertificateDialog(worker)}><FileText className="h-4 w-4" /></button><button aria-label={`编辑${worker.realName}档案`} className="grid h-8 w-8 place-items-center rounded-lg bg-[#fbefe0] text-[#975227] active:scale-95" onClick={() => openWorkerDialog(worker)}><Pencil className="h-4 w-4" /></button></div></div><div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-[#fcf8f2] px-3 py-2.5 text-[11px] text-[#765a49]"><span>身份证：{worker.identityNoMasked || "未录入"}</span><span>手机：{worker.phoneMasked || "未录入"}</span><span>开户行：{worker.bankName || "未录入"}</span><span>银行卡：{worker.bankAccountMasked || "未录入"}</span>{worker.identityVerificationNote ? <span className="col-span-2">核验说明：{worker.identityVerificationNote}</span> : null}</div></CardContent></Card>; })}
+                {workers.data?.map(worker => {
+                  const identityStatus = getIdentityVerificationStatus(worker.identityVerificationStatus);
+                  return <Card key={worker.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{worker.realName}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${identityStatus.className}`}>{identityStatus.label}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${worker.attendanceStatus === "active" ? "bg-[#e6f1e4] text-[#47754d]" : worker.attendanceStatus === "left" ? "bg-[#eee8e2] text-[#806e60]" : "bg-[#f8ead8] text-[#94603a]"}`}>{worker.attendanceStatus === "active" ? "在场" : worker.attendanceStatus === "left" ? "已退场" : "待进场"}</span></div>
+                          <p className="mt-1 text-xs text-[#8f7566]">{worker.teamName || "未分班组"} · 进场 {formatDate(worker.entryDate)}</p>
+                        </div>
+                        <div className="flex items-center gap-2 print:hidden">
+                          <button aria-label={`管理${worker.realName}证照`} className="grid h-8 w-8 place-items-center rounded-lg bg-[#f7ead8] text-[#975227] active:scale-95" onClick={() => openCertificateDialog(worker)}><FileText className="h-4 w-4" /></button>
+                          {isSuperAdmin ? <button aria-label={`编辑${worker.realName}档案`} className="grid h-8 w-8 place-items-center rounded-lg bg-[#fbefe0] text-[#975227] active:scale-95" onClick={() => openWorkerDialog(worker)}><Pencil className="h-4 w-4" /></button> : null}
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-[#fcf8f2] px-3 py-2.5 text-[11px] text-[#765a49]"><span>身份证：{worker.identityNoMasked || "未录入"}</span><span>手机：{worker.phoneMasked || "未录入"}</span><span>开户行：{worker.bankName || "未录入"}</span><span>银行卡：{worker.bankAccountMasked || "未录入"}</span>{worker.identityVerificationNote ? <span className="col-span-2">核验说明：{worker.identityVerificationNote}</span> : null}</div>
+                    </CardContent>
+                  </Card>;
+                })}
               </TabsContent>
 
               <TabsContent value="attendance" className="mt-4 space-y-3">
@@ -422,7 +455,7 @@ export default function MobileLaborPage() {
                 {payroll.data?.map(statement => {
                   const status = getPayrollStatus(statement.status);
                   const canVoidCurrent = ["draft", "reviewing", "approved"].includes(statement.status) && canVoidPayroll;
-                  const hasAction = statement.status === "draft" || (statement.status === "reviewing" && canApprovePayroll) || (statement.status === "approved" && canPayPayroll) || canVoidCurrent;
+                  const hasAction = isSuperAdmin && (statement.status === "draft" || (statement.status === "reviewing" && canApprovePayroll) || (statement.status === "approved" && canPayPayroll) || canVoidCurrent);
                   return (
                     <Card key={statement.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]">
                       <CardContent className="p-4">

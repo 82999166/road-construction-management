@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
@@ -15,11 +16,12 @@ vi.mock("./access", async importOriginal => {
     ...actual,
     assertDepartmentBusinessAccess: vi.fn(),
     assertProjectInCurrentScope: vi.fn(),
+    assertSuperAdmin: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
   };
 });
 
-import { assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
+import { assertProjectInCurrentScope, assertSuperAdmin, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
 
@@ -77,6 +79,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+    vi.mocked(assertSuperAdmin).mockResolvedValue(createAuthContext().user);
     mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
   });
 
@@ -267,6 +270,62 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", action: "create_record", targetId: "项目材料费用" }));
     expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
+  });
+
+  it("普通管理人员只能新增未结清财务流水，结算和作废状态必须由超级管理员办理", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const values = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+    vi.mocked(assertSuperAdmin).mockRejectedValueOnce(new TRPCError({ code: "FORBIDDEN", message: "仅超级管理员可维护结算或作废状态" }));
+
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "expense",
+      category: "已结清材料费",
+      amount: 123.45,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "paid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: null,
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(values).not.toHaveBeenCalled();
+
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "expense",
+      category: "普通录入材料费",
+      amount: 123.45,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "unpaid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: null,
+    })).resolves.toEqual({ success: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ settlementStatus: "unpaid" }));
+  });
+
+  it("超级管理员可创建需要立即确认或作废的财务流水", async () => {
+    const values = vi.fn(async () => undefined);
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
+    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "income",
+      category: "已确认工程回款",
+      amount: 500,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "paid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: "管理员核验后登记",
+    })).resolves.toEqual({ success: true });
+    expect(assertSuperAdmin).toHaveBeenCalledWith(expect.anything());
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ settlementStatus: "paid" }));
   });
 
   it("人工财务流水仅可在支付前作废，并由会计或财务负责人对已支付流水创建反方向冲销记录", async () => {

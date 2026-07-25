@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { MobileFinanceAdjustmentPanel } from "@/components/MobileFinanceAdjustmentPanel";
+import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { trpc } from "@/lib/trpc";
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, CircleHelp, FilePlus2, HardHat, Printer, WalletCards } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
@@ -25,6 +26,7 @@ export default function MobileFinancePage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const { isSuperAdmin } = useManagementPermissions();
   const [projectId, setProjectId] = useState<number>();
   const [period, setPeriod] = useState(currentPeriod);
   const [recordOpen, setRecordOpen] = useState(false);
@@ -42,7 +44,7 @@ export default function MobileFinancePage() {
   const save = trpc.finance.saveRecord.useMutation({ onSuccess: async () => { toast.success("资金流水已登记"); setRecordOpen(false); await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]); }, onError: error => toast.error(error.message) });
   function submit() {
     if (!selectedProjectId || !draft.category.trim() || !draft.amount) return toast.error("请填写收支分类和金额");
-    save.mutate({ projectId: selectedProjectId, direction: draft.direction, category: draft.category.trim(), amount: Number(draft.amount), occurredAt: new Date(draft.occurredAt).toISOString(), settlementStatus: draft.settlementStatus, sourceType: null, sourceId: null, evidenceId: null, remarks: draft.remarks.trim() || null });
+    save.mutate({ projectId: selectedProjectId, direction: draft.direction, category: draft.category.trim(), amount: Number(draft.amount), occurredAt: new Date(draft.occurredAt).toISOString(), settlementStatus: isSuperAdmin ? draft.settlementStatus : "unpaid", sourceType: null, sourceId: null, evidenceId: null, remarks: draft.remarks.trim() || null });
   }
   if (loading || !isAuthenticated || projects.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projects.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载财务成本权限…" title="财务成本" description="请使用企业统一身份进入已授权项目的财务与成本数据。" Icon={WalletCards} onRetry={() => { void refresh(); void projects.refetch(); }} />;
 
@@ -55,10 +57,25 @@ export default function MobileFinancePage() {
         <section className="grid grid-cols-2 gap-3"><FinanceMetric label="确认收入" value={formatMoney(summary.data?.incomeAmount)} tone="text-emerald-700" /><FinanceMetric label="本期支出" value={formatMoney(summary.data?.expenseAmount)} tone="text-rose-700" /><FinanceMetric label="项目利润" value={formatMoney(summary.data?.profitAmount)} tone="text-teal-700" /><FinanceMetric label="待收/待付" value={`${formatMoney(summary.data?.receivableAmount)} / ${formatMoney(summary.data?.payableAmount)}`} tone="text-amber-700" /><FinanceMetric label="现金流入" value={formatMoney(summary.data?.cashInflowAmount)} tone="text-sky-700" /><FinanceMetric label="现金流出" value={formatMoney(summary.data?.cashOutflowAmount)} tone="text-orange-700" /><FinanceMetric label="净现金流" value={formatMoney(summary.data?.netCashFlowAmount)} tone="text-violet-700" /></section>
         <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="font-semibold">{period} 项目现金流</p><p className="text-xs text-[#7d563d]">流入 {formatMoney(summary.data?.cashInflowAmount)}　流出 {formatMoney(summary.data?.cashOutflowAmount)}</p></div><div className="flex gap-1"><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={() => window.print()}><Printer className="h-4 w-4" />打印</Button><Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" onClick={() => setRecordOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />登记</Button></div></section>
         <section className="space-y-3">{records.data?.length ? records.data.map(record => <Card key={record.id} className="border-0 shadow-sm"><CardContent className="flex items-center gap-3 p-4"><div className={`grid h-10 w-10 place-items-center rounded-full ${record.direction === "income" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{record.direction === "income" ? <ArrowDownRight className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}</div><div className="min-w-0 flex-1"><p className="truncate font-semibold">{record.category}</p><p className="mt-1 text-xs text-[#8f7566]">{new Date(record.occurredAt).toLocaleString("zh-CN")}　{record.settlementStatus === "paid" ? "已结清" : record.settlementStatus === "partial" ? "部分结清" : record.settlementStatus === "void" ? "已作废" : "未结清"}</p></div><p className={record.direction === "income" ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>{record.direction === "income" ? "+" : "-"}{formatMoney(record.amount)}</p></CardContent></Card>) : <Card className="border-dashed border-[#e3cbb4] bg-[#fffaf4]"><CardContent className="p-7 text-center text-sm text-[#8f7566]">当前期间暂无真实资金流水。</CardContent></Card>}</section>
-        <MobileFinanceAdjustmentPanel projectId={selectedProjectId} roleCodes={roleCodes} records={records.data ?? []} />
+        {isSuperAdmin ? <MobileFinanceAdjustmentPanel projectId={selectedProjectId} roleCodes={roleCodes} records={records.data ?? []} /> : null}
       </>}
     </main>
-    <Dialog open={recordOpen} onOpenChange={setRecordOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>登记资金流水</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>收支方向</Label><Select value={draft.direction} onValueChange={value => setDraft(current => ({ ...current, direction: value as "income" | "expense" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="income">收入</SelectItem><SelectItem value="expense">支出</SelectItem></SelectContent></Select></div><div><Label>资金分类</Label><Input className="mt-1" placeholder="例如：材料款、工程回款" value={draft.category} onChange={event => setDraft(current => ({ ...current, category: event.target.value }))} /></div><div className="grid grid-cols-2 gap-2"><div><Label>金额</Label><Input className="mt-1" inputMode="decimal" value={draft.amount} onChange={event => setDraft(current => ({ ...current, amount: event.target.value }))} /></div><div><Label>结算状态</Label><Select value={draft.settlementStatus} onValueChange={value => setDraft(current => ({ ...current, settlementStatus: value as "unpaid" | "partial" | "paid" | "void" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unpaid">未结清</SelectItem><SelectItem value="partial">部分结清</SelectItem><SelectItem value="paid">已结清</SelectItem><SelectItem value="void">已作废</SelectItem></SelectContent></Select></div></div><div><Label>发生时间</Label><Input className="mt-1" type="datetime-local" value={draft.occurredAt} onChange={event => setDraft(current => ({ ...current, occurredAt: event.target.value }))} /></div><div><Label>备注</Label><Input className="mt-1" value={draft.remarks} onChange={event => setDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setRecordOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submit} disabled={save.isPending}>登记</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={recordOpen} onOpenChange={setRecordOpen}>
+      <DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl">
+        <DialogHeader><DialogTitle>登记资金流水</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div><Label>收支方向</Label><Select value={draft.direction} onValueChange={value => setDraft(current => ({ ...current, direction: value as "income" | "expense" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="income">收入</SelectItem><SelectItem value="expense">支出</SelectItem></SelectContent></Select></div>
+          <div><Label>资金分类</Label><Input className="mt-1" placeholder="例如：材料款、工程回款" value={draft.category} onChange={event => setDraft(current => ({ ...current, category: event.target.value }))} /></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><Label>金额</Label><Input className="mt-1" inputMode="decimal" value={draft.amount} onChange={event => setDraft(current => ({ ...current, amount: event.target.value }))} /></div>
+            {isSuperAdmin ? <div><Label>结算状态</Label><Select value={draft.settlementStatus} onValueChange={value => setDraft(current => ({ ...current, settlementStatus: value as "unpaid" | "partial" | "paid" | "void" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unpaid">未结清</SelectItem><SelectItem value="partial">部分结清</SelectItem><SelectItem value="paid">已结清</SelectItem><SelectItem value="void">已作废</SelectItem></SelectContent></Select></div> : <div><Label>结算状态</Label><Input className="mt-1 bg-[#fcf8f2]" value="未结清" readOnly /></div>}
+          </div>
+          <div><Label>发生时间</Label><Input className="mt-1" type="datetime-local" value={draft.occurredAt} onChange={event => setDraft(current => ({ ...current, occurredAt: event.target.value }))} /></div>
+          <div><Label>备注</Label><Input className="mt-1" value={draft.remarks} onChange={event => setDraft(current => ({ ...current, remarks: event.target.value }))} /></div>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setRecordOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submit} disabled={save.isPending}>登记</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div></div>;
 }
 
