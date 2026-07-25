@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
 import { decryptSecret, encryptSecret } from "../services/secretVault";
@@ -74,6 +74,7 @@ const MAX_CERTIFICATE_BYTES = 5 * 1024 * 1024;
  * 管理员对应 ALL 标记，用于系统初始化、应急处理和后台授权后的完整数据访问。
  */
 async function assertLaborBusinessAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "LABOR");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowedCodes = ["LABOR_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowedCodes.includes(role))) {

@@ -3,7 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
 import { auditLogs, evidenceRecords, projects, systemSettings } from "../../drizzle/schema";
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
 import { storageGet, storageGetSignedUrl, storagePut } from "../storage";
@@ -94,10 +94,12 @@ async function getCaptureConnectorConfig(db: NonNullable<Awaited<ReturnType<type
   };
 }
 
-/** 影像取证仅对具有移动端业务岗位的已登录用户开放；项目范围仍由服务端强制校验。 */
+/** 影像取证同时要求有效业务岗位、现场取证部门模块与该模块项目范围。 */
 async function assertEvidenceAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   const roles = await getEffectiveRoleCodes(ctx);
   if (!roles.length) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未获现场影像取证授权" });
+  await assertDepartmentBusinessAccess(ctx, "EVIDENCE");
+  return getDepartmentModuleDataScope(ctx, "EVIDENCE");
 }
 
 /**
@@ -115,8 +117,7 @@ export const evidenceRouter = router({
 
   /** 返回当前用户在授权项目和组织范围内可选择的项目，避免移动端通过猜测 ID 探测项目。 */
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
-    await assertEvidenceAccess(ctx);
-    const [db, scope] = await Promise.all([getDb(), getCurrentDataScope(ctx)]);
+    const [db, scope] = await Promise.all([getDb(), assertEvidenceAccess(ctx)]);
     if (!db) return [];
     const rows = await db.select({ id: projects.id, name: projects.name, organizationId: projects.organizationId, status: projects.status }).from(projects).orderBy(projects.sortOrder, projects.id);
     return rows.filter(project => scope.hasAllProjects || scope.projectIds.includes(project.id) || (project.organizationId !== null && scope.organizationIds.includes(project.organizationId)));

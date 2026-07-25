@@ -18,7 +18,7 @@ import {
   assertPurchaseRequestStatusTransition,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
@@ -80,6 +80,7 @@ async function listScopedProjects(ctx: Parameters<typeof requireAuthenticatedUse
 
 /** 采购与仓储岗位访问控制，系统管理员以 ALL 角色覆盖应急处置。 */
 async function assertPurchaseAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "PURCHASING");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["PURCHASER", "WAREHOUSE_MANAGER", "LOGISTICS_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
@@ -90,6 +91,7 @@ async function assertPurchaseAccess(ctx: Parameters<typeof requireAuthenticatedU
 
 /** 工程计量岗位访问控制，金额确认还会在状态操作处进行更严格限制。 */
 async function assertMeasurementAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "MEASUREMENT");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["MEASUREMENT_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER", "ACCOUNTANT"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
@@ -100,6 +102,7 @@ async function assertMeasurementAccess(ctx: Parameters<typeof requireAuthenticat
 
 /** 财务成本岗位访问控制，出纳可登记资金流水但不能确认工程计量。 */
 async function assertFinanceAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "FINANCE");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER", "PROJECT_MANAGER"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {

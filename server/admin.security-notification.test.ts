@@ -42,9 +42,8 @@ function createAdminDb(selectResponses: unknown[][] = []) {
   const insertedValues: unknown[] = [];
   const query = () => {
     const rows = selectResponses[selectIndex++] ?? [];
-    return {
-      where: vi.fn(() => ({ limit: vi.fn(async () => rows) })),
-    };
+    const result = Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
+    return { where: vi.fn(() => result) };
   };
   return {
     select: vi.fn(() => ({ from: vi.fn(() => query()) })),
@@ -76,13 +75,35 @@ describe("后台安全通知", () => {
   });
 
   it("人员授权变更同时写入用户可见的站内提醒和企业微信审计事件", async () => {
-    const db = createAdminDb();
+    const db = createAdminDb([[{ code: "SUPER_ADMIN" }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).resolves.toEqual({ success: true });
 
     expect(mockCreateInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 18, eventCode: "user_access_updated", deepLink: "/mobile/profile" }));
     expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "user_access_updated", targetType: "user", targetId: "18" }));
+  });
+
+  it("普通业务角色授权必须绑定启用的部门或项目部", async () => {
+    const db = createAdminDb([[{ code: "LABOR_MANAGER" }]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "业务角色授权必须选择所属部门或项目部",
+    });
+  });
+
+  it("超级管理员可为有效部门启用标准业务模块并写入审计", async () => {
+    const db = createAdminDb([[{ id: 22, type: "department" }], []]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ organizationId: 22, module: "LABOR", status: "active" })).resolves.toEqual({ success: true });
+
+    expect(db.insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ organizationId: 22, module: "LABOR", status: "active", configuredBy: 1 }),
+      expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "22:LABOR" }),
+    ]));
   });
 
   it("外部连接测试失败仍记录审计并生成不含连接地址的系统异常提醒", async () => {

@@ -20,7 +20,7 @@ import {
   calculateTieredFreightAmount,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
@@ -211,6 +211,7 @@ async function listScopedProjects(ctx: Parameters<typeof requireAuthenticatedUse
 
 /** 机械模块允许的岗位；管理员角色对应 ALL，可覆盖初始化和应急处置。 */
 async function assertMachineryAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "MACHINERY");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["MACHINERY_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
@@ -221,6 +222,7 @@ async function assertMachineryAccess(ctx: Parameters<typeof requireAuthenticated
 
 /** 运输模块允许的岗位；司机角色只可操作分配给本人的车辆及趟次。 */
 async function assertTransportAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "TRANSPORT");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["TRANSPORT_MANAGER", "DRIVER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {

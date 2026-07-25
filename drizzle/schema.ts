@@ -181,6 +181,27 @@ export const userRoleAssignments = mysqlTable(
   }),
 );
 
+/**
+ * 部门可办理的业务模块。人员仍通过角色授权表关联到部门与项目范围，
+ * 本表则决定该部门整体可以进入哪些业务域；两层授权取交集后才允许办理业务。
+ */
+export const departmentBusinessScopes = mysqlTable(
+  "department_business_scopes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    organizationId: int("organizationId").notNull(),
+    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"]).notNull(),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    configuredBy: int("configuredBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    departmentModuleUnique: uniqueIndex("department_business_scopes_unique").on(table.organizationId, table.module),
+    organizationIndex: index("department_business_scopes_organization_index").on(table.organizationId),
+  }),
+);
+
 /** 所有外部接口、业务参数和消息模板的统一配置表。敏感值只保存密文。 */
 export const systemSettings = mysqlTable(
   "system_settings",

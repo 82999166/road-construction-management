@@ -8,10 +8,10 @@ vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn() }));
 vi.mock("./services/secretVault", () => ({ decryptSecret: vi.fn((value: string) => value.replace(/^cipher:/, "")) }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
-  return { ...actual, assertProjectInCurrentScope: vi.fn(), getCurrentDataScope: vi.fn(), getEffectiveRoleCodes: vi.fn() };
+  return { ...actual, assertDepartmentBusinessAccess: vi.fn(), assertProjectInCurrentScope: vi.fn(), getCurrentDataScope: vi.fn(), getDepartmentModuleDataScope: vi.fn(), getEffectiveRoleCodes: vi.fn() };
 });
 
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes } from "./access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getDepartmentModuleDataScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
@@ -50,6 +50,7 @@ describe("消息、影像与企业微信通知安全边界", () => {
     vi.clearAllMocks();
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["SITE_MANAGER"]);
     vi.mocked(getCurrentDataScope).mockResolvedValue({ hasAllProjects: false, projectIds: [2], organizationIds: [5], roleCodes: ["SITE_MANAGER"] });
+    vi.mocked(getDepartmentModuleDataScope).mockResolvedValue({ hasAllProjects: false, projectIds: [2], organizationIds: [5], roleCodes: ["SITE_MANAGER"] });
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
   });
 
@@ -71,6 +72,7 @@ describe("消息、影像与企业微信通知安全边界", () => {
 
     const options = await evidenceRouter.createCaller(createAuthContext()).projectOptions();
     expect(options.map(item => item.id)).toEqual([1, 2]);
+    expect(assertDepartmentBusinessAccess).toHaveBeenCalledWith(expect.anything(), "EVIDENCE");
     await expect(evidenceRouter.createCaller(createAuthContext()).upload({ projectId: 2, sourceType: "site_photo", description: "路面摊铺现场", capturedAt: "2026-07-25T04:00:00.000Z", longitude: 120.1, latitude: 30.2, fileName: "现场.jpg", mimeType: "image/jpeg", base64Data: "%%%" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 

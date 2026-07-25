@@ -1,8 +1,36 @@
 import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { projects, systemRoles, userRoleAssignments, users } from "../drizzle/schema";
+import { departmentBusinessScopes, organizations, projects, systemRoles, userRoleAssignments, users } from "../drizzle/schema";
+import { type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
+import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
 import type { TrpcContext } from "./_core/context";
+
+type DepartmentScopedContext = TrpcContext & { departmentModule?: DepartmentBusinessModule };
+type DataScope = { userId: number; hasAllProjects: boolean; projectIds: number[]; organizationIds: number[] };
+
+/** 岗位必须能够办理目标模块；`ALL` 菜单表示任一已授权业务岗位均可使用该通用模块。 */
+function canRoleHandleDepartmentModule(roleCode: string, module: DepartmentBusinessModule) {
+  const menu = MOBILE_MENU_CATALOG.find(item => item.code === module);
+  if (!menu) return false;
+  const permittedRoles = menu.roles as readonly string[];
+  return permittedRoles.includes("ALL") || permittedRoles.includes(roleCode);
+}
+
+/** 将角色授权记录安全收敛为项目与组织数据范围；空集合始终表示无数据访问权。 */
+function toDataScope(userId: number, rows: Array<{ projectId: number | null; organizationId: number | null }>, hasAllProjects = false): DataScope {
+  return {
+    userId,
+    hasAllProjects,
+    projectIds: Array.from(new Set(rows.flatMap(row => (row.projectId ? [row.projectId] : [])))),
+    organizationIds: Array.from(new Set(rows.flatMap(row => (row.organizationId ? [row.organizationId] : [])))),
+  };
+}
+
+/** 由部门业务过程写入的内部模块标识，仅服务端中间件可设置，客户端请求不可伪造。 */
+function getRequestedDepartmentModule(ctx: TrpcContext) {
+  return (ctx as DepartmentScopedContext).departmentModule;
+}
 
 /**
  * 校验用户已登录。业务路由和后台路由均应先调用此函数，
@@ -86,13 +114,17 @@ export async function getEffectiveRoleCodes(ctx: TrpcContext): Promise<string[]>
 }
 
 /**
- * 计算当前用户在业务数据查询中可访问的组织和项目范围。
- * 项目范围为空且 hasAllProjects 为 false 时表示无项目数据访问权，业务路由不得将其误解为全部项目。
+ * 解析登录人员通过有效角色授权所归属的部门，以及这些部门启用的业务模块。
+ * 未配置部门或部门模块时返回空集合，遵循默认拒绝原则，避免旧角色被误解为跨部门业务授权。
  */
-export async function getCurrentDataScope(ctx: TrpcContext) {
+export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   const user = requireAuthenticatedUser(ctx);
   if (user.role === "admin") {
-    return { userId: user.id, hasAllProjects: true, projectIds: [] as number[], organizationIds: [] as number[] };
+    return {
+      departments: [] as Array<{ id: number; name: string; type: "department" | "project_department" }>,
+      moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"] as DepartmentBusinessModule[],
+      hasAllDepartments: true,
+    };
   }
 
   const db = await getDb();
@@ -100,23 +132,124 @@ export async function getCurrentDataScope(ctx: TrpcContext) {
 
   const now = new Date();
   const rows = await db
-    .select({ projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId })
+    .select({ organizationId: organizations.id, organizationName: organizations.name, organizationType: organizations.type, roleCode: systemRoles.code, module: departmentBusinessScopes.module })
     .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .innerJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
+    .innerJoin(departmentBusinessScopes, eq(organizations.id, departmentBusinessScopes.organizationId))
     .where(
       and(
         eq(userRoleAssignments.userId, user.id),
         eq(userRoleAssignments.status, "active"),
+        eq(organizations.status, "active"),
+        or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
+        eq(departmentBusinessScopes.status, "active"),
         or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
         or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
       ),
     );
 
+  const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
+  const departmentMap = new Map<number, { id: number; name: string; type: "department" | "project_department" }>();
+  for (const row of authorizedRows) {
+    // 查询条件已限制为两类部门节点；显式保护让未来扩展组织枚举时仍不会放宽部门边界。
+    if (row.organizationType === "department" || row.organizationType === "project_department") {
+      departmentMap.set(row.organizationId, { id: row.organizationId, name: row.organizationName, type: row.organizationType });
+    }
+  }
   return {
-    userId: user.id,
-    hasAllProjects: rows.some(row => row.projectId === null && row.organizationId === null),
-    projectIds: Array.from(new Set(rows.flatMap(row => (row.projectId ? [row.projectId] : [])))),
-    organizationIds: Array.from(new Set(rows.flatMap(row => (row.organizationId ? [row.organizationId] : [])))),
+    departments: Array.from(departmentMap.values()),
+    moduleCodes: Array.from(new Set(authorizedRows.map(row => row.module))) as DepartmentBusinessModule[],
+    hasAllDepartments: false,
   };
+}
+
+/** 当前用户是否可代表其已配置部门办理指定业务；角色和部门业务范围均必须有效。 */
+export async function assertDepartmentBusinessAccess(ctx: TrpcContext, module: DepartmentBusinessModule) {
+  const access = await getCurrentDepartmentAccess(ctx);
+  if (access.hasAllDepartments || access.moduleCodes.includes(module)) {
+    // 上下文仅存在于当前服务端请求内；客户端无法注入该字段。
+    (ctx as DepartmentScopedContext).departmentModule = module;
+    return access;
+  }
+  throw new TRPCError({ code: "FORBIDDEN", message: `当前账号所属部门未获授权办理“${getDepartmentBusinessModuleName(module)}”业务` });
+}
+
+/** 返回某个已授权部门业务域下的项目与组织范围；管理员始终拥有完整范围。 */
+async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: DepartmentBusinessModule): Promise<DataScope> {
+  const user = requireAuthenticatedUser(ctx);
+  if (user.role === "admin") return toDataScope(user.id, [], true);
+
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+  const now = new Date();
+  const rows = await db
+    .select({ projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId, roleCode: systemRoles.code, module: departmentBusinessScopes.module })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .innerJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
+    .innerJoin(departmentBusinessScopes, eq(organizations.id, departmentBusinessScopes.organizationId))
+    .where(
+      and(
+        eq(userRoleAssignments.userId, user.id),
+        eq(userRoleAssignments.status, "active"),
+        eq(organizations.status, "active"),
+        or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
+        eq(departmentBusinessScopes.module, module),
+        eq(departmentBusinessScopes.status, "active"),
+        or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
+        or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
+      ),
+    );
+  return toDataScope(user.id, rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule)));
+}
+
+/**
+ * 获取指定部门业务模块的独立项目范围。工作台聚合多个模块时必须使用此函数，
+ * 禁止将劳务、财务等不同模块的项目范围混合后用于单个模块的统计或查询。
+ */
+export async function getDepartmentModuleDataScope(ctx: TrpcContext, module: DepartmentBusinessModule) {
+  await assertDepartmentBusinessAccess(ctx, module);
+  return getCurrentDepartmentModuleDataScope(ctx, module);
+}
+
+/**
+ * 计算当前用户在业务数据查询中可访问的组织和项目范围。
+ * 项目范围为空且 hasAllProjects 为 false 时表示无项目数据访问权，业务路由不得将其误解为全部项目。
+ */
+export async function getCurrentDataScope(ctx: TrpcContext) {
+  const user = requireAuthenticatedUser(ctx);
+  const departmentModule = getRequestedDepartmentModule(ctx);
+  if (departmentModule) return getCurrentDepartmentModuleDataScope(ctx, departmentModule);
+  if (user.role === "admin") {
+    return toDataScope(user.id, [], true);
+  }
+
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+  const now = new Date();
+  const rows = await db
+    .select({ projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId, roleCode: systemRoles.code, module: departmentBusinessScopes.module })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .innerJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
+    .innerJoin(departmentBusinessScopes, eq(organizations.id, departmentBusinessScopes.organizationId))
+    .where(
+      and(
+        eq(userRoleAssignments.userId, user.id),
+        eq(userRoleAssignments.status, "active"),
+        eq(organizations.status, "active"),
+        or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
+        eq(departmentBusinessScopes.status, "active"),
+        or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
+        or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
+      ),
+    );
+
+  const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
+  return toDataScope(user.id, authorizedRows);
 }
 
 /**

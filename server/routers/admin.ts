@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   auditLogs,
   configPublishLogs,
+  departmentBusinessScopes,
   organizations,
   positions,
   projects,
@@ -13,6 +14,7 @@ import {
   systemSettings,
   userRoleAssignments,
 } from "../../drizzle/schema";
+import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
@@ -40,6 +42,13 @@ const roleInput = z.object({
   name: z.string().trim().min(2).max(128),
   category: z.enum(["system", "business"]).default("business"),
   description: z.string().max(1000).nullable().optional(),
+  status: z.enum(["active", "disabled"]).default("active"),
+});
+
+/** 部门业务范围配置仅允许使用系统定义的业务模块编码。 */
+const departmentBusinessScopeInput = z.object({
+  organizationId: z.number().int().positive(),
+  module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"]),
   status: z.enum(["active", "disabled"]).default("active"),
 });
 
@@ -179,6 +188,44 @@ export const adminRouter = router({
     }),
   }),
 
+  /** 部门业务范围由超级管理员统一配置，普通人员不能通过客户端自行增加业务入口。 */
+  department: router({
+    listScopes: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db
+        .select({ id: departmentBusinessScopes.id, organizationId: organizations.id, organizationCode: organizations.code, organizationName: organizations.name, organizationType: organizations.type, module: departmentBusinessScopes.module, status: departmentBusinessScopes.status, updatedAt: departmentBusinessScopes.updatedAt })
+        .from(departmentBusinessScopes)
+        .innerJoin(organizations, eq(departmentBusinessScopes.organizationId, organizations.id))
+        .orderBy(organizations.sortOrder, organizations.id, departmentBusinessScopes.module);
+      return rows.filter(row => row.organizationType === "department" || row.organizationType === "project_department");
+    }),
+    saveScope: protectedProcedure.input(departmentBusinessScopeInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const [department] = await db.select({ id: organizations.id, type: organizations.type }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
+      if (!department || (department.type !== "department" && department.type !== "project_department")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的部门或项目部节点配置业务范围" });
+      }
+      const currentScopes = await db.select({ id: departmentBusinessScopes.id, module: departmentBusinessScopes.module }).from(departmentBusinessScopes).where(eq(departmentBusinessScopes.organizationId, input.organizationId));
+      const existing = currentScopes.find(item => item.module === input.module);
+      if (existing) {
+        await db.update(departmentBusinessScopes).set({ status: input.status, configuredBy: admin.id }).where(eq(departmentBusinessScopes.id, existing.id));
+      } else {
+        await db.insert(departmentBusinessScopes).values({ ...input, configuredBy: admin.id });
+      }
+      await db.insert(auditLogs).values({ userId: admin.id, module: "department", action: input.status === "active" ? "enable_business_scope" : "disable_business_scope", targetType: "department_business_scope", targetId: `${input.organizationId}:${input.module}`, summary: `维护部门业务范围：${input.module}` });
+      return { success: true };
+    }),
+    /** 将模块目录由服务端统一返回，确保管理端不依赖硬编码选项。 */
+    modules: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      return DEPARTMENT_BUSINESS_MODULES;
+    }),
+  }),
+
   position: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       await assertSuperAdmin(ctx);
@@ -305,6 +352,17 @@ export const adminRouter = router({
         const validTo = input.validTo ? new Date(input.validTo) : null;
         if (validFrom && validTo && validTo <= validFrom) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "授权失效时间必须晚于生效时间" });
+        }
+        const [assignedRole] = await db.select({ code: systemRoles.code }).from(systemRoles).where(eq(systemRoles.id, input.roleId)).limit(1);
+        if (!assignedRole) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的系统角色" });
+        if (assignedRole.code !== "SUPER_ADMIN" && !input.organizationId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "业务角色授权必须选择所属部门或项目部" });
+        }
+        if (input.organizationId) {
+          const [department] = await db.select({ type: organizations.type, status: organizations.status }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
+          if (!department || (department.type !== "department" && department.type !== "project_department") || department.status !== "active") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "所属部门必须是启用中的部门或项目部节点" });
+          }
         }
         const values = { ...input, organizationId: input.organizationId ?? null, projectId: input.projectId ?? null, validFrom, validTo, grantedBy: admin.id };
         if (input.id) await db.update(userRoleAssignments).set(values).where(eq(userRoleAssignments.id, input.id));

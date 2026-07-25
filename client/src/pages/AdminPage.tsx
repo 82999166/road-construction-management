@@ -36,6 +36,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
 ];
 
 type OrganizationType = "group" | "company" | "project_department" | "department" | "team";
+type DepartmentModuleCode = "CONSTRUCTION" | "LABOR" | "MACHINERY" | "TRANSPORT" | "PURCHASING" | "MEASUREMENT" | "FINANCE" | "EVIDENCE";
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
@@ -94,6 +95,8 @@ export default function AdminPage() {
   const permissions = trpc.admin.role.permissions.useQuery(undefined, queryOptions);
   const users = trpc.admin.personnel.listUsers.useQuery(undefined, queryOptions);
   const assignments = trpc.admin.personnel.listAssignments.useQuery(undefined, queryOptions);
+  const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, queryOptions);
+  const departmentModules = trpc.admin.department.modules.useQuery(undefined, queryOptions);
   const settings = trpc.admin.settings.list.useQuery(undefined, queryOptions);
   const audits = trpc.admin.audit.list.useQuery(undefined, queryOptions);
 
@@ -121,7 +124,8 @@ export default function AdminPage() {
     projectType: "highway" as const,
   });
   const [roleForm, setRoleForm] = useState({ code: "", name: "", description: "" });
-  const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", projectId: "", validFrom: "", validTo: "" });
+  const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
+  const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState({
     category: "企业微信",
     settingKey: "",
@@ -177,8 +181,15 @@ export default function AdminPage() {
   const saveAssignment = trpc.admin.personnel.saveAssignment.useMutation({
     onSuccess: async () => {
       toast.success("人员授权已保存");
-      setAssignmentForm({ userId: "", roleId: "", projectId: "", validFrom: "", validTo: "" });
+      setAssignmentForm({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
       await assignments.refetch();
+    },
+  });
+  const saveDepartmentScope = trpc.admin.department.saveScope.useMutation({
+    onSuccess: async () => {
+      toast.success("部门业务范围已保存，相关人员下次请求将按新范围校验");
+      setDepartmentScopeForm({ organizationId: "", module: "" });
+      await departmentScopes.refetch();
     },
   });
   const saveSetting = trpc.admin.settings.saveDraft.useMutation({
@@ -232,6 +243,14 @@ export default function AdminPage() {
     }
     return Object.entries(grouped);
   }, [permissions.data]);
+  const departmentNodes = useMemo(
+    () => (organizations.data ?? []).filter(item => item.type === "department" || item.type === "project_department"),
+    [organizations.data],
+  );
+  const organizationNameById = useMemo(
+    () => new Map((organizations.data ?? []).map(item => [item.id, item.name])),
+    [organizations.data],
+  );
 
   const renderOverview = () => (
     <div className="space-y-6">
@@ -366,17 +385,32 @@ export default function AdminPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>可为登录用户授予角色、组织/项目数据范围及生效期限；账号敏感字段不在此界面展示。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">部门可办理业务</CardTitle><CardDescription>先为部门或项目部启用业务模块，再向人员授予该部门角色。服务端会同时校验角色、部门模块和项目范围。</CardDescription></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+              <Select value={departmentScopeForm.organizationId} onValueChange={value => setDepartmentScopeForm({ ...departmentScopeForm, organizationId: value })}><SelectTrigger><SelectValue placeholder="选择部门或项目部" /></SelectTrigger><SelectContent>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
+              <Select value={departmentScopeForm.module} onValueChange={value => setDepartmentScopeForm({ ...departmentScopeForm, module: value as DepartmentModuleCode })}><SelectTrigger><SelectValue placeholder="选择业务模块" /></SelectTrigger><SelectContent>{departmentModules.data?.map(module => <SelectItem key={module.code} value={module.code}>{module.name}</SelectItem>)}</SelectContent></Select>
+              <Button disabled={!departmentScopeForm.organizationId || !departmentScopeForm.module || saveDepartmentScope.isPending} onClick={() => { if (departmentScopeForm.module) saveDepartmentScope.mutate({ organizationId: Number(departmentScopeForm.organizationId), module: departmentScopeForm.module, status: "active" }); }}>启用业务</Button>
+            </div>
+            {departmentScopes.data?.length ? <div className="space-y-2">{departmentScopes.data.map(scope => {
+              const module = departmentModules.data?.find(item => item.code === scope.module);
+              return <div key={scope.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{scope.organizationName} · {module?.name ?? scope.module}</p><p className="mt-0.5 text-xs text-slate-500">{module?.description ?? "部门业务模块"} · 最后更新：{displayDate(scope.updatedAt)}</p></div><Button size="sm" variant="outline" disabled={saveDepartmentScope.isPending} onClick={() => saveDepartmentScope.mutate({ organizationId: scope.organizationId, module: scope.module, status: scope.status === "active" ? "disabled" : "active" })}>{scope.status === "active" ? "停用" : "启用"}</Button></div>;
+            })}</div> : <EmptyState text="尚未配置部门可办理业务。请先建立部门节点，再按实际职责启用业务模块。" />}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色必须绑定所属部门或项目部；项目范围和有效期继续由服务端统一校验，账号敏感字段不在此界面展示。</CardDescription></CardHeader>
           <CardContent className="grid gap-3 lg:grid-cols-3">
             <Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select>
             <Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}</SelectItem>)}</SelectContent></Select>
+            <Select value={assignmentForm.organizationId || "UNASSIGNED"} onValueChange={value => setAssignmentForm({ ...assignmentForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择所属部门" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">不设置（仅超级管理员）</SelectItem>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
             <Select value={assignmentForm.projectId || "ALL"} onValueChange={value => setAssignmentForm({ ...assignmentForm, projectId: value === "ALL" ? "" : value })}><SelectTrigger><SelectValue placeholder="项目范围（可选）" /></SelectTrigger><SelectContent><SelectItem value="ALL">全部项目（按角色权限）</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select>
             <Input type="datetime-local" aria-label="授权生效时间" value={assignmentForm.validFrom} onChange={event => setAssignmentForm({ ...assignmentForm, validFrom: event.target.value })} />
             <Input type="datetime-local" aria-label="授权失效时间" value={assignmentForm.validTo} onChange={event => setAssignmentForm({ ...assignmentForm, validTo: event.target.value })} />
-            <Button disabled={!assignmentForm.userId || !assignmentForm.roleId || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), projectId: assignmentForm.projectId ? Number(assignmentForm.projectId) : null, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>授权</Button>
+            <Button disabled={!assignmentForm.userId || !assignmentForm.roleId || (!assignmentForm.organizationId && roles.data?.find(role => role.id === Number(assignmentForm.roleId))?.code !== "SUPER_ADMIN") || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: assignmentForm.organizationId ? Number(assignmentForm.organizationId) : null, projectId: assignmentForm.projectId ? Number(assignmentForm.projectId) : null, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>授权</Button>
           </CardContent>
           <CardContent className="pt-0">
-            {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 项目 {item.projectId || "全部"}</span><Badge variant="outline">{item.status}</Badge></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
+            {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 部门 {item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 项目 {item.projectId || "全部"}</span><Badge variant="outline">{item.status}</Badge></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
           </CardContent>
         </Card>
       </section>

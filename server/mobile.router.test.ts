@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
-const { mockGetCurrentDataScope, mockGetEffectiveRoleCodes } = vi.hoisted(() => ({
+const { mockGetCurrentDataScope, mockGetCurrentDepartmentAccess, mockGetEffectiveRoleCodes } = vi.hoisted(() => ({
   mockGetCurrentDataScope: vi.fn(),
+  mockGetCurrentDepartmentAccess: vi.fn().mockResolvedValue({ departments: [], moduleCodes: [], hasAllDepartments: true }),
   mockGetEffectiveRoleCodes: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock("./access", async importOriginal => {
   return {
     ...actual,
     getCurrentDataScope: mockGetCurrentDataScope,
+    getCurrentDepartmentAccess: mockGetCurrentDepartmentAccess,
     getEffectiveRoleCodes: mockGetEffectiveRoleCodes,
   };
 });
@@ -80,5 +82,22 @@ describe("移动工作台 tRPC 路由", () => {
 
     expect(result.statistics).toEqual({ pendingApprovals: 0, unreadMessages: 2, todayTrips: 0, pendingPayroll: 0 });
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("移动菜单必须同时满足岗位与部门业务范围，不能因拥有财务岗位而越过劳务部门授权", async () => {
+    mockGetEffectiveRoleCodes.mockResolvedValue(["LABOR_MANAGER", "FINANCE_MANAGER"]);
+    mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [], organizationIds: [] });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({
+      departments: [{ id: 31, name: "劳务管理部", type: "department" }],
+      moduleCodes: ["LABOR"],
+      hasAllDepartments: false,
+    });
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
+
+    const result = await mobileRouter.createCaller(createAuthContext()).workbench();
+
+    expect(result.user.departments).toEqual([{ id: 31, name: "劳务管理部", type: "department" }]);
+    expect(result.menus.some(menu => menu.code === "LABOR")).toBe(true);
+    expect(result.menus.some(menu => menu.code === "FINANCE")).toBe(false);
   });
 });

@@ -1,7 +1,8 @@
 import { MOBILE_MENU_CATALOG } from "../../shared/domain";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { measurementClaims, notificationRecords, payrollStatements, projects, purchaseRequests, transportTrips } from "../../drizzle/schema";
-import { getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { getCurrentDataScope, getCurrentDepartmentAccess, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { DEPARTMENT_AGNOSTIC_MOBILE_MENUS } from "../../shared/department";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 
@@ -48,22 +49,25 @@ async function resolveScopedProjectIds(
 export const mobileRouter = router({
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
-    const [roleCodes, dataScope] = await Promise.all([getEffectiveRoleCodes(ctx), getCurrentDataScope(ctx)]);
+    const [roleCodes, dataScope, departmentAccess] = await Promise.all([getEffectiveRoleCodes(ctx), getCurrentDataScope(ctx), getCurrentDepartmentAccess(ctx)]);
     const db = await getDb();
     const unreadMessages = db
       ? (await db.select({ id: notificationRecords.id }).from(notificationRecords).where(and(eq(notificationRecords.recipientUserId, user.id), ne(notificationRecords.status, "read")))).length
       : 0;
     const menus = MOBILE_MENU_CATALOG.filter(menu => {
-      if (roleCodes.includes("ALL")) return true;
+      // 工作台和消息中心属于所有已登录人员的基础入口；其余业务入口必须同时通过岗位和部门业务范围校验。
+      if ((DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code)) return true;
       // 将只读字面量角色数组提升为字符串数组，便于对不同菜单的角色集合统一比较。
       const menuRoles = menu.roles as readonly string[];
-      return menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));
+      const hasRoleAccess = roleCodes.includes("ALL") || menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));
+      const hasDepartmentAccess = departmentAccess.hasAllDepartments || departmentAccess.moduleCodes.includes(menu.code as never);
+      return hasRoleAccess && hasDepartmentAccess;
     });
 
     // 无数据库连接时仅返回已知的未读数降级值；不构造或缓存虚假的业务待办统计。
     if (!db) {
       return {
-        user: { id: user.id, name: user.name, roleCodes },
+        user: { id: user.id, name: user.name, roleCodes, departments: departmentAccess.departments, departmentModules: departmentAccess.moduleCodes },
         menus,
         dataScope,
         maskedFields: ["identityNo", "bankAccount", "mobile"],
@@ -97,7 +101,7 @@ export const mobileRouter = router({
       : [[], [], [], [], []];
 
     return {
-      user: { id: user.id, name: user.name, roleCodes },
+      user: { id: user.id, name: user.name, roleCodes, departments: departmentAccess.departments, departmentModules: departmentAccess.moduleCodes },
       menus,
       // 数据范围由服务端根据有效授权实时计算，前端只用于展示，不可自行扩大查询范围。
       dataScope,

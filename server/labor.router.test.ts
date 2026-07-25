@@ -18,6 +18,7 @@ vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
     ...actual,
+    assertDepartmentBusinessAccess: vi.fn(),
     assertProjectInCurrentScope: vi.fn(),
     getCurrentDataScope: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
