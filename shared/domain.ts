@@ -287,6 +287,22 @@ export function canApprovePayroll(roleCodes: readonly string[]) {
 }
 
 /**
+ * 工资发放确认属于资金执行动作，只允许财务负责人或系统级应急管理身份操作。
+ * 会计审核和实际发放拆分，避免单一岗位同时完成审核与支付确认。
+ */
+export function canPayPayroll(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/**
+ * 工资条作废仅能发生在发放确认前，由会计或财务负责人办理并留下原因审计。
+ * 已支付工资条不在此权限判断中放行，最终状态机仍会拒绝任何回退。
+ */
+export function canVoidPayroll(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("ACCOUNTANT") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/**
  * 校验单日考勤工时。正常工时和加班工时分别保留，是为了工资核算能区分班次与加班；
  * 但二者合计不能超过自然日 24 小时。
  */

@@ -108,6 +108,11 @@ async function assertFinanceAccess(ctx: Parameters<typeof requireAuthenticatedUs
   return roleCodes;
 }
 
+/** 人工资金流水的作废和冲销会改变财务口径，仅允许会计、财务负责人或系统应急角色办理。 */
+function canAdjustFinancialRecord(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER") || roleCodes.includes("ACCOUNTANT");
+}
+
 /** 采购申请审批权仅限项目负责人、财务负责人和系统管理员。 */
 function canApprovePurchase(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("PROJECT_MANAGER") || roleCodes.includes("FINANCE_MANAGER");
@@ -222,6 +227,21 @@ const financialRecordInput = z.object({
   sourceId: z.string().trim().max(128).nullable().optional(),
   evidenceId: z.number().int().positive().nullable().optional(),
   remarks: z.string().trim().max(2000).nullable().optional(),
+});
+
+/** 未实际支付的人工流水可作废；已支付流水必须通过相反方向的冲销流水处理。 */
+const financialRecordVoidInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  reason: z.string().trim().min(1, "请填写作废原因").max(500, "作废原因不得超过 500 个字符"),
+});
+
+/** 已支付人工流水的冲销必须保留原流水，不允许直接改写金额、方向或结算终态。 */
+const financialRecordReversalInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  reversedAt: isoDateTimeSchema,
+  reason: z.string().trim().min(1, "请填写冲销原因").max(500, "冲销原因不得超过 500 个字符"),
 });
 
 /** 按项目读取采购申请，避免客户端仅凭申请 ID 获取或修改其他项目记录。 */
@@ -512,8 +532,8 @@ export const measurementRouter = router({
     return { success: true };
   }),
 
-  /** 计量状态流转含项目复核、会计审核和收入确认，金额以审核接口传入的核定值为准。 */
-  transitionClaim: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), targetStatus: z.enum(["submitted", "reviewing", "approved", "settled", "rejected"]), approvedAmount: moneySchema.nullable().optional(), reviewNote: z.string().trim().max(500).nullable().optional() })).mutation(async ({ ctx, input }) => {
+  /** 计量状态流转含项目复核、会计审核、受控作废和收入确认，金额以审核接口传入的核定值为准。 */
+  transitionClaim: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), targetStatus: z.enum(["submitted", "reviewing", "approved", "settled", "rejected", "void"]), approvedAmount: moneySchema.nullable().optional(), reviewNote: z.string().trim().max(500).nullable().optional() })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertMeasurementAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -526,7 +546,7 @@ export const measurementRouter = router({
     } catch (error) {
       throwDomainAsBadRequest(error);
     }
-    if (["reviewing", "approved", "rejected"].includes(input.targetStatus) && !canReviewMeasurement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无工程计量复核权限" });
+    if (["reviewing", "approved", "rejected", "void"].includes(input.targetStatus) && !canReviewMeasurement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无工程计量复核或作废权限" });
     if (input.targetStatus === "settled" && !canSettleMeasurement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无工程计量结算确认权限" });
     if (input.targetStatus === "approved" && (input.approvedAmount === null || input.approvedAmount === undefined)) throw new TRPCError({ code: "BAD_REQUEST", message: "核定通过时必须填写核定金额" });
     const now = new Date();
@@ -634,6 +654,62 @@ export const financeRouter = router({
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "create_record", targetType: "financial_record", targetId: input.category, summary: `登记项目${input.direction === "income" ? "收入" : "支出"}流水：${input.category}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "finance", eventCode: `financial_${input.direction}`, targetType: "financial_record", targetId: input.category, title: `项目${input.direction === "income" ? "收入" : "支出"}流水已登记`, deepLink: "/mobile/finance" }).catch(() => undefined);
     return { success: true };
+  }),
+
+  /** 作废未支付的人工财务流水；来源于计量、采购等业务单据的自动流水不得在此入口调整。 */
+  voidRecord: protectedProcedure.input(financialRecordVoidInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水作废仅限会计或财务负责人办理" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(financialRecords).where(eq(financialRecords.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
+    if (record.sourceType) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接作废" });
+    if (record.settlementStatus === "paid") throw new TRPCError({ code: "CONFLICT", message: "已支付流水不可作废，请使用冲销流程" });
+    if (record.settlementStatus === "void") throw new TRPCError({ code: "CONFLICT", message: "该财务流水已作废" });
+    await db.update(financialRecords).set({ settlementStatus: "void" }).where(eq(financialRecords.id, record.id));
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "void_financial_record", targetType: "financial_record", targetId: String(record.id), summary: `财务流水已作废：${record.recordNo}；原因：${input.reason}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "finance", eventCode: "financial_voided", targetType: "financial_record", targetId: String(record.id), title: "项目财务流水已作废", deepLink: "/mobile/finance" }).catch(() => undefined);
+    return { success: true, status: "void" as const };
+  }),
+
+  /** 已支付的人工流水以反方向新流水冲销，保留原记录和资金发生时点的审计链。 */
+  reverseRecord: protectedProcedure.input(financialRecordReversalInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水冲销仅限会计或财务负责人办理" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(financialRecords).where(eq(financialRecords.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
+    if (record.sourceType) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接冲销" });
+    if (record.settlementStatus !== "paid") throw new TRPCError({ code: "CONFLICT", message: "仅已支付的人工财务流水可以冲销；未支付流水请使用作废流程" });
+    const existingReversal = await db
+      .select({ id: financialRecords.id })
+      .from(financialRecords)
+      .where(and(eq(financialRecords.sourceType, "financial_reversal"), eq(financialRecords.sourceId, String(record.id))))
+      .limit(1);
+    if (existingReversal.length > 0) throw new TRPCError({ code: "CONFLICT", message: "该财务流水已存在冲销记录" });
+    const reversalDirection = record.direction === "income" ? "expense" : "income";
+    await db.insert(financialRecords).values({
+      recordNo: createBusinessNo("REV"),
+      projectId: input.projectId,
+      direction: reversalDirection,
+      category: `冲销：${record.category}`.slice(0, 64),
+      amount: String(roundMoney(Number(record.amount))),
+      occurredAt: new Date(input.reversedAt),
+      settlementStatus: "paid",
+      sourceType: "financial_reversal",
+      sourceId: String(record.id),
+      evidenceId: null,
+      remarks: `冲销原流水 ${record.recordNo}：${input.reason}`,
+    });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "reverse_financial_record", targetType: "financial_record", targetId: String(record.id), summary: `财务流水已冲销：${record.recordNo}；原因：${input.reason}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "finance", eventCode: "financial_reversed", targetType: "financial_record", targetId: String(record.id), title: "项目财务流水已冲销", deepLink: "/mobile/finance" }).catch(() => undefined);
+    return { success: true, reversalDirection };
   }),
 
   /** 现金流与利润只在服务端按原始财务流水汇总；工程计量收入确认与实际回款使用不同口径。 */

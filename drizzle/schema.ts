@@ -337,6 +337,8 @@ export const payrollStatements = mysqlTable(
     accountantId: int("accountantId"),
     reviewedAt: datetime("reviewedAt"),
     paidAt: datetime("paidAt"),
+    /** 银行或资金系统的付款凭证号；仅保存引用，不保存银行卡、流水详情或支付密钥。 */
+    paymentReference: varchar("paymentReference", { length: 64 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -575,7 +577,7 @@ export const measurementClaims = mysqlTable(
     period: varchar("period", { length: 7 }).notNull(),
     declaredAmount: decimal("declaredAmount", { precision: 16, scale: 2 }).notNull(),
     approvedAmount: decimal("approvedAmount", { precision: 16, scale: 2 }),
-    status: mysqlEnum("status", ["draft", "submitted", "reviewing", "approved", "settled", "rejected"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "submitted", "reviewing", "approved", "settled", "rejected", "void"]).default("draft").notNull(),
     submittedBy: int("submittedBy").notNull(),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),

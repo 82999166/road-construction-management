@@ -1,0 +1,1 @@
+ALTER TABLE `measurement_claims` MODIFY COLUMN `status` enum('draft','submitted','reviewing','approved','settled','rejected','void') NOT NULL DEFAULT 'draft';

@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { startLogin } from "@/const";
+import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
 import {
   Bell,
@@ -23,7 +23,7 @@ import {
   WalletCards,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
 /**
@@ -67,7 +67,7 @@ function readWorkbenchSnapshot(): WorkbenchSnapshot | null {
 
 /** 移动端工作台只处理业务入口，不复用 PC 后台的侧栏布局。 */
 export default function MobileWorkbench() {
-  const { user, loading, isAuthenticated } = useAuth();
+  const { user, loading, isAuthenticated, authLoadingTimedOut, refresh } = useAuth();
   const [, navigate] = useLocation();
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(() => readWorkbenchSnapshot());
@@ -108,21 +108,28 @@ export default function MobileWorkbench() {
     }
   }, [workbench.data]);
 
-  // 登录态尚未确定时保留轻量加载态，避免瞬间出现未授权的错误提示。
+  // 离线且没有可安全阅读的本地摘要时，不主动发起业务请求。
   if (!isOnline && isAuthenticated && !snapshot) {
     return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#fff8ed]"><div className="max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><CloudOff className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">当前处于离线状态</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">尚未找到本机已同步的工作台摘要。请恢复网络后重新登录或加载岗位数据。</p><Button disabled className="mt-6 bg-[#f4dfc3] text-[#3b2118] hover:bg-white disabled:opacity-60" onClick={retryWorkbench}><RefreshCw className="mr-1.5 h-4 w-4" />恢复网络后重试</Button></div></div>;
   }
 
-  if (loading || (isAuthenticated && workbench.isLoading && (isOnline || !snapshot))) {
-    return <div className="grid min-h-screen place-items-center bg-[#2c1712] text-sm text-[#f8ead7]">正在同步您的岗位工作台…</div>;
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#fff8ed]">
-        <div className="max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a] shadow-[0_16px_35px_rgba(0,0,0,.28)]"><HardHat className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">工程云管移动工作台</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">请先通过企业统一身份登录，系统将按您的岗位展示可办理业务。</p><Button className="mt-6 bg-[#f4dfc3] text-[#3b2118] hover:bg-white" onClick={() => startLogin()}>企业身份登录</Button></div>
-      </div>
-    );
+  // 登录态、企业身份核验或在线岗位摘要未完成时统一提供重试和登录出口。
+  const isOnlineWorkbenchLoading = isAuthenticated && workbench.isLoading && (isOnline || !snapshot);
+  if (loading || !isAuthenticated || authLoadingTimedOut || isOnlineWorkbenchLoading) {
+    return <MobileAccessGate
+      isAuthenticated={isAuthenticated}
+      isLoading={loading || isOnlineWorkbenchLoading}
+      authLoadingTimedOut={authLoadingTimedOut}
+      loadingText="正在同步您的岗位工作台…"
+      title="工程云管移动工作台"
+      description="请先通过企业统一身份登录，系统将按您的岗位展示可办理业务。"
+      Icon={HardHat}
+      onRetry={() => {
+        if (!isOnline) return;
+        void refresh();
+        void workbench.refetch();
+      }}
+    />;
   }
 
   if (workbench.error && isOnline) {

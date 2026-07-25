@@ -15,9 +15,11 @@ import {
 } from "../../drizzle/schema";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
+import { notifyWecomBusinessEvent } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { protectedProcedure, router } from "../_core/trpc";
+import { createInAppMessage } from "./messages";
 
 /** 后台组织节点输入。父级为空表示顶级节点。 */
 const organizationInput = z.object({
@@ -95,6 +97,37 @@ function sanitizeConfigSnapshot(snapshotJson: string | null) {
     return snapshot;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 安全类通知不得阻断已经完成的权限或配置写入。
+ * 调用方仅传递角色、用户、配置等最小化业务标识，通知服务自身负责记录投递结果审计。
+ */
+function dispatchWecomSecurityNotification(event: Parameters<typeof notifyWecomBusinessEvent>[0]) {
+  void notifyWecomBusinessEvent(event).catch(() => undefined);
+}
+
+/** 站内安全提醒采用幂等键，投递故障只留待后续重试，不允许回滚既有授权和配置操作。 */
+function dispatchInAppSecurityNotification(input: Parameters<typeof createInAppMessage>[0]) {
+  void createInAppMessage(input).catch(() => undefined);
+}
+
+/**
+ * 配置版本既是已发布版本的展示编号，也是后台治理操作的乐观锁令牌。
+ * 草稿、发布、停用和回滚都会递增版本，避免两个管理员基于同一旧版本互相覆盖。
+ */
+function assertExpectedSettingVersion(actualVersion: number, expectedVersion: number) {
+  if (actualVersion !== expectedVersion) {
+    throw new TRPCError({ code: "CONFLICT", message: "配置已被其他管理员更新，请刷新后基于最新版本再次操作" });
+  }
+}
+
+/** MySQL 驱动会返回受影响行数；0 行意味着条件版本锁未命中，必须停止后续审计与发布日志写入。 */
+function assertVersionedSettingWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "配置版本已变化，未执行覆盖写入，请刷新后重试" });
   }
 }
 
@@ -238,6 +271,15 @@ export const adminRouter = router({
         await db.insert(rolePermissions).values(input.permissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: "更新角色权限集合" });
+      dispatchWecomSecurityNotification({
+        userId: admin.id,
+        module: "security",
+        eventCode: "role_permissions_updated",
+        targetType: "role",
+        targetId: String(input.roleId),
+        title: "角色权限集合已更新",
+        deepLink: "/admin/permission",
+      });
       return { success: true };
     }),
   }),
@@ -268,6 +310,24 @@ export const adminRouter = router({
         if (input.id) await db.update(userRoleAssignments).set(values).where(eq(userRoleAssignments.id, input.id));
         else await db.insert(userRoleAssignments).values(values);
         await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: input.id ? "update_assignment" : "grant_role", targetType: "user", targetId: String(input.userId), summary: "维护用户角色与数据范围" });
+        const assignmentEventCode = input.status === "revoked" ? "user_access_revoked" : "user_access_updated";
+        dispatchInAppSecurityNotification({
+          eventCode: assignmentEventCode,
+          idempotencyKey: `${assignmentEventCode}:${input.id ?? "new"}:${input.userId}:${input.roleId}:${Date.now()}`,
+          recipientUserId: input.userId,
+          title: input.status === "revoked" ? "您的业务授权已被撤销" : "您的业务授权已更新",
+          content: input.status === "revoked" ? "管理员已调整您的系统授权。请重新打开工作台以同步最新权限。" : "管理员已更新您的岗位或数据范围。请重新打开工作台以同步最新权限。",
+          deepLink: "/mobile/profile",
+        });
+        dispatchWecomSecurityNotification({
+          userId: admin.id,
+          module: "security",
+          eventCode: assignmentEventCode,
+          targetType: "user",
+          targetId: String(input.userId),
+          title: input.status === "revoked" ? "用户业务授权已撤销" : "用户业务授权已更新",
+          deepLink: "/admin/permission",
+        });
         return { success: true };
       }),
   }),
@@ -280,7 +340,7 @@ export const adminRouter = router({
       return db.select({ id: systemSettings.id, category: systemSettings.category, settingKey: systemSettings.settingKey, displayName: systemSettings.displayName, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, isSensitive: systemSettings.isSensitive, status: systemSettings.status, version: systemSettings.version, publishedAt: systemSettings.publishedAt, updatedAt: systemSettings.updatedAt, remarks: systemSettings.remarks }).from(systemSettings).orderBy(systemSettings.category, systemSettings.settingKey);
     }),
     saveDraft: protectedProcedure
-      .input(z.object({ id: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))
+      .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
@@ -302,22 +362,33 @@ export const adminRouter = router({
           updatedBy: admin.id,
         };
         if (input.id) {
-          // 保存草稿不改变已发布版本号；版本号仅在显式发布时递增。
-          await db.update(systemSettings).set(payload).where(eq(systemSettings.id, input.id));
+          if (!input.expectedVersion) throw new TRPCError({ code: "BAD_REQUEST", message: "编辑既有配置必须携带当前版本号" });
+          const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
+          if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在" });
+          assertExpectedSettingVersion(existing.version, input.expectedVersion);
+          const nextVersion = existing.version + 1;
+          const writeResult = await db.update(systemSettings).set({ ...payload, version: nextVersion }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          await db.insert(configPublishLogs).values({ settingId: input.id, operation: "update", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+          await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_draft", targetType: "setting", targetId: input.settingKey, summary: `保存配置草稿：${input.displayName}（v${nextVersion}）` });
+          return { success: true, version: nextVersion };
         } else {
           await db.insert(systemSettings).values(payload);
         }
         await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_draft", targetType: "setting", targetId: input.settingKey, summary: `保存配置草稿：${input.displayName}` });
         return { success: true };
       }),
-    publish: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    publish: protectedProcedure.input(z.object({ id: z.number().int().positive(), expectedVersion: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const existing = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
       if (existing.length === 0) throw new Error("配置项不存在");
+      assertExpectedSettingVersion(existing[0]!.version, input.expectedVersion);
       const nextVersion = existing[0]!.version + 1;
-      await db.update(systemSettings).set({ status: "published", version: nextVersion, publishedAt: new Date(), updatedBy: admin.id }).where(eq(systemSettings.id, input.id));
+      const writeResult = await db.update(systemSettings).set({ status: "published", version: nextVersion, publishedAt: new Date(), updatedBy: admin.id }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
+      assertVersionedSettingWrite(writeResult);
       // 发布快照仅供服务端回滚使用；敏感密文可在数据库中留存，但不会从任何接口回传。
       const snapshot = {
         category: existing[0]!.category, settingKey: existing[0]!.settingKey, displayName: existing[0]!.displayName,
@@ -329,14 +400,16 @@ export const adminRouter = router({
       return { success: true, version: nextVersion };
     }),
     /** 显式停用配置而不删除密文和版本历史，支持紧急止损与后续可审计恢复。 */
-    disable: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    disable: protectedProcedure.input(z.object({ id: z.number().int().positive(), expectedVersion: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在" });
+      assertExpectedSettingVersion(existing.version, input.expectedVersion);
       const nextVersion = existing.version + 1;
-      await db.update(systemSettings).set({ status: "disabled", version: nextVersion, updatedBy: admin.id }).where(eq(systemSettings.id, input.id));
+      const writeResult = await db.update(systemSettings).set({ status: "disabled", version: nextVersion, updatedBy: admin.id }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
+      assertVersionedSettingWrite(writeResult);
       const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
       await db.insert(configPublishLogs).values({ settingId: existing.id, operation: "disable", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
       await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "disable", targetType: "setting", targetId: String(existing.id), summary: `停用配置：${existing.displayName}` });
@@ -367,6 +440,26 @@ export const adminRouter = router({
         result = { success: true, message: "配置格式校验通过；该类型无需发起远程连接" };
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "test", targetType: "setting", targetId: String(input.id), summary: `测试配置：${setting[0].displayName}，${result.message}` });
+      if (!result.success) {
+        // 不带入地址、密钥或返回报文；操作者可在后台审计中查看受控的失败上下文。
+        dispatchInAppSecurityNotification({
+          eventCode: "system_connector_test_failed",
+          idempotencyKey: `system_connector_test_failed:${input.id}:${Date.now()}`,
+          recipientUserId: admin.id,
+          title: "系统连接配置测试失败",
+          content: "系统检测到一项连接配置未通过安全连通性测试，请在系统设置与审计记录中核查。",
+          deepLink: "/admin/settings",
+        });
+        dispatchWecomSecurityNotification({
+          userId: admin.id,
+          module: "security",
+          eventCode: "system_connector_test_failed",
+          targetType: "setting",
+          targetId: String(input.id),
+          title: "系统连接配置测试失败",
+          deepLink: "/admin/settings",
+        });
+      }
       return result;
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
@@ -377,26 +470,28 @@ export const adminRouter = router({
       // 使用解构彻底移除原始快照字段，避免即使值为 undefined 也被序列化工具或调用方枚举到。
       return logs.map(({ snapshotJson, ...log }) => ({ ...log, snapshot: sanitizeConfigSnapshot(snapshotJson) }));
     }),
-    rollback: protectedProcedure.input(z.object({ settingId: z.number().int().positive(), publishLogId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    rollback: protectedProcedure.input(z.object({ settingId: z.number().int().positive(), publishLogId: z.number().int().positive(), expectedVersion: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const [setting] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.settingId)).limit(1);
       const [log] = await db.select().from(configPublishLogs).where(and(eq(configPublishLogs.id, input.publishLogId), eq(configPublishLogs.settingId, input.settingId))).limit(1);
       if (!setting || !log?.snapshotJson) throw new TRPCError({ code: "NOT_FOUND", message: "未找到可回滚的配置版本" });
+      assertExpectedSettingVersion(setting.version, input.expectedVersion);
       let snapshot: Record<string, unknown>;
       try { snapshot = JSON.parse(log.snapshotJson) as Record<string, unknown>; } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "历史配置快照已损坏，无法回滚" }); }
       const requiredKeys = ["category", "settingKey", "displayName", "isSensitive"];
       if (!requiredKeys.every(key => key in snapshot)) throw new TRPCError({ code: "BAD_REQUEST", message: "历史版本不完整，无法安全回滚" });
       const nextVersion = setting.version + 1;
-      await db.update(systemSettings).set({
+      const writeResult = await db.update(systemSettings).set({
         category: String(snapshot.category), settingKey: String(snapshot.settingKey), displayName: String(snapshot.displayName),
         valueJson: typeof snapshot.valueJson === "string" ? snapshot.valueJson : null,
         secretEncrypted: typeof snapshot.secretEncrypted === "string" ? snapshot.secretEncrypted : null,
         valuePreview: typeof snapshot.valuePreview === "string" ? snapshot.valuePreview : null,
         isSensitive: Boolean(snapshot.isSensitive), remarks: typeof snapshot.remarks === "string" ? snapshot.remarks : null,
         status: "published", version: nextVersion, publishedAt: new Date(), updatedBy: admin.id,
-      }).where(eq(systemSettings.id, input.settingId));
+      }).where(and(eq(systemSettings.id, input.settingId), eq(systemSettings.version, input.expectedVersion)));
+      assertVersionedSettingWrite(writeResult);
       await db.insert(configPublishLogs).values({ settingId: input.settingId, operation: "rollback", version: nextVersion, operatorId: admin.id, snapshotJson: log.snapshotJson });
       await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "rollback", targetType: "setting", targetId: String(input.settingId), summary: `回滚配置：${setting.displayName} 至历史版本 ${log.version}` });
       return { success: true, version: nextVersion };

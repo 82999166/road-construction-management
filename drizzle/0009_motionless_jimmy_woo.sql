@@ -1,0 +1,1 @@
+ALTER TABLE `payroll_statements` ADD `paymentReference` varchar(64);

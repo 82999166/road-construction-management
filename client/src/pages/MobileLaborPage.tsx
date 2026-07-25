@@ -11,6 +11,7 @@ import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowLeft,
+  Ban,
   BadgeCheck,
   Bell,
   CalendarDays,
@@ -29,7 +30,7 @@ import {
   UsersRound,
   WalletCards,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -97,6 +98,23 @@ function getIdentityVerificationStatus(status: "pending" | "verified" | "rejecte
   return dictionary[status];
 }
 
+/** 劳务页底部导航限定在移动端路由域，避免业务人员跳转至通用根路由。 */
+export const MOBILE_LABOR_BOTTOM_NAVIGATION = {
+  workbench: "/mobile",
+  messages: "/mobile/messages",
+  profile: "/mobile/profile",
+} as const;
+
+/** 前端仅收敛可见操作；服务端仍会按照岗位权限和工资状态机进行最终校验。 */
+export function canPayPayrollFromMobile(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/** 未确认发放的工资条仅向会计、财务负责人或系统级应急角色显示作废入口。 */
+export function canVoidPayrollFromMobile(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("ACCOUNTANT") || roleCodes.includes("FINANCE_MANAGER");
+}
+
 /** 考勤人员的默认表单状态，集中维护可避免多处表单字段漂移。 */
 const emptyWorkerDraft = {
   realName: "",
@@ -126,12 +144,16 @@ export default function MobileLaborPage() {
   const [workerDialogOpen, setWorkerDialogOpen] = useState(false);
   const [attendanceDialogOpen, setAttendanceDialogOpen] = useState(false);
   const [payrollDialogOpen, setPayrollDialogOpen] = useState(false);
+  const [payrollPaymentDialogOpen, setPayrollPaymentDialogOpen] = useState(false);
+  const [payrollVoidDialogOpen, setPayrollVoidDialogOpen] = useState(false);
   const [certificateDialogOpen, setCertificateDialogOpen] = useState(false);
   const [helpDialogOpen, setHelpDialogOpen] = useState(false);
   const [editingWorkerId, setEditingWorkerId] = useState<number | null>(null);
   const [workerDraft, setWorkerDraft] = useState(emptyWorkerDraft);
   const [attendanceDraft, setAttendanceDraft] = useState({ workerId: "", attendanceDate: getTodayText(), workHours: "8", overtimeHours: "0", note: "" });
   const [payrollDraft, setPayrollDraft] = useState({ workerId: "", payableAmount: "", deductionAmount: "0" });
+  const [payrollPaymentDraft, setPayrollPaymentDraft] = useState({ id: 0, paymentReference: "" });
+  const [payrollVoidDraft, setPayrollVoidDraft] = useState({ id: 0, reason: "" });
   const [certificateWorker, setCertificateWorker] = useState<{ id: number; realName: string } | null>(null);
   const [certificateName, setCertificateName] = useState("");
   const [certificateFile, setCertificateFile] = useState<File | null>(null);
@@ -198,6 +220,26 @@ export default function MobileLaborPage() {
     },
     onError: error => toast.error(error.message),
   });
+  /** 发放确认只记录外部资金系统的凭证引用，不会从页面或服务器直接发起银行转账。 */
+  const payPayroll = trpc.labor.payroll.pay.useMutation({
+    onSuccess: async () => {
+      toast.success("工资条已确认发放");
+      setPayrollPaymentDialogOpen(false);
+      setPayrollPaymentDraft({ id: 0, paymentReference: "" });
+      await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  /** 作废必须说明原因；页面只负责采集，服务端负责终态和权限拦截。 */
+  const voidPayroll = trpc.labor.payroll.void.useMutation({
+    onSuccess: async () => {
+      toast.success("工资条已作废");
+      setPayrollVoidDialogOpen(false);
+      setPayrollVoidDraft({ id: 0, reason: "" });
+      await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
   /** 证照本体仅上传至对象存储，台账只保留受权限控制的元数据与安全访问地址。 */
   const uploadCertificate = trpc.labor.certificates.upload.useMutation({
     onSuccess: async () => {
@@ -209,7 +251,11 @@ export default function MobileLaborPage() {
     onError: error => toast.error(error.message),
   });
 
-  const canApprovePayroll = Boolean(workbench.data?.user.roleCodes.includes("ALL") || workbench.data?.user.roleCodes.includes("ACCOUNTANT"));
+  /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管页面渲染。 */
+  const activeRoleCodes = workbench.data?.user?.roleCodes ?? [];
+  const canApprovePayroll = Boolean(activeRoleCodes.includes("ALL") || activeRoleCodes.includes("ACCOUNTANT"));
+  const canPayPayroll = canPayPayrollFromMobile(activeRoleCodes);
+  const canVoidPayroll = canVoidPayrollFromMobile(activeRoleCodes);
   const isBusy = workers.isLoading || attendance.isLoading || payroll.isLoading || summary.isLoading;
 
   /** 新建或编辑时仅预填非敏感字段；敏感输入框留空即表示保留既有加密值。 */
@@ -375,14 +421,35 @@ export default function MobileLaborPage() {
                 {!payroll.data?.length && !payroll.isLoading ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">当前结算期间尚未生成工资条。</div> : null}
                 {payroll.data?.map(statement => {
                   const status = getPayrollStatus(statement.status);
-                  return <Card key={statement.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="font-semibold">{statement.workerName}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#8f7566]">{statement.teamName || "未分班组"} · 卡号 {statement.bankAccountMasked || "未录入"}</p></div><div className="text-right"><p className="text-base font-semibold text-[#75351e]">{formatMoney(statement.actualAmount)}</p><p className="mt-1 text-[10px] text-[#8f7566]">应发 {formatMoney(statement.payableAmount)} · 扣 {formatMoney(statement.deductionAmount)}</p></div></div>{statement.status === "draft" || (statement.status === "reviewing" && canApprovePayroll) ? <div className="mt-3 flex justify-end gap-2 print:hidden">{statement.status === "draft" ? <Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={submitPayroll.isPending} onClick={() => submitPayroll.mutate({ id: statement.id })}>提交审核 <ChevronRight className="ml-1 h-3.5 w-3.5" /></Button> : null}{statement.status === "reviewing" && canApprovePayroll ? <><Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "returned" })}>退回</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "approved" })}><BadgeCheck className="mr-1 h-3.5 w-3.5" />审核通过</Button></> : null}</div> : null}</CardContent></Card>;
+                  const canVoidCurrent = ["draft", "reviewing", "approved"].includes(statement.status) && canVoidPayroll;
+                  const hasAction = statement.status === "draft" || (statement.status === "reviewing" && canApprovePayroll) || (statement.status === "approved" && canPayPayroll) || canVoidCurrent;
+                  return (
+                    <Card key={statement.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2"><h3 className="font-semibold">{statement.workerName}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${status.className}`}>{status.label}</span></div>
+                            <p className="mt-1 text-xs text-[#8f7566]">{statement.teamName || "未分班组"} · 卡号 {statement.bankAccountMasked || "未录入"}</p>
+                            {statement.paymentReference ? <p className="mt-1 text-[10px] text-[#8f7566]">付款凭证：{statement.paymentReference}</p> : null}
+                          </div>
+                          <div className="text-right"><p className="text-base font-semibold text-[#75351e]">{formatMoney(statement.actualAmount)}</p><p className="mt-1 text-[10px] text-[#8f7566]">应发 {formatMoney(statement.payableAmount)} · 扣 {formatMoney(statement.deductionAmount)}</p></div>
+                        </div>
+                        {hasAction ? <div className="mt-3 flex flex-wrap justify-end gap-2 print:hidden">
+                          {statement.status === "draft" ? <Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={submitPayroll.isPending} onClick={() => submitPayroll.mutate({ id: statement.id })}>提交审核 <ChevronRight className="ml-1 h-3.5 w-3.5" /></Button> : null}
+                          {statement.status === "reviewing" && canApprovePayroll ? <><Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "returned" })}>退回</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "approved" })}><BadgeCheck className="mr-1 h-3.5 w-3.5" />审核通过</Button></> : null}
+                          {statement.status === "approved" && canPayPayroll ? <Button size="sm" className="h-8 bg-[#3e746a] text-white hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { setPayrollPaymentDraft({ id: statement.id, paymentReference: "" }); setPayrollPaymentDialogOpen(true); }}>确认发放</Button> : null}
+                          {canVoidCurrent ? <Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" disabled={voidPayroll.isPending} onClick={() => { setPayrollVoidDraft({ id: statement.id, reason: "" }); setPayrollVoidDialogOpen(true); }}><Ban className="mr-1 h-3.5 w-3.5" />作废</Button> : null}
+                        </div> : null}
+                      </CardContent>
+                    </Card>
+                  );
                 })}
               </TabsContent>
             </Tabs>
           </> : null}
         </main>
 
-        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><ContactRound className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><WalletCards className="h-5 w-5" /><span className="text-[10px] font-medium">劳务工资</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
+        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_LABOR_BOTTOM_NAVIGATION.workbench)}><ContactRound className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><WalletCards className="h-5 w-5" /><span className="text-[10px] font-medium">劳务工资</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_LABOR_BOTTOM_NAVIGATION.messages)}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_LABOR_BOTTOM_NAVIGATION.profile)}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
 
       <Dialog open={workerDialogOpen} onOpenChange={setWorkerDialogOpen}>
@@ -399,6 +466,14 @@ export default function MobileLaborPage() {
 
       <Dialog open={payrollDialogOpen} onOpenChange={setPayrollDialogOpen}>
         <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>核算 {period} 工资</DialogTitle><DialogDescription>实发金额将由服务端按“应发金额 − 扣款金额”计算，保存后仍需提交会计审核。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>劳务人员</Label><Select value={payrollDraft.workerId} onValueChange={value => setPayrollDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择劳务人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.attendanceStatus !== "left").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-2 gap-3"><div className="grid gap-1.5"><Label htmlFor="payable-amount">应发金额（元）</Label><Input id="payable-amount" type="number" min="0" step="0.01" value={payrollDraft.payableAmount} onChange={event => setPayrollDraft(current => ({ ...current, payableAmount: event.target.value }))} /></div><div className="grid gap-1.5"><Label htmlFor="deduction-amount">扣款金额（元）</Label><Input id="deduction-amount" type="number" min="0" step="0.01" value={payrollDraft.deductionAmount} onChange={event => setPayrollDraft(current => ({ ...current, deductionAmount: event.target.value }))} /></div></div><div className="rounded-xl bg-[#f6eadb] px-3 py-2 text-xs text-[#80543c]"><Landmark className="mr-1 inline h-3.5 w-3.5" />工资条将关联当前加密保存的银行卡尾号；如需变更银行卡，请先维护人员档案。</div></div><DialogFooter><Button variant="outline" onClick={() => setPayrollDialogOpen(false)}>取消</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={savePayroll.isPending} onClick={submitPayrollForm}>{savePayroll.isPending ? "核算中…" : "保存工资草稿"}</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={payrollPaymentDialogOpen} onOpenChange={setPayrollPaymentDialogOpen}>
+        <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>确认工资发放</DialogTitle><DialogDescription>请先在外部资金系统完成支付，再录入付款凭证号确认台账；本系统不会直接发起银行转账。</DialogDescription></DialogHeader><div className="grid gap-2 py-2"><Label htmlFor="payroll-payment-reference">付款凭证号或资金流水号</Label><Input id="payroll-payment-reference" value={payrollPaymentDraft.paymentReference} onChange={event => setPayrollPaymentDraft(current => ({ ...current, paymentReference: event.target.value }))} placeholder="例如：PAY-202607-0001" /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollPaymentDialogOpen(false)}>取消</Button><Button className="bg-[#3e746a] hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { if (!payrollPaymentDraft.paymentReference.trim()) return toast.error("请填写付款凭证号或资金流水号"); payPayroll.mutate({ id: payrollPaymentDraft.id, paymentReference: payrollPaymentDraft.paymentReference.trim() }); }}>确认已发放</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={payrollVoidDialogOpen} onOpenChange={setPayrollVoidDialogOpen}>
+        <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>作废工资条</DialogTitle><DialogDescription>仅未确认发放的工资条可以作废。作废后不能恢复，请填写原因以便审计追溯。</DialogDescription></DialogHeader><div className="grid gap-2 py-2"><Label htmlFor="payroll-void-reason">作废原因</Label><Textarea id="payroll-void-reason" value={payrollVoidDraft.reason} onChange={event => setPayrollVoidDraft(current => ({ ...current, reason: event.target.value }))} placeholder="例如：考勤口径调整，需要重新核算" /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollVoidDialogOpen(false)}>取消</Button><Button className="bg-rose-700 hover:bg-rose-800" disabled={voidPayroll.isPending} onClick={() => { if (!payrollVoidDraft.reason.trim()) return toast.error("请填写作废原因"); voidPayroll.mutate({ id: payrollVoidDraft.id, reason: payrollVoidDraft.reason.trim() }); }}><Ban className="mr-1 h-4 w-4" />确认作废</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={helpDialogOpen} onOpenChange={setHelpDialogOpen}>

@@ -2,7 +2,7 @@ import { and, desc, eq, gte, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
-import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, summarizePayrollStatements } from "../../shared/domain";
+import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
 import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
@@ -80,6 +80,11 @@ async function assertLaborBusinessAccess(ctx: Parameters<typeof requireAuthentic
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获劳务工资数据访问授权" });
   }
   return roleCodes;
+}
+
+/** 付款凭证属于内部资金流水，只允许会计、财务负责人和系统级应急角色查看。 */
+function canViewPayrollPaymentReference(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("ACCOUNTANT") || roleCodes.includes("FINANCE_MANAGER");
 }
 
 /** 将金额按两位小数归一化，避免 JavaScript 浮点误差扩散至工资单。 */
@@ -462,14 +467,14 @@ export const laborRouter = router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number().int().positive(), period: payrollPeriodSchema.optional() }))
       .query(async ({ ctx, input }) => {
-        await assertLaborBusinessAccess(ctx);
+        const roleCodes = await assertLaborBusinessAccess(ctx);
         await assertProjectInCurrentScope(ctx, input.projectId);
         const db = await getDb();
         if (!db) return [];
         const filter = input.period
           ? and(eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period))
           : eq(payrollStatements.projectId, input.projectId);
-        return db
+        const rows = await db
           .select({
             id: payrollStatements.id,
             workerId: payrollStatements.workerId,
@@ -484,6 +489,7 @@ export const laborRouter = router({
             status: payrollStatements.status,
             accountantId: payrollStatements.accountantId,
             paidAt: payrollStatements.paidAt,
+            paymentReference: payrollStatements.paymentReference,
             createdAt: payrollStatements.createdAt,
             updatedAt: payrollStatements.updatedAt,
           })
@@ -491,6 +497,11 @@ export const laborRouter = router({
           .innerJoin(laborWorkers, eq(payrollStatements.workerId, laborWorkers.id))
           .where(filter)
           .orderBy(desc(payrollStatements.period), laborWorkers.realName);
+        const mayViewPaymentReference = canViewPayrollPaymentReference(roleCodes);
+        return rows.map(row => ({
+          ...row,
+          paymentReference: mayViewPaymentReference ? row.paymentReference : null,
+        }));
       }),
 
     /** 保存工资草稿；服务端通过应发减扣款计算实发金额并读取银行卡尾号。 */
@@ -621,6 +632,102 @@ export const laborRouter = router({
           await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资审核企业微信通知未送达：${wecomResult.reason}` });
         }
         return { success: true, status: isApproved ? "approved" : "draft" };
+      }),
+
+    /**
+     * 由财务负责人确认外部资金已完成发放。系统只保存付款凭证引用，不发起银行转账，
+     * 以保证资金执行与系统台账确认之间具有可追溯且不越权的边界。
+     */
+    pay: protectedProcedure
+      .input(z.object({ id: z.number().int().positive(), paymentReference: z.string().trim().min(4, "请填写付款凭证号或资金流水号").max(64) }))
+      .mutation(async ({ ctx, input }) => {
+        const user = requireAuthenticatedUser(ctx);
+        const roleCodes = await assertLaborBusinessAccess(ctx);
+        if (!canPayPayroll(roleCodes)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "工资发放确认仅限财务负责人办理" });
+        }
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        const rows = await db.select().from(payrollStatements).where(eq(payrollStatements.id, input.id)).limit(1);
+        const payroll = rows[0];
+        if (!payroll) throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
+        await assertProjectInCurrentScope(ctx, payroll.projectId);
+        try {
+          assertPayrollStatusTransition(payroll.status, "paid");
+        } catch {
+          throw new TRPCError({ code: "CONFLICT", message: "仅审核通过的工资条可以确认发放" });
+        }
+        const paidAt = new Date();
+        await db.update(payrollStatements).set({ status: "paid", paidAt, paymentReference: input.paymentReference }).where(eq(payrollStatements.id, payroll.id));
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "pay_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已确认发放，付款凭证：${input.paymentReference}` });
+        const recipientUserId = payroll.submittedBy ?? user.id;
+        try {
+          const messageResult = await createInAppMessage({
+            eventCode: "PAYROLL_PAID",
+            idempotencyKey: `payroll-paid:${payroll.id}:${paidAt.getTime()}`,
+            recipientUserId,
+            title: "工资条已确认发放",
+            content: `${payroll.period} 工资条已完成发放确认，请在系统内查看处理记录。`,
+            deepLink: "/mobile/labor",
+          });
+          if (!messageResult.created && messageResult.reason === "database_unavailable") {
+            await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_unavailable", targetType: "payroll_statement", targetId: String(payroll.id), summary: "工资发放结论未能写入站内消息：数据库暂不可用" });
+          }
+        } catch (error) {
+          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资发放结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
+        }
+        // 企业微信不传递金额、人员身份、银行卡或付款凭证，仅提醒责任人在受控页面查看结果。
+        const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已确认发放，请相关责任人在系统内查看。`);
+        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
+          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资发放企业微信通知未送达：${wecomResult.reason}` });
+        }
+        return { success: true, status: "paid" as const, paidAt };
+      }),
+
+    /** 工资条可在支付前由会计或财务负责人作废，原因只保存于受控审计和站内业务记录。 */
+    void: protectedProcedure
+      .input(z.object({ id: z.number().int().positive(), reason: z.string().trim().min(1, "请填写作废原因").max(500, "作废原因不得超过 500 个字符") }))
+      .mutation(async ({ ctx, input }) => {
+        const user = requireAuthenticatedUser(ctx);
+        const roleCodes = await assertLaborBusinessAccess(ctx);
+        if (!canVoidPayroll(roleCodes)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "工资条作废仅限会计或财务负责人办理" });
+        }
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        const rows = await db.select().from(payrollStatements).where(eq(payrollStatements.id, input.id)).limit(1);
+        const payroll = rows[0];
+        if (!payroll) throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
+        await assertProjectInCurrentScope(ctx, payroll.projectId);
+        try {
+          assertPayrollStatusTransition(payroll.status, "void");
+        } catch {
+          throw new TRPCError({ code: "CONFLICT", message: "已发放或已作废的工资条不可作废" });
+        }
+        const voidedAt = new Date();
+        await db.update(payrollStatements).set({ status: "void" }).where(eq(payrollStatements.id, payroll.id));
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "void_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已作废，原因：${input.reason}` });
+        const recipientUserId = payroll.submittedBy ?? user.id;
+        try {
+          const messageResult = await createInAppMessage({
+            eventCode: "PAYROLL_VOIDED",
+            idempotencyKey: `payroll-void:${payroll.id}:${voidedAt.getTime()}`,
+            recipientUserId,
+            title: "工资条已作废",
+            content: `${payroll.period} 工资条已作废，请在系统内查看处理记录。`,
+            deepLink: "/mobile/labor",
+          });
+          if (!messageResult.created && messageResult.reason === "database_unavailable") {
+            await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_unavailable", targetType: "payroll_statement", targetId: String(payroll.id), summary: "工资作废结论未能写入站内消息：数据库暂不可用" });
+          }
+        } catch (error) {
+          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资作废结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
+        }
+        const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已作废，请相关责任人在系统内查看。`);
+        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
+          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资作废企业微信通知未送达：${wecomResult.reason}` });
+        }
+        return { success: true, status: "void" as const };
       }),
   }),
 

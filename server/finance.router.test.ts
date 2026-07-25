@@ -194,6 +194,26 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 43, projectId: 10, targetStatus: "settled", approvedAmount: null, reviewNote: null })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("工程计量仅可在收入确认前由复核岗位作废，且作废会留下审计和通知深链", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
+    const updateWhere = vi.fn(async () => undefined);
+    const values = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDb([{ id: 44, projectId: 10, status: "approved", declaredAmount: "1000.00", approvedAmount: "900.00" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 44, projectId: 10, targetStatus: "void", approvedAmount: null, reviewNote: "业主计量口径变更，取消本次申报" })).resolves.toEqual({ success: true });
+    expect(updateWhere).toHaveBeenCalled();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", action: "transition_claim", targetId: "44" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_void", targetId: "44", deepLink: "/mobile/measurement" }));
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 45, projectId: 10, status: "settled", declaredAmount: "1000.00", approvedAmount: "900.00" }]) as never);
+    await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 45, projectId: 10, targetStatus: "void", approvedAmount: null, reviewNote: "不得冲销已确认收入" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("工程回款只能登记在已确认收入的计量申报上，且不得超过剩余可回款金额", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
     const values = vi.fn(async () => undefined);
@@ -246,6 +266,39 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", action: "create_record", targetId: "项目材料费用" }));
     expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
+  });
+
+  it("人工财务流水仅可在支付前作废，并由会计或财务负责人对已支付流水创建反方向冲销记录", async () => {
+    const manualPaidRecord = { id: 71, recordNo: "FIN-20260725-AAAA", projectId: 10, direction: "expense", category: "临时材料款", amount: "800.00", settlementStatus: "paid", sourceType: null };
+    const insertValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const db = {
+      ...createSelectDbSequence([manualPaidRecord], []),
+      insert: vi.fn(() => ({ values: insertValues })),
+      update: vi.fn(() => ({ set: updateSet })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
+
+    await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "供应商退款已核实" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "供应商退款已核实" })).resolves.toEqual({ success: true, reversalDirection: "income" });
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ direction: "income", amount: "800", settlementStatus: "paid", sourceType: "financial_reversal", sourceId: "71" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "financial_reversed", deepLink: "/mobile/finance" }));
+
+    const unpaidRecord = { ...manualPaidRecord, id: 72, recordNo: "FIN-20260725-BBBB", settlementStatus: "unpaid" };
+    const voidDb = {
+      ...createSelectDb([unpaidRecord]),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+      update: vi.fn(() => ({ set: updateSet })),
+    };
+    vi.mocked(getDb).mockResolvedValue(voidDb as never);
+    await expect(financeRouter.createCaller(createAuthContext()).voidRecord({ id: 72, projectId: 10, reason: "重复录入" })).resolves.toEqual({ success: true, status: "void" });
+    expect(updateSet).toHaveBeenCalledWith({ settlementStatus: "void" });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ ...manualPaidRecord, sourceType: "measurement_payment" }]) as never);
+    await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "不应跨模块调整" })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {

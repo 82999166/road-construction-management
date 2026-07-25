@@ -118,16 +118,82 @@ describe("系统设置安全工作流", () => {
       remarks: "历史版本",
     };
     const existing = { id: 12, version: 3, ...snapshot };
-    const db = createSettingsDb([[existing], [existing], [{ id: 66, settingId: 12, version: 2, snapshotJson: JSON.stringify(snapshot) }]]);
+    const published = { ...existing, version: 4, status: "published" };
+    const db = createSettingsDb([[existing], [published], [{ id: 66, settingId: 12, version: 2, snapshotJson: JSON.stringify(snapshot) }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
     const caller = adminRouter.createCaller(createAdminContext());
 
-    await expect(caller.settings.publish({ id: 12 })).resolves.toEqual({ success: true, version: 4 });
-    await expect(caller.settings.rollback({ settingId: 12, publishLogId: 66 })).resolves.toEqual({ success: true, version: 4 });
+    await expect(caller.settings.publish({ id: 12, expectedVersion: 3 })).resolves.toEqual({ success: true, version: 4 });
+    await expect(caller.settings.rollback({ settingId: 12, publishLogId: 66, expectedVersion: 4 })).resolves.toEqual({ success: true, version: 5 });
 
     expect(db.updatedValues[0]).toMatchObject({ status: "published", version: 4 });
-    expect(db.updatedValues[1]).toMatchObject({ secretEncrypted: "cipher:historical-key", valueJson: null, status: "published", version: 4 });
+    expect(db.updatedValues[1]).toMatchObject({ secretEncrypted: "cipher:historical-key", valueJson: null, status: "published", version: 5 });
     expect(db.updatedValues[1]).not.toMatchObject({ secretEncrypted: "historical-key" });
+  });
+
+  it("过期配置版本不能覆盖已被其他管理员修订的当前版本", async () => {
+    const existing = {
+      id: 14,
+      version: 6,
+      category: "business_parameter",
+      settingKey: "TRANSPORT_START_PRICE",
+      displayName: "运输起步价",
+      valueJson: "120",
+      secretEncrypted: null,
+      valuePreview: "120",
+      isSensitive: false,
+      remarks: "按元/趟配置",
+    };
+    const db = createSettingsDb([[existing]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.publish({ id: 14, expectedVersion: 5 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(db.updatedValues).toHaveLength(0);
+    expect(db.insertedValues).toHaveLength(0);
+  });
+
+  it("编辑既有草稿与停用配置均以 expectedVersion 条件写入，并递增版本记录审计", async () => {
+    const existingDraft = { id: 18, version: 3, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", valueJson: "120", secretEncrypted: null, valuePreview: "120", isSensitive: false, remarks: "旧草稿" };
+    const draftDb = createSettingsDb([[existingDraft]]);
+    vi.mocked(getDb).mockResolvedValue(draftDb as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.saveDraft({ id: 18, expectedVersion: 3, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "130", isSensitive: false, remarks: "修订草稿" })).resolves.toEqual({ success: true, version: 4 });
+    expect(draftDb.updatedValues[0]).toMatchObject({ valueJson: "130", status: "draft", version: 4 });
+    expect(draftDb.insertedValues).toHaveLength(2);
+
+    const existingPublished = { ...existingDraft, id: 19, version: 7, status: "published" };
+    const disableDb = createSettingsDb([[existingPublished]]);
+    vi.mocked(getDb).mockResolvedValue(disableDb as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.disable({ id: 19, expectedVersion: 7 })).resolves.toEqual({ success: true, version: 8 });
+    expect(disableDb.updatedValues[0]).toMatchObject({ status: "disabled", version: 8 });
+    expect(disableDb.insertedValues).toHaveLength(2);
+  });
+
+  it("过期 expectedVersion 会拒绝草稿保存和配置停用，且不写入更新、审计或历史", async () => {
+    const existing = { id: 20, version: 9, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", valueJson: "120", secretEncrypted: null, valuePreview: "120", isSensitive: false, remarks: null };
+    const staleDraftDb = createSettingsDb([[existing]]);
+    vi.mocked(getDb).mockResolvedValue(staleDraftDb as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.saveDraft({ id: 20, expectedVersion: 8, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "130", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(staleDraftDb.updatedValues).toHaveLength(0);
+    expect(staleDraftDb.insertedValues).toHaveLength(0);
+
+    const staleDisableDb = createSettingsDb([[existing]]);
+    vi.mocked(getDb).mockResolvedValue(staleDisableDb as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.disable({ id: 20, expectedVersion: 8 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(staleDisableDb.updatedValues).toHaveLength(0);
+    expect(staleDisableDb.insertedValues).toHaveLength(0);
+  });
+
+  it("既有配置的草稿修订缺少 expectedVersion 时一律拒绝，后台新建表单不会绕过版本锁", async () => {
+    const db = createSettingsDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.saveDraft({ id: 21, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "130", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.updatedValues).toHaveLength(0);
+    expect(db.insertedValues).toHaveLength(0);
   });
 
   it("企业微信与业务参数均可在统一配置中心经历草稿、发布、历史脱敏与回滚闭环", async () => {
@@ -156,20 +222,20 @@ describe("系统设置安全工作流", () => {
     const businessSetting = { id: 43, version: 5, ...businessSnapshot };
     const wecomLog = { id: 81, settingId: 42, version: 1, operation: "publish", snapshotJson: JSON.stringify(wecomSnapshot) };
     const businessLog = { id: 82, settingId: 43, version: 5, operation: "publish", snapshotJson: JSON.stringify(businessSnapshot) };
-    const db = createSettingsDb([[wecomSetting], [wecomLog], [wecomSetting], [wecomLog], [businessSetting], [businessLog], [businessSetting], [businessLog]]);
+    const db = createSettingsDb([[wecomSetting], [wecomLog], [{ ...wecomSetting, version: 2 }], [wecomLog], [businessSetting], [businessLog], [{ ...businessSetting, version: 6 }], [businessLog]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
     const caller = adminRouter.createCaller(createAdminContext());
 
     await expect(caller.settings.saveDraft({ category: "wechat", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人", value: "https://example.com/webhook", isSensitive: true, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await caller.settings.saveDraft({ category: "wechat", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人", value: webhook, isSensitive: true, remarks: "用于业务待办通知" });
-    await expect(caller.settings.publish({ id: 42 })).resolves.toEqual({ success: true, version: 2 });
+    await expect(caller.settings.publish({ id: 42, expectedVersion: 1 })).resolves.toEqual({ success: true, version: 2 });
     const wecomHistory = await caller.settings.history({ settingId: 42 });
-    await expect(caller.settings.rollback({ settingId: 42, publishLogId: 81 })).resolves.toEqual({ success: true, version: 2 });
+    await expect(caller.settings.rollback({ settingId: 42, publishLogId: 81, expectedVersion: 2 })).resolves.toEqual({ success: true, version: 3 });
 
     await caller.settings.saveDraft({ category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "120", isSensitive: false, remarks: "按元/趟配置" });
-    await expect(caller.settings.publish({ id: 43 })).resolves.toEqual({ success: true, version: 6 });
+    await expect(caller.settings.publish({ id: 43, expectedVersion: 5 })).resolves.toEqual({ success: true, version: 6 });
     const businessHistory = await caller.settings.history({ settingId: 43 });
-    await expect(caller.settings.rollback({ settingId: 43, publishLogId: 82 })).resolves.toEqual({ success: true, version: 6 });
+    await expect(caller.settings.rollback({ settingId: 43, publishLogId: 82, expectedVersion: 6 })).resolves.toEqual({ success: true, version: 7 });
 
     expect(JSON.stringify(db.insertedValues)).not.toContain(webhook);
     expect(JSON.stringify(wecomHistory)).not.toContain("cipher:wecom-webhook");

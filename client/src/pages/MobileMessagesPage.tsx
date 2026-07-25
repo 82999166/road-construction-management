@@ -7,6 +7,12 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 
+/** 移动端底部导航只使用移动路由，避免从消息中心误跳至后台个人页。 */
+export const MOBILE_BOTTOM_NAVIGATION = {
+  workbench: "/mobile",
+  profile: "/mobile/profile",
+} as const;
+
 /** 将服务器 UTC 时间转换为用户可读的本地时间；没有时间时使用安全占位符。 */
 function formatMessageTime(value: Date | string | null | undefined) {
   if (!value) return "—";
@@ -55,7 +61,7 @@ export default function MobileMessagesPage() {
           })}
         </main>
 
-        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Bell className="h-5 w-5" /><span className="text-[10px] font-medium">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
+        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_BOTTOM_NAVIGATION.workbench)}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Bell className="h-5 w-5" /><span className="text-[10px] font-medium">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_BOTTOM_NAVIGATION.profile)}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
     </div>
   );

@@ -22,4 +22,24 @@ describe("MobileAccessGate", () => {
 
     expect(markup).toContain("当前岗位与数据范围");
   });
+
+  it("认证超时时展示可操作的重新加载与企业身份登录出口，而非持续展示加载文案", () => {
+    const markup = renderToStaticMarkup(
+      <MobileAccessGate
+        isAuthenticated={false}
+        isLoading={true}
+        authLoadingTimedOut
+        loadingText="正在加载项目权限…"
+        title="财务成本"
+        description="需要企业身份授权"
+        Icon={UserRound}
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("身份核验响应超时");
+    expect(markup).toContain("重新加载");
+    expect(markup).toContain("企业身份登录");
+    expect(markup).not.toContain("正在加载项目权限…");
+  });
 });

@@ -51,13 +51,15 @@ function createAuthContext(): TrpcContext {
 
 /** 构造 Drizzle 查询链，返回指定的单次查询结果。 */
 function createSelectDb(rows: unknown[]) {
+  const terminalQuery = {
+    orderBy: vi.fn(async () => rows),
+    limit: vi.fn(async () => rows),
+  };
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => rows),
-          limit: vi.fn(async () => rows),
-        })),
+        where: vi.fn(() => terminalQuery),
+        innerJoin: vi.fn(() => ({ where: vi.fn(() => terminalQuery) })),
       })),
     })),
   };
@@ -184,8 +186,11 @@ describe("labor tRPC 路由", () => {
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "approved" })).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+    vi.mocked(sendWecomTextNotification).mockResolvedValueOnce({ delivered: false, reason: "request_failed" });
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "approved" })).resolves.toEqual({ success: true, status: "approved" });
     expect(updateSet).toHaveBeenLastCalledWith(expect.objectContaining({ status: "approved", accountantId: 1 }));
+    expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已完成会计审核，请相关责任人在系统内查看。");
+    expect(db.insert).toHaveBeenCalled();
 
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "returned" })).resolves.toEqual({ success: true, status: "draft" });
     expect(updateSet).toHaveBeenLastCalledWith(expect.objectContaining({ status: "draft", accountantId: 1 }));
@@ -197,5 +202,81 @@ describe("labor tRPC 路由", () => {
     };
     vi.mocked(getDb).mockResolvedValue(finalizedDb as never);
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("工资付款凭证仅向会计、财务负责人和系统级应急角色返回", async () => {
+    const payrollRow = {
+      id: 18,
+      workerId: 7,
+      workerName: "张三",
+      teamName: "沥青班组",
+      projectId: 10,
+      period: "2026-07",
+      payableAmount: "12000.00",
+      deductionAmount: "0.00",
+      actualAmount: "12000.00",
+      bankAccountMasked: "****7890",
+      status: "paid",
+      accountantId: 9,
+      paidAt: new Date("2026-07-25T00:00:00.000Z"),
+      paymentReference: "PAY-202607-0001",
+      createdAt: new Date("2026-07-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-25T00:00:00.000Z"),
+    };
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([payrollRow]) as never);
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["LABOR_MANAGER"]);
+
+    const restrictedRows = await laborRouter.createCaller(createAuthContext()).payroll.list({ projectId: 10, period: "2026-07" });
+    expect(restrictedRows[0]?.paymentReference).toBeNull();
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const financeRows = await laborRouter.createCaller(createAuthContext()).payroll.list({ projectId: 10, period: "2026-07" });
+    expect(financeRows[0]?.paymentReference).toBe("PAY-202607-0001");
+  });
+
+  it("工资发放只允许财务负责人确认，并保留最小化通知和企业微信失败审计", async () => {
+    const payroll = { id: 8, projectId: 10, period: "2026-07", status: "approved", submittedBy: 7 };
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const insertValues = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDb([payroll]),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: insertValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    vi.mocked(sendWecomTextNotification).mockResolvedValueOnce({ delivered: false, reason: "request_failed" });
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).resolves.toMatchObject({ success: true, status: "paid" });
+
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "paid", paymentReference: "PAY-202607-0001" }));
+    expect(vi.mocked(createInAppMessage)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "PAYROLL_PAID", recipientUserId: 7, deepLink: "/mobile/labor" }));
+    expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已确认发放，请相关责任人在系统内查看。");
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "wecom_notification_failed", targetId: "8" }));
+  });
+
+  it("工资条只能在发放确认前由会计或财务负责人作废，已发放记录保持终态锁定", async () => {
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const insertValues = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDb([{ id: 9, projectId: 10, period: "2026-07", status: "approved", submittedBy: 7 }]),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: insertValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.void({ id: 9, reason: "考勤口径调整" })).resolves.toEqual({ success: true, status: "void" });
+    expect(updateSet).toHaveBeenCalledWith({ status: "void" });
+    expect(vi.mocked(createInAppMessage)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "PAYROLL_VOIDED", recipientUserId: 7, deepLink: "/mobile/labor" }));
+
+    const paidDb = {
+      ...createSelectDb([{ id: 10, projectId: 10, period: "2026-07", status: "paid", submittedBy: 7 }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(paidDb as never);
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.void({ id: 10, reason: "不可回退验证" })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

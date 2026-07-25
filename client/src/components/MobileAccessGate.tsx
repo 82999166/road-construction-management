@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { startLogin } from "@/const";
 import { LogIn, RefreshCw, type LucideIcon } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import React, { type ReactNode, useEffect, useState } from "react";
 
 type MobileAccessGateProps = {
   /** 当前会话是否已经通过服务端身份校验。 */

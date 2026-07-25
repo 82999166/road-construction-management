@@ -142,6 +142,13 @@ export default function AdminPage() {
   useEffect(() => {
     if (!selectedSettingId && settings.data?.[0]) setSelectedSettingId(settings.data[0].id);
   }, [selectedSettingId, settings.data]);
+  const selectedSetting = settings.data?.find(item => item.id === selectedSettingId);
+
+  /** 配置版本冲突后强制刷新列表与历史，避免管理员继续在旧版本上操作。 */
+  const refreshAfterSettingConflict = async () => {
+    toast.error("配置已被其他管理员更新，已刷新为最新版本，请确认后重试");
+    await Promise.all([settings.refetch(), settingHistory.refetch(), audits.refetch()]);
+  };
 
   const saveOrganization = trpc.admin.organization.save.useMutation({
     onSuccess: async () => {
@@ -188,6 +195,7 @@ export default function AdminPage() {
       await settings.refetch();
       await audits.refetch();
     },
+    onError: refreshAfterSettingConflict,
   });
   const testSetting = trpc.admin.settings.test.useMutation({
     onSuccess: async result => {
@@ -200,12 +208,14 @@ export default function AdminPage() {
       toast.success(`配置已停用并记录为 v${result.version}`);
       await Promise.all([settings.refetch(), settingHistory.refetch(), audits.refetch()]);
     },
+    onError: refreshAfterSettingConflict,
   });
   const rollbackSetting = trpc.admin.settings.rollback.useMutation({
     onSuccess: async result => {
       toast.success(`配置已回滚并发布为 v${result.version}`);
       await Promise.all([settings.refetch(), settingHistory.refetch(), audits.refetch()]);
     },
+    onError: refreshAfterSettingConflict,
   });
   const savePermissions = trpc.admin.role.setPermissions.useMutation({
     onSuccess: async () => {
@@ -383,7 +393,7 @@ export default function AdminPage() {
             {settings.data?.length ? settings.data.map(item => (
               <div key={item.id} className={`flex flex-col gap-3 rounded-xl border p-4 transition-colors ${selectedSettingId === item.id ? "border-[#203c48] bg-[#f7faf9]" : "border-slate-100"}`}>
                 <button className="text-left" onClick={() => setSelectedSettingId(item.id)}><div className="flex items-center gap-2"><p className="text-sm font-medium">{item.displayName}</p>{item.isSensitive ? <Badge variant="outline">加密托管</Badge> : null}<Badge variant={item.status === "published" ? "secondary" : "outline"}>{item.status === "published" ? "已发布" : item.status === "draft" ? "草稿" : "已禁用"}</Badge></div><p className="mt-1 text-xs text-slate-500">{item.category} · {item.settingKey} · v{item.version} · {item.valuePreview || "未设置值"}</p></button>
-                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id })}>发布</Button><Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey === "WECHAT_WORK_WEBHOOK" ? "发送测试消息" : "校验 / 测试"}</Button>{item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id }); }}>停用</Button> : null}</div>
+                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id, expectedVersion: item.version })}>发布</Button><Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey === "WECHAT_WORK_WEBHOOK" ? "发送测试消息" : "校验 / 测试"}</Button>{item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id, expectedVersion: item.version }); }}>停用</Button> : null}</div>
               </div>
             )) : <EmptyState text="暂无配置项，请在右侧创建企业微信、消息模板或外部 API 配置草稿。" />}
           </CardContent>
@@ -391,7 +401,7 @@ export default function AdminPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">配置版本与安全回滚</CardTitle><CardDescription>历史版本不展示密钥明文；回滚后会生成新的已发布版本，并全程记录审计日志。</CardDescription></CardHeader>
           <CardContent className="space-y-2">
-            {selectedSettingId === undefined ? <EmptyState text="请选择一条配置查看其发布历史。" /> : settingHistory.data?.length ? settingHistory.data.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-3"><div><p className="text-sm font-medium">{item.operation === "publish" ? "发布版本" : "回滚版本"} · v{item.version}</p><p className="mt-0.5 text-xs text-slate-500">{item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN") : "时间未知"}</p></div><Button size="sm" variant="outline" disabled={rollbackSetting.isPending} onClick={() => { if (window.confirm("确认将当前配置回滚至此历史版本？此操作会创建新的发布版本。")) rollbackSetting.mutate({ settingId: selectedSettingId, publishLogId: item.id }); }}>回滚至此版本</Button></div>) : <EmptyState text="该配置尚无已发布历史；发布后即可在此回滚。" />}
+            {selectedSettingId === undefined ? <EmptyState text="请选择一条配置查看其发布历史。" /> : settingHistory.data?.length ? settingHistory.data.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-3"><div><p className="text-sm font-medium">{item.operation === "publish" ? "发布版本" : item.operation === "update" ? "草稿修订" : "回滚版本"} · v{item.version}</p><p className="mt-0.5 text-xs text-slate-500">{item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN") : "时间未知"}</p></div><Button size="sm" variant="outline" disabled={!selectedSetting || rollbackSetting.isPending} onClick={() => { if (selectedSetting && window.confirm("确认将当前配置回滚至此历史版本？此操作会创建新的发布版本。")) rollbackSetting.mutate({ settingId: selectedSettingId, publishLogId: item.id, expectedVersion: selectedSetting.version }); }}>回滚至此版本</Button></div>) : <EmptyState text="该配置尚无已发布历史；发布后即可在此回滚。" />}
           </CardContent>
         </Card>
         <Card>
@@ -407,7 +417,7 @@ export default function AdminPage() {
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "企业微信", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人 Webhook", value: "", isSensitive: true, remarks: "用于工程业务节点通知；保存后请先发布，再由超级管理员主动发送测试消息。" })}>填入企业微信机器人模板</Button></CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">新建配置草稿</CardTitle><CardDescription>密钥类内容会在服务端立即进行 AES-GCM 加密，不会回传明文。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">新建配置草稿</CardTitle><CardDescription>该表单仅创建新的配置项；既有配置通过版本化发布、停用或回滚操作维护，密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="企业微信">企业微信接入</SelectItem><SelectItem value="企业微信消息模板">企业微信消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
             <div><Label>配置键</Label><Input value={settingForm.settingKey} placeholder="WECOM:CORP_ID" onChange={event => setSettingForm({ ...settingForm, settingKey: event.target.value.toUpperCase() })} /></div>
