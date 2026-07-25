@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { startLogin } from "@/const";
+import { createLoginPath, getCurrentAppPath } from "@/lib/authNavigation";
 import { LogIn, RefreshCw, type LucideIcon } from "lucide-react";
 import React, { type ReactNode, useEffect, useState } from "react";
 
@@ -63,7 +63,7 @@ export function MobileAccessGate({
   }
 
   if (!isAuthenticated || authLoadingTimedOut) {
-    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#fff8ed]"><div><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><Icon className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">{title}</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">{authLoadingTimedOut ? "身份核验响应超时。请重新加载；如问题持续，请重新完成企业身份登录。" : description}</p><div className="mt-6 flex justify-center gap-3"><Button variant="outline" className="border-[#d7a167] bg-transparent text-[#f4dfc3] hover:bg-white/10 hover:text-white" onClick={retry}><RefreshCw className="mr-1.5 h-4 w-4" />重新加载</Button><Button className="bg-[#f4dfc3] text-[#3b2118] hover:bg-white" onClick={() => startLogin()}><LogIn className="mr-1.5 h-4 w-4" />企业身份登录</Button></div></div></div>;
+    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#fff8ed]"><div><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><Icon className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">{title}</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">{authLoadingTimedOut ? "身份核验响应超时。请重新加载；如问题持续，请重新完成企业身份登录。" : description}</p><div className="mt-6 flex justify-center gap-3"><Button variant="outline" className="border-[#d7a167] bg-transparent text-[#f4dfc3] hover:bg-white/10 hover:text-white" onClick={retry}><RefreshCw className="mr-1.5 h-4 w-4" />重新加载</Button><Button className="bg-[#f4dfc3] text-[#3b2118] hover:bg-white" onClick={() => { window.location.href = createLoginPath(getCurrentAppPath()); }}><LogIn className="mr-1.5 h-4 w-4" />前往登录页</Button></div></div></div>;
   }
 
   if (resourceLoadingTimedOut) {

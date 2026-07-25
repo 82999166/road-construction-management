@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import NotFound from "@/pages/NotFound";
-import { startLogin } from "@/const";
+import { createLoginPath } from "@/lib/authNavigation";
 import { trpc } from "@/lib/trpc";
 import { ShieldAlert } from "lucide-react";
 import { useEffect } from "react";
@@ -11,6 +11,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import AdminPage from "./pages/AdminPage";
 import Home from "./pages/Home";
+import LoginPage from "./pages/LoginPage";
 import MobileEvidencePage from "./pages/MobileEvidencePage";
 import MobileFinancePage from "./pages/MobileFinancePage";
 import MobileLaborPage from "./pages/MobileLaborPage";
@@ -34,7 +35,7 @@ function AdminRouteGuard() {
   const access = trpc.admin.access.useQuery(undefined, { enabled: isAuthenticated, retry: false });
 
   useEffect(() => {
-    if (!loading && !isAuthenticated) navigate("/");
+    if (!loading && !isAuthenticated) navigate(createLoginPath("/admin"));
     if (!access.isLoading && access.data && !access.data.canAccess) navigate("/");
   }, [access.data, access.isLoading, isAuthenticated, loading, navigate]);
 
@@ -42,7 +43,7 @@ function AdminRouteGuard() {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在核验后台访问权限…</div>;
   }
   if (!isAuthenticated) {
-    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">PC 超级管理后台需要先完成登录。</p><Button onClick={() => startLogin()}>登录系统</Button></div>;
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">PC 超级管理后台需要先完成登录。</p><Button onClick={() => navigate(createLoginPath("/admin"))}>前往登录页</Button></div>;
   }
   if (access.error || (access.data && !access.data.canAccess)) {
     return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-amber-600" /><p className="text-sm text-slate-600">当前账号未获超级管理后台授权，正在返回业务入口。</p></div>;
@@ -54,6 +55,7 @@ function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
+      <Route path={"/login"} component={LoginPage} />
       <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/labor"} component={MobileLaborPage} />

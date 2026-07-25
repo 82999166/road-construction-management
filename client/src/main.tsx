@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
-import { COOKIE_NAME, UNAUTHED_ERR_MSG } from '@shared/const';
+import { redirectToLoginForUnauthorizedError } from "@/lib/unauthorizedRedirect";
+import { COOKIE_NAME } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
-import { startLogin } from "./const";
+import { getCurrentAppPath } from "./lib/authNavigation";
 import "./index.css";
 
 const queryClient = new QueryClient();
@@ -14,11 +15,8 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
 
-  const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
-
-  if (!isUnauthorized) return;
-
-  startLogin();
+  // 未授权请求统一先进入站内登录页，避免网络层直接绕过用户可见的登录界面。
+  redirectToLoginForUnauthorizedError(error.message, getCurrentAppPath(), (loginPath) => window.location.replace(loginPath));
 };
 
 queryClient.getQueryCache().subscribe(event => {

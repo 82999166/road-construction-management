@@ -1,13 +1,19 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { startLogin } from "@/const";
+import { consumePostLoginReturnPath, createLoginPath } from "@/lib/authNavigation";
 import { ArrowRight, Building2, HardHat, ShieldCheck, Smartphone } from "lucide-react";
+import React, { useEffect } from "react";
 import { useLocation } from "wouter";
 
 /** 系统入口页：业务人员进入移动工作台，超级管理员可进入独立 PC 后台。 */
 export default function Home() {
   const { user, loading, isAuthenticated } = useAuth();
   const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (!isAuthenticated || loading) return;
+    setLocation(consumePostLoginReturnPath());
+  }, [isAuthenticated, loading, setLocation]);
 
   return (
     <div className="min-h-screen bg-[#f7f6f2] text-slate-900">
@@ -18,7 +24,7 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           {isAuthenticated ? <span className="hidden text-sm text-slate-500 sm:inline">您好，{user?.name || "用户"}</span> : null}
-          <Button variant="outline" className="border-slate-300 bg-white" onClick={() => isAuthenticated ? setLocation("/admin") : startLogin()}>{isAuthenticated ? "进入管理后台" : "登录系统"}</Button>
+          <Button variant="outline" className="border-slate-300 bg-white" onClick={() => isAuthenticated ? setLocation("/admin") : setLocation(createLoginPath("/admin"))}>{isAuthenticated ? "进入管理后台" : "登录系统"}</Button>
         </div>
       </header>
       <main className="mx-auto grid w-full max-w-6xl gap-12 px-5 pb-14 pt-12 lg:grid-cols-[1.15fr_.85fr] lg:px-8 lg:pt-20">
@@ -27,8 +33,8 @@ export default function Home() {
           <h1 className="text-4xl font-semibold leading-tight tracking-tight text-[#172b34] sm:text-5xl">让施工现场、经营数据与管理决策处于同一节奏。</h1>
           <p className="mt-6 max-w-xl text-base leading-7 text-slate-600">覆盖劳务工资、机械租赁、渣土运输、采购仓储、计量财务、水印取证和项目成本。业务人员在移动端办理，超级管理员在独立 PC 后台完成治理与配置。</p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Button className="bg-[#203c48] px-5 hover:bg-[#17313b]" onClick={() => isAuthenticated ? setLocation("/mobile") : startLogin()}>{loading ? "正在识别登录状态" : "进入移动工作台"}<ArrowRight className="ml-2 h-4 w-4" /></Button>
-            <Button variant="outline" className="border-slate-300 bg-white px-5" onClick={() => isAuthenticated ? setLocation("/admin") : startLogin()}>PC 超级管理后台</Button>
+            <Button className="bg-[#203c48] px-5 hover:bg-[#17313b]" onClick={() => isAuthenticated ? setLocation("/mobile") : setLocation(createLoginPath("/mobile"))}>{loading ? "正在识别登录状态" : "进入移动工作台"}<ArrowRight className="ml-2 h-4 w-4" /></Button>
+            <Button variant="outline" className="border-slate-300 bg-white px-5" onClick={() => isAuthenticated ? setLocation("/admin") : setLocation(createLoginPath("/admin"))}>PC 超级管理后台</Button>
           </div>
         </section>
         <section className="grid gap-4 sm:grid-cols-3 lg:grid-cols-1">

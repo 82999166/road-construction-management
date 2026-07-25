@@ -43,11 +43,11 @@ describe("移动业务页面认证与授权门禁", () => {
     runtime.auth.refresh = vi.fn();
   });
 
-  it.each(protectedMobilePages)("%s 在未登录时显示重新加载和企业身份登录出口", (_name, Page) => {
+  it.each(protectedMobilePages)("%s 在未登录时显示重新加载和独立登录页入口", (_name, Page) => {
     const markup = renderToStaticMarkup(<Page />);
 
     expect(markup).toContain("重新加载");
-    expect(markup).toContain("企业身份登录");
+    expect(markup).toContain("前往登录页");
   });
 
   it.each(protectedMobilePages)("%s 在身份核验超时时显示超时降级而非持续加载", (_name, Page) => {
@@ -57,6 +57,6 @@ describe("移动业务页面认证与授权门禁", () => {
 
     expect(markup).toContain("身份核验响应超时");
     expect(markup).toContain("重新加载");
-    expect(markup).toContain("企业身份登录");
+    expect(markup).toContain("前往登录页");
   });
 });
