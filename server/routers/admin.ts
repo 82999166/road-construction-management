@@ -15,9 +15,13 @@ import {
   systemPermissions,
   systemRoles,
   systemSettings,
+  transportTrips,
+  transportVehicles,
   userRoleAssignments,
+  users,
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
+import { calculateTheoreticalVolume } from "../../shared/domain";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -39,6 +43,23 @@ const organizationInput = z.object({
   costCenterCode: z.string().trim().max(64).nullable().optional(),
   sortOrder: z.number().int().min(0).max(99999).default(0),
   status: z.enum(["active", "disabled"]).default("active"),
+});
+
+/** 超级管理后台维护的车辆主数据；尺寸和装载系数仍是运输趟次理论方量计算的权威输入。 */
+const vehicleManagementInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  organizationId: z.number().int().positive().nullable().optional(),
+  plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
+  vehicleType: z.enum(["dump_truck", "tractor", "mixer", "flatbed", "other"]),
+  ownerName: z.string().trim().max(128).nullable().optional(),
+  driverUserId: z.number().int().positive().nullable().optional(),
+  boxLengthMeters: z.number().gt(0).max(100),
+  boxWidthMeters: z.number().gt(0).max(20),
+  boxHeightMeters: z.number().gt(0).max(20),
+  loadFactor: z.number().gt(0).max(1.5).default(1),
+  payloadTons: z.number().gt(0).max(9999).nullable().optional(),
+  status: z.enum(["active", "suspended", "disabled"]),
 });
 
 const roleInput = z.object({
@@ -182,6 +203,35 @@ export const adminRouter = router({
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
+      if (input.id && input.parentId === input.id) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "组织节点不能选择自身作为上级节点" });
+      }
+      if (input.parentId) {
+        const [parent] = await db.select({ id: organizations.id, parentId: organizations.parentId, status: organizations.status }).from(organizations).where(eq(organizations.id, input.parentId)).limit(1);
+        if (!parent || parent.status !== "active") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "上级组织必须是已启用的有效节点" });
+        }
+        const visited = new Set<number>([parent.id]);
+        let ancestorId = parent.parentId;
+        while (ancestorId) {
+          if (input.id && ancestorId === input.id) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "组织层级不能形成循环引用" });
+          }
+          if (visited.has(ancestorId)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "上级组织层级存在循环引用，请先修正历史数据" });
+          }
+          visited.add(ancestorId);
+          const [ancestor] = await db.select({ id: organizations.id, parentId: organizations.parentId, status: organizations.status }).from(organizations).where(eq(organizations.id, ancestorId)).limit(1);
+          if (!ancestor || ancestor.status !== "active") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "上级组织层级包含无效或已停用节点" });
+          }
+          ancestorId = ancestor.parentId;
+        }
+      }
+      if (input.managerUserId) {
+        const [manager] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.managerUserId)).limit(1);
+        if (!manager) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择已存在的组织负责人账号" });
+      }
       const values = { ...input, parentId: input.parentId ?? null, managerUserId: input.managerUserId ?? null, costCenterCode: input.costCenterCode ?? null };
       if (input.id) {
         await db.update(organizations).set(values).where(eq(organizations.id, input.id));
@@ -265,6 +315,40 @@ export const adminRouter = router({
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
         if (!db) throw new Error("数据库连接暂不可用");
+        if (input.id && input.parentId === input.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "项目节点不能选择自身作为上级节点" });
+        }
+        if (input.parentId) {
+          const [parent] = await db.select({ id: projects.id, parentId: projects.parentId, status: projects.status }).from(projects).where(eq(projects.id, input.parentId)).limit(1);
+          if (!parent || parent.status === "archived") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "上级项目必须是未归档的有效节点" });
+          }
+          const visited = new Set<number>([parent.id]);
+          let ancestorId = parent.parentId;
+          while (ancestorId) {
+            if (input.id && ancestorId === input.id) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "项目层级不能形成循环引用" });
+            }
+            if (visited.has(ancestorId)) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "上级项目层级存在循环引用，请先修正历史数据" });
+            }
+            visited.add(ancestorId);
+            const [ancestor] = await db.select({ id: projects.id, parentId: projects.parentId, status: projects.status }).from(projects).where(eq(projects.id, ancestorId)).limit(1);
+            if (!ancestor || ancestor.status === "archived") {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "上级项目层级包含无效或已归档节点" });
+            }
+            ancestorId = ancestor.parentId;
+          }
+        }
+        if (input.organizationId) {
+          const [organization] = await db.select({ id: organizations.id, status: organizations.status }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
+          if (!organization || organization.status !== "active") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "项目归属组织必须是已启用的有效节点" });
+          }
+        }
+        if (input.startDate && input.endDate && input.endDate < input.startDate) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "项目结束日期不得早于开始日期" });
+        }
         const values = {
           ...input,
           parentId: input.parentId ?? null,
@@ -279,6 +363,85 @@ export const adminRouter = router({
         await db.insert(auditLogs).values({ userId: admin.id, module: "project", action: input.id ? "update" : "create", targetType: "project", targetId: String(input.id ?? input.code), summary: `维护项目节点：${input.name}` });
         return { success: true };
       }),
+  }),
+
+  vehicle: router({
+    /** 超级管理员从唯一的运输车辆台账读取全局资源，理论方量始终由货厢参数实时计算。 */
+    list: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(transportVehicles).orderBy(desc(transportVehicles.updatedAt));
+      return rows.map(vehicle => ({
+        ...vehicle,
+        theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
+      }));
+    }),
+    save: protectedProcedure.input(vehicleManagementInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+      const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      if (!project || project.status === "archived") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "车辆必须归属未归档的有效项目节点" });
+      }
+      if (input.organizationId) {
+        const [organization] = await db.select({ id: organizations.id, status: organizations.status }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
+        if (!organization || organization.status !== "active") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "车辆所属单位必须是已启用的组织节点" });
+        }
+      }
+      if (input.driverUserId) {
+        const [driver] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.driverUserId)).limit(1);
+        if (!driver) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择已存在的司机账号" });
+      }
+      const plateMatches = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.plateNo, input.plateNo));
+      if (plateMatches.some(vehicle => vehicle.id !== input.id)) {
+        throw new TRPCError({ code: "CONFLICT", message: "该车牌已存在，不能重复建档" });
+      }
+
+      let existing: typeof transportVehicles.$inferSelect | undefined;
+      if (input.id) {
+        [existing] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
+        if (input.status === "disabled" && existing.status !== "disabled") {
+          const openTrips = await db.select({ id: transportTrips.id, status: transportTrips.status }).from(transportTrips).where(eq(transportTrips.vehicleId, input.id));
+          if (openTrips.some(trip => ["draft", "submitted", "verified"].includes(trip.status))) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "车辆存在未结算趟次，不能直接停用；请先完成或作废相关趟次" });
+          }
+        }
+      }
+
+      const values = {
+        projectId: input.projectId,
+        organizationId: input.organizationId ?? null,
+        plateNo: input.plateNo,
+        vehicleType: input.vehicleType,
+        ownerName: input.ownerName ?? null,
+        driverUserId: input.driverUserId ?? null,
+        boxLengthMeters: String(input.boxLengthMeters),
+        boxWidthMeters: String(input.boxWidthMeters),
+        boxHeightMeters: String(input.boxHeightMeters),
+        loadFactor: String(input.loadFactor),
+        payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons),
+        status: input.status,
+      };
+      if (existing) await db.update(transportVehicles).set(values).where(eq(transportVehicles.id, existing.id));
+      else await db.insert(transportVehicles).values(values);
+      await db.insert(auditLogs).values({
+        userId: admin.id,
+        module: "transport",
+        action: input.id ? "admin_update_vehicle" : "admin_create_vehicle",
+        targetType: "transport_vehicle",
+        targetId: String(input.id ?? input.plateNo),
+        summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}`,
+      });
+      return {
+        success: true,
+        theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor),
+      };
+    }),
   }),
 
   role: router({
@@ -367,6 +530,12 @@ export const adminRouter = router({
           const [department] = await db.select({ type: organizations.type, status: organizations.status }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
           if (!department || (department.type !== "department" && department.type !== "project_department") || department.status !== "active") {
             throw new TRPCError({ code: "BAD_REQUEST", message: "所属部门必须是启用中的部门或项目部节点" });
+          }
+        }
+        if (input.projectId) {
+          const [project] = await db.select({ status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+          if (!project || project.status === "archived") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "授权项目必须是未归档的有效项目节点" });
           }
         }
         const values = { ...input, organizationId: input.organizationId ?? null, projectId: input.projectId ?? null, validFrom, validTo, grantedBy: admin.id };

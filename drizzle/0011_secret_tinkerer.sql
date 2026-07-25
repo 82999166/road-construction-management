@@ -1,0 +1,2 @@
+ALTER TABLE `transport_vehicles` ADD `organizationId` int;--> statement-breakpoint
+ALTER TABLE `transport_vehicles` ADD `vehicleType` enum('dump_truck','tractor','mixer','flatbed','other') DEFAULT 'dump_truck' NOT NULL;

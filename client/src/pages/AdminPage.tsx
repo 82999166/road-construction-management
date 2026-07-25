@@ -17,6 +17,7 @@ import {
   ScrollText,
   Settings2,
   ShieldCheck,
+  Truck,
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import { useLocation } from "wouter";
 const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: LayoutDashboard, label: "运营概览", path: "/admin" },
   { icon: Building2, label: "组织与项目", path: "/admin/organization" },
+  { icon: Truck, label: "车辆与资源", path: "/admin/vehicles" },
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
@@ -37,6 +39,21 @@ const ADMIN_MENU: DashboardMenuItem[] = [
 
 type OrganizationType = "group" | "company" | "project_department" | "department" | "team";
 type DepartmentModuleCode = "CONSTRUCTION" | "LABOR" | "MACHINERY" | "TRANSPORT" | "PURCHASING" | "MEASUREMENT" | "FINANCE" | "EVIDENCE";
+type OrganizationStatus = "active" | "disabled";
+type ProjectType = "highway" | "railway" | "municipal" | "other";
+type ProjectStatus = "planning" | "active" | "suspended" | "completed" | "archived";
+
+type OrganizationForm = { id?: number; parentId: string; code: string; name: string; type: OrganizationType; managerUserId: string; costCenterCode: string; sortOrder: string; status: OrganizationStatus };
+type ProjectForm = { id?: number; parentId: string; organizationId: string; code: string; name: string; nodeType: string; projectType: ProjectType; status: ProjectStatus; startDate: string; endDate: string; costCenterCode: string; sortOrder: string };
+type PositionForm = { id?: number; code: string; name: string; category: string; description: string; status: OrganizationStatus };
+type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
+type VehicleStatus = "active" | "suspended" | "disabled";
+type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus };
+
+const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
+const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
+const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
+const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
@@ -100,6 +117,7 @@ export default function AdminPage() {
   const settings = trpc.admin.settings.list.useQuery(undefined, queryOptions);
   const audits = trpc.admin.audit.list.useQuery(undefined, queryOptions);
   const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, queryOptions);
+  const vehicles = trpc.admin.vehicle.list.useQuery(undefined, queryOptions);
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -113,17 +131,10 @@ export default function AdminPage() {
   );
   const [draftPermissionIds, setDraftPermissionIds] = useState<number[]>([]);
 
-  const [organizationForm, setOrganizationForm] = useState<{ code: string; name: string; type: OrganizationType }>({
-    code: "",
-    name: "",
-    type: "department",
-  });
-  const [projectForm, setProjectForm] = useState({
-    code: "",
-    name: "",
-    nodeType: "项目",
-    projectType: "highway" as const,
-  });
+  const [organizationForm, setOrganizationForm] = useState<OrganizationForm>(EMPTY_ORGANIZATION_FORM);
+  const [projectForm, setProjectForm] = useState<ProjectForm>(EMPTY_PROJECT_FORM);
+  const [positionForm, setPositionForm] = useState<PositionForm>(EMPTY_POSITION_FORM);
+  const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
   const [roleForm, setRoleForm] = useState({ code: "", name: "", description: "" });
   const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
@@ -158,18 +169,34 @@ export default function AdminPage() {
   const saveOrganization = trpc.admin.organization.save.useMutation({
     onSuccess: async () => {
       toast.success("组织节点已保存");
-      setOrganizationForm({ code: "", name: "", type: "department" });
-      await organizations.refetch();
-      await overview.refetch();
+      setOrganizationForm(EMPTY_ORGANIZATION_FORM);
+      await Promise.all([organizations.refetch(), overview.refetch(), audits.refetch()]);
     },
+    onError: error => toast.error(error.message),
   });
   const saveProject = trpc.admin.project.save.useMutation({
     onSuccess: async () => {
       toast.success("项目节点已保存");
-      setProjectForm({ code: "", name: "", nodeType: "项目", projectType: "highway" });
-      await projects.refetch();
-      await overview.refetch();
+      setProjectForm(EMPTY_PROJECT_FORM);
+      await Promise.all([projects.refetch(), overview.refetch(), audits.refetch()]);
     },
+    onError: error => toast.error(error.message),
+  });
+  const savePosition = trpc.admin.position.save.useMutation({
+    onSuccess: async () => {
+      toast.success("岗位字典已保存");
+      setPositionForm(EMPTY_POSITION_FORM);
+      await Promise.all([positions.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveVehicle = trpc.admin.vehicle.save.useMutation({
+    onSuccess: async data => {
+      toast.success(`车辆台账已保存，理论方量 ${data.theoreticalVolumeCubicMeters} m³`);
+      setVehicleForm(EMPTY_VEHICLE_FORM);
+      await Promise.all([vehicles.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const saveRole = trpc.admin.role.save.useMutation({
     onSuccess: async () => {
@@ -252,6 +279,10 @@ export default function AdminPage() {
     () => new Map((organizations.data ?? []).map(item => [item.id, item.name])),
     [organizations.data],
   );
+  const userNameById = useMemo(
+    () => new Map((users.data ?? []).map(user => [user.id, user.name || `用户 #${user.id}`])),
+    [users.data],
+  );
 
   const renderOverview = () => (
     <div className="space-y-6">
@@ -302,66 +333,180 @@ export default function AdminPage() {
     </div>
   );
 
-  const renderOrganization = () => (
-    <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
-      <section className="space-y-6">
-        <div>
-          <p className="text-sm font-medium text-[#203c48]">基础主数据</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">组织、岗位与项目层级</h1>
-          <p className="mt-2 text-sm text-slate-500">PC 后台可维护组织、部门、岗位和项目树；修改会保留审计日志。</p>
+  const renderOrganization = () => {
+    const submitOrganization = () => {
+      if (!organizationForm.code.trim() || !organizationForm.name.trim()) return toast.error("请填写组织编码和组织名称");
+      saveOrganization.mutate({
+        id: organizationForm.id,
+        parentId: organizationForm.parentId ? Number(organizationForm.parentId) : null,
+        code: organizationForm.code.trim(),
+        name: organizationForm.name.trim(),
+        type: organizationForm.type,
+        managerUserId: organizationForm.managerUserId ? Number(organizationForm.managerUserId) : null,
+        costCenterCode: organizationForm.costCenterCode.trim() || null,
+        sortOrder: Number(organizationForm.sortOrder || 0),
+        status: organizationForm.status,
+      });
+    };
+    const submitProject = () => {
+      if (!projectForm.code.trim() || !projectForm.name.trim() || !projectForm.nodeType.trim()) return toast.error("请填写项目编码、名称和层级名称");
+      saveProject.mutate({
+        id: projectForm.id,
+        parentId: projectForm.parentId ? Number(projectForm.parentId) : null,
+        organizationId: projectForm.organizationId ? Number(projectForm.organizationId) : null,
+        code: projectForm.code.trim(),
+        name: projectForm.name.trim(),
+        nodeType: projectForm.nodeType.trim(),
+        projectType: projectForm.projectType,
+        status: projectForm.status,
+        startDate: projectForm.startDate || null,
+        endDate: projectForm.endDate || null,
+        costCenterCode: projectForm.costCenterCode.trim() || null,
+        sortOrder: Number(projectForm.sortOrder || 0),
+      });
+    };
+    const submitPosition = () => {
+      if (!positionForm.code.trim() || !positionForm.name.trim() || !positionForm.category.trim()) return toast.error("请填写岗位编码、名称和分类");
+      savePosition.mutate({ id: positionForm.id, code: positionForm.code.trim(), name: positionForm.name.trim(), category: positionForm.category.trim(), description: positionForm.description.trim() || null, status: positionForm.status });
+    };
+    const editableOrganizationOptions = (organizations.data ?? []).filter(item => item.id !== organizationForm.id);
+    const editableProjectOptions = (projects.data ?? []).filter(item => item.id !== projectForm.id);
+
+    return (
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+        <section className="space-y-6">
+          <div>
+            <p className="text-sm font-medium text-[#203c48]">基础主数据</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">组织、岗位与项目层级</h1>
+            <p className="mt-2 text-sm text-slate-500">统一维护管理部门、负责人、岗位、项目范围和状态；所有保存均由超级管理员鉴权并写入审计。</p>
+          </div>
+          <Card>
+            <CardHeader><CardTitle className="text-base">组织架构</CardTitle><CardDescription>支持集团、公司、部门、项目部和班组层级。点击条目即可在右侧维护。</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              {organizations.data?.length ? organizations.data.map(item => (
+                <button key={item.id} className="flex w-full items-center justify-between rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setOrganizationForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", code: item.code, name: item.name, type: item.type, managerUserId: item.managerUserId ? String(item.managerUserId) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder), status: item.status })}>
+                  <div><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · 上级：{item.parentId ? organizationNameById.get(item.parentId) ?? `#${item.parentId}` : "顶级"} · 负责人：{item.managerUserId ? userNameById.get(item.managerUserId) ?? `#${item.managerUserId}` : "未设置"} · 成本中心：{item.costCenterCode || "未设置"}</p></div>
+                  <Badge variant={item.status === "active" ? "secondary" : "outline"}>{item.status === "active" ? "启用" : "停用"}</Badge>
+                </button>
+              )) : <EmptyState text="暂无组织节点，请在右侧新增后开始维护。" />}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-base">岗位字典</CardTitle><CardDescription>岗位用于人员档案与职责管理，不直接替代角色权限。</CardDescription></CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              {positions.data?.length ? positions.data.map(item => <button key={item.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left text-sm transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setPositionForm({ id: item.id, code: item.code, name: item.name, category: item.category, description: item.description ?? "", status: item.status })}>{item.name}<span className="ml-1 text-xs text-slate-400">{item.category} · {item.status === "active" ? "启用" : "停用"}</span></button>) : <EmptyState text="暂无自定义岗位；请在右侧新增后再为人员分配。" />}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-base">项目层级</CardTitle><CardDescription>推荐“项目 → 标段/工区 → 单位工程 → 施工段/作业面”；点击条目可维护归属、计划日期和状态。</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              {projects.data?.length ? projects.data.map(item => <button key={item.id} className="w-full rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setProjectForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", organizationId: item.organizationId ? String(item.organizationId) : "", code: item.code, name: item.name, nodeType: item.nodeType, projectType: item.projectType ?? "other", status: item.status, startDate: item.startDate ? new Date(item.startDate).toISOString().slice(0, 10) : "", endDate: item.endDate ? new Date(item.endDate).toISOString().slice(0, 10) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder) })}><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · 上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {item.status}</p></button>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
+            </CardContent>
+          </Card>
+        </section>
+        <aside className="space-y-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><CardTitle className="text-base">{organizationForm.id ? "维护组织节点" : "新增组织节点"}</CardTitle>{organizationForm.id ? <Button size="sm" variant="ghost" onClick={() => setOrganizationForm(EMPTY_ORGANIZATION_FORM)}>新建</Button> : null}</CardHeader>
+            <CardContent className="space-y-3">
+              <div><Label>组织编码</Label><Input value={organizationForm.code} placeholder="例如 DEPT_FIN" onChange={event => setOrganizationForm({ ...organizationForm, code: event.target.value.toUpperCase() })} /></div>
+              <div><Label>组织名称</Label><Input value={organizationForm.name} placeholder="例如 财务部" onChange={event => setOrganizationForm({ ...organizationForm, name: event.target.value })} /></div>
+              <div><Label>上级组织</Label><Select value={organizationForm.parentId || "ROOT"} onValueChange={value => setOrganizationForm({ ...organizationForm, parentId: value === "ROOT" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ROOT">顶级节点</SelectItem>{editableOrganizationOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>节点类型</Label><Select value={organizationForm.type} onValueChange={(value: OrganizationType) => setOrganizationForm({ ...organizationForm, type: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="group">集团</SelectItem><SelectItem value="company">公司</SelectItem><SelectItem value="department">部门</SelectItem><SelectItem value="project_department">项目部</SelectItem><SelectItem value="team">班组</SelectItem></SelectContent></Select></div>
+              <div><Label>组织负责人</Label><Select value={organizationForm.managerUserId || "UNASSIGNED"} onValueChange={value => setOrganizationForm({ ...organizationForm, managerUserId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不设置</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>成本中心</Label><Input value={organizationForm.costCenterCode} placeholder="可选" onChange={event => setOrganizationForm({ ...organizationForm, costCenterCode: event.target.value.toUpperCase() })} /></div><div><Label>排序</Label><Input type="number" min="0" value={organizationForm.sortOrder} onChange={event => setOrganizationForm({ ...organizationForm, sortOrder: event.target.value })} /></div></div>
+              <div><Label>状态</Label><Select value={organizationForm.status} onValueChange={(value: OrganizationStatus) => setOrganizationForm({ ...organizationForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
+              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!organizationForm.code || !organizationForm.name || saveOrganization.isPending} onClick={submitOrganization}>{organizationForm.id ? "保存组织变更" : "保存组织节点"}</Button>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><CardTitle className="text-base">{projectForm.id ? "维护项目节点" : "新增项目节点"}</CardTitle>{projectForm.id ? <Button size="sm" variant="ghost" onClick={() => setProjectForm(EMPTY_PROJECT_FORM)}>新建</Button> : null}</CardHeader>
+            <CardContent className="space-y-3">
+              <div><Label>项目编码</Label><Input value={projectForm.code} placeholder="例如 GZ-GS-01" onChange={event => setProjectForm({ ...projectForm, code: event.target.value.toUpperCase() })} /></div>
+              <div><Label>项目名称</Label><Input value={projectForm.name} placeholder="例如 GZ 高速一标段" onChange={event => setProjectForm({ ...projectForm, name: event.target.value })} /></div>
+              <div><Label>上级项目</Label><Select value={projectForm.parentId || "ROOT"} onValueChange={value => setProjectForm({ ...projectForm, parentId: value === "ROOT" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ROOT">顶级项目</SelectItem>{editableProjectOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>归属组织</Label><Select value={projectForm.organizationId || "UNASSIGNED"} onValueChange={value => setProjectForm({ ...projectForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不设置</SelectItem>{organizations.data?.filter(item => item.status === "active").map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>层级名称</Label><Input value={projectForm.nodeType} onChange={event => setProjectForm({ ...projectForm, nodeType: event.target.value })} /></div><div><Label>工程类型</Label><Select value={projectForm.projectType} onValueChange={(value: ProjectType) => setProjectForm({ ...projectForm, projectType: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="highway">公路</SelectItem><SelectItem value="railway">铁路</SelectItem><SelectItem value="municipal">市政</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>开始日期</Label><Input type="date" value={projectForm.startDate} onChange={event => setProjectForm({ ...projectForm, startDate: event.target.value })} /></div><div><Label>结束日期</Label><Input type="date" value={projectForm.endDate} onChange={event => setProjectForm({ ...projectForm, endDate: event.target.value })} /></div></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>成本中心</Label><Input value={projectForm.costCenterCode} placeholder="可选" onChange={event => setProjectForm({ ...projectForm, costCenterCode: event.target.value.toUpperCase() })} /></div><div><Label>排序</Label><Input type="number" min="0" value={projectForm.sortOrder} onChange={event => setProjectForm({ ...projectForm, sortOrder: event.target.value })} /></div></div>
+              <div><Label>状态</Label><Select value={projectForm.status} onValueChange={(value: ProjectStatus) => setProjectForm({ ...projectForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="planning">筹备</SelectItem><SelectItem value="active">进行中</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="completed">已完工</SelectItem><SelectItem value="archived">已归档</SelectItem></SelectContent></Select></div>
+              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!projectForm.code || !projectForm.name || !projectForm.nodeType || saveProject.isPending} onClick={submitProject}>{projectForm.id ? "保存项目变更" : "保存项目节点"}</Button>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><CardTitle className="text-base">{positionForm.id ? "维护岗位" : "新增岗位"}</CardTitle>{positionForm.id ? <Button size="sm" variant="ghost" onClick={() => setPositionForm(EMPTY_POSITION_FORM)}>新建</Button> : null}</CardHeader>
+            <CardContent className="space-y-3"><div><Label>岗位编码</Label><Input value={positionForm.code} placeholder="例如 TRANSPORT_MANAGER" onChange={event => setPositionForm({ ...positionForm, code: event.target.value.toUpperCase() })} /></div><div><Label>岗位名称</Label><Input value={positionForm.name} placeholder="例如 运输主管" onChange={event => setPositionForm({ ...positionForm, name: event.target.value })} /></div><div><Label>岗位分类</Label><Input value={positionForm.category} placeholder="例如 业务岗位" onChange={event => setPositionForm({ ...positionForm, category: event.target.value })} /></div><div><Label>职责说明</Label><Input value={positionForm.description} placeholder="可选" onChange={event => setPositionForm({ ...positionForm, description: event.target.value })} /></div><div><Label>状态</Label><Select value={positionForm.status} onValueChange={(value: OrganizationStatus) => setPositionForm({ ...positionForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div><Button variant="outline" className="w-full" disabled={!positionForm.code || !positionForm.name || !positionForm.category || savePosition.isPending} onClick={submitPosition}>{positionForm.id ? "保存岗位变更" : "保存岗位"}</Button></CardContent>
+          </Card>
+        </aside>
+      </div>
+    );
+  };
+
+  const renderVehicles = () => {
+    const vehicleTypeLabel: Record<VehicleType, string> = { dump_truck: "渣土车", tractor: "牵引车", mixer: "搅拌车", flatbed: "平板车", other: "其他" };
+    const vehicleStatusLabel: Record<VehicleStatus, string> = { active: "可调度", suspended: "暂停", disabled: "停用" };
+    const vehicleStatusClass: Record<VehicleStatus, string> = { active: "bg-emerald-50 text-emerald-700", suspended: "bg-amber-50 text-amber-700", disabled: "bg-slate-100 text-slate-600" };
+    const rows = vehicles.data ?? [];
+    const submitVehicle = () => {
+      if (!vehicleForm.projectId || !vehicleForm.plateNo.trim()) return toast.error("请填写车辆归属项目和车牌号");
+      if (!vehicleForm.boxLengthMeters || !vehicleForm.boxWidthMeters || !vehicleForm.boxHeightMeters) return toast.error("请填写货厢长、宽、高");
+      saveVehicle.mutate({
+        id: vehicleForm.id,
+        projectId: Number(vehicleForm.projectId),
+        organizationId: vehicleForm.organizationId ? Number(vehicleForm.organizationId) : null,
+        plateNo: vehicleForm.plateNo.trim(),
+        vehicleType: vehicleForm.vehicleType,
+        ownerName: vehicleForm.ownerName.trim() || null,
+        driverUserId: vehicleForm.driverUserId ? Number(vehicleForm.driverUserId) : null,
+        boxLengthMeters: Number(vehicleForm.boxLengthMeters),
+        boxWidthMeters: Number(vehicleForm.boxWidthMeters),
+        boxHeightMeters: Number(vehicleForm.boxHeightMeters),
+        loadFactor: Number(vehicleForm.loadFactor || 1),
+        payloadTons: vehicleForm.payloadTons ? Number(vehicleForm.payloadTons) : null,
+        status: vehicleForm.status,
+      });
+    };
+    const openVehicle = (item: NonNullable<typeof vehicles.data>[number]) => setVehicleForm({
+      id: item.id,
+      projectId: String(item.projectId),
+      organizationId: item.organizationId ? String(item.organizationId) : "",
+      plateNo: item.plateNo,
+      vehicleType: item.vehicleType,
+      ownerName: item.ownerName ?? "",
+      driverUserId: item.driverUserId ? String(item.driverUserId) : "",
+      boxLengthMeters: String(item.boxLengthMeters),
+      boxWidthMeters: String(item.boxWidthMeters),
+      boxHeightMeters: String(item.boxHeightMeters),
+      loadFactor: String(item.loadFactor),
+      payloadTons: item.payloadTons ? String(item.payloadTons) : "",
+      status: item.status,
+    });
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-sm font-medium text-[#203c48]">资源与运输治理</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">车辆统一台账</h1><p className="mt-2 text-sm text-slate-500">与移动运输端使用同一车辆数据源。超级管理员可维护归属、司机、货厢参数和启停状态；已存在未结算趟次的车辆不能直接停用。</p></div><Button variant="outline" onClick={() => { setVehicleForm(EMPTY_VEHICLE_FORM); void vehicles.refetch(); }}><Truck className="mr-2 h-4 w-4" />新建或刷新</Button></div>
+        <section className="grid gap-3 sm:grid-cols-3"><MetricCard title="车辆总数" value={rows.length} description="运输车辆唯一台账" icon={Truck} /><MetricCard title="可调度" value={rows.filter(item => item.status === "active").length} description="可用于新建运输趟次" icon={ShieldCheck} /><MetricCard title="暂停或停用" value={rows.filter(item => item.status !== "active").length} description="需先处理未结算趟次" icon={ScrollText} /></section>
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+          <Card>
+            <CardHeader><CardTitle className="text-base">车辆资源列表</CardTitle><CardDescription>点击一辆车即可在右侧编辑。系统不会创建演示车辆或模拟运输记录。</CardDescription></CardHeader>
+            <CardContent className="space-y-3">
+              {rows.length ? rows.map(item => <button key={item.id} className="flex w-full flex-col gap-2 rounded-xl border border-slate-100 p-3 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9] sm:flex-row sm:items-center sm:justify-between" onClick={() => openVehicle(item)}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-800">{item.plateNo}</p><Badge variant="outline">{vehicleTypeLabel[item.vehicleType]}</Badge><Badge className={vehicleStatusClass[item.status]}>{vehicleStatusLabel[item.status]}</Badge></div><p className="mt-1 truncate text-xs text-slate-500">项目：{projects.data?.find(project => project.id === item.projectId)?.name ?? `#${item.projectId}`} · 所属单位：{item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 司机：{item.driverUserId ? userNameById.get(item.driverUserId) ?? `#${item.driverUserId}` : "未分配"}</p><p className="mt-1 text-xs text-slate-500">货厢 {item.boxLengthMeters} × {item.boxWidthMeters} × {item.boxHeightMeters} m · 装载系数 {item.loadFactor} · 理论方量 {item.theoreticalVolumeCubicMeters} m³ · 核定载重 {item.payloadTons ?? "—"} t</p></div><span className="text-xs font-medium text-[#203c48]">编辑台账</span></button>) : <EmptyState text="尚无真实车辆台账。请使用右侧表单录入已授权项目的真实车辆资料。" />}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><div><CardTitle className="text-base">{vehicleForm.id ? "维护车辆档案" : "新增车辆档案"}</CardTitle><CardDescription>车牌全局唯一，理论方量由服务端计算。</CardDescription></div>{vehicleForm.id ? <Button size="sm" variant="ghost" onClick={() => setVehicleForm(EMPTY_VEHICLE_FORM)}>新建</Button> : null}</CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-3"><div><Label>车牌号</Label><Input value={vehicleForm.plateNo} placeholder="例如 粤A12345" onChange={event => setVehicleForm({ ...vehicleForm, plateNo: event.target.value.toUpperCase() })} /></div><div><Label>车辆类型</Label><Select value={vehicleForm.vehicleType} onValueChange={(value: VehicleType) => setVehicleForm({ ...vehicleForm, vehicleType: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="dump_truck">渣土车</SelectItem><SelectItem value="tractor">牵引车</SelectItem><SelectItem value="mixer">搅拌车</SelectItem><SelectItem value="flatbed">平板车</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div></div>
+              <div><Label>归属项目</Label><Select value={vehicleForm.projectId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, projectId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择有效项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>所属单位</Label><Select value={vehicleForm.organizationId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不设置</SelectItem>{organizations.data?.filter(item => item.status === "active").map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>产权/所属人</Label><Input value={vehicleForm.ownerName} placeholder="可选" onChange={event => setVehicleForm({ ...vehicleForm, ownerName: event.target.value })} /></div><div><Label>绑定司机</Label><Select value={vehicleForm.driverUserId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, driverUserId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不分配</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></div></div>
+              <div className="grid grid-cols-3 gap-2"><div><Label>货厢长(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxLengthMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxLengthMeters: event.target.value })} /></div><div><Label>货厢宽(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxWidthMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxWidthMeters: event.target.value })} /></div><div><Label>货厢高(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxHeightMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxHeightMeters: event.target.value })} /></div></div>
+              <div className="grid grid-cols-3 gap-2"><div><Label>装载系数</Label><Input type="number" min="0.001" max="1.5" step="0.001" value={vehicleForm.loadFactor} onChange={event => setVehicleForm({ ...vehicleForm, loadFactor: event.target.value })} /></div><div><Label>核定载重(t)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.payloadTons} placeholder="可选" onChange={event => setVehicleForm({ ...vehicleForm, payloadTons: event.target.value })} /></div><div><Label>调度状态</Label><Select value={vehicleForm.status} onValueChange={(value: VehicleStatus) => setVehicleForm({ ...vehicleForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">可调度</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div></div>
+              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!vehicleForm.projectId || !vehicleForm.plateNo || !vehicleForm.boxLengthMeters || !vehicleForm.boxWidthMeters || !vehicleForm.boxHeightMeters || saveVehicle.isPending} onClick={submitVehicle}>{vehicleForm.id ? "保存车辆变更" : "保存车辆档案"}</Button>
+            </CardContent>
+          </Card>
         </div>
-        <Card>
-          <CardHeader><CardTitle className="text-base">组织架构</CardTitle><CardDescription>支持集团、公司、部门、项目部和班组层级。</CardDescription></CardHeader>
-          <CardContent className="space-y-3">
-            {organizations.data?.length ? organizations.data.map(item => (
-              <div key={item.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2.5">
-                <div><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.type} · 成本中心：{item.costCenterCode || "未设置"}</p></div>
-                <Badge variant={item.status === "active" ? "secondary" : "outline"}>{item.status === "active" ? "启用" : "停用"}</Badge>
-              </div>
-            )) : <EmptyState text="暂无组织节点，请在右侧新增后开始维护。" />}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle className="text-base">岗位字典</CardTitle></CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {positions.data?.length ? positions.data.map(item => <Badge key={item.id} variant="outline" className="bg-white px-2.5 py-1.5">{item.name}<span className="ml-1 text-slate-400">{item.category}</span></Badge>) : <EmptyState text="暂无自定义岗位；系统角色可在权限页面维护。" />}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle className="text-base">项目层级</CardTitle><CardDescription>推荐“项目 → 标段/工区 → 单位工程 → 施工段/作业面”。</CardDescription></CardHeader>
-          <CardContent className="space-y-3">
-            {projects.data?.length ? projects.data.map(item => <div key={item.id} className="rounded-lg border border-slate-100 px-3 py-2.5"><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · {item.projectType || "未设置类型"}</p></div>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
-          </CardContent>
-        </Card>
-      </section>
-      <aside className="space-y-4">
-        <Card>
-          <CardHeader><CardTitle className="text-base">新增组织节点</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <div><Label>组织编码</Label><Input value={organizationForm.code} placeholder="例如 DEPT_FIN" onChange={event => setOrganizationForm({ ...organizationForm, code: event.target.value.toUpperCase() })} /></div>
-            <div><Label>组织名称</Label><Input value={organizationForm.name} placeholder="例如 财务部" onChange={event => setOrganizationForm({ ...organizationForm, name: event.target.value })} /></div>
-            <div>
-              <Label>节点类型</Label>
-              <Select value={organizationForm.type} onValueChange={(value: OrganizationType) => setOrganizationForm({ ...organizationForm, type: value })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="group">集团</SelectItem><SelectItem value="company">公司</SelectItem><SelectItem value="department">部门</SelectItem><SelectItem value="project_department">项目部</SelectItem><SelectItem value="team">班组</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!organizationForm.code || !organizationForm.name || saveOrganization.isPending} onClick={() => saveOrganization.mutate(organizationForm)}>保存组织节点</Button>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle className="text-base">新增项目节点</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <div><Label>项目编码</Label><Input value={projectForm.code} placeholder="例如 GZ-GS-01" onChange={event => setProjectForm({ ...projectForm, code: event.target.value.toUpperCase() })} /></div>
-            <div><Label>项目名称</Label><Input value={projectForm.name} placeholder="例如 GZ 高速一标段" onChange={event => setProjectForm({ ...projectForm, name: event.target.value })} /></div>
-            <div><Label>层级名称</Label><Input value={projectForm.nodeType} onChange={event => setProjectForm({ ...projectForm, nodeType: event.target.value })} /></div>
-            <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!projectForm.code || !projectForm.name || saveProject.isPending} onClick={() => saveProject.mutate(projectForm)}>保存项目节点</Button>
-          </CardContent>
-        </Card>
-      </aside>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderPermissions = () => (
     <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
@@ -505,13 +650,13 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "permission" ? renderPermissions() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "permission" ? renderPermissions() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 超级后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
-          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
+          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
       </div>

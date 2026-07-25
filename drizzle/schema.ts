@@ -430,7 +430,11 @@ export const transportVehicles = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
+    /** 车辆所属组织由超级管理员维护，用于归属治理；运输趟次仍以 projectId 作为实际业务范围。 */
+    organizationId: int("organizationId"),
     plateNo: varchar("plateNo", { length: 32 }).notNull(),
+    /** 车辆类型仅描述车辆资源属性，不参与运费计算；默认渣土车兼容既有运输台账。 */
+    vehicleType: mysqlEnum("vehicleType", ["dump_truck", "tractor", "mixer", "flatbed", "other"]).default("dump_truck").notNull(),
     ownerName: varchar("ownerName", { length: 128 }),
     driverUserId: int("driverUserId"),
     boxLengthMeters: decimal("boxLengthMeters", { precision: 8, scale: 3 }).notNull(),
