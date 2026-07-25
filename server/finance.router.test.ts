@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
+/** 防止路由回归测试对外投递真实消息，同时验证每个业务模块传递正确的深链。 */
+const { mockNotifyWecomBusinessEvent } = vi.hoisted(() => ({
+  mockNotifyWecomBusinessEvent: vi.fn(),
+}));
+
 /** 路由测试隔离数据库与范围授权基础设施，只验证采购、计量和财务的业务安全边界。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
+vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mockNotifyWecomBusinessEvent }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
@@ -70,6 +76,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+    mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
   });
 
   it("已关闭采购申请不可回退，且状态操作始终保留项目范围校验", async () => {
@@ -156,6 +163,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 38, projectId: 10, amount: 500, settledAt: "2026-07-25T08:00:00.000Z", remarks: "首笔付款" })).resolves.toEqual({ success: true, settledAmount: 800, remainingAmount: 200 });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ category: "采购结算", sourceType: "purchase_order_settlement", sourceId: "38", amount: "500" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "purchasing", eventCode: "purchase_order_settlement", targetId: "38", deepLink: "/mobile/purchasing" }));
 
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
@@ -202,6 +210,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 51, projectId: 10, amount: 300, receivedAt: "2026-07-25T08:00:00.000Z", remarks: "第一笔回款" })).resolves.toEqual({ success: true, receivedAmount: 700, remainingAmount: 300 });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ category: "工程计量回款", sourceType: "measurement_payment", sourceId: "51", settlementStatus: "partial" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_payment", targetId: "51", deepLink: "/mobile/measurement" }));
 
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
       [{ id: 52, projectId: 10, status: "settled", declaredAmount: "1000.00", approvedAmount: "1000.00" }],
@@ -215,6 +224,28 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 53, projectId: 10, status: "approved", declaredAmount: "1000.00", approvedAmount: "1000.00" }]) as never);
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 53, projectId: 10, amount: 10, receivedAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "CONFLICT", message: "仅已确认收入的工程计量可以登记回款" });
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 53, projectId: 10, amount: 0, receivedAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("财务流水由服务端审计并投递固定的财务深链", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const values = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "expense",
+      category: "项目材料费用",
+      amount: 123.45,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "unpaid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: null,
+    })).resolves.toEqual({ success: true });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", action: "create_record", targetId: "项目材料费用" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
   });
 
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {

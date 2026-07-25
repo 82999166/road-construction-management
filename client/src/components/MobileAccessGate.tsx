@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { startLogin } from "@/const";
 import { LogIn, RefreshCw, type LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 type MobileAccessGateProps = {
   /** 当前会话是否已经通过服务端身份校验。 */
@@ -20,6 +20,8 @@ type MobileAccessGateProps = {
   Icon: LucideIcon;
   /** 重新加载认证和业务数据的安全回调。 */
   onRetry: () => void | Promise<unknown>;
+  /** 认证与资源校验均通过后才展示的页面内容。未传入时保持原有仅作门禁的行为。 */
+  children?: ReactNode;
 };
 
 /**
@@ -37,6 +39,7 @@ export function MobileAccessGate({
   description,
   Icon,
   onRetry,
+  children,
 }: MobileAccessGateProps) {
   const [resourceLoadingTimedOut, setResourceLoadingTimedOut] = useState(false);
 
@@ -67,5 +70,5 @@ export function MobileAccessGate({
     return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#fff8ed]"><div><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><Icon className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">{title}暂时无法加载</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">权限或业务数据加载超时。请重新加载；若仍无法恢复，请联系管理员核查项目数据范围。</p><Button className="mt-6 bg-[#f4dfc3] text-[#3b2118] hover:bg-white" onClick={retry}><RefreshCw className="mr-1.5 h-4 w-4" />重新加载</Button></div></div>;
   }
 
-  return null;
+  return children ?? null;
 }

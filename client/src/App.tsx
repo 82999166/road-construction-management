@@ -18,6 +18,7 @@ import MobileMeasurementPage from "./pages/MobileMeasurementPage";
 import MobileMessagesPage from "./pages/MobileMessagesPage";
 import MobileMachineryPage from "./pages/MobileMachineryPage";
 import MobilePurchasingPage from "./pages/MobilePurchasingPage";
+import MobileProfilePage from "./pages/MobileProfilePage";
 import MobileTransportPage from "./pages/MobileTransportPage";
 import MobileWorkbench from "./pages/MobileWorkbench";
 import { useAuth } from "./_core/hooks/useAuth";
@@ -63,6 +64,7 @@ function Router() {
       <Route path={"/mobile/finance"} component={MobileFinancePage} />
       <Route path={"/mobile/messages"} component={MobileMessagesPage} />
       <Route path={"/mobile/evidence"} component={MobileEvidencePage} />
+      <Route path={"/mobile/profile"} component={MobileProfilePage} />
       <Route path={"/admin"} component={AdminRouteGuard} />
       <Route path={"/admin/:section"} component={AdminRouteGuard} />
       <Route path={"/404"} component={NotFound} />

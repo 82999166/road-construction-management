@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
+/** 业务节点通知在路由中异步投递；测试仅校验调用契约，不发起真实企业微信请求。 */
+const { mockNotifyWecomBusinessEvent } = vi.hoisted(() => ({
+  mockNotifyWecomBusinessEvent: vi.fn(),
+}));
+
 /** 路由测试隔离数据库和数据范围基础设施，只验证机械、运输的业务权限与状态边界。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
+vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mockNotifyWecomBusinessEvent }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
@@ -70,6 +76,7 @@ describe("机械与运输 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+    mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
   });
 
   it("机械台账列表在读取前强制校验调用方的项目数据范围", async () => {
@@ -131,5 +138,35 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(tripDb as never);
 
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("机械与运输正向流转同时留下审计和企业微信业务深链", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    const machineAuditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 22, projectId: 10, status: "draft" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: vi.fn(() => ({ values: machineAuditValues })),
+    } as never);
+
+    await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 22, projectId: 10, nextStatus: "approved" })).resolves.toEqual({ success: true });
+    expect(machineAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "machinery", action: "transition_cost", targetId: "22" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+      module: "machinery", eventCode: "machine_cost_approved", targetId: "22", deepLink: "/mobile/machinery",
+    }));
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const tripAuditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 32, projectId: 10, vehicleId: 11, status: "draft" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: vi.fn(() => ({ values: tripAuditValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 32, projectId: 10, nextStatus: "submitted" })).resolves.toEqual({ success: true });
+    expect(tripAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "transition_trip", targetId: "32" }));
+    expect(mockNotifyWecomBusinessEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+      module: "transport", eventCode: "transport_trip_submitted", targetId: "32", deepLink: "/mobile/transport",
+    }));
   });
 });

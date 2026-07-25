@@ -21,6 +21,7 @@ import {
 import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { notifyWecomBusinessEvent } from "../services/businessNotifier";
 
 /** 期间一律采用 YYYY-MM，防止浏览器时区导致项目月报跨月统计。 */
 const periodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM");
@@ -343,6 +344,7 @@ export const purchasingRouter = router({
     if (input.targetStatus === "closed") patch.closedAt = now;
     await db.update(purchaseRequests).set(patch).where(eq(purchaseRequests.id, input.id));
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: `采购申请状态变更为：${input.targetStatus}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${input.targetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: `采购申请已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -412,6 +414,7 @@ export const purchasingRouter = router({
     await db.update(purchaseOrders).set(patch).where(eq(purchaseOrders.id, input.id));
     if (input.targetStatus === "received") await db.update(purchaseRequests).set({ status: "received" }).where(eq(purchaseRequests.id, order.requestId));
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_order", targetType: "purchase_order", targetId: String(input.id), summary: `采购订单状态变更为：${input.targetStatus}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "purchasing", eventCode: `purchase_order_${input.targetStatus}`, targetType: "purchase_order", targetId: String(input.id), title: `采购订单已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -434,6 +437,7 @@ export const purchasingRouter = router({
     const nextRemainingAmount = roundMoney(remainingAmount - input.amount);
     await db.insert(financialRecords).values({ recordNo: createBusinessNo("PSET"), projectId: input.projectId, direction: "expense", category: "采购结算", amount: String(roundMoney(input.amount)), occurredAt: new Date(input.settledAt), settlementStatus: nextRemainingAmount === 0 ? "paid" : "partial", sourceType: "purchase_order_settlement", sourceId, remarks: input.remarks ?? null });
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "record_settlement", targetType: "purchase_order", targetId: sourceId, summary: `登记采购订单结算：${roundMoney(input.amount)}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "purchasing", eventCode: "purchase_order_settlement", targetType: "purchase_order", targetId: sourceId, title: "采购订单已登记结算", deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, settledAmount: roundMoney(settledAmount + input.amount), remainingAmount: nextRemainingAmount };
   }),
 
@@ -540,6 +544,7 @@ export const measurementRouter = router({
       }
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_claim", targetType: "measurement_claim", targetId: String(input.id), summary: `工程计量状态变更为：${input.targetStatus}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "measurement", eventCode: `measurement_${input.targetStatus}`, targetType: "measurement_claim", targetId: String(input.id), title: `工程计量已${input.targetStatus}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -580,6 +585,7 @@ export const measurementRouter = router({
     const [incomeRecord] = await db.select({ id: financialRecords.id }).from(financialRecords).where(and(eq(financialRecords.sourceType, "measurement_claim"), eq(financialRecords.sourceId, sourceId))).limit(1);
     if (incomeRecord) await db.update(financialRecords).set({ settlementStatus: remainingAmount === 0 ? "paid" : "partial" }).where(eq(financialRecords.id, incomeRecord.id));
     await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "record_payment", targetType: "measurement_claim", targetId: sourceId, summary: `登记工程计量回款：${roundMoney(input.amount)}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "measurement", eventCode: "measurement_payment", targetType: "measurement_claim", targetId: sourceId, title: "工程计量已登记回款", deepLink: "/mobile/measurement" }).catch(() => undefined);
     return { success: true, receivedAmount: roundMoney(receivedAmount + input.amount), remainingAmount };
   }),
 
@@ -626,6 +632,7 @@ export const financeRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     await db.insert(financialRecords).values({ recordNo: createBusinessNo("FIN"), projectId: input.projectId, direction: input.direction, category: input.category, amount: String(roundMoney(input.amount)), occurredAt: new Date(input.occurredAt), settlementStatus: input.settlementStatus, sourceType: input.sourceType ?? null, sourceId: input.sourceId ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null });
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "create_record", targetType: "financial_record", targetId: input.category, summary: `登记项目${input.direction === "income" ? "收入" : "支出"}流水：${input.category}` });
+    void notifyWecomBusinessEvent({ userId: user.id, module: "finance", eventCode: `financial_${input.direction}`, targetType: "financial_record", targetId: input.category, title: `项目${input.direction === "income" ? "收入" : "支出"}流水已登记`, deepLink: "/mobile/finance" }).catch(() => undefined);
     return { success: true };
   }),
 
