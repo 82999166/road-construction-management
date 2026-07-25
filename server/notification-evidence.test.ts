@@ -17,7 +17,7 @@ import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
 import { createInAppMessage, messageRouter } from "./routers/messages";
 import { sendWecomTextNotification } from "./services/wecomNotifier";
-import { storageGetSignedUrl } from "./storage";
+import { storageGet, storageGetSignedUrl, storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -29,10 +29,14 @@ function createAuthContext(): TrpcContext {
 
 /** 兼容路由不同查询链的轻量 Drizzle Mock。 */
 function createSelectDb(rows: unknown[]) {
+  const queryResult = () => Object.assign(Promise.resolve(rows), {
+    orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })),
+    limit: vi.fn(async () => rows),
+  });
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })), limit: vi.fn(async () => rows) })),
+        where: vi.fn(() => queryResult()),
         orderBy: vi.fn(async () => rows),
       })),
     })),
@@ -68,6 +72,24 @@ describe("消息、影像与企业微信通知安全边界", () => {
     const options = await evidenceRouter.createCaller(createAuthContext()).projectOptions();
     expect(options.map(item => item.id)).toEqual([1, 2]);
     await expect(evidenceRouter.createCaller(createAuthContext()).upload({ projectId: 2, sourceType: "site_photo", description: "路面摊铺现场", capturedAt: "2026-07-25T04:00:00.000Z", longitude: 120.1, latitude: 30.2, fileName: "现场.jpg", mimeType: "image/jpeg", base64Data: "%%%" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("取证连接器仅采纳已发布的公开配置，并在服务端强制执行必填定位", async () => {
+    const db = createSelectDb([
+      { settingKey: "EVIDENCE_CAMERA_PROVIDER", valueJson: "browser", isSensitive: false },
+      { settingKey: "EVIDENCE_LOCATION_PROVIDER", valueJson: "browser", isSensitive: false },
+      { settingKey: "EVIDENCE_LOCATION_REQUIRED", valueJson: "true", isSensitive: false },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(storagePut).mockResolvedValue({ key: "evidence/2/现场.jpg", url: "https://storage.example/evidence.jpg" } as never);
+
+    await expect(evidenceRouter.createCaller(createAuthContext()).captureConfig()).resolves.toEqual({
+      camera: { provider: "browser", enabled: true },
+      location: { provider: "browser", enabled: true, required: true },
+    });
+    const jpegBase64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+    await expect(evidenceRouter.createCaller(createAuthContext()).upload({ projectId: 2, sourceType: "site_photo", description: "定位必填测试", capturedAt: "2026-07-25T04:00:00.000Z", longitude: null, latitude: null, fileName: "现场.jpg", mimeType: "image/jpeg", base64Data: jpegBase64 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "当前项目要求上传现场影像时附带有效定位" });
+    expect(storagePut).not.toHaveBeenCalled();
   });
 
   it("票据 OCR 仅处理已授权项目的影像，并强制将模型结果标记为人工复核", async () => {

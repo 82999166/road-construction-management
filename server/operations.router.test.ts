@@ -48,6 +48,24 @@ function createSelectDb(rows: unknown[]) {
   };
 }
 
+/** 支持运输保存流程按车辆、影像与运价规则的读取顺序返回不同数据。 */
+function createSelectDbSequence(...responses: unknown[][]) {
+  let queryIndex = 0;
+  return {
+    select: vi.fn(() => {
+      const rows = responses[queryIndex++] ?? [];
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(async () => rows),
+            limit: vi.fn(async () => rows),
+          })),
+        })),
+      };
+    }),
+  };
+}
+
 describe("机械与运输 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -73,6 +91,24 @@ describe("机械与运输 tRPC 路由", () => {
     const result = await transportRouter.createCaller(createAuthContext()).listVehicles({ projectId: 10 });
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ id: 11, driverUserId: 1, theoreticalVolumeCubicMeters: 14.904 });
+  });
+
+  it("运输趟次将 GPS 与影像关联固化为快照，并由服务端返回缺失证据预警", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const values = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
+        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+      ),
+      insert: vi.fn(() => ({ values })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-TEST-01", vehicleId: 11, projectId: 10, freightRuleId: 12, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 0.1, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null });
+
+    expect(result.anomalies.map(item => item.code)).toEqual(expect.arrayContaining(["MISSING_EVIDENCE", "MISSING_GPS", "MISSING_END_TIME", "ABNORMAL_DISTANCE"]));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ evidenceId: null, routeSnapshot: expect.objectContaining({ startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null }) }));
   });
 
   it("机械成本和运输趟次的状态流转均保留项目范围校验，已结算记录不可回退", async () => {

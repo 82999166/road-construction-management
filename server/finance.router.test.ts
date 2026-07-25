@@ -142,6 +142,34 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ transactionType: "inbound", amount: "30.85", requestId: 37 }));
   });
 
+  it("采购结算只允许已收货订单分次付款，并由服务端拒绝超额结算", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
+    const values = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 38, projectId: 10, status: "received", amount: "1000.00" }],
+        [{ amount: "300.00", settlementStatus: "partial" }],
+      ),
+      insert: vi.fn(() => ({ values })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 38, projectId: 10, amount: 500, settledAt: "2026-07-25T08:00:00.000Z", remarks: "首笔付款" })).resolves.toEqual({ success: true, settledAmount: 800, remainingAmount: 200 });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ category: "采购结算", sourceType: "purchase_order_settlement", sourceId: "38", amount: "500" }));
+
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 39, projectId: 10, status: "received", amount: "1000.00" }],
+        [{ amount: "950.00", settlementStatus: "partial" }],
+      ),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    } as never);
+    await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 39, projectId: 10, amount: 100, settledAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "本次结算超过采购订单待结算余额" });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 40, projectId: 10, status: "confirmed", amount: "1000.00" }]) as never);
+    await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 40, projectId: 10, amount: 100, settledAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "CONFLICT", message: "采购订单须已收货后才能登记结算" });
+  });
+
   it("工程计量核定必须提交核定金额，禁止将空金额写入已审核状态", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 41, projectId: 10, status: "reviewing", declaredAmount: "1000.00", approvedAmount: null }]) as never);

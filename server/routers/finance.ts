@@ -132,6 +132,11 @@ function canRecordMeasurementPayment(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.some(role => ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER"].includes(role));
 }
 
+/** 采购结算属于真实资金确认，允许财务、会计、出纳或系统管理员分次登记。 */
+function canRecordPurchaseSettlement(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.some(role => ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER"].includes(role));
+}
+
 /** 采购申请输入不允许携带状态或审批人，状态由专用审批接口在服务端控制。 */
 const purchaseRequestInput = z.object({
   id: z.number().int().positive().optional(),
@@ -161,6 +166,15 @@ const purchaseOrderInput = z.object({
   amount: moneySchema,
   orderedAt: isoDateTimeSchema,
   orderNo: z.string().trim().min(4).max(64).optional(),
+});
+
+/** 采购订单结算只接收本次实际付款金额，待结算余额始终由服务端财务流水计算。 */
+const purchaseSettlementInput = z.object({
+  orderId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  amount: moneySchema.gt(0, "结算金额必须大于 0"),
+  settledAt: isoDateTimeSchema,
+  remarks: z.string().trim().max(500).nullable().optional(),
 });
 
 /** 库存收发输入只接收数量和单价，金额由服务器计算并写入不可变流水。 */
@@ -340,6 +354,29 @@ export const purchasingRouter = router({
     return db.select().from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)).orderBy(desc(purchaseOrders.updatedAt));
   }),
 
+  /** 返回由服务端汇总的采购订单结算明细和余额，禁止移动端自行累计金额。 */
+  listSettlements: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertPurchaseAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { records: [], totalsByOrder: {} as Record<string, { settledAmount: number; remainingAmount: number }> };
+    const [orders, records] = await Promise.all([
+      db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount }).from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)),
+      db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.sourceType, "purchase_order_settlement"))).orderBy(desc(financialRecords.occurredAt)),
+    ]);
+    const settledByOrder = new Map<string, number>();
+    for (const record of records) {
+      if (record.settlementStatus === "void" || !record.sourceId) continue;
+      settledByOrder.set(record.sourceId, roundMoney((settledByOrder.get(record.sourceId) ?? 0) + Number(record.amount)));
+    }
+    const totalsByOrder: Record<string, { settledAmount: number; remainingAmount: number }> = {};
+    for (const order of orders) {
+      const settledAmount = settledByOrder.get(String(order.id)) ?? 0;
+      totalsByOrder[String(order.id)] = { settledAmount, remainingAmount: roundMoney(Math.max(0, Number(order.amount) - settledAmount)) };
+    }
+    return { records, totalsByOrder };
+  }),
+
   /** 只有已批准采购申请可生成采购订单，订单金额不能超过申请金额。 */
   createOrder: protectedProcedure.input(purchaseOrderInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
@@ -376,6 +413,28 @@ export const purchasingRouter = router({
     if (input.targetStatus === "received") await db.update(purchaseRequests).set({ status: "received" }).where(eq(purchaseRequests.id, order.requestId));
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_order", targetType: "purchase_order", targetId: String(input.id), summary: `采购订单状态变更为：${input.targetStatus}` });
     return { success: true };
+  }),
+
+  /** 对已收货订单分次登记实际付款，并自动归集到项目费用流水，防止超额付款或跨项目串账。 */
+  recordSettlement: protectedProcedure.input(purchaseSettlementInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canRecordPurchaseSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无采购结算登记权限" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [order] = await db.select().from(purchaseOrders).where(and(eq(purchaseOrders.id, input.orderId), eq(purchaseOrders.projectId, input.projectId))).limit(1);
+    if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的采购订单" });
+    if (!["received", "closed"].includes(order.status)) throw new TRPCError({ code: "CONFLICT", message: "采购订单须已收货后才能登记结算" });
+    const sourceId = String(order.id);
+    const settlements = await db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.sourceType, "purchase_order_settlement"), eq(financialRecords.sourceId, sourceId))).orderBy(desc(financialRecords.occurredAt));
+    const settledAmount = roundMoney(settlements.filter(item => item.settlementStatus !== "void").reduce((sum, item) => sum + Number(item.amount), 0));
+    const remainingAmount = roundMoney(Number(order.amount) - settledAmount);
+    if (input.amount > remainingAmount + 0.000001) throw new TRPCError({ code: "BAD_REQUEST", message: "本次结算超过采购订单待结算余额" });
+    const nextRemainingAmount = roundMoney(remainingAmount - input.amount);
+    await db.insert(financialRecords).values({ recordNo: createBusinessNo("PSET"), projectId: input.projectId, direction: "expense", category: "采购结算", amount: String(roundMoney(input.amount)), occurredAt: new Date(input.settledAt), settlementStatus: nextRemainingAmount === 0 ? "paid" : "partial", sourceType: "purchase_order_settlement", sourceId, remarks: input.remarks ?? null });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "record_settlement", targetType: "purchase_order", targetId: sourceId, summary: `登记采购订单结算：${roundMoney(input.amount)}` });
+    return { success: true, settledAmount: roundMoney(settledAmount + input.amount), remainingAmount: nextRemainingAmount };
   }),
 
   listInventory: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

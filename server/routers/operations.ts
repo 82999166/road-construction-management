@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
+  evidenceRecords,
   freightRateRules,
   machineCostRecords,
   machineLeaseRules,
@@ -144,6 +145,46 @@ function getMonthRange(period: string) {
 /** 金额一律保留两位小数，避免浮点误差进入结算与审计记录。 */
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * 运输异常仅由服务端按已固化的趟次快照计算，前端只负责展示；
+ * 这避免司机通过修改浏览器状态规避核验提示。
+ */
+type TransportAnomaly = {
+  code: "MISSING_EVIDENCE" | "MISSING_GPS" | "MISSING_END_TIME" | "ABNORMAL_DISTANCE" | "ABNORMAL_VOLUME" | "ABNORMAL_DURATION";
+  severity: "warning" | "notice";
+  label: string;
+};
+
+function getRouteSnapshot(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function calculateTransportAnomalies(trip: {
+  evidenceId: number | null;
+  startAt: Date;
+  endAt: Date | null;
+  actualDistanceKm: string | null;
+  volumeCubicMeters: string | null;
+  routeSnapshot: unknown;
+}): TransportAnomaly[] {
+  const snapshot = getRouteSnapshot(trip.routeSnapshot);
+  const hasStartGps = typeof snapshot.startLatitude === "number" && typeof snapshot.startLongitude === "number";
+  const hasEndGps = typeof snapshot.endLatitude === "number" && typeof snapshot.endLongitude === "number";
+  const anomalies: TransportAnomaly[] = [];
+  if (!trip.evidenceId) anomalies.push({ code: "MISSING_EVIDENCE", severity: "notice", label: "未关联现场影像" });
+  if (!hasStartGps || !hasEndGps) anomalies.push({ code: "MISSING_GPS", severity: "notice", label: "GPS 定位信息不完整" });
+  if (!trip.endAt) anomalies.push({ code: "MISSING_END_TIME", severity: "notice", label: "未填写收工时间" });
+  if (Number(trip.actualDistanceKm ?? 0) <= 0.1) anomalies.push({ code: "ABNORMAL_DISTANCE", severity: "warning", label: "申报里程过低，请核对" });
+  const theoreticalVolume = Number(snapshot.theoreticalVolumeCubicMeters ?? 0);
+  if (theoreticalVolume > 0 && Number(trip.volumeCubicMeters ?? 0) > theoreticalVolume * 1.1) {
+    anomalies.push({ code: "ABNORMAL_VOLUME", severity: "warning", label: "申报方量高于理论方量 10%" });
+  }
+  if (trip.endAt && trip.endAt.getTime() - trip.startAt.getTime() < 2 * 60 * 1000) {
+    anomalies.push({ code: "ABNORMAL_DURATION", severity: "warning", label: "运输时长不足 2 分钟，请核验" });
+  }
+  return anomalies;
 }
 
 /** 将领域异常转换为移动端可显示的标准业务错误，避免原始堆栈泄露。 */
@@ -482,13 +523,15 @@ export const transportRouter = router({
       end.setUTCDate(end.getUTCDate() + 1);
       predicates.push(gte(transportTrips.startAt, start), lt(transportTrips.startAt, end));
     }
-    const rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
+    let rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
     const user = requireAuthenticatedUser(ctx);
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
-    if (!isDriverOnly) return rows;
-    const vehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
-    const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
-    return rows.filter(trip => vehicleIds.has(trip.vehicleId));
+    if (isDriverOnly) {
+      const vehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
+      const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
+      rows = rows.filter(trip => vehicleIds.has(trip.vehicleId));
+    }
+    return rows.map(trip => ({ ...trip, anomalies: calculateTransportAnomalies(trip) }));
   }),
 
   /** 录入运输趟次并把当时运价和原始载货参数写入快照，后续修改价格规则不影响历史金额。 */
@@ -497,6 +540,12 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
     if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态" });
+    if (input.evidenceId) {
+      const [evidence] = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+      if (!evidence || evidence.projectId !== input.projectId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "现场影像不存在或不属于当前项目，不能关联到运输趟次" });
+      }
+    }
     const [rule] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, input.freightRuleId)).limit(1);
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "未找到当前项目下可用的生效运价规则" });
     const tripStart = new Date(input.startAt);
@@ -516,7 +565,7 @@ export const transportRouter = router({
       price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
     } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = input.tripNo ?? `TR-${input.projectId}-${Date.now()}`;
-    const routeSnapshot = { source: "manual", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
+    const routeSnapshot = { source: "mobile", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
     await db.insert(transportTrips).values({
       tripNo,
       vehicleId: input.vehicleId,
@@ -534,7 +583,8 @@ export const transportRouter = router({
       status: "draft",
     });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_trip", targetType: "transport_trip", targetId: tripNo, summary: "录入运输趟次，运费由合同规则快照计算" });
-    return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume };
+    const anomalies = calculateTransportAnomalies({ evidenceId: input.evidenceId ?? null, startAt: tripStart, endAt: input.endAt ? new Date(input.endAt) : null, actualDistanceKm: String(input.actualDistanceKm), volumeCubicMeters: String(volume), routeSnapshot });
+    return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, anomalies };
   }),
 
   /** 提交、核验、结算或作废运输趟次，确保历史运价快照与已结算金额不可回退。 */
@@ -562,7 +612,7 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
-    if (!db) return { tripCount: 0, submittedCount: 0, verifiedCount: 0, settledCount: 0, volumeCubicMeters: 0, weightTons: 0, amount: 0 };
+    if (!db) return { tripCount: 0, submittedCount: 0, verifiedCount: 0, settledCount: 0, volumeCubicMeters: 0, weightTons: 0, amount: 0, alertTripCount: 0, alertCount: 0 };
     const start = toBusinessDate(input.date);
     const end = new Date(start);
     end.setUTCDate(end.getUTCDate() + 1);
@@ -575,6 +625,7 @@ export const transportRouter = router({
       rows = rows.filter(trip => ownVehicleIds.has(trip.vehicleId));
     }
     const activeRows = rows.filter(trip => trip.status !== "void");
+    const anomalyMatrix = activeRows.map(trip => calculateTransportAnomalies(trip));
     return {
       tripCount: activeRows.length,
       submittedCount: activeRows.filter(trip => trip.status === "submitted").length,
@@ -583,6 +634,8 @@ export const transportRouter = router({
       volumeCubicMeters: Math.round(activeRows.reduce((sum, trip) => sum + Number(trip.volumeCubicMeters ?? 0), 0) * 1000) / 1000,
       weightTons: Math.round(activeRows.reduce((sum, trip) => sum + Number(trip.weightTons ?? 0), 0) * 1000) / 1000,
       amount: roundMoney(activeRows.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0)),
+      alertTripCount: anomalyMatrix.filter(items => items.length > 0).length,
+      alertCount: anomalyMatrix.reduce((sum, items) => sum + items.length, 0),
     };
   }),
 });

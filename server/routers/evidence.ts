@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
-import { auditLogs, evidenceRecords, projects } from "../../drizzle/schema";
+import { auditLogs, evidenceRecords, projects, systemSettings } from "../../drizzle/schema";
 import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
@@ -11,6 +11,11 @@ import { protectedProcedure, router } from "../_core/trpc";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
 const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "other"]);
+const CAPTURE_CONNECTOR_SETTING_KEYS = ["EVIDENCE_CAMERA_PROVIDER", "EVIDENCE_LOCATION_PROVIDER", "EVIDENCE_LOCATION_REQUIRED"] as const;
+type CaptureConnectorConfig = {
+  camera: { provider: "browser" | "disabled"; enabled: boolean };
+  location: { provider: "browser" | "disabled"; enabled: boolean; required: boolean };
+};
 const ocrResultSchema = z.object({
   documentType: z.string().max(80),
   issuer: z.string().max(200),
@@ -70,6 +75,25 @@ function parseOcrResult(rawText: string) {
   return { ...parsed, requiresManualReview: true };
 }
 
+/**
+ * 现场取证仅暴露浏览器采集连接器的公开运行状态；配置值来自已发布、非敏感的系统设置。
+ * 上传接口仍在服务端强制执行该状态，避免仅依赖移动端禁用按钮而被绕过。
+ */
+async function getCaptureConnectorConfig(db: NonNullable<Awaited<ReturnType<typeof getDb>>>): Promise<CaptureConnectorConfig> {
+  const rows = await db
+    .select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, isSensitive: systemSettings.isSensitive })
+    .from(systemSettings)
+    .where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, CAPTURE_CONNECTOR_SETTING_KEYS)));
+  const values = new Map(rows.filter(row => !row.isSensitive && row.valueJson !== null).map(row => [row.settingKey, String(row.valueJson).trim().toLowerCase()]));
+  const cameraProvider = values.get("EVIDENCE_CAMERA_PROVIDER") === "disabled" ? "disabled" : "browser";
+  const locationProvider = values.get("EVIDENCE_LOCATION_PROVIDER") === "disabled" ? "disabled" : "browser";
+  const locationRequired = locationProvider === "browser" && values.get("EVIDENCE_LOCATION_REQUIRED") === "true";
+  return {
+    camera: { provider: cameraProvider, enabled: cameraProvider === "browser" },
+    location: { provider: locationProvider, enabled: locationProvider === "browser", required: locationRequired },
+  };
+}
+
 /** 影像取证仅对具有移动端业务岗位的已登录用户开放；项目范围仍由服务端强制校验。 */
 async function assertEvidenceAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   const roles = await getEffectiveRoleCodes(ctx);
@@ -81,6 +105,14 @@ async function assertEvidenceAccess(ctx: Parameters<typeof requireAuthenticatedU
  * 文件字节保存在对象存储，数据库仅保存可审计的文件键、时间、坐标和业务关联元数据。
  */
 export const evidenceRouter = router({
+  /** 已发布的采集连接器运行状态，供移动端在发起浏览器 API 前给出明确提示。 */
+  captureConfig: protectedProcedure.query(async ({ ctx }) => {
+    await assertEvidenceAccess(ctx);
+    const db = await getDb();
+    if (!db) return { camera: { provider: "browser" as const, enabled: true }, location: { provider: "browser" as const, enabled: true, required: false } };
+    return getCaptureConnectorConfig(db);
+  }),
+
   /** 返回当前用户在授权项目和组织范围内可选择的项目，避免移动端通过猜测 ID 探测项目。 */
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertEvidenceAccess(ctx);
@@ -139,6 +171,13 @@ export const evidenceRouter = router({
       assertEvidenceImageSignature(imageBytes, input.mimeType);
     } catch (error) {
       throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "影像文件格式无效" });
+    }
+    const captureConfig = await getCaptureConnectorConfig(db);
+    if (!captureConfig.camera.enabled) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "现场影像采集连接器已被管理员停用" });
+    }
+    if (captureConfig.location.required && (input.longitude === null || input.longitude === undefined || input.latitude === null || input.latitude === undefined)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "当前项目要求上传现场影像时附带有效定位" });
     }
     const capturedAt = new Date(input.capturedAt);
     if (Number.isNaN(capturedAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "拍摄时间无效" });
