@@ -19,6 +19,8 @@ describe("独立登录页", () => {
   it("展示统一身份认证入口且不渲染本地密码字段", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
+    expect(markup).toContain("账号恢复与密码重置");
+    expect(markup).toContain('href="/api/identity-recovery"');
     expect(markup).toContain("系统不保存企业账号密码");
     expect(markup).not.toContain('type="password"');
   });

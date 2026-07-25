@@ -1,12 +1,15 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
+  attendanceRecords,
   configPublishLogs,
   departmentBusinessScopes,
+  laborWorkers,
   organizations,
   positions,
+  payrollStatements,
   projects,
   rolePermissions,
   systemPermissions,
@@ -15,11 +18,13 @@ import {
   userRoleAssignments,
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
+import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
+import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -407,13 +412,24 @@ export const adminRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "API 密钥、令牌和密码类配置必须勾选“加密托管”" });
         }
         if (input.settingKey === "WECHAT_WORK_WEBHOOK") assertWecomWebhookUrl(input.value);
+        if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY && input.isSensitive) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须以公开 HTTPS 配置保存，不得作为密码或密钥加密托管" });
+        }
+        let normalizedValue = input.value;
+        if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY) {
+          try {
+            normalizedValue = normalizeIdentityRecoveryUrl(input.value);
+          } catch {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须是公开 HTTPS 地址，且不得包含账号、密码、内网或本机地址" });
+          }
+        }
         const payload = {
           category: input.category,
           settingKey: input.settingKey,
           displayName: input.displayName,
-          valueJson: input.isSensitive ? null : input.value,
-          secretEncrypted: input.isSensitive ? encryptSecret(input.value) : null,
-          valuePreview: input.isSensitive ? maskSecret(input.value) : input.value.slice(0, 256),
+          valueJson: input.isSensitive ? null : normalizedValue,
+          secretEncrypted: input.isSensitive ? encryptSecret(normalizedValue) : null,
+          valuePreview: input.isSensitive ? maskSecret(normalizedValue) : normalizedValue.slice(0, 256),
           isSensitive: input.isSensitive,
           status: "draft" as const,
           remarks: input.remarks ?? null,
@@ -553,6 +569,33 @@ export const adminRouter = router({
       await db.insert(configPublishLogs).values({ settingId: input.settingId, operation: "rollback", version: nextVersion, operatorId: admin.id, snapshotJson: log.snapshotJson });
       await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "rollback", targetType: "setting", targetId: String(input.settingId), summary: `回滚配置：${setting.displayName} 至历史版本 ${log.version}` });
       return { success: true, version: nextVersion };
+    }),
+  }),
+
+  acceptance: router({
+    /** 仅返回汇总计数和就绪状态，供超级管理员安排真实项目复测，不暴露人员或财务明细。 */
+    realDataReadiness: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "数据库连接暂不可用，无法执行真实数据验收预检" });
+      const [[organization], [project], [roleAssignment], [departmentScope], [laborWorker], [attendance], [payroll]] = await Promise.all([
+        db.select({ total: count() }).from(organizations),
+        db.select({ total: count() }).from(projects),
+        db.select({ total: count() }).from(userRoleAssignments),
+        db.select({ total: count() }).from(departmentBusinessScopes),
+        db.select({ total: count() }).from(laborWorkers),
+        db.select({ total: count() }).from(attendanceRecords),
+        db.select({ total: count() }).from(payrollStatements),
+      ]);
+      return evaluateRealDataReadiness({
+        organizations: Number(organization?.total ?? 0),
+        projects: Number(project?.total ?? 0),
+        roleAssignments: Number(roleAssignment?.total ?? 0),
+        departmentScopes: Number(departmentScope?.total ?? 0),
+        laborWorkers: Number(laborWorker?.total ?? 0),
+        attendanceRecords: Number(attendance?.total ?? 0),
+        payrollStatements: Number(payroll?.total ?? 0),
+      });
     }),
   }),
 

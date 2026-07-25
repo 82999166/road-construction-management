@@ -106,6 +106,20 @@ describe("系统设置安全工作流", () => {
     expect(templateDraft).toMatchObject({ settingKey: "MESSAGE_TEMPLATE_PAYROLL", valueJson: "工资单已审核，请在移动端查看。", secretEncrypted: null, isSensitive: false });
   });
 
+  it("身份恢复地址必须以非敏感公开 HTTPS 配置保存，并移除浏览器片段", async () => {
+    const db = createSettingsDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    const caller = adminRouter.createCaller(createAdminContext());
+
+    await expect(caller.settings.saveDraft({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份恢复", value: "https://id.example.com/recover", isSensitive: true, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.settings.saveDraft({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份恢复", value: "http://id.example.com/recover", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await caller.settings.saveDraft({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份恢复", value: "https://id.example.com/recover#temporary-token", isSensitive: false, remarks: "由身份平台处理找回与重置" });
+    const recoveryDraft = db.insertedValues[0] as Record<string, unknown>;
+    expect(recoveryDraft).toMatchObject({ settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", valueJson: "https://id.example.com/recover", secretEncrypted: null, isSensitive: false, status: "draft" });
+    expect(JSON.stringify(recoveryDraft)).not.toContain("temporary-token");
+  });
+
   it("发布敏感草稿仅保存服务器端密文快照，回滚继续使用密文而不会恢复明文", async () => {
     const snapshot = {
       category: "external_api",

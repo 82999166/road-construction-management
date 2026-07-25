@@ -6,7 +6,7 @@ import {
   getLoginReturnPath,
   rememberPostLoginReturnPath,
 } from "@/lib/authNavigation";
-import { ArrowRight, HardHat, ShieldCheck } from "lucide-react";
+import { ArrowRight, HardHat, KeyRound, ShieldCheck } from "lucide-react";
 import React, { useEffect } from "react";
 import { useLocation } from "wouter";
 
@@ -52,6 +52,7 @@ export default function LoginPage() {
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+            <a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a>
             <p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请联系系统管理员核查账号状态与项目授权。</p>
           </div>
         </section>

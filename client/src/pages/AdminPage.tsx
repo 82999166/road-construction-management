@@ -99,6 +99,7 @@ export default function AdminPage() {
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, queryOptions);
   const settings = trpc.admin.settings.list.useQuery(undefined, queryOptions);
   const audits = trpc.admin.audit.list.useQuery(undefined, queryOptions);
+  const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, queryOptions);
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -276,6 +277,28 @@ export default function AdminPage() {
           <div className="rounded-xl bg-slate-50 p-4"><b className="text-slate-800">03 系统设置</b><p className="mt-1 text-xs leading-5">配置企业微信及外部 API，校验后发布。</p></div>
         </CardContent>
       </Card>
+      <Card className="border-[#d8e3e0]">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle className="text-base">真实项目数据验收预检</CardTitle>
+            <CardDescription>仅统计授权与业务记录数量，不读取或展示人员、考勤、工资明细；不会创建任何模拟数据。</CardDescription>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => realDataReadiness.refetch()} disabled={realDataReadiness.isFetching}>刷新预检</Button>
+        </CardHeader>
+        <CardContent>
+          {realDataReadiness.isLoading ? <EmptyState text="正在读取真实数据验收准备度…" /> : realDataReadiness.isError ? <EmptyState text="暂无法读取验收预检，请确认当前账号具有超级管理员权限并稍后重试。" /> : realDataReadiness.data ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-4 py-3">
+                <div><p className="text-sm font-medium text-slate-800">{realDataReadiness.data.ready ? "已具备完整复测前提" : "尚未具备完整复测前提"}</p><p className="mt-1 text-xs text-slate-500">真实项目验收应使用已授权账号和可追溯业务记录完成，不能以模拟数据替代。</p></div>
+                <Badge variant={realDataReadiness.data.ready ? "secondary" : "outline"}>{realDataReadiness.data.ready ? "可安排复测" : "待补齐真实数据"}</Badge>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {realDataReadiness.data.checks.map(check => <div key={check.key} className={`rounded-lg border p-3 ${check.ready ? "border-emerald-100 bg-emerald-50/40" : "border-amber-100 bg-amber-50/40"}`}><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{check.label}</p><Badge variant={check.ready ? "secondary" : "outline"}>{check.ready ? "已就绪" : "待补齐"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-500">{check.detail}</p></div>)}
+              </div>
+            </div>
+          ) : <EmptyState text="暂无预检结果，请刷新后重试。" />}
+        </CardContent>
+      </Card>
     </div>
   );
 
@@ -450,10 +473,14 @@ export default function AdminPage() {
           <CardHeader><CardTitle className="text-base">企业微信机器人快速配置</CardTitle><CardDescription>仅支持企业微信官方 HTTPS Webhook。地址会被 AES-GCM 加密保存，列表与审计日志只显示掩码。</CardDescription></CardHeader>
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "企业微信", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人 Webhook", value: "", isSensitive: true, remarks: "用于工程业务节点通知；保存后请先发布，再由超级管理员主动发送测试消息。" })}>填入企业微信机器人模板</Button></CardContent>
         </Card>
+        <Card className="border-[#d8e3e0] bg-[#f7faf9]">
+          <CardHeader><CardTitle className="text-base">企业身份账号恢复</CardTitle><CardDescription>仅配置身份提供方公开 HTTPS 恢复页面。系统不保存企业密码，登录页和个人中心将通过受控端点跳转至该地址。</CardDescription></CardHeader>
+          <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份平台账号恢复地址", value: "", isSensitive: false, remarks: "仅限企业统一身份提供方的账号找回或密码重置页面；保存草稿后需发布才会对用户生效。" })}>填入身份恢复地址模板</Button></CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle className="text-base">新建配置草稿</CardTitle><CardDescription>该表单仅创建新的配置项；既有配置通过版本化发布、停用或回滚操作维护，密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
-            <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="企业微信">企业微信接入</SelectItem><SelectItem value="企业微信消息模板">企业微信消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
+            <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="企业微信">企业微信接入</SelectItem><SelectItem value="企业微信消息模板">企业微信消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
             <div><Label>配置键</Label><Input value={settingForm.settingKey} placeholder="WECOM:CORP_ID" onChange={event => setSettingForm({ ...settingForm, settingKey: event.target.value.toUpperCase() })} /></div>
             <div><Label>显示名称</Label><Input value={settingForm.displayName} placeholder="企业微信企业 ID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /></div>
             <div><Label>配置值</Label><Input value={settingForm.value} type={settingForm.isSensitive ? "password" : "text"} placeholder="输入值或密钥" onChange={event => setSettingForm({ ...settingForm, value: event.target.value })} /></div>

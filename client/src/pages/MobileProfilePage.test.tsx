@@ -59,6 +59,8 @@ describe("MobileProfilePage", () => {
 
     expect(markup).toContain("账户安全");
     expect(markup).toContain("不保存您的企业密码");
+    expect(markup).toContain("账号恢复与密码重置");
+    expect(markup).toContain('href="/api/identity-recovery"');
     expect(hasCapturedButtonLabel("重新验证身份")).toBe(true);
     expect(hasCapturedButtonLabel("安全退出")).toBe(true);
   });
