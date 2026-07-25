@@ -1,0 +1,183 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { trpc } from "@/lib/trpc";
+import { ArrowLeft, CalendarRange, CircleHelp, Cog, FileClock, Fuel, HardHat, LayoutDashboard, Pencil, Plus, Printer, ReceiptText, Settings2, UserRound, Wrench } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { useLocation } from "wouter";
+import { useAuth } from "../_core/hooks/useAuth";
+
+/** 将移动端本地日期转换为不带时区的业务日期文本。 */
+function getTodayText() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+/** 月度结算筛选统一使用自然月，避免使用浏览器本地日期造成月末跨日。 */
+function getCurrentPeriod() {
+  return getTodayText().slice(0, 7);
+}
+
+/** 金额显示兼容后端 decimal 字段序列化后的字符串。 */
+function formatMoney(value: string | number | null | undefined) {
+  return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** 机械状态使用高对比度暖工业色，保证现场强光环境下仍容易区分。 */
+function getMachineStatus(status: "idle" | "working" | "repairing" | "offsite" | "retired") {
+  const dictionary = {
+    idle: { label: "待命", className: "bg-[#f7ead8] text-[#94582d]" },
+    working: { label: "作业中", className: "bg-[#e6f1e4] text-[#47754d]" },
+    repairing: { label: "维修中", className: "bg-[#f8e4dd] text-[#a34b3a]" },
+    offsite: { label: "场外", className: "bg-[#e6eef2] text-[#4d6f82]" },
+    retired: { label: "已退场", className: "bg-[#eee8e2] text-[#806e60]" },
+  } as const;
+  return dictionary[status];
+}
+
+/** 机械成本状态在移动端明确区分录入、审核、结算与作废。 */
+function getCostStatus(status: "draft" | "approved" | "settled" | "void") {
+  const dictionary = {
+    draft: { label: "待审核", className: "bg-[#f8ead8] text-[#94603a]" },
+    approved: { label: "已审核", className: "bg-[#e7f1e5] text-[#47754d]" },
+    settled: { label: "已结算", className: "bg-[#e2f0ed] text-[#3e746a]" },
+    void: { label: "已作废", className: "bg-[#eee8e2] text-[#857365]" },
+  } as const;
+  return dictionary[status];
+}
+
+/** 新建机械的表单默认值集中维护，避免表单字段与服务端契约漂移。 */
+const EMPTY_MACHINE_DRAFT = {
+  code: "",
+  name: "",
+  model: "",
+  ownership: "owned" as "owned" | "leased",
+  supplierName: "",
+  plateOrAssetNo: "",
+  operatorUserId: "",
+  status: "idle" as "idle" | "working" | "repairing" | "offsite" | "retired",
+};
+
+/**
+ * 机械管理移动端页面。
+ * 页面仅负责业务录入体验，项目范围、金额计算、状态机和最终权限均在服务端强制执行。
+ */
+export default function MobileMachineryPage() {
+  const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
+  const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
+  const [projectId, setProjectId] = useState<number | undefined>();
+  const [machineId, setMachineId] = useState<number | undefined>();
+  const [period, setPeriod] = useState(getCurrentPeriod);
+  const [activeTab, setActiveTab] = useState("ledger");
+  const [machineDialogOpen, setMachineDialogOpen] = useState(false);
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
+  const [costDialogOpen, setCostDialogOpen] = useState(false);
+  const [editingMachineId, setEditingMachineId] = useState<number | null>(null);
+  const [machineDraft, setMachineDraft] = useState(EMPTY_MACHINE_DRAFT);
+  const [ruleDraft, setRuleDraft] = useState({ billingType: "monthly" as "monthly" | "daily" | "hourly" | "shift", rate: "", overtimeHourlyRate: "0", effectiveFrom: getTodayText(), effectiveTo: "", status: "active" as "active" | "disabled" });
+  const [costDraft, setCostDraft] = useState({ costType: "fuel" as "fuel" | "repair" | "overtime" | "mobilization" | "other", quantity: "", unitPrice: "", occurredAt: new Date().toISOString().slice(0, 16) });
+  const [leaseUsageUnits, setLeaseUsageUnits] = useState("1");
+
+  const projectOptions = trpc.machinery.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  /** 首次获得授权项目时自动选中第一项，切换项目时重置当前机械避免跨项目查询。 */
+  useEffect(() => {
+    if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id);
+  }, [projectId, projectOptions.data]);
+  const selectedProjectId = projectId ?? 0;
+  const machinesInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
+  const machines = trpc.machinery.listMachines.useQuery(machinesInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+  /** 当前项目机械列表变更后优先保留选择，否则自动切换至首台设备。 */
+  useEffect(() => {
+    if (!machineId && machines.data?.length) setMachineId(machines.data[0].id);
+    if (machineId && machines.data && !machines.data.some(item => item.id === machineId)) setMachineId(machines.data[0]?.id);
+  }, [machineId, machines.data]);
+  const selectedMachineId = machineId ?? 0;
+  const detailInput = useMemo(() => ({ projectId: selectedProjectId, machineId: selectedMachineId }), [selectedProjectId, selectedMachineId]);
+  const costsInput = useMemo(() => ({ ...detailInput, period }), [detailInput, period]);
+  const previewInput = useMemo(() => ({ ...detailInput, period, leaseUsageUnits: Number(leaseUsageUnits || 0), deductionAmount: 0 }), [detailInput, leaseUsageUnits, period]);
+  const leaseRules = trpc.machinery.listLeaseRules.useQuery(detailInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const costs = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const settlement = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+
+  /** 写入成功后只失效相关服务端数据，避免在客户端手工计算或篡改成本金额。 */
+  const saveMachine = trpc.machinery.saveMachine.useMutation({
+    onSuccess: async () => { toast.success(editingMachineId ? "机械台账已更新" : "机械台账已建立"); setMachineDialogOpen(false); await utils.machinery.listMachines.invalidate(); },
+    onError: error => toast.error(error.message),
+  });
+  const saveRule = trpc.machinery.saveLeaseRule.useMutation({
+    onSuccess: async () => { toast.success("机械计价规则已保存"); setRuleDialogOpen(false); await Promise.all([utils.machinery.listLeaseRules.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
+    onError: error => toast.error(error.message),
+  });
+  const saveCost = trpc.machinery.saveCost.useMutation({
+    onSuccess: async data => { toast.success(`机械成本已录入，系统核算 ${formatMoney(data.amount)}`); setCostDialogOpen(false); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
+    onError: error => toast.error(error.message),
+  });
+  const transitionCost = trpc.machinery.transitionCost.useMutation({
+    onSuccess: async () => { toast.success("机械成本状态已更新"); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
+    onError: error => toast.error(error.message),
+  });
+
+  /** 打开编辑对话框时仅加载当前台账的非敏感业务字段。 */
+  function openMachineDialog(machine?: NonNullable<typeof machines.data>[number]) {
+    setEditingMachineId(machine?.id ?? null);
+    setMachineDraft(machine ? { code: machine.code, name: machine.name, model: machine.model ?? "", ownership: machine.ownership, supplierName: machine.supplierName ?? "", plateOrAssetNo: machine.plateOrAssetNo ?? "", operatorUserId: machine.operatorUserId ? String(machine.operatorUserId) : "", status: machine.status } : EMPTY_MACHINE_DRAFT);
+    setMachineDialogOpen(true);
+  }
+
+  /** 提交机械台账时前端只做必填体验校验，项目范围和跨项目编辑校验由服务端兜底。 */
+  function submitMachine() {
+    if (!selectedProjectId) return toast.error("请先选择项目");
+    if (!machineDraft.code.trim() || !machineDraft.name.trim()) return toast.error("请填写机械编号和名称");
+    saveMachine.mutate({ id: editingMachineId ?? undefined, projectId: selectedProjectId, code: machineDraft.code.trim(), name: machineDraft.name.trim(), model: machineDraft.model.trim() || null, ownership: machineDraft.ownership, supplierName: machineDraft.supplierName.trim() || null, plateOrAssetNo: machineDraft.plateOrAssetNo.trim() || null, operatorUserId: machineDraft.operatorUserId ? Number(machineDraft.operatorUserId) : null, status: machineDraft.status });
+  }
+
+  /** 保存租赁规则时使用当前选定机械，避免客户端提交与机械无关的价格记录。 */
+  function submitRule() {
+    if (!selectedProjectId || !selectedMachineId) return toast.error("请先选择机械台账");
+    if (!ruleDraft.rate) return toast.error("请填写合同计价单价");
+    saveRule.mutate({ machineId: selectedMachineId, projectId: selectedProjectId, billingType: ruleDraft.billingType, rate: Number(ruleDraft.rate), overtimeHourlyRate: Number(ruleDraft.overtimeHourlyRate || 0), effectiveFrom: ruleDraft.effectiveFrom, effectiveTo: ruleDraft.effectiveTo || null, status: ruleDraft.status });
+  }
+
+  /** 成本金额由服务端按数量和单价计算，移动端不传递可篡改的金额字段。 */
+  function submitCost() {
+    if (!selectedProjectId || !selectedMachineId) return toast.error("请先选择机械台账");
+    if (!costDraft.quantity || !costDraft.unitPrice) return toast.error("请填写数量与单价");
+    saveCost.mutate({ machineId: selectedMachineId, projectId: selectedProjectId, costType: costDraft.costType, quantity: Number(costDraft.quantity), unitPrice: Number(costDraft.unitPrice), occurredAt: new Date(costDraft.occurredAt).toISOString(), evidenceId: null });
+  }
+
+  if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载机械管理权限…" title="机械管理" description="请使用企业统一身份进入已授权项目的机械台账。" Icon={Cog} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
+
+  const selectedMachine = machines.data?.find(machine => machine.id === selectedMachineId);
+  const totalCost = costs.data?.filter(item => item.status !== "void").reduce((sum, item) => sum + Number(item.amount), 0) ?? 0;
+  const workingCount = machines.data?.filter(item => item.status === "working").length ?? 0;
+
+  return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]"><div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
+    <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-6 pt-5 text-[#fff7ea] print:hidden"><div className="pointer-events-none absolute inset-0 opacity-[0.12] [background-image:linear-gradient(rgba(255,238,215,.32)_1px,transparent_1px),linear-gradient(90deg,rgba(255,238,215,.32)_1px,transparent_1px)] [background-size:24px_24px]" /><div className="relative flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 active:scale-95" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">机械管理</p><p className="mt-0.5 text-[11px] text-[#e8cfb2]">台账 · 成本 · 月度结算</p></div><button aria-label="查看机械计价说明" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 active:scale-95" onClick={() => toast.info("成本录入后须经审核与财务结算，已结算记录不可回退。")}><CircleHelp className="h-5 w-5" /></button></div><div className="relative mt-5 flex items-end justify-between"><div><p className="text-xs text-[#e8cfb2]">当前项目</p><p className="mt-1 text-lg font-semibold">{projectOptions.data?.find(item => item.id === selectedProjectId)?.name ?? "请选择项目"}</p></div><Wrench className="h-6 w-6 text-[#e7b779]" /></div></header>
+    <main className="space-y-5 px-5 py-5">
+      {projectOptions.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">模块权限加载失败：{projectOptions.error.message}</CardContent></Card> : null}
+      {!projectOptions.data?.length ? <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-8 text-center"><HardHat className="mx-auto h-8 w-8 text-[#ad6335]" /><h2 className="mt-3 font-semibold">暂无授权项目</h2><p className="mt-2 text-xs leading-5 text-[#957667]">请联系超级管理员为机械管理岗位分配项目或组织数据范围。</p></CardContent></Card> : <>
+        <section className="grid grid-cols-[1fr_auto] gap-3 print:hidden"><Select value={projectId ? String(projectId) : undefined} onValueChange={value => { setProjectId(Number(value)); setMachineId(undefined); }}><SelectTrigger className="h-11 border-[#e9d8c6] bg-white text-[#4d2e22]"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Input aria-label="机械结算期间" className="h-11 w-[112px] border-[#e9d8c6] bg-white" type="month" value={period} onChange={event => setPeriod(event.target.value)} /></section>
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4"><Card className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-3.5"><p className="text-lg font-semibold">{machines.data?.length ?? 0}</p><p className="mt-1 text-[11px] text-[#8f7566]">机械总数</p></CardContent></Card><Card className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-3.5"><p className="text-lg font-semibold text-[#47754d]">{workingCount}</p><p className="mt-1 text-[11px] text-[#8f7566]">作业中</p></CardContent></Card><Card className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-3.5"><p className="text-sm font-semibold">{formatMoney(totalCost)}</p><p className="mt-1 text-[11px] text-[#8f7566]">本月成本</p></CardContent></Card><Card className="border-0 bg-[#e7f1e5] shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-3.5"><p className="text-sm font-semibold text-[#47754d]">{formatMoney(settlement.data?.settlement.totalAmount)}</p><p className="mt-1 text-[11px] text-[#638365]">结算预览</p></CardContent></Card></section>
+        <section className="rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">{period} 机械月结</p><p className="mt-1 text-xs text-[#7d563d]">合同规则、成本台账与结算状态均以服务端记录为准。</p></div><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={() => window.print()}><Printer className="h-4 w-4" />打印</Button></div></section>
+        <section className="hidden print:block"><h1 className="text-center text-xl font-semibold">机械月度结算预览表</h1><p className="mt-2 text-center text-sm">项目：{projectOptions.data?.find(item => item.id === selectedProjectId)?.name ?? "—"}　设备：{selectedMachine?.name ?? "—"}　期间：{period}</p><div className="mt-4 grid grid-cols-3 gap-3 text-center"><div>合同计价<p className="mt-1 font-semibold">{formatMoney(settlement.data?.settlement.totalAmount)}</p></div><div>成本记录<p className="mt-1 font-semibold">{settlement.data?.costRecordCount ?? 0} 笔</p></div><div>生成时间<p className="mt-1 font-semibold">{new Date().toLocaleString("zh-CN")}</p></div></div></section>
+        <Tabs value={activeTab} onValueChange={setActiveTab}><TabsList className="grid h-auto w-full grid-cols-3 rounded-2xl bg-[#f0e5d7] p-1 print:hidden"><TabsTrigger value="ledger" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">机械台账</TabsTrigger><TabsTrigger value="costs" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">成本记录</TabsTrigger><TabsTrigger value="settlement" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">月结预览</TabsTrigger></TabsList>
+          <TabsContent value="ledger" className="mt-4 space-y-3"><div className="flex items-center justify-between"><div><h2 className="text-base font-semibold">设备台账</h2><p className="mt-0.5 text-xs text-[#8f7566]">自有与外租机械统一管理</p></div><Button size="sm" className="bg-[#a85f30] text-white hover:bg-[#8e4b22]" onClick={() => openMachineDialog()}><Plus className="mr-1 h-4 w-4" />录入机械</Button></div>{machines.isLoading ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-sm text-[#8f7566]">正在加载机械台账…</CardContent></Card> : null}{!machines.isLoading && !machines.data?.length ? <Card className="border-0 bg-white"><CardContent className="p-6 text-center text-sm text-[#8f7566]">当前项目尚未录入机械台账。</CardContent></Card> : null}{machines.data?.map(machine => { const status = getMachineStatus(machine.status); return <Card key={machine.id} className={`border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)] ${machine.id === selectedMachineId ? "ring-2 ring-[#d6a273]/60" : ""}`}><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><button className="min-w-0 text-left" onClick={() => setMachineId(machine.id)}><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{machine.name}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#8f7566]">{machine.code} · {machine.ownership === "owned" ? "公司自有" : "外租机械"} · {machine.model || "未填型号"}</p></button><button aria-label={`编辑${machine.name}台账`} className="grid h-8 w-8 place-items-center rounded-lg bg-[#f7ead8] text-[#975227] active:scale-95" onClick={() => openMachineDialog(machine)}><Pencil className="h-4 w-4" /></button></div><div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-[#fcf8f2] px-3 py-2.5 text-[11px] text-[#765a49]"><span>资产/车牌：{machine.plateOrAssetNo || "未录入"}</span><span>操作员：{machine.operatorUserId ? `用户 #${machine.operatorUserId}` : "未绑定"}</span><span className="col-span-2">供应方：{machine.supplierName || "—"}</span></div></CardContent></Card>; })}</TabsContent>
+          <TabsContent value="costs" className="mt-4 space-y-3"><div className="flex items-center justify-between"><div><h2 className="text-base font-semibold">机械成本</h2><p className="mt-0.5 text-xs text-[#8f7566]">油料、维修、加班与进退场费用</p></div><Button size="sm" disabled={!selectedMachineId} className="bg-[#a85f30] text-white hover:bg-[#8e4b22]" onClick={() => { setCostDraft({ costType: "fuel", quantity: "", unitPrice: "", occurredAt: new Date().toISOString().slice(0, 16) }); setCostDialogOpen(true); }}><Plus className="mr-1 h-4 w-4" />录入成本</Button></div><div className="grid grid-cols-[1fr_auto] gap-3 rounded-xl bg-white p-3 shadow-[0_6px_18px_rgba(71,42,30,.06)]"><Select value={machineId ? String(machineId) : undefined} onValueChange={value => setMachineId(Number(value))}><SelectTrigger className="border-[#ead9c8] bg-[#fffaf5]"><SelectValue placeholder="选择机械" /></SelectTrigger><SelectContent>{machines.data?.map(machine => <SelectItem key={machine.id} value={String(machine.id)}>{machine.name} · {machine.code}</SelectItem>)}</SelectContent></Select><span className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#82523a]">{period}</span></div>{costs.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">成本台账加载失败：{costs.error.message}</CardContent></Card> : null}{!selectedMachineId ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-sm text-[#8f7566]">请先选择需要查看的机械。</CardContent></Card> : !costs.data?.length && !costs.isLoading ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-sm text-[#8f7566]">本月尚未录入机械成本。</CardContent></Card> : costs.data?.map(cost => { const status = getCostStatus(cost.status); return <Card key={cost.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-4"><div className="flex items-start justify-between"><div><div className="flex items-center gap-2"><h3 className="text-sm font-semibold">{cost.costType === "fuel" ? "油料" : cost.costType === "repair" ? "维修" : cost.costType === "overtime" ? "加班" : cost.costType === "mobilization" ? "进退场" : "其他"}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#8f7566]">{new Date(cost.occurredAt).toLocaleString("zh-CN")} · {cost.quantity} × {formatMoney(cost.unitPrice)}</p></div><p className="text-sm font-semibold text-[#6d3f2b]">{formatMoney(cost.amount)}</p></div>{cost.status === "draft" ? <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" className="h-7 border-[#d7b392] text-xs text-[#8a4b25]" onClick={() => transitionCost.mutate({ id: cost.id, projectId: selectedProjectId, nextStatus: "approved" })}>审核</Button><Button size="sm" variant="ghost" className="h-7 text-xs text-[#94604a]" onClick={() => transitionCost.mutate({ id: cost.id, projectId: selectedProjectId, nextStatus: "void" })}>作废</Button></div> : cost.status === "approved" ? <Button size="sm" className="mt-3 h-7 bg-[#47754d] text-xs text-white hover:bg-[#39623e]" onClick={() => transitionCost.mutate({ id: cost.id, projectId: selectedProjectId, nextStatus: "settled" })}>财务确认结算</Button> : null}</CardContent></Card>; })}</TabsContent>
+          <TabsContent value="settlement" className="mt-4 space-y-3"><div className="flex items-center justify-between"><div><h2 className="text-base font-semibold">月度结算预览</h2><p className="mt-0.5 text-xs text-[#8f7566]">预览不改变成本台账结算状态</p></div><Button size="sm" variant="outline" className="border-[#d7b392] text-[#8a4b25]" disabled={!selectedMachineId} onClick={() => { setRuleDraft({ billingType: "monthly", rate: "", overtimeHourlyRate: "0", effectiveFrom: getTodayText(), effectiveTo: "", status: "active" }); setRuleDialogOpen(true); }}><Settings2 className="mr-1 h-4 w-4" />计价规则</Button></div><Card className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="space-y-4 p-4"><div className="grid grid-cols-[1fr_auto] items-end gap-3"><div><Label>非月租的合同用量</Label><Input className="mt-2 border-[#ead9c8] bg-[#fffaf5]" type="number" min="0" value={leaseUsageUnits} onChange={event => setLeaseUsageUnits(event.target.value)} /></div><span className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#80543d]">{period}</span></div>{settlement.isLoading ? <p className="py-6 text-center text-sm text-[#8f7566]">正在核算月度结算预览…</p> : settlement.error ? <div className="rounded-xl bg-[#fff4ea] p-3 text-xs leading-5 text-[#9c4d27]">{settlement.error.message}<br />请先为当前机械配置生效的合同计价规则。</div> : settlement.data ? <><div className="rounded-2xl bg-[#3a2117] p-4 text-[#fff7ea]"><p className="text-xs text-[#e8cfb2]">本期结算预览</p><p className="mt-1 text-2xl font-semibold">{formatMoney(settlement.data.settlement.totalAmount)}</p><p className="mt-2 text-[11px] text-[#e8cfb2]">{settlement.data.rule.billingType === "monthly" ? "月租" : settlement.data.rule.billingType === "daily" ? "日租" : settlement.data.rule.billingType === "hourly" ? "小时租" : "台班"} · 合同单价 {formatMoney(settlement.data.rule.rate)}</p></div><div className="grid grid-cols-2 gap-2 text-xs"><div className="rounded-xl bg-[#fcf8f2] p-3">油料 <p className="mt-1 font-semibold">{formatMoney(settlement.data.costBreakdown.fuelAmount)}</p></div><div className="rounded-xl bg-[#fcf8f2] p-3">加班 <p className="mt-1 font-semibold">{formatMoney(settlement.data.costBreakdown.overtimeAmount)}</p></div><div className="rounded-xl bg-[#fcf8f2] p-3">维修 <p className="mt-1 font-semibold">{formatMoney(settlement.data.costBreakdown.repairAmount)}</p></div><div className="rounded-xl bg-[#fcf8f2] p-3">进退场 <p className="mt-1 font-semibold">{formatMoney(settlement.data.costBreakdown.mobilizationAmount)}</p></div></div><p className="text-[11px] leading-5 text-[#8f7566]">本期纳入 {settlement.data.costRecordCount} 笔未作废成本。最终结算需逐笔完成审核和财务确认。</p></> : null}</CardContent></Card>{leaseRules.data?.length ? <Card className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]"><CardContent className="p-4"><p className="text-sm font-semibold">当前机械计价规则</p>{leaseRules.data.map(rule => <div key={rule.id} className="mt-3 flex items-center justify-between border-t border-[#f0e4d7] pt-3 text-xs"><span>{rule.billingType === "monthly" ? "月租" : rule.billingType === "daily" ? "日租" : rule.billingType === "hourly" ? "小时租" : "台班"} · {new Date(rule.effectiveFrom).toLocaleDateString("zh-CN")}</span><span className={rule.status === "active" ? "text-[#47754d]" : "text-[#8f7566]"}>{formatMoney(rule.rate)} / {rule.status === "active" ? "生效" : "停用"}</span></div>)}</CardContent></Card> : null}</TabsContent>
+        </Tabs>
+      </>}
+    </main>
+    <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Cog className="h-5 w-5" /><span className="text-[10px] font-medium">机械</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
+
+    <Dialog open={machineDialogOpen} onOpenChange={setMachineDialogOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>{editingMachineId ? "维护机械台账" : "录入机械台账"}</DialogTitle></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><div><Label>机械编号</Label><Input className="mt-1" value={machineDraft.code} maxLength={64} onChange={event => setMachineDraft(current => ({ ...current, code: event.target.value }))} /></div><div><Label>机械名称</Label><Input className="mt-1" value={machineDraft.name} maxLength={128} onChange={event => setMachineDraft(current => ({ ...current, name: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-3"><div><Label>产权性质</Label><Select value={machineDraft.ownership} onValueChange={value => setMachineDraft(current => ({ ...current, ownership: value as typeof current.ownership }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="owned">公司自有</SelectItem><SelectItem value="leased">外租机械</SelectItem></SelectContent></Select></div><div><Label>设备状态</Label><Select value={machineDraft.status} onValueChange={value => setMachineDraft(current => ({ ...current, status: value as typeof current.status }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="idle">待命</SelectItem><SelectItem value="working">作业中</SelectItem><SelectItem value="repairing">维修中</SelectItem><SelectItem value="offsite">场外</SelectItem><SelectItem value="retired">已退场</SelectItem></SelectContent></Select></div></div><div><Label>型号</Label><Input className="mt-1" value={machineDraft.model} maxLength={128} onChange={event => setMachineDraft(current => ({ ...current, model: event.target.value }))} /></div><div className="grid grid-cols-2 gap-3"><div><Label>资产/车牌编号</Label><Input className="mt-1" value={machineDraft.plateOrAssetNo} maxLength={64} onChange={event => setMachineDraft(current => ({ ...current, plateOrAssetNo: event.target.value }))} /></div><div><Label>操作员用户 ID</Label><Input className="mt-1" inputMode="numeric" value={machineDraft.operatorUserId} placeholder="可选" onChange={event => setMachineDraft(current => ({ ...current, operatorUserId: event.target.value }))} /></div></div><div><Label>外租供应方</Label><Input className="mt-1" value={machineDraft.supplierName} maxLength={200} placeholder="自有机械可留空" onChange={event => setMachineDraft(current => ({ ...current, supplierName: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setMachineDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveMachine.isPending} onClick={submitMachine}>{saveMachine.isPending ? "正在保存…" : "保存台账"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}><DialogContent><DialogHeader><DialogTitle>新增机械计价规则</DialogTitle></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><div><Label>计价方式</Label><Select value={ruleDraft.billingType} onValueChange={value => setRuleDraft(current => ({ ...current, billingType: value as typeof current.billingType }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="monthly">月租</SelectItem><SelectItem value="daily">日租</SelectItem><SelectItem value="hourly">小时租</SelectItem><SelectItem value="shift">台班</SelectItem></SelectContent></Select></div><div><Label>合同单价</Label><Input className="mt-1" type="number" min="0" value={ruleDraft.rate} onChange={event => setRuleDraft(current => ({ ...current, rate: event.target.value }))} /></div></div><div><Label>加班小时单价</Label><Input className="mt-1" type="number" min="0" value={ruleDraft.overtimeHourlyRate} onChange={event => setRuleDraft(current => ({ ...current, overtimeHourlyRate: event.target.value }))} /></div><div className="grid grid-cols-2 gap-3"><div><Label>生效日期</Label><Input className="mt-1" type="date" value={ruleDraft.effectiveFrom} onChange={event => setRuleDraft(current => ({ ...current, effectiveFrom: event.target.value }))} /></div><div><Label>截止日期</Label><Input className="mt-1" type="date" value={ruleDraft.effectiveTo} onChange={event => setRuleDraft(current => ({ ...current, effectiveTo: event.target.value }))} /></div></div></div><DialogFooter><Button variant="outline" onClick={() => setRuleDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveRule.isPending} onClick={submitRule}>{saveRule.isPending ? "正在保存…" : "保存规则"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={costDialogOpen} onOpenChange={setCostDialogOpen}><DialogContent><DialogHeader><DialogTitle>录入机械成本</DialogTitle></DialogHeader><div className="grid gap-3 py-2"><div><Label>成本类别</Label><Select value={costDraft.costType} onValueChange={value => setCostDraft(current => ({ ...current, costType: value as typeof current.costType }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="fuel">油料</SelectItem><SelectItem value="repair">维修</SelectItem><SelectItem value="overtime">加班</SelectItem><SelectItem value="mobilization">进退场</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div><div className="grid grid-cols-2 gap-3"><div><Label>数量</Label><Input className="mt-1" type="number" min="0" value={costDraft.quantity} onChange={event => setCostDraft(current => ({ ...current, quantity: event.target.value }))} /></div><div><Label>单价</Label><Input className="mt-1" type="number" min="0" value={costDraft.unitPrice} onChange={event => setCostDraft(current => ({ ...current, unitPrice: event.target.value }))} /></div></div><div><Label>发生时间</Label><Input className="mt-1" type="datetime-local" value={costDraft.occurredAt} onChange={event => setCostDraft(current => ({ ...current, occurredAt: event.target.value }))} /></div><p className="rounded-lg bg-[#f9eddf] p-3 text-xs leading-5 text-[#80543d]">系统将按“数量 × 单价”计算金额；录入后仍需经过审核及财务结算。</p></div><DialogFooter><Button variant="outline" onClick={() => setCostDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveCost.isPending} onClick={submitCost}>{saveCost.isPending ? "正在核算…" : "保存成本"}</Button></DialogFooter></DialogContent></Dialog>
+  </div></div>;
+}

@@ -1,0 +1,588 @@
+import { and, desc, eq, gte, lt, ne } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import {
+  auditLogs,
+  freightRateRules,
+  machineCostRecords,
+  machineLeaseRules,
+  machines,
+  projects,
+  transportTrips,
+  transportVehicles,
+} from "../../drizzle/schema";
+import {
+  assertMachineCostStatusTransition,
+  assertTransportTripStatusTransition,
+  calculateMachineSettlement,
+  calculateTheoreticalVolume,
+  calculateTieredFreightAmount,
+  ConstructionDomainError,
+} from "../../shared/domain";
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { getDb } from "../db";
+import { protectedProcedure, router } from "../_core/trpc";
+
+/** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
+const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
+const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
+const isoDateTimeSchema = z.string().datetime({ offset: true, message: "时间必须使用 ISO 8601 格式" });
+
+/** 机械台账写入输入。项目不可为空，避免无归属设备绕开数据范围控制。 */
+const machineInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  operatorUserId: z.number().int().positive().nullable().optional(),
+  code: z.string().trim().min(2, "请填写机械编号").max(64),
+  name: z.string().trim().min(2, "请填写机械名称").max(128),
+  model: z.string().trim().max(128).nullable().optional(),
+  ownership: z.enum(["owned", "leased"]),
+  supplierName: z.string().trim().max(200).nullable().optional(),
+  plateOrAssetNo: z.string().trim().max(64).nullable().optional(),
+  status: z.enum(["idle", "working", "repairing", "offsite", "retired"]),
+});
+
+/** 机械合同计价规则由后台录入，所有金额最终仅在服务端参与核算。 */
+const machineLeaseRuleInput = z.object({
+  id: z.number().int().positive().optional(),
+  machineId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  billingType: z.enum(["monthly", "daily", "hourly", "shift"]),
+  rate: z.number().min(0).max(999999999999.99),
+  overtimeHourlyRate: z.number().min(0).max(999999999999.99).default(0),
+  effectiveFrom: businessDateSchema,
+  effectiveTo: businessDateSchema.nullable().optional(),
+  status: z.enum(["active", "disabled"]),
+}).refine(value => !value.effectiveTo || value.effectiveTo >= value.effectiveFrom, {
+  message: "计价规则截止日期不得早于生效日期",
+  path: ["effectiveTo"],
+});
+
+/** 机械成本金额通过数量乘单价服务端计算，客户端不允许直接写入应结金额。 */
+const machineCostInput = z.object({
+  machineId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  costType: z.enum(["fuel", "repair", "overtime", "mobilization", "other"]),
+  quantity: z.number().min(0).max(999999999.999),
+  unitPrice: z.number().min(0).max(999999999999.99),
+  occurredAt: isoDateTimeSchema,
+  evidenceId: z.number().int().positive().nullable().optional(),
+});
+
+/** 运输车辆档案以货厢尺寸和装载系数为权威输入，理论方量由服务端计算。 */
+const vehicleInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
+  ownerName: z.string().trim().max(128).nullable().optional(),
+  driverUserId: z.number().int().positive().nullable().optional(),
+  boxLengthMeters: z.number().gt(0).max(100),
+  boxWidthMeters: z.number().gt(0).max(20),
+  boxHeightMeters: z.number().gt(0).max(20),
+  loadFactor: z.number().gt(0).max(1.5).default(1),
+  payloadTons: z.number().gt(0).max(9999).nullable().optional(),
+  status: z.enum(["active", "suspended", "disabled"]),
+});
+
+/** 阶梯运价规则。每 500 米的步长可按合同调整，基础价格按结算单位而非趟次硬编码。 */
+const freightRuleInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  materialName: z.string().trim().max(128).nullable().optional(),
+  settlementUnit: z.enum(["cubic_meter", "ton", "trip"]),
+  startDistanceKm: z.number().min(0).max(9999),
+  basePricePerUnit: z.number().min(0).max(999999999999.99),
+  stepMeters: z.number().int().min(1).max(100000).default(500),
+  stepIncreasePerUnit: z.number().min(0).max(999999999999.99).default(0),
+  effectiveFrom: businessDateSchema,
+  effectiveTo: businessDateSchema.nullable().optional(),
+  status: z.enum(["draft", "active", "disabled"]),
+}).refine(value => !value.effectiveTo || value.effectiveTo >= value.effectiveFrom, {
+  message: "运价规则截止日期不得早于生效日期",
+  path: ["effectiveTo"],
+});
+
+/** 趟次录入只接收原始里程与载货参数，单价和金额必须由规则快照在服务端计算。 */
+const tripInput = z.object({
+  tripNo: z.string().trim().min(4, "请填写趟次编号").max(64).optional(),
+  vehicleId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  freightRuleId: z.number().int().positive(),
+  startAt: isoDateTimeSchema,
+  endAt: isoDateTimeSchema.nullable().optional(),
+  actualDistanceKm: z.number().min(0).max(9999),
+  volumeCubicMeters: z.number().gt(0).max(999999).nullable().optional(),
+  weightTons: z.number().gt(0).max(999999).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  startLatitude: z.number().min(-90).max(90).nullable().optional(),
+  startLongitude: z.number().min(-180).max(180).nullable().optional(),
+  endLatitude: z.number().min(-90).max(90).nullable().optional(),
+  endLongitude: z.number().min(-180).max(180).nullable().optional(),
+}).refine(value => !value.endAt || new Date(value.endAt).getTime() >= new Date(value.startAt).getTime(), {
+  message: "结束时间不得早于开始时间",
+  path: ["endAt"],
+});
+
+/** 统一将前端日期解释为 UTC 业务日零点，避免月结边界受浏览器时区影响。 */
+function toBusinessDate(value: string) {
+  return new Date(`${value}T00:00:00.000Z`);
+}
+
+/** 返回左闭右开的月度区间，确保月结查询不重复计入跨月数据。 */
+function getMonthRange(period: string) {
+  const [yearText, monthText] = period.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  return {
+    start: toBusinessDate(`${period}-01`),
+    endExclusive: toBusinessDate(`${nextYear}-${String(nextMonth).padStart(2, "0")}-01`),
+  };
+}
+
+/** 金额一律保留两位小数，避免浮点误差进入结算与审计记录。 */
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/** 将领域异常转换为移动端可显示的标准业务错误，避免原始堆栈泄露。 */
+function throwDomainAsBadRequest(error: unknown): never {
+  if (error instanceof ConstructionDomainError) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+  }
+  throw error;
+}
+
+/** 返回用户有权访问的项目选项，项目/组织范围均以服务端授权记录为准。 */
+async function listScopedProjects(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  const scope = await getCurrentDataScope(ctx);
+  const db = await getDb();
+  if (!db) return [];
+  const allProjects = await db
+    .select({ id: projects.id, code: projects.code, name: projects.name, status: projects.status, organizationId: projects.organizationId })
+    .from(projects)
+    .orderBy(projects.sortOrder, projects.id);
+  if (scope.hasAllProjects) return allProjects;
+  return allProjects.filter(project => scope.projectIds.includes(project.id) || (project.organizationId !== null && scope.organizationIds.includes(project.organizationId)));
+}
+
+/** 机械模块允许的岗位；管理员角色对应 ALL，可覆盖初始化和应急处置。 */
+async function assertMachineryAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  const roleCodes = await getEffectiveRoleCodes(ctx);
+  const allowed = ["MACHINERY_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER"];
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获机械管理数据访问授权" });
+  }
+  return roleCodes;
+}
+
+/** 运输模块允许的岗位；司机角色只可操作分配给本人的车辆及趟次。 */
+async function assertTransportAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  const roleCodes = await getEffectiveRoleCodes(ctx);
+  const allowed = ["TRANSPORT_MANAGER", "DRIVER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获运输管理数据访问授权" });
+  }
+  return roleCodes;
+}
+
+/** 结算状态变更仅由机械/运输负责人、项目负责人、财务或系统管理员处理。 */
+function canManageSettlement(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.some(role => ["MACHINERY_MANAGER", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+}
+
+/** 财务结算确认只能由财务负责人、会计或系统管理员完成。 */
+function canSettleFinancialRecord(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER") || roleCodes.includes("ACCOUNTANT");
+}
+
+/** 按项目读取机械并校验数据范围；防止客户端以机械 ID 越权修改别的项目台账。 */
+async function getScopedMachine(ctx: Parameters<typeof requireAuthenticatedUser>[0], machineId: number, projectId: number) {
+  await assertProjectInCurrentScope(ctx, projectId);
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const [machine] = await db.select().from(machines).where(eq(machines.id, machineId)).limit(1);
+  if (!machine || machine.projectId !== projectId) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的机械台账" });
+  }
+  return { db, machine };
+}
+
+/** 读取并校验车辆归属项目，司机还需满足本人被绑定到该车辆的最小权限要求。 */
+async function getScopedVehicle(ctx: Parameters<typeof requireAuthenticatedUser>[0], vehicleId: number, projectId: number, roleCodes: readonly string[]) {
+  await assertProjectInCurrentScope(ctx, projectId);
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, vehicleId)).limit(1);
+  if (!vehicle || vehicle.projectId !== projectId) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的运输车辆" });
+  }
+  const user = requireAuthenticatedUser(ctx);
+  const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+  if (isDriverOnly && vehicle.driverUserId !== user.id) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "司机仅可操作分配给本人的运输车辆" });
+  }
+  return { db, vehicle };
+}
+
+/** 机械台账、租赁计价、成本记录和月度结算预览。 */
+export const machineryRouter = router({
+  projectOptions: protectedProcedure.query(async ({ ctx }) => {
+    await assertMachineryAccess(ctx);
+    return listScopedProjects(ctx);
+  }),
+
+  listMachines: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select().from(machines).where(eq(machines.projectId, input.projectId)).orderBy(desc(machines.updatedAt));
+  }),
+
+  /** 新建或维护机械台账；跨项目编辑时需同时校验原项目和目标项目授权。 */
+  saveMachine: protectedProcedure.input(machineInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const values = {
+      projectId: input.projectId,
+      operatorUserId: input.operatorUserId ?? null,
+      code: input.code,
+      name: input.name,
+      model: input.model ?? null,
+      ownership: input.ownership,
+      supplierName: input.supplierName ?? null,
+      plateOrAssetNo: input.plateOrAssetNo ?? null,
+      status: input.status,
+    };
+    if (input.id) {
+      const [existing] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "机械台账不存在" });
+      if (existing.projectId) await assertProjectInCurrentScope(ctx, existing.projectId);
+      await db.update(machines).set(values).where(eq(machines.id, input.id));
+    } else {
+      await db.insert(machines).values(values);
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(input.id ?? input.code), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}` });
+    return { success: true };
+  }),
+
+  listLeaseRules: protectedProcedure.input(z.object({ machineId: z.number().int().positive(), projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    return db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, input.machineId), eq(machineLeaseRules.projectId, input.projectId))).orderBy(desc(machineLeaseRules.effectiveFrom));
+  }),
+
+  /** 保存外租机械的月租、日租、小时或台班合同规则，规则本身不包含实际成本。 */
+  saveLeaseRule: protectedProcedure.input(machineLeaseRuleInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMachineryAccess(ctx);
+    const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const values = {
+      machineId: input.machineId,
+      projectId: input.projectId,
+      billingType: input.billingType,
+      rate: String(roundMoney(input.rate)),
+      overtimeHourlyRate: String(roundMoney(input.overtimeHourlyRate)),
+      effectiveFrom: toBusinessDate(input.effectiveFrom),
+      effectiveTo: input.effectiveTo ? toBusinessDate(input.effectiveTo) : null,
+      status: input.status,
+    };
+    if (input.id) {
+      const [existing] = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.id, input.id)).limit(1);
+      if (!existing || existing.machineId !== input.machineId || existing.projectId !== input.projectId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "机械计价规则不存在或不属于当前机械" });
+      }
+      await db.update(machineLeaseRules).set(values).where(eq(machineLeaseRules.id, input.id));
+    } else {
+      await db.insert(machineLeaseRules).values(values);
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_lease_rule" : "create_lease_rule", targetType: "machine_lease_rule", targetId: String(input.id ?? input.machineId), summary: `维护机械计价规则：${input.billingType}` });
+    return { success: true };
+  }),
+
+  listCosts: protectedProcedure.input(z.object({ machineId: z.number().int().positive(), projectId: z.number().int().positive(), period: settlementPeriodSchema.optional() })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const range = input.period ? getMonthRange(input.period) : null;
+    const predicates = [eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId)];
+    if (range) predicates.push(gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive));
+    return db.select().from(machineCostRecords).where(and(...predicates)).orderBy(desc(machineCostRecords.occurredAt));
+  }),
+
+  /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */
+  saveCost: protectedProcedure.input(machineCostInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMachineryAccess(ctx);
+    const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const amount = roundMoney(input.quantity * input.unitPrice);
+    await db.insert(machineCostRecords).values({
+      machineId: input.machineId,
+      projectId: input.projectId,
+      costType: input.costType,
+      quantity: String(input.quantity),
+      unitPrice: String(roundMoney(input.unitPrice)),
+      amount: String(amount),
+      occurredAt: new Date(input.occurredAt),
+      evidenceId: input.evidenceId ?? null,
+      status: "draft",
+    });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: `${input.machineId}:${input.occurredAt}`, summary: `录入机械${input.costType}成本，金额由系统核算` });
+    return { success: true, amount };
+  }),
+
+  /** 审批、结算或作废机械成本；已结算记录不可回退，结算操作限定财务岗位。 */
+  transitionCost: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), nextStatus: z.enum(["approved", "settled", "void"]) })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权处理机械成本状态" });
+    if (input.nextStatus === "settled" && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可确认机械成本结算" });
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(machineCostRecords).where(eq(machineCostRecords.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械成本记录不存在" });
+    try { assertMachineCostStatusTransition(record.status, input.nextStatus); } catch (error) { throwDomainAsBadRequest(error); }
+    await db.update(machineCostRecords).set({ status: input.nextStatus }).where(eq(machineCostRecords.id, input.id));
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_cost", targetType: "machine_cost", targetId: String(input.id), summary: `机械成本状态变更为：${input.nextStatus}` });
+    return { success: true };
+  }),
+
+  /**
+   * 生成月度机械结算预览。租赁用量由管理人员输入，油料、加班、维修和进退场费均来自不可篡改的成本记录。
+   * 本接口仅预览，不自动改变任何成本记录状态；最终结算必须逐笔经过状态流转。
+   */
+  settlementPreview: protectedProcedure.input(z.object({ machineId: z.number().int().positive(), projectId: z.number().int().positive(), period: settlementPeriodSchema, leaseUsageUnits: z.number().min(0).max(100000).default(1), deductionAmount: z.number().min(0).max(999999999999.99).default(0) })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const range = getMonthRange(input.period);
+    const rules = await db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, input.machineId), eq(machineLeaseRules.projectId, input.projectId), eq(machineLeaseRules.status, "active"))).orderBy(desc(machineLeaseRules.effectiveFrom));
+    const selectedRule = rules.find(rule => new Date(rule.effectiveFrom).getTime() < range.endExclusive.getTime() && (!rule.effectiveTo || new Date(rule.effectiveTo).getTime() >= range.start.getTime()));
+    if (!selectedRule) throw new TRPCError({ code: "BAD_REQUEST", message: "当前结算期间未找到生效的机械计价规则" });
+    const costs = await db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive)));
+    const sumByType = (type: typeof machineCostRecords.$inferSelect["costType"]) => costs.filter(item => item.costType === type).reduce((sum, item) => sum + Number(item.amount), 0);
+    const fuelRows = costs.filter(item => item.costType === "fuel");
+    const overtimeRows = costs.filter(item => item.costType === "overtime");
+    const fuelQuantity = fuelRows.reduce((sum, item) => sum + Number(item.quantity), 0);
+    const fuelAmount = sumByType("fuel");
+    const overtimeHours = overtimeRows.reduce((sum, item) => sum + Number(item.quantity), 0);
+    const overtimeAmount = sumByType("overtime");
+    const leaseAmount = selectedRule.billingType === "monthly" ? Number(selectedRule.rate) : roundMoney(Number(selectedRule.rate) * input.leaseUsageUnits);
+    let settlement;
+    try {
+      settlement = calculateMachineSettlement({
+        leaseAmount,
+        dieselLiters: fuelQuantity,
+        dieselUnitPrice: fuelQuantity > 0 ? fuelAmount / fuelQuantity : 0,
+        overtimeHours,
+        overtimeHourlyRate: overtimeHours > 0 ? overtimeAmount / overtimeHours : Number(selectedRule.overtimeHourlyRate),
+        repairAmount: sumByType("repair"),
+        mobilizationAmount: sumByType("mobilization"),
+        deductionAmount: input.deductionAmount,
+        otherAmount: sumByType("other"),
+      });
+    } catch (error) { throwDomainAsBadRequest(error); }
+    return {
+      machine: { id: machine.id, code: machine.code, name: machine.name, ownership: machine.ownership },
+      period: input.period,
+      rule: { id: selectedRule.id, billingType: selectedRule.billingType, rate: Number(selectedRule.rate), overtimeHourlyRate: Number(selectedRule.overtimeHourlyRate) },
+      leaseUsageUnits: input.leaseUsageUnits,
+      costRecordCount: costs.length,
+      costBreakdown: { fuelAmount: roundMoney(fuelAmount), overtimeAmount: roundMoney(overtimeAmount), repairAmount: roundMoney(sumByType("repair")), mobilizationAmount: roundMoney(sumByType("mobilization")), otherAmount: roundMoney(sumByType("other")), deductionAmount: roundMoney(input.deductionAmount) },
+      settlement,
+    };
+  }),
+});
+
+/** 运输车辆、运价规则、趟次记录与日报结算。 */
+export const transportRouter = router({
+  projectOptions: protectedProcedure.query(async ({ ctx }) => {
+    await assertTransportAccess(ctx);
+    return listScopedProjects(ctx);
+  }),
+
+  listVehicles: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const user = requireAuthenticatedUser(ctx);
+    const rows = await db.select().from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)).orderBy(desc(transportVehicles.updatedAt));
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    const scopedRows = isDriverOnly ? rows.filter(vehicle => vehicle.driverUserId === user.id) : rows;
+    return scopedRows.map(vehicle => ({ ...vehicle, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)) }));
+  }),
+
+  /** 新建或维护运输车辆档案；司机角色不得修改车辆主数据。 */
+  saveVehicle: protectedProcedure.input(vehicleInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    if (roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "司机无权维护运输车辆档案" });
+    }
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: input.driverUserId ?? null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
+    if (input.id) {
+      const [existing] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
+      await assertProjectInCurrentScope(ctx, existing.projectId);
+      await db.update(transportVehicles).set(values).where(eq(transportVehicles.id, input.id));
+    } else {
+      await db.insert(transportVehicles).values(values);
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle" : "create_vehicle", targetType: "transport_vehicle", targetId: String(input.id ?? input.plateNo), summary: `${input.id ? "维护" : "新建"}运输车辆：${input.plateNo}` });
+    return { success: true, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor) };
+  }),
+
+  listFreightRules: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select().from(freightRateRules).where(eq(freightRateRules.projectId, input.projectId)).orderBy(desc(freightRateRules.effectiveFrom));
+  }),
+
+  /** 保存项目运输阶梯运价。司机无权维护合同价格，以防绕过审核调整运费。 */
+  saveFreightRule: protectedProcedure.input(freightRuleInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    if (roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "司机无权维护运输运价规则" });
+    }
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const values = { projectId: input.projectId, materialName: input.materialName ?? null, settlementUnit: input.settlementUnit, startDistanceKm: String(input.startDistanceKm), basePricePerUnit: String(roundMoney(input.basePricePerUnit)), stepMeters: input.stepMeters, stepIncreasePerUnit: String(roundMoney(input.stepIncreasePerUnit)), effectiveFrom: toBusinessDate(input.effectiveFrom), effectiveTo: input.effectiveTo ? toBusinessDate(input.effectiveTo) : null, status: input.status };
+    if (input.id) {
+      const [existing] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输运价规则不存在" });
+      await db.update(freightRateRules).set(values).where(eq(freightRateRules.id, input.id));
+    } else {
+      await db.insert(freightRateRules).values(values);
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_freight_rule" : "create_freight_rule", targetType: "freight_rate_rule", targetId: String(input.id ?? input.projectId), summary: `维护运输阶梯运价规则：${input.settlementUnit}` });
+    return { success: true };
+  }),
+
+  listTrips: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema.optional() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const predicates = [eq(transportTrips.projectId, input.projectId)];
+    if (input.date) {
+      const start = toBusinessDate(input.date);
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
+      predicates.push(gte(transportTrips.startAt, start), lt(transportTrips.startAt, end));
+    }
+    const rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
+    const user = requireAuthenticatedUser(ctx);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (!isDriverOnly) return rows;
+    const vehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
+    const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
+    return rows.filter(trip => vehicleIds.has(trip.vehicleId));
+  }),
+
+  /** 录入运输趟次并把当时运价和原始载货参数写入快照，后续修改价格规则不影响历史金额。 */
+  saveTrip: protectedProcedure.input(tripInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
+    if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态" });
+    const [rule] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, input.freightRuleId)).limit(1);
+    if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "未找到当前项目下可用的生效运价规则" });
+    const tripStart = new Date(input.startAt);
+    const ruleStart = new Date(rule.effectiveFrom);
+    const ruleEnd = rule.effectiveTo ? new Date(rule.effectiveTo) : null;
+    if (tripStart.getTime() < ruleStart.getTime() || (ruleEnd && tripStart.getTime() > new Date(ruleEnd.getTime() + 24 * 60 * 60 * 1000).getTime())) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "趟次发生日期不在当前运价规则有效期内" });
+    }
+    let theoreticalVolume: number;
+    try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
+    const volume = input.volumeCubicMeters ?? theoreticalVolume;
+    if (volume > theoreticalVolume * 1.5) throw new TRPCError({ code: "BAD_REQUEST", message: "申报方量超过车辆理论方量上限，请核对货厢尺寸或装载系数" });
+    const settlementQuantity = rule.settlementUnit === "cubic_meter" ? volume : rule.settlementUnit === "ton" ? input.weightTons : 1;
+    if (!settlementQuantity || settlementQuantity <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: rule.settlementUnit === "ton" ? "按吨结算必须填写有效载重" : "请填写有效结算数量" });
+    let price;
+    try {
+      price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
+    } catch (error) { throwDomainAsBadRequest(error); }
+    const tripNo = input.tripNo ?? `TR-${input.projectId}-${Date.now()}`;
+    const routeSnapshot = { source: "manual", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
+    await db.insert(transportTrips).values({
+      tripNo,
+      vehicleId: input.vehicleId,
+      projectId: input.projectId,
+      freightRuleId: input.freightRuleId,
+      startAt: tripStart,
+      endAt: input.endAt ? new Date(input.endAt) : null,
+      actualDistanceKm: String(input.actualDistanceKm),
+      volumeCubicMeters: String(volume),
+      weightTons: input.weightTons === null || input.weightTons === undefined ? null : String(input.weightTons),
+      calculatedUnitPrice: String(price.unitPrice),
+      calculatedAmount: String(price.totalAmount),
+      routeSnapshot,
+      evidenceId: input.evidenceId ?? null,
+      status: "draft",
+    });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_trip", targetType: "transport_trip", targetId: tripNo, summary: "录入运输趟次，运费由合同规则快照计算" });
+    return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume };
+  }),
+
+  /** 提交、核验、结算或作废运输趟次，确保历史运价快照与已结算金额不可回退。 */
+  transitionTrip: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), nextStatus: z.enum(["submitted", "verified", "settled", "void"]) })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.id)).limit(1);
+    if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输趟次不存在" });
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly && input.nextStatus !== "submitted") throw new TRPCError({ code: "FORBIDDEN", message: "司机仅可提交本人录入的运输趟次" });
+    if (isDriverOnly) await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
+    if (["verified", "void"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权核验或作废运输趟次" });
+    if (input.nextStatus === "settled" && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可确认运输结算" });
+    try { assertTransportTripStatusTransition(trip.status, input.nextStatus); } catch (error) { throwDomainAsBadRequest(error); }
+    await db.update(transportTrips).set({ status: input.nextStatus }).where(eq(transportTrips.id, input.id));
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}` });
+    return { success: true };
+  }),
+
+  /** 按自然日汇总趟次、方量、吨位和可结算运费，供日报与打印视图统一使用。 */
+  dailySummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { tripCount: 0, submittedCount: 0, verifiedCount: 0, settledCount: 0, volumeCubicMeters: 0, weightTons: 0, amount: 0 };
+    const start = toBusinessDate(input.date);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 1);
+    let rows = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), gte(transportTrips.startAt, start), lt(transportTrips.startAt, end)));
+    const user = requireAuthenticatedUser(ctx);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly) {
+      const vehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
+      const ownVehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
+      rows = rows.filter(trip => ownVehicleIds.has(trip.vehicleId));
+    }
+    const activeRows = rows.filter(trip => trip.status !== "void");
+    return {
+      tripCount: activeRows.length,
+      submittedCount: activeRows.filter(trip => trip.status === "submitted").length,
+      verifiedCount: activeRows.filter(trip => trip.status === "verified").length,
+      settledCount: activeRows.filter(trip => trip.status === "settled").length,
+      volumeCubicMeters: Math.round(activeRows.reduce((sum, trip) => sum + Number(trip.volumeCubicMeters ?? 0), 0) * 1000) / 1000,
+      weightTons: Math.round(activeRows.reduce((sum, trip) => sum + Number(trip.weightTons ?? 0), 0) * 1000) / 1000,
+      amount: roundMoney(activeRows.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0)),
+    };
+  }),
+});

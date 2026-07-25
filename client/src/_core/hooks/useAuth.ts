@@ -1,7 +1,7 @@
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -15,6 +15,11 @@ export function useAuth(options?: UseAuthOptions) {
   // desync it from an in-flight login's `state`.
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
+  /**
+   * 认证请求通常应在数秒内结束。超过阈值时不再让页面永久显示加载态，
+   * 而是安全地按未登录状态降级；用户仍可通过刷新或登录按钮重新发起认证。
+   */
+  const [authLoadingTimedOut, setAuthLoadingTimedOut] = useState(false);
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
     retry: false,
@@ -26,6 +31,15 @@ export function useAuth(options?: UseAuthOptions) {
       utils.auth.me.setData(undefined, null);
     },
   });
+
+  useEffect(() => {
+    if (!meQuery.isLoading) {
+      setAuthLoadingTimedOut(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setAuthLoadingTimedOut(true), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [meQuery.isLoading]);
 
   const logout = useCallback(async () => {
     try {
@@ -57,14 +71,16 @@ export function useAuth(options?: UseAuthOptions) {
     );
     return {
       user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
+      loading: (meQuery.isLoading && !authLoadingTimedOut) || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
       isAuthenticated: Boolean(meQuery.data),
+      authLoadingTimedOut,
     };
   }, [
     meQuery.data,
     meQuery.error,
     meQuery.isLoading,
+    authLoadingTimedOut,
     logoutMutation.error,
     logoutMutation.isPending,
   ]);
@@ -92,7 +108,11 @@ export function useAuth(options?: UseAuthOptions) {
 
   return {
     ...state,
-    refresh: () => meQuery.refetch(),
+    /** 手动重试会先清除超时降级标识，再调用 tRPC 的原始刷新逻辑。 */
+    refresh: () => {
+      setAuthLoadingTimedOut(false);
+      return meQuery.refetch();
+    },
     logout,
   };
 }

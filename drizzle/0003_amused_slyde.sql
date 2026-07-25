@@ -1,0 +1,2 @@
+ALTER TABLE `payroll_statements` DROP INDEX `payroll_worker_period_unique`;--> statement-breakpoint
+ALTER TABLE `payroll_statements` ADD CONSTRAINT `payroll_worker_project_period_unique` UNIQUE(`workerId`,`projectId`,`period`);

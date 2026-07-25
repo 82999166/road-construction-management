@@ -1,0 +1,1 @@
+ALTER TABLE `attendance_records` ADD `note` varchar(500);

@@ -21,16 +21,23 @@ import {
 } from "@/components/ui/sidebar";
 import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Users, type LucideIcon } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
 
-const menuItems = [
+const defaultMenuItems = [
   { icon: LayoutDashboard, label: "Page 1", path: "/" },
   { icon: Users, label: "Page 2", path: "/some-path" },
 ];
+
+/** 侧边栏菜单由上层页面传入，便于独立的超级管理后台复用预置布局。 */
+export type DashboardMenuItem = {
+  icon: LucideIcon;
+  label: string;
+  path: string;
+};
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -39,8 +46,12 @@ const MAX_WIDTH = 480;
 
 export default function DashboardLayout({
   children,
+  title = "管理工作台",
+  menuItems = defaultMenuItems,
 }: {
   children: React.ReactNode;
+  title?: string;
+  menuItems?: DashboardMenuItem[];
 }) {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -88,7 +99,7 @@ export default function DashboardLayout({
         } as CSSProperties
       }
     >
-      <DashboardLayoutContent setSidebarWidth={setSidebarWidth}>
+      <DashboardLayoutContent setSidebarWidth={setSidebarWidth} title={title} menuItems={menuItems}>
         {children}
       </DashboardLayoutContent>
     </SidebarProvider>
@@ -98,11 +109,15 @@ export default function DashboardLayout({
 type DashboardLayoutContentProps = {
   children: React.ReactNode;
   setSidebarWidth: (width: number) => void;
+  title: string;
+  menuItems: DashboardMenuItem[];
 };
 
 function DashboardLayoutContent({
   children,
   setSidebarWidth,
+  title,
+  menuItems,
 }: DashboardLayoutContentProps) {
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
@@ -110,7 +125,7 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => item.path === location);
+  const activeMenuItem = menuItems.find(item => location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`)));
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -168,9 +183,7 @@ function DashboardLayoutContent({
               </button>
               {!isCollapsed ? (
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold tracking-tight truncate">
-                    Navigation
-                  </span>
+                    <span className="font-semibold tracking-tight truncate">{title}</span>
                 </div>
               ) : null}
             </div>
@@ -179,7 +192,7 @@ function DashboardLayoutContent({
           <SidebarContent className="gap-0">
             <SidebarMenu className="px-2 py-1">
               {menuItems.map(item => {
-                const isActive = location === item.path;
+                const isActive = location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`));
                 return (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
@@ -213,7 +226,7 @@ function DashboardLayoutContent({
                       {user?.name || "-"}
                     </p>
                     <p className="text-xs text-muted-foreground truncate mt-1.5">
-                      {user?.email || "-"}
+                      {user?.email || "已登录用户"}
                     </p>
                   </div>
                 </button>
@@ -224,7 +237,7 @@ function DashboardLayoutContent({
                   className="cursor-pointer text-destructive focus:text-destructive"
                 >
                   <LogOut className="mr-2 h-4 w-4" />
-                  <span>Sign out</span>
+                  <span>退出登录</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

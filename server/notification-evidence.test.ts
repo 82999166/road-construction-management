@@ -1,0 +1,97 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TrpcContext } from "./_core/context";
+
+/** 所有外部基础设施均使用 Mock，测试不读取真实影像、不调用模型也不向企业微信发送网络请求。 */
+vi.mock("./db", () => ({ getDb: vi.fn() }));
+vi.mock("./storage", () => ({ storageGet: vi.fn(), storageGetSignedUrl: vi.fn(), storagePut: vi.fn() }));
+vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn() }));
+vi.mock("./services/secretVault", () => ({ decryptSecret: vi.fn((value: string) => value.replace(/^cipher:/, "")) }));
+vi.mock("./access", async importOriginal => {
+  const actual = await importOriginal<typeof import("./access")>();
+  return { ...actual, assertProjectInCurrentScope: vi.fn(), getCurrentDataScope: vi.fn(), getEffectiveRoleCodes: vi.fn() };
+});
+
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes } from "./access";
+import { getDb } from "./db";
+import { invokeLLM } from "./_core/llm";
+import { evidenceRouter } from "./routers/evidence";
+import { createInAppMessage, messageRouter } from "./routers/messages";
+import { sendWecomTextNotification } from "./services/wecomNotifier";
+import { storageGetSignedUrl } from "./storage";
+
+type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
+
+/** 生成最小登录态，所有真正的权限校验仍由路由调用的访问控制函数承担。 */
+function createAuthContext(): TrpcContext {
+  const user: AuthenticatedUser = { id: 9, openId: "notification-test-user", email: "notification-test@example.com", name: "消息测试人员", loginMethod: "manus", role: "user", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() };
+  return { user, req: {} as TrpcContext["req"], res: {} as TrpcContext["res"] };
+}
+
+/** 兼容路由不同查询链的轻量 Drizzle Mock。 */
+function createSelectDb(rows: unknown[]) {
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })), limit: vi.fn(async () => rows) })),
+        orderBy: vi.fn(async () => rows),
+      })),
+    })),
+    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+  };
+}
+
+describe("消息、影像与企业微信通知安全边界", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["SITE_MANAGER"]);
+    vi.mocked(getCurrentDataScope).mockResolvedValue({ hasAllProjects: false, projectIds: [2], organizationIds: [5], roleCodes: ["SITE_MANAGER"] });
+    vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+  });
+
+  it("消息列表只以当前登录收件人为条件，且站内消息拒绝开放跳转深链", async () => {
+    const db = createSelectDb([{ id: 1, eventCode: "PAYROLL_APPROVED", title: "工资审核完成", content: "请在系统内查看", deepLink: "/mobile/labor", status: "sent", sentAt: new Date(), readAt: null, createdAt: new Date() }]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(messageRouter.createCaller(createAuthContext()).list({ limit: 20 })).resolves.toHaveLength(1);
+    await expect(createInAppMessage({ eventCode: "TEST", idempotencyKey: "message-test-1", recipientUserId: 9, title: "测试", content: "测试内容", deepLink: "https://untrusted.example" })).rejects.toThrow("消息深链必须为站内相对路径");
+  });
+
+  it("影像项目选择仅返回当前数据范围内的项目，并在对象存储前拒绝非法 Base64 编码", async () => {
+    const db = createSelectDb([
+      { id: 1, name: "组织范围项目", organizationId: 5, status: "active" },
+      { id: 2, name: "项目直授权", organizationId: null, status: "active" },
+      { id: 3, name: "无权项目", organizationId: 6, status: "active" },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const options = await evidenceRouter.createCaller(createAuthContext()).projectOptions();
+    expect(options.map(item => item.id)).toEqual([1, 2]);
+    await expect(evidenceRouter.createCaller(createAuthContext()).upload({ projectId: 2, sourceType: "site_photo", description: "路面摊铺现场", capturedAt: "2026-07-25T04:00:00.000Z", longitude: 120.1, latitude: 30.2, fileName: "现场.jpg", mimeType: "image/jpeg", base64Data: "%%%" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("票据 OCR 仅处理已授权项目的影像，并强制将模型结果标记为人工复核", async () => {
+    const db = createSelectDb([{ id: 88, projectId: 2, fileKey: "evidence/2/receipt.jpg", mimeType: "image/jpeg" }]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(storageGetSignedUrl).mockResolvedValue("https://storage.example/signed-receipt.jpg" as never);
+    vi.mocked(invokeLLM).mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ documentType: "收据", issuer: "", documentNo: "", issueDate: "", amount: "", currency: "", summary: "", confidence: 0.42, requiresManualReview: false }) } }] } as never);
+
+    const result = await evidenceRouter.createCaller(createAuthContext()).ocr({ id: 88 });
+
+    expect(assertProjectInCurrentScope).toHaveBeenCalledWith(expect.anything(), 2);
+    expect(invokeLLM).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 700 }));
+    expect(result.ocrResult.requiresManualReview).toBe(true);
+    expect(result.ocrResult.documentType).toBe("收据");
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("企业微信通知仅使用已发布、加密且官方域名的配置，非法地址不会发起网络请求", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createSelectDb([{ status: "published", isSensitive: true, secretEncrypted: "cipher:https://invalid.example/webhook?key=x" }]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(sendWecomTextNotification("【系统】测试通知")).resolves.toEqual({ delivered: false, reason: "invalid_config" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
