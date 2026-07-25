@@ -9,6 +9,13 @@ vi.mock("@/_core/hooks/useAuth", () => ({
 
 vi.mock("@/const", () => ({ startLogin: vi.fn() }));
 
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
+    auth: { localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) } },
+  },
+}));
+
 vi.mock("wouter", () => ({
   useLocation: () => ["/login", vi.fn()],
 }));
@@ -16,13 +23,15 @@ vi.mock("wouter", () => ({
 import LoginPage from "./LoginPage";
 
 describe("独立登录页", () => {
-  it("展示统一身份认证入口且不渲染本地密码字段", () => {
+  it("保留统一身份认证入口，并展示仅供初始化使用的临时管理后台登录表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
     expect(markup).toContain("账号恢复与密码重置");
     expect(markup).toContain('href="/api/identity-recovery"');
-    expect(markup).toContain("系统不保存企业账号密码");
-    expect(markup).not.toContain('type="password"');
+    expect(markup).toContain("临时管理后台登录");
+    expect(markup).toContain("仅用于初始化或应急管理");
+    expect(markup).toContain('type="password"');
+    expect(markup).not.toContain("admin123");
   });
 
   it("认证会话已准备就绪时回到受控的原业务路径", () => {

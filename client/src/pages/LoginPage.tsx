@@ -1,24 +1,31 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { startLogin } from "@/const";
 import {
   getAuthenticatedLoginRedirectTarget,
   getLoginReturnPath,
   rememberPostLoginReturnPath,
 } from "@/lib/authNavigation";
+import { trpc } from "@/lib/trpc";
 import { ArrowRight, HardHat, KeyRound, ShieldCheck } from "lucide-react";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
 /**
- * 独立登录页面只负责发起统一身份认证，不收集、存储或校验本地账号密码。
- * 用户主动点击后才调用 OAuth 跳转函数，以保持一次性 nonce 与浏览器 Cookie 配对。
+ * 企业人员默认走统一身份认证；初始化期间，临时超级管理员可通过受控服务端接口登录。
+ * 本页面从不保存口令，临时口令仅随本次 HTTPS 请求发送给服务端进行不可逆摘要校验。
  */
 export default function LoginPage() {
   const { isAuthenticated, loading } = useAuth();
+  const utils = trpc.useUtils();
   const [location, navigate] = useLocation();
+  const [temporaryUsername, setTemporaryUsername] = useState("");
+  const [temporaryPassword, setTemporaryPassword] = useState("");
   const returnTo = getLoginReturnPath(location.includes("?") ? `?${location.split("?")[1]}` : "");
   const redirectTarget = getAuthenticatedLoginRedirectTarget(isAuthenticated, loading, returnTo);
+  const temporaryLogin = trpc.auth.localAdminLogin.useMutation();
 
   useEffect(() => {
     if (redirectTarget) navigate(redirectTarget);
@@ -27,6 +34,18 @@ export default function LoginPage() {
   function handleLogin() {
     rememberPostLoginReturnPath(returnTo);
     startLogin();
+  }
+
+  async function handleTemporaryAdminLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await temporaryLogin.mutateAsync({ username: temporaryUsername.trim(), password: temporaryPassword });
+      setTemporaryPassword("");
+      await utils.auth.me.invalidate();
+      navigate(returnTo);
+    } catch {
+      setTemporaryPassword("");
+    }
   }
 
   return (
@@ -41,7 +60,7 @@ export default function LoginPage() {
             <div className="mt-16 max-w-md">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />统一身份认证</span>
               <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">安全进入施工业务与管理后台。</h1>
-              <p className="mt-5 text-sm leading-7 text-[#ead4bc]">系统不保存企业账号密码。登录、找回与密码管理由您的统一身份提供方负责，业务权限则在本系统内按岗位与项目范围校验。</p>
+              <p className="mt-5 text-sm leading-7 text-[#ead4bc]">企业人员通过统一身份认证进入系统，业务权限按岗位与项目范围校验。初始化期间，系统管理员可使用受控的临时本地登录入口；口令只在服务器端校验。</p>
             </div>
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
@@ -52,6 +71,24 @@ export default function LoginPage() {
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+            <form className="mt-5 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />临时管理后台登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">仅用于初始化或应急管理；登录成功后拥有超级管理员权限，请尽快替换临时口令。</p>
+              <div className="mt-3 grid gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="temporary-admin-username">账号</Label>
+                  <Input id="temporary-admin-username" autoComplete="username" value={temporaryUsername} onChange={event => setTemporaryUsername(event.target.value)} disabled={temporaryLogin.isPending} required />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="temporary-admin-password">密码</Label>
+                  <Input id="temporary-admin-password" type="password" autoComplete="current-password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} disabled={temporaryLogin.isPending} required />
+                </div>
+              </div>
+              {temporaryLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{temporaryLogin.error.message}</p> : null}
+              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={temporaryLogin.isPending}>
+                {temporaryLogin.isPending ? "正在安全登录…" : "临时管理员登录"}
+              </Button>
+            </form>
             <a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a>
             <p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请联系系统管理员核查账号状态与项目授权。</p>
           </div>

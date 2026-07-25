@@ -8,6 +8,13 @@ vi.mock("@/_core/hooks/useAuth", () => ({
 
 vi.mock("@/const", () => ({ startLogin: vi.fn() }));
 
+vi.mock("@/lib/trpc", () => ({
+  trpc: {
+    useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
+    auth: { localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) } },
+  },
+}));
+
 vi.mock("wouter", () => ({
   useLocation: () => ["/login?returnTo=%2Fmobile%2Flabor", mockNavigate],
 }));
@@ -17,6 +24,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useEffect: (effect: () => void) => effect(),
+    useState: <T,>(initialValue: T) => [initialValue, vi.fn()] as const,
   };
 });
 
