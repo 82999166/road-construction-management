@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
 
 vi.mock("@/_core/hooks/useAuth", () => ({
-  useAuth: () => ({ isAuthenticated: true, loading: false }),
+  useAuth: () => ({ isAuthenticated: true, loading: false, user: null }),
 }));
 
 vi.mock("@/const", () => ({ startLogin: vi.fn() }));
@@ -11,7 +11,11 @@ vi.mock("@/const", () => ({ startLogin: vi.fn() }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
     useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
-    auth: { localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) } },
+    auth: {
+      localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      localManagerLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      changeLocalPassword: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+    },
   },
 }));
 

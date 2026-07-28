@@ -25,11 +25,21 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
+  /** 仅后台创建的普通本地账号使用；OAuth 用户保持为 null。 */
+  localUsername: varchar("localUsername", { length: 64 }),
+  /** 使用 scrypt 生成的不可逆口令摘要，绝不向客户端或审计日志返回。 */
+  localPasswordHash: varchar("localPasswordHash", { length: 256 }),
+  /** 停用后服务端会拒绝该本地账号的所有后续会话请求。 */
+  localAccountStatus: mysqlEnum("localAccountStatus", ["active", "disabled"]).default("active").notNull(),
+  /** 管理员初始化或重置口令后，普通人员必须先在登录页完成改密。 */
+  localPasswordChangeRequired: boolean("localPasswordChangeRequired").default(false).notNull(),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
+}, table => ({
+  localUsernameUnique: uniqueIndex("users_local_username_unique").on(table.localUsername),
+}));
 
 /** 可维护的组织树，支持集团、公司、项目部、部门和班组等节点。 */
 export const organizations = mysqlTable(

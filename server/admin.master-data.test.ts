@@ -108,6 +108,7 @@ describe("超级管理主数据约束", () => {
 
   it("业务角色授权拒绝归档项目，防止历史项目重新获得业务写入范围", async () => {
     const db = createSequentialLimitDb(
+      [{ id: 12, loginMethod: "oauth" }],
       [{ code: "TRANSPORT_MANAGER" }],
       [{ type: "department", status: "active" }],
       [{ status: "archived" }],

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getAuthenticatedLoginRedirectTarget } from "@/lib/authNavigation";
 
 vi.mock("@/_core/hooks/useAuth", () => ({
-  useAuth: () => ({ isAuthenticated: false, loading: false }),
+  useAuth: () => ({ isAuthenticated: false, loading: false, user: null }),
 }));
 
 vi.mock("@/const", () => ({ startLogin: vi.fn() }));
@@ -12,7 +12,11 @@ vi.mock("@/const", () => ({ startLogin: vi.fn() }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
     useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
-    auth: { localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) } },
+    auth: {
+      localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      localManagerLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      changeLocalPassword: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+    },
   },
 }));
 
@@ -23,13 +27,15 @@ vi.mock("wouter", () => ({
 import LoginPage from "./LoginPage";
 
 describe("独立登录页", () => {
-  it("保留统一身份认证入口，并展示仅供初始化使用的临时管理后台登录表单", () => {
+  it("保留统一身份认证入口，并展示普通管理人员与临时管理员的受控本地登录表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
     expect(markup).toContain("账号恢复与密码重置");
     expect(markup).toContain('href="/api/identity-recovery"');
     expect(markup).toContain("临时管理后台登录");
     expect(markup).toContain("仅用于初始化或应急管理");
+    expect(markup).toContain("普通管理人员账号登录");
+    expect(markup).toContain("账号由超级管理员在后台创建");
     expect(markup).toContain('type="password"');
     expect(markup).not.toContain("admin123");
   });

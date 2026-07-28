@@ -45,6 +45,15 @@ const requireUser = t.middleware(async opts => {
   });
 });
 
+/** 初始口令或后台重置口令后，普通本地账号只能改密或安全退出，不能直接读取或写入业务数据。 */
+const requireLocalManagerPasswordChange = t.middleware(async opts => {
+  const { ctx, next, path } = opts;
+  if (ctx.user?.loginMethod === "local_manager" && ctx.user.localPasswordChangeRequired && path !== "auth.changeLocalPassword" && path !== "auth.logout") {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "请先完成初始密码修改后再进入业务工作台" });
+  }
+  return next({ ctx });
+});
+
 const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   const { ctx, next, path, type, input } = opts;
   if (type !== "mutation" || !isScopedBusinessMutation(path)) {
@@ -62,7 +71,7 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   return next({ ctx });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser).use(restrictOrdinaryManagerBusinessMutation);
+export const protectedProcedure = t.procedure.use(requireUser).use(requireLocalManagerPasswordChange).use(restrictOrdinaryManagerBusinessMutation);
 
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {

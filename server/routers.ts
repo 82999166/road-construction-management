@@ -1,8 +1,8 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
-import { loginTemporaryAdmin } from "./localAuth";
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { changeLocalManagerPassword, loginLocalManager, loginTemporaryAdmin } from "./localAuth";
 import { adminRouter } from "./routers/admin";
 import { evidenceRouter } from "./routers/evidence";
 import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
@@ -28,6 +28,18 @@ export const appRouter = router({
         password: z.string().min(1).max(256),
       }))
       .mutation(({ ctx, input }) => loginTemporaryAdmin(ctx, input)),
+    localManagerLogin: publicProcedure
+      .input(z.object({
+        username: z.string().trim().min(1).max(64),
+        password: z.string().min(1).max(256),
+      }))
+      .mutation(({ ctx, input }) => loginLocalManager(ctx, input)),
+    changeLocalPassword: protectedProcedure
+      .input(z.object({
+        currentPassword: z.string().min(1).max(256),
+        newPassword: z.string().min(12, "新密码至少 12 位").max(128).refine(value => /[A-Za-z]/.test(value) && /\d/.test(value), "新密码须同时包含字母和数字"),
+      }))
+      .mutation(({ ctx, input }) => changeLocalManagerPassword(ctx, input)),
   }),
   admin: adminRouter,
   mobile: mobileRouter,

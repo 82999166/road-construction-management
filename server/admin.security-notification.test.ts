@@ -75,7 +75,7 @@ describe("后台安全通知", () => {
   });
 
   it("人员授权变更同时写入用户可见的站内提醒和企业微信审计事件", async () => {
-    const db = createAdminDb([[{ code: "SUPER_ADMIN" }], [{ id: 88, status: "active" }]]);
+    const db = createAdminDb([[{ id: 18, loginMethod: "oauth" }], [{ code: "SUPER_ADMIN" }], [{ id: 88, status: "active" }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).resolves.toEqual({ success: true });
@@ -85,7 +85,7 @@ describe("后台安全通知", () => {
   });
 
   it("普通业务角色授权必须绑定启用的部门或项目部", async () => {
-    const db = createAdminDb([[{ code: "LABOR_MANAGER" }]]);
+    const db = createAdminDb([[{ id: 18, loginMethod: "oauth" }], [{ code: "LABOR_MANAGER" }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).rejects.toMatchObject({

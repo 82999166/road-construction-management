@@ -310,5 +310,14 @@ export function maskSensitiveValue(value: string | null | undefined, visibleTail
 export async function listLoginUsers() {
   const db = await getDb();
   if (!db) return [];
-  return db.select({ id: users.id, name: users.name, role: users.role, lastSignedIn: users.lastSignedIn }).from(users);
+  return db.select({
+    id: users.id,
+    name: users.name,
+    role: users.role,
+    loginMethod: users.loginMethod,
+    localUsername: users.localUsername,
+    localAccountStatus: users.localAccountStatus,
+    localPasswordChangeRequired: users.localPasswordChangeRequired,
+    lastSignedIn: users.lastSignedIn,
+  }).from(users);
 }

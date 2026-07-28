@@ -137,6 +137,7 @@ export default function AdminPage() {
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
   const [roleForm, setRoleForm] = useState({ code: "", name: "", description: "" });
   const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
+  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" as "active" | "disabled" });
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState({
     category: "企业微信",
@@ -212,6 +213,21 @@ export default function AdminPage() {
       setAssignmentForm({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
       await assignments.refetch();
     },
+  });
+  const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
+    onSuccess: async () => {
+      toast.success("普通管理人员账号已创建，请继续配置角色、部门和项目范围");
+      setLocalAccountForm({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" });
+      await Promise.all([users.refetch(), audits.refetch(), overview.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const setLocalUserStatus = trpc.admin.personnel.setLocalUserStatus.useMutation({
+    onSuccess: async () => {
+      toast.success("本地账号状态已更新；已停用账号的后续请求会被服务端拒绝");
+      await Promise.all([users.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const saveDepartmentScope = trpc.admin.department.saveScope.useMutation({
     onSuccess: async () => {
@@ -567,9 +583,23 @@ export default function AdminPage() {
           </CardContent>
         </Card>
         <Card>
+          <CardHeader><CardTitle className="text-base">新增普通管理人员账号</CardTitle><CardDescription>在此创建本地登录账号。初始密码只会在本次安全请求中生成不可逆摘要，不能查看、导出或在审计中回显；创建后须继续授予角色、部门与项目范围。</CardDescription></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="grid gap-1.5"><Label htmlFor="local-account-username">登录账号</Label><Input id="local-account-username" autoComplete="off" value={localAccountForm.username} onChange={event => setLocalAccountForm({ ...localAccountForm, username: event.target.value })} placeholder="例如：zhangsan" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="local-account-name">显示姓名</Label><Input id="local-account-name" value={localAccountForm.displayName} onChange={event => setLocalAccountForm({ ...localAccountForm, displayName: event.target.value })} placeholder="例如：张三" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="local-account-password">初始密码</Label><Input id="local-account-password" type="password" autoComplete="new-password" value={localAccountForm.initialPassword} onChange={event => setLocalAccountForm({ ...localAccountForm, initialPassword: event.target.value })} placeholder="至少 12 位，含字母和数字" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="local-account-wecom">企业微信员工标识（可选）</Label><Input id="local-account-wecom" value={localAccountForm.wecomUserId} onChange={event => setLocalAccountForm({ ...localAccountForm, wecomUserId: event.target.value })} placeholder="企业微信 UserID" /></div>
+              <div className="grid gap-1.5"><Label>初始状态</Label><Select value={localAccountForm.status} onValueChange={value => setLocalAccountForm({ ...localAccountForm, status: value as "active" | "disabled" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
+              <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate({ ...localAccountForm, wecomUserId: localAccountForm.wecomUserId.trim() || null })}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
+            </div>
+            {users.data?.some(user => user.loginMethod === "local_manager") ? <div className="space-y-2">{users.data.filter(user => user.loginMethod === "local_manager").map(user => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{user.name || `用户 #${user.id}`} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">{user.localPasswordChangeRequired ? "待首次改密" : "密码已激活"} · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex items-center gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button></div></div>)}</div> : <EmptyState text="尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。" />}
+          </CardContent>
+        </Card>
+        <Card>
           <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色必须绑定所属部门或项目部；项目范围和有效期继续由服务端统一校验，账号敏感字段不在此界面展示。</CardDescription></CardHeader>
           <CardContent className="grid gap-3 lg:grid-cols-3">
-            <Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select>
+            <Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}{user.localUsername ? `（${user.localUsername}）` : ""}</SelectItem>)}</SelectContent></Select>
             <Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}</SelectItem>)}</SelectContent></Select>
             <Select value={assignmentForm.organizationId || "UNASSIGNED"} onValueChange={value => setAssignmentForm({ ...assignmentForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择所属部门" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">不设置（仅超级管理员）</SelectItem>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
             <Select value={assignmentForm.projectId || "ALL"} onValueChange={value => setAssignmentForm({ ...assignmentForm, projectId: value === "ALL" ? "" : value })}><SelectTrigger><SelectValue placeholder="项目范围（可选）" /></SelectTrigger><SelectContent><SelectItem value="ALL">全部项目（按角色权限）</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select>

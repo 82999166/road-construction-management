@@ -17,6 +17,7 @@ import {
   systemSettings,
   transportTrips,
   transportVehicles,
+  userProfiles,
   userRoleAssignments,
   users,
 } from "../../drizzle/schema";
@@ -29,6 +30,7 @@ import { notifyWecomBusinessEvent } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
+import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -76,6 +78,20 @@ const departmentBusinessScopeInput = z.object({
   organizationId: z.number().int().positive(),
   module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"]),
   status: z.enum(["active", "disabled"]).default("active"),
+});
+
+/** 超级管理员只能创建普通本地账号，初始密码仅在本次请求中用于生成不可逆摘要。 */
+const localManagerAccountInput = z.object({
+  username: z.string().trim().min(3).max(48),
+  displayName: z.string().trim().min(2).max(128),
+  initialPassword: z.string().min(12, "初始密码至少 12 位").max(128).refine(value => /[A-Za-z]/.test(value) && /\d/.test(value), "初始密码须同时包含字母和数字"),
+  status: z.enum(["active", "disabled"]).default("active"),
+  wecomUserId: z.string().trim().min(1).max(128).nullable().optional(),
+});
+
+const localManagerStatusInput = z.object({
+  userId: z.number().int().positive(),
+  status: z.enum(["active", "disabled"]),
 });
 
 /** API 密钥、令牌和密码类配置必须使用服务端加密托管，避免被当作普通参数保存。 */
@@ -510,6 +526,66 @@ export const adminRouter = router({
       if (!db) return [];
       return db.select().from(userRoleAssignments).orderBy(desc(userRoleAssignments.createdAt));
     }),
+    createLocalUser: protectedProcedure.input(localManagerAccountInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const database = await getDb();
+      if (!database) throw new Error("数据库连接暂不可用");
+      const localUsername = normalizeLocalManagerUsername(input.username);
+      if (!isValidLocalManagerUsername(localUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+      }
+      const existing = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
+      if (existing[0]) throw new TRPCError({ code: "CONFLICT", message: "该本地账号已存在" });
+
+      await database.insert(users).values({
+        openId: createLocalManagerOpenId(localUsername),
+        name: input.displayName,
+        loginMethod: "local_manager",
+        role: "user",
+        localUsername,
+        localPasswordHash: createLocalManagerPasswordHash(input.initialPassword),
+        localAccountStatus: input.status,
+        localPasswordChangeRequired: true,
+        lastSignedIn: new Date(),
+      });
+      const [createdUser] = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
+      if (!createdUser) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "普通管理人员账号创建失败，请稍后重试" });
+
+      await database.insert(userProfiles).values({
+        userId: createdUser.id,
+        wecomUserId: input.wecomUserId ?? null,
+        status: input.status === "active" ? "pending" : "disabled",
+      });
+      await database.insert(auditLogs).values({
+        userId: admin.id,
+        module: "permission",
+        action: "create_local_manager_account",
+        targetType: "user",
+        targetId: String(createdUser.id),
+        summary: `创建普通管理人员本地账号：${input.displayName}`,
+      });
+      return { success: true, userId: createdUser.id };
+    }),
+    setLocalUserStatus: protectedProcedure.input(localManagerStatusInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const database = await getDb();
+      if (!database) throw new Error("数据库连接暂不可用");
+      const [target] = await database.select({ id: users.id, name: users.name, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (!target || target.loginMethod !== "local_manager") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "仅可启用或停用由后台创建的普通本地账号" });
+      }
+      await database.update(users).set({ localAccountStatus: input.status }).where(eq(users.id, target.id));
+      await database.update(userProfiles).set({ status: input.status === "active" ? "pending" : "disabled" }).where(eq(userProfiles.userId, target.id));
+      await database.insert(auditLogs).values({
+        userId: admin.id,
+        module: "permission",
+        action: input.status === "active" ? "enable_local_manager_account" : "disable_local_manager_account",
+        targetType: "user",
+        targetId: String(target.id),
+        summary: `${input.status === "active" ? "启用" : "停用"}普通管理人员本地账号：${target.name || `用户 #${target.id}`}`,
+      });
+      return { success: true };
+    }),
     saveAssignment: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), userId: z.number().int().positive(), roleId: z.number().int().positive(), organizationId: z.number().int().positive().nullable().optional(), projectId: z.number().int().positive().nullable().optional(), validFrom: z.string().datetime().nullable().optional(), validTo: z.string().datetime().nullable().optional(), status: z.enum(["active", "revoked", "expired"]).default("active") }))
       .mutation(async ({ ctx, input }) => {
@@ -521,8 +597,13 @@ export const adminRouter = router({
         if (validFrom && validTo && validTo <= validFrom) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "授权失效时间必须晚于生效时间" });
         }
+        const [targetUser] = await db.select({ id: users.id, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
+        if (!targetUser) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的管理人员账号" });
         const [assignedRole] = await db.select({ code: systemRoles.code }).from(systemRoles).where(eq(systemRoles.id, input.roleId)).limit(1);
         if (!assignedRole) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的系统角色" });
+        if (targetUser.loginMethod === "local_manager" && assignedRole.code === "SUPER_ADMIN") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "普通管理人员账号不得被授予超级管理员权限" });
+        }
         if (assignedRole.code !== "SUPER_ADMIN" && !input.organizationId) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "业务角色授权必须选择所属部门或项目部" });
         }

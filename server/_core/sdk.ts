@@ -311,6 +311,11 @@ class SDKServer {
       throw ForbiddenError("User not found");
     }
 
+    /** 后台停用普通本地账号后，任何已签发 Cookie 都不能继续访问受保护接口。 */
+    if (user.loginMethod === "local_manager" && user.localAccountStatus !== "active") {
+      throw ForbiddenError("Local manager account is disabled");
+    }
+
     await db.upsertUser({
       openId: user.openId,
       lastSignedIn: signedInAt,
