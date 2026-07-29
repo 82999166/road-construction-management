@@ -54,6 +54,16 @@ type WorkbenchSnapshot = {
 
 const WORKBENCH_SNAPSHOT_KEY = "road-construction-workbench-snapshot";
 
+/**
+ * 预览代理、移动 WebView 或网络从离线恢复时，浏览器可能在请求尚未抵达服务端前抛出 Failed to fetch。
+ * 仅对此类传输层错误作有限重试；权限、输入校验和业务错误必须立即交由服务端返回，不能被客户端重试掩盖。
+ */
+export function shouldRetryMobileWorkbenchRequest(failureCount: number, error: unknown) {
+  if (failureCount >= 2) return false;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /failed to fetch|networkerror|network request failed|load failed/i.test(message);
+}
+
 /** 仅缓存已脱敏的工作台摘要；项目明细和业务数据仍需联网后由服务端重新鉴权。 */
 function readWorkbenchSnapshot(): WorkbenchSnapshot | null {
   try {
@@ -75,7 +85,9 @@ export default function MobileWorkbench() {
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(() => readWorkbenchSnapshot());
   const workbench = trpc.mobile.workbench.useQuery(undefined, {
     enabled: isAuthenticated,
-    retry: false,
+    retry: shouldRetryMobileWorkbenchRequest,
+    retryDelay: attemptIndex => Math.min(500 * 2 ** attemptIndex, 2_000),
+    refetchOnReconnect: true,
   });
 
   /** 离线缓存仅可阅读，不允许通过重试按钮主动发起业务接口调用。 */
@@ -84,7 +96,10 @@ export default function MobileWorkbench() {
   };
 
   useEffect(() => {
-    const markOnline = () => setIsOnline(true);
+    const markOnline = () => {
+      setIsOnline(true);
+      void workbench.refetch();
+    };
     const markOffline = () => setIsOnline(false);
     window.addEventListener("online", markOnline);
     window.addEventListener("offline", markOffline);
@@ -92,7 +107,7 @@ export default function MobileWorkbench() {
       window.removeEventListener("online", markOnline);
       window.removeEventListener("offline", markOffline);
     };
-  }, []);
+  }, [workbench.refetch]);
 
   useEffect(() => {
     if (!workbench.data) return;
@@ -136,11 +151,12 @@ export default function MobileWorkbench() {
     />;
   }
 
-  if (workbench.error && isOnline) {
-    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-sm text-[#f8ead7]">工作台加载失败：{workbench.error.message}<Button variant="outline" className="mt-4 border-[#c9854a] text-[#fff8ed]" onClick={() => workbench.refetch()}>重新加载</Button></div>;
+  if (workbench.error && isOnline && !snapshot) {
+    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-[#f8ead7]"><div className="max-w-xs"><div className="mx-auto grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><CloudOff className="h-8 w-8" /></div><h1 className="mt-6 text-2xl font-semibold">工作台暂时无法连接</h1><p className="mt-3 text-sm leading-6 text-[#e6cdb0]">网络正在恢复或服务正在重新连接。系统已自动重试；您也可以稍后手动同步。</p><Button variant="outline" className="mt-6 border-[#c9854a] text-[#fff8ed]" onClick={retryWorkbench}><RefreshCw className="mr-1.5 h-4 w-4" />重新同步</Button></div></div>;
   }
 
   const activeWorkbench = isOnline ? workbench.data : undefined;
+  const isUsingSnapshot = !activeWorkbench && Boolean(snapshot);
   const menus = (activeWorkbench?.menus ?? snapshot?.menus ?? []).filter(menu => menu.code !== "WORKBENCH");
   // 消息中心属于所有已登录人员的通用入口，已由顶部和底部导航提供；“我的业务”只展示部门可办理模块。
   const businessMenus = menus.filter(menu => menu.code !== "MESSAGES");
@@ -168,7 +184,7 @@ export default function MobileWorkbench() {
         </header>
 
         <main className="space-y-6 px-5 pb-24 pt-5">
-          {!isOnline ? <section role="status" className="flex items-start gap-3 rounded-2xl border border-[#dfb78a] bg-[#fff0db] p-3 text-[#6d3d20]"><CloudOff className="mt-0.5 h-4 w-4 shrink-0" /><div className="min-w-0"><p className="text-xs font-semibold">离线查看模式</p><p className="mt-1 text-xs leading-5">正在显示本机上次同步的岗位菜单和摘要（{new Date(snapshot?.savedAt ?? Date.now()).toLocaleString()}）。离线期间不可提交业务操作。</p></div><button aria-label="恢复网络后重新尝试同步" disabled className="ml-auto rounded-lg p-1.5 transition-colors hover:bg-[#f5dfc4] disabled:cursor-not-allowed disabled:opacity-50" onClick={retryWorkbench}><RefreshCw className="h-4 w-4" /></button></section> : null}
+          {isUsingSnapshot ? <section role="status" className="flex items-start gap-3 rounded-2xl border border-[#dfb78a] bg-[#fff0db] p-3 text-[#6d3d20]"><CloudOff className="mt-0.5 h-4 w-4 shrink-0" /><div className="min-w-0"><p className="text-xs font-semibold">{isOnline ? "网络连接暂时不稳定" : "离线查看模式"}</p><p className="mt-1 text-xs leading-5">正在显示本机上次同步的岗位菜单和摘要（{new Date(snapshot?.savedAt ?? Date.now()).toLocaleString()}）。{isOnline ? "网络恢复后会自动同步，您也可以立即重新同步。" : "离线期间不可提交业务操作。"}</p></div><button aria-label="恢复网络后重新尝试同步" disabled={!isOnline} className="ml-auto rounded-lg p-1.5 transition-colors hover:bg-[#f5dfc4] disabled:cursor-not-allowed disabled:opacity-50" onClick={retryWorkbench}><RefreshCw className="h-4 w-4" /></button></section> : null}
           <section className="grid grid-cols-2 gap-3">
             {[{ label: "待处理审批", value: statistics?.pendingApprovals ?? 0, icon: ClipboardCheck, tone: "bg-[#fff1df] text-[#9b4f25]" }, { label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }, { label: "未读消息", value: statistics?.unreadMessages ?? 0, icon: Bell, tone: "bg-[#efe9dd] text-[#655244]" }].map(item => {
               // 将图标提升为大写组件变量，符合 JSX 动态组件的语法约束。

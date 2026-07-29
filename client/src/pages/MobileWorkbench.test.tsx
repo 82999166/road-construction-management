@@ -22,7 +22,7 @@ vi.mock("wouter", () => ({
   useLocation: () => ["/mobile", vi.fn()],
 }));
 
-import MobileWorkbench from "./MobileWorkbench";
+import MobileWorkbench, { shouldRetryMobileWorkbenchRequest } from "./MobileWorkbench";
 
 /** 工作台只展示服务端按岗位、部门和项目范围投影后的结果，前端不自行推导权限。 */
 function renderWorkbench(data: unknown) {
@@ -76,5 +76,31 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("当前权限：超级管理员（全局业务授权）");
     expect(markup).toContain("已启用超级管理员全局业务授权，接口仍执行服务端校验");
     expect(markup).toContain("返回超级管理后台");
+  });
+
+  it("仅对短暂网络传输失败作有限重试，并在浏览器恢复联网后重新同步", () => {
+    const markup = renderWorkbench({
+      user: { id: 7, name: "劳务测试人员", roleCodes: ["LABOR_MANAGER"], departments: [], departmentModules: ["LABOR"] },
+      menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "LABOR", title: "劳务工资" }],
+      statistics: { pendingApprovals: 0, unreadMessages: 0, todayTrips: 0, pendingPayroll: 0 },
+    });
+
+    expect(markup).toContain("劳务工资");
+    expect(shouldRetryMobileWorkbenchRequest(0, new Error("Failed to fetch"))).toBe(true);
+    expect(shouldRetryMobileWorkbenchRequest(1, new Error("Network request failed"))).toBe(true);
+    expect(shouldRetryMobileWorkbenchRequest(2, new Error("Failed to fetch"))).toBe(false);
+    expect(shouldRetryMobileWorkbenchRequest(0, new Error("无权访问该项目"))).toBe(false);
+    const [, queryOptions] = mockUseQuery.mock.calls.at(-1) ?? [];
+    expect(queryOptions).toMatchObject({ refetchOnReconnect: true });
+  });
+
+  it("没有缓存摘要时以可恢复状态替代原始网络错误文本", () => {
+    vi.stubGlobal("navigator", { onLine: true });
+    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: new Error("Failed to fetch"), refetch: vi.fn() });
+    const markup = renderToStaticMarkup(<MobileWorkbench />);
+
+    expect(markup).toContain("工作台暂时无法连接");
+    expect(markup).toContain("重新同步");
+    expect(markup).not.toContain("工作台加载失败：Failed to fetch");
   });
 });
