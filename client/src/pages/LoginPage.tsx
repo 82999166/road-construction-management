@@ -29,7 +29,8 @@ export default function LoginPage() {
   const [newPassword, setNewPassword] = useState("");
   const [shouldChangeLocalPassword, setShouldChangeLocalPassword] = useState(false);
   const returnTo = getLoginReturnPath(location.includes("?") ? `?${location.split("?")[1]}` : "");
-  const requiresLocalPasswordChange = shouldChangeLocalPassword || (user?.loginMethod === "local_manager" && user.localPasswordChangeRequired);
+  // 用户已确认本地账号无需在首次登录时强制改密；保留改密接口仅供后续受控密码维护使用。
+  const requiresLocalPasswordChange = false;
   const redirectTarget = requiresLocalPasswordChange ? null : getAuthenticatedLoginRedirectTarget(isAuthenticated, loading, returnTo);
   const temporaryLogin = trpc.auth.localAdminLogin.useMutation();
   const managerLogin = trpc.auth.localManagerLogin.useMutation();

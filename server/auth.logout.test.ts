@@ -59,7 +59,7 @@ describe("auth.logout", () => {
       id: 1,
       name: "Sample User",
       loginMethod: "local_manager",
-      localPasswordChangeRequired: true,
+      localPasswordChangeRequired: false,
     });
     expect(result).not.toHaveProperty("localPasswordHash");
     expect(result).not.toHaveProperty("localUsername");

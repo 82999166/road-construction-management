@@ -28,6 +28,7 @@ const managerUser = {
   localUsername: "zhangsan",
   localPasswordHash: createLocalManagerPasswordHash(initialPassword),
   localAccountStatus: "active",
+  // 模拟历史账号遗留的旧标记；新策略下登录也不能被强制拦截。
   localPasswordChangeRequired: true,
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -65,12 +66,12 @@ describe("普通管理人员本地账号认证", () => {
     vi.mocked(getLocalManagerByUsername).mockResolvedValue({ ...managerUser } as never);
   });
 
-  it("启用账号使用正确口令登录后签发八小时会话，并要求首次改密", async () => {
+  it("启用账号使用正确口令登录后签发八小时会话，且不再要求首次改密", async () => {
     const { caller, response } = createCaller();
     await expect(caller.auth.localManagerLogin({ username: " ZhangSan ", password: initialPassword })).resolves.toEqual({
       success: true,
       expiresInMs: 8 * 60 * 60 * 1000,
-      mustChangePassword: true,
+      mustChangePassword: false,
     });
     expect(upsertUser).toHaveBeenCalledWith(expect.objectContaining({ openId: managerUser.openId }));
     expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-local-manager-session", expect.objectContaining({ httpOnly: true, maxAge: 8 * 60 * 60 * 1000 }));
@@ -84,10 +85,15 @@ describe("普通管理人员本地账号认证", () => {
     expect(JSON.stringify(vi.mocked(getDb).mock.calls)).not.toContain(initialPassword);
   });
 
-  it("仅启用中的普通本地账号可在当前口令校验后完成首次改密", async () => {
+  it("仅启用中的普通本地账号可在当前口令校验后使用六位任意字符更新密码", async () => {
     const { caller } = createCaller({ ...managerUser });
-    await expect(caller.auth.changeLocalPassword({ currentPassword: initialPassword, newPassword: "NewManagerPass2026" })).resolves.toEqual({ success: true });
+    await expect(caller.auth.changeLocalPassword({ currentPassword: initialPassword, newPassword: "654321" })).resolves.toEqual({ success: true });
     expect(updateLocalManagerPassword).toHaveBeenCalledWith(managerUser.id, expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/));
+  });
+
+  it("密码仍至少需要六位", async () => {
+    const { caller } = createCaller({ ...managerUser });
+    await expect(caller.auth.changeLocalPassword({ currentPassword: initialPassword, newPassword: "12345" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("普通本地账号不能通过服务端超级管理员断言进入管理后台", async () => {

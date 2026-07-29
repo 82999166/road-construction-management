@@ -31,7 +31,7 @@ export const users = mysqlTable("users", {
   localPasswordHash: varchar("localPasswordHash", { length: 256 }),
   /** 停用后服务端会拒绝该本地账号的所有后续会话请求。 */
   localAccountStatus: mysqlEnum("localAccountStatus", ["active", "disabled"]).default("active").notNull(),
-  /** 管理员初始化或重置口令后，普通人员必须先在登录页完成改密。 */
+  /** 兼容旧账号资料的历史字段；当前本地账号不再强制首次登录改密。 */
   localPasswordChangeRequired: boolean("localPasswordChangeRequired").default(false).notNull(),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

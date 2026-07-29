@@ -40,7 +40,7 @@ describe("后台普通管理人员本地账号管理", () => {
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    const initialPassword = "ManagerPass2026";
+    const initialPassword = "123456";
     await expect(createCaller().admin.personnel.createLocalUser({
       username: "zhangsan",
       displayName: "张三",
@@ -57,7 +57,7 @@ describe("后台普通管理人员本地账号管理", () => {
         loginMethod: "local_manager",
         role: "user",
         localAccountStatus: "active",
-        localPasswordChangeRequired: true,
+        localPasswordChangeRequired: false,
         localPasswordHash: expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/),
       }),
       expect.objectContaining({ userId: 7301, wecomUserId: "zhangsan-wecom" }),

@@ -27,8 +27,8 @@ function toPublicAuthUser(user: TrpcContext["user"]) {
     name: user.name,
     loginMethod: user.loginMethod,
     role: user.role,
-    /** 登录页仅据此决定是否必须先改密；不包含账号状态或认证材料。 */
-    localPasswordChangeRequired: Boolean(user.localPasswordChangeRequired),
+    /** 为兼容既有客户端保留字段；本地账号已取消首次登录强制改密。 */
+    localPasswordChangeRequired: false,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastSignedIn: user.lastSignedIn,
@@ -60,7 +60,7 @@ export const appRouter = router({
     changeLocalPassword: protectedProcedure
       .input(z.object({
         currentPassword: z.string().min(1).max(256),
-        newPassword: z.string().min(12, "新密码至少 12 位").max(128).refine(value => /[A-Za-z]/.test(value) && /\d/.test(value), "新密码须同时包含字母和数字"),
+        newPassword: z.string().min(6, "新密码至少 6 位").max(128),
       }))
       .mutation(({ ctx, input }) => changeLocalManagerPassword(ctx, input)),
   }),

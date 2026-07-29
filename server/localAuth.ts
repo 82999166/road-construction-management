@@ -195,7 +195,8 @@ export async function loginLocalManager(ctx: TrpcContext, input: { username: str
   await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
   await recordLoginAudit("local_manager_login_success", user.id);
   await signInUser(ctx, user.openId, user.name || user.localUsername || "普通管理人员", LOCAL_MANAGER_SESSION_MS);
-  return { success: true, expiresInMs: LOCAL_MANAGER_SESSION_MS, mustChangePassword: user.localPasswordChangeRequired } as const;
+  // 本地账号不再强制首次改密；口令仍仅以 scrypt 摘要保存，并保留失败限流与安全审计。
+  return { success: true, expiresInMs: LOCAL_MANAGER_SESSION_MS, mustChangePassword: false } as const;
 }
 
 /** 改密要求当前受控会话与当前口令同时成立，避免仅凭被窃取的 Cookie 重置普通人员账号。 */

@@ -105,7 +105,7 @@ export async function getLocalManagerByUsername(localUsername: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-/** 仅更新本地普通账号的口令摘要与首次改密标记，避免 OAuth 同步覆盖本地认证字段。 */
+/** 仅更新本地普通账号的口令摘要；兼容字段统一保持为不强制首次改密，避免 OAuth 同步覆盖本地认证字段。 */
 export async function updateLocalManagerPassword(userId: number, localPasswordHash: string) {
   const db = await getDb();
   if (!db) throw new Error("数据库连接暂不可用");

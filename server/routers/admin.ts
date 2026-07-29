@@ -85,7 +85,7 @@ const departmentBusinessScopeInput = z.object({
 const localManagerAccountInput = z.object({
   username: z.string().trim().min(3).max(48),
   displayName: z.string().trim().min(2).max(128),
-  initialPassword: z.string().min(12, "初始密码至少 12 位").max(128).refine(value => /[A-Za-z]/.test(value) && /\d/.test(value), "初始密码须同时包含字母和数字"),
+  initialPassword: z.string().min(6, "初始密码至少 6 位").max(128),
   status: z.enum(["active", "disabled"]).default("active"),
   wecomUserId: z.string().trim().min(1).max(128).nullable().optional(),
 });
@@ -552,7 +552,7 @@ export const adminRouter = router({
         localUsername,
         localPasswordHash: createLocalManagerPasswordHash(input.initialPassword),
         localAccountStatus: input.status,
-        localPasswordChangeRequired: true,
+        localPasswordChangeRequired: false,
         lastSignedIn: new Date(),
       });
       const [createdUser] = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
