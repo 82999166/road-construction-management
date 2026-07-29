@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { departmentBusinessScopes, organizations, projects, systemRoles, userRoleAssignments, users } from "../drizzle/schema";
+import { departmentBusinessScopes, organizations, projects, systemRoles, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
 import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
@@ -72,6 +72,12 @@ function getRequestedDepartmentModule(ctx: TrpcContext) {
 export function requireAuthenticatedUser(ctx: TrpcContext) {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "请先登录后再继续操作" });
+  }
+  if (ctx.user.loginMethod === "local_manager" && ctx.user.localAccountStatus !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已停用，请联系超级管理员" });
+  }
+  if (ctx.user.loginMethod === "deleted_local_manager") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已删除，请联系超级管理员" });
   }
   return ctx.user;
 }
@@ -361,5 +367,6 @@ export async function listLoginUsers() {
     localAccountStatus: users.localAccountStatus,
     localPasswordChangeRequired: users.localPasswordChangeRequired,
     lastSignedIn: users.lastSignedIn,
-  }).from(users);
+    wecomUserId: userProfiles.wecomUserId,
+  }).from(users).leftJoin(userProfiles, eq(userProfiles.userId, users.id));
 }

@@ -1,9 +1,11 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -54,6 +56,9 @@ type PositionForm = { id?: number; code: string; name: string; category: string;
 type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus };
+type LocalAccountStatus = "active" | "disabled";
+type LocalAccountEditForm = { userId: number; username: string; displayName: string; wecomUserId: string; status: LocalAccountStatus };
+type LocalAccountActionTarget = { id: number; name: string; username: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
@@ -170,7 +175,11 @@ export default function AdminPage() {
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
   const [roleForm, setRoleForm] = useState({ code: "", name: "", description: "" });
   const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
-  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" as "active" | "disabled" });
+  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" as LocalAccountStatus });
+  const [localAccountEditForm, setLocalAccountEditForm] = useState<LocalAccountEditForm | null>(null);
+  const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<LocalAccountActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState({
     category: "企业微信",
@@ -262,6 +271,31 @@ export default function AdminPage() {
     onSuccess: async () => {
       toast.success("本地账号状态已更新；已停用账号的后续请求会被服务端拒绝");
       await Promise.all([users.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const updateLocalUser = trpc.admin.personnel.updateLocalUser.useMutation({
+    onSuccess: async () => {
+      toast.success("普通管理人员账号资料已更新");
+      setLocalAccountEditForm(null);
+      await Promise.all([users.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const resetLocalUserPassword = trpc.admin.personnel.resetLocalUserPassword.useMutation({
+    onSuccess: async () => {
+      toast.success("普通管理人员密码已重置，新密码不会再次显示");
+      setPasswordResetTarget(null);
+      setResetPassword("");
+      await audits.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const deleteLocalUser = trpc.admin.personnel.deleteLocalUser.useMutation({
+    onSuccess: async data => {
+      toast.success(`普通管理人员账号已删除，并撤销 ${data.revokedAssignmentCount} 项角色授权`);
+      setDeleteTarget(null);
+      await Promise.all([users.refetch(), assignments.refetch(), audits.refetch(), overview.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -648,7 +682,7 @@ export default function AdminPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">新增普通管理人员账号</CardTitle><CardDescription>在此创建本地登录账号。初始密码只会在本次安全请求中生成不可逆摘要，不能查看、导出或在审计中回显；创建后须继续授予角色、部门与项目范围。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">普通管理人员账号</CardTitle><CardDescription>可创建、编辑、重置密码、启停和删除本地登录账号。口令只会生成不可逆摘要；删除会撤销角色授权，且存在业务责任、资源归属或历史单据的账号必须先完成交接。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 lg:grid-cols-2">
               <div className="grid gap-1.5"><Label htmlFor="local-account-username">登录账号</Label><Input id="local-account-username" autoComplete="off" value={localAccountForm.username} onChange={event => setLocalAccountForm({ ...localAccountForm, username: event.target.value })} placeholder="例如：zhangsan" /></div>
@@ -658,9 +692,41 @@ export default function AdminPage() {
               <div className="grid gap-1.5"><Label>初始状态</Label><Select value={localAccountForm.status} onValueChange={value => setLocalAccountForm({ ...localAccountForm, status: value as "active" | "disabled" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
               <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate({ ...localAccountForm, wecomUserId: localAccountForm.wecomUserId.trim() || null })}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
             </div>
-            {users.data?.some(user => user.loginMethod === "local_manager") ? <div className="space-y-2">{users.data.filter(user => user.loginMethod === "local_manager").map(user => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{user.name || `用户 #${user.id}`} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex items-center gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button></div></div>)}</div> : <EmptyState text="尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。" />}
+            {users.data?.some(user => user.loginMethod === "local_manager") ? <div className="space-y-2">{users.data.filter(user => user.loginMethod === "local_manager").map(user => {
+              const accountTarget = { id: user.id, name: user.name || `用户 #${user.id}`, username: user.localUsername || "" };
+              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{accountTarget.name} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">密码已设置 · 企业微信：{user.wecomUserId || "未绑定"} · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, wecomUserId: user.wecomUserId || "", status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
+            })}</div> : <EmptyState text="尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。" />}
           </CardContent>
         </Card>
+        <Dialog open={Boolean(localAccountEditForm)} onOpenChange={open => { if (!open) setLocalAccountEditForm(null); }}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader><DialogTitle>编辑普通管理人员账号</DialogTitle><DialogDescription>可修改登录账号、显示姓名、企业微信标识和启停状态；角色及数据范围请在下方“管理人员角色授权”中单独维护。</DialogDescription></DialogHeader>
+            {localAccountEditForm ? <form className="space-y-4" onSubmit={event => { event.preventDefault(); updateLocalUser.mutate({ ...localAccountEditForm, wecomUserId: localAccountEditForm.wecomUserId.trim() || null }); }}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-1.5"><Label htmlFor="edit-local-account-username">登录账号</Label><Input id="edit-local-account-username" autoComplete="off" value={localAccountEditForm.username} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, username: event.target.value })} /><p className="text-xs text-slate-500">以字母开头，可使用小写字母、数字、点、下划线或连字符。</p></div>
+                <div className="grid gap-1.5"><Label htmlFor="edit-local-account-name">显示姓名</Label><Input id="edit-local-account-name" value={localAccountEditForm.displayName} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, displayName: event.target.value })} /></div>
+                <div className="grid gap-1.5"><Label htmlFor="edit-local-account-wecom">企业微信员工标识（可选）</Label><Input id="edit-local-account-wecom" value={localAccountEditForm.wecomUserId} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, wecomUserId: event.target.value })} placeholder="企业微信 UserID" /></div>
+                <div className="grid gap-1.5"><Label>账号状态</Label><Select value={localAccountEditForm.status} onValueChange={value => setLocalAccountEditForm({ ...localAccountEditForm, status: value as LocalAccountStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
+              </div>
+              <DialogFooter><Button type="button" variant="outline" onClick={() => setLocalAccountEditForm(null)}>取消</Button><Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountEditForm.username || !localAccountEditForm.displayName || updateLocalUser.isPending}>{updateLocalUser.isPending ? "正在保存…" : "保存修改"}</Button></DialogFooter>
+            </form> : null}
+          </DialogContent>
+        </Dialog>
+        <Dialog open={Boolean(passwordResetTarget)} onOpenChange={open => { if (!open) { setPasswordResetTarget(null); setResetPassword(""); } }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader><DialogTitle>重置普通管理人员密码</DialogTitle><DialogDescription>正在为“{passwordResetTarget?.name}”设置新密码。新密码至少 6 位，任意数字或字符均可；系统只保存不可逆摘要，设置后不会再次显示。</DialogDescription></DialogHeader>
+            <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (passwordResetTarget) resetLocalUserPassword.mutate({ userId: passwordResetTarget.id, newPassword: resetPassword }); }}>
+              <div className="grid gap-1.5"><Label htmlFor="reset-local-account-password">新密码</Label><Input id="reset-local-account-password" type="password" autoComplete="new-password" value={resetPassword} onChange={event => setResetPassword(event.target.value)} placeholder="至少 6 位，任意数字或字符" /></div>
+              <DialogFooter><Button type="button" variant="outline" onClick={() => { setPasswordResetTarget(null); setResetPassword(""); }}>取消</Button><Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={resetPassword.length < 6 || resetLocalUserPassword.isPending}>{resetLocalUserPassword.isPending ? "正在重置…" : "确认重置密码"}</Button></DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+        <AlertDialog open={Boolean(deleteTarget)} onOpenChange={open => { if (!open) setDeleteTarget(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader><AlertDialogTitle>确认删除管理人员账号？</AlertDialogTitle><AlertDialogDescription>将删除“{deleteTarget?.name}（{deleteTarget?.username}）”的本地登录能力，并撤销其角色授权。系统会保留必要审计索引；如账号仍关联业务单据、资源责任或组织负责人信息，服务端会拒绝删除并提示需交接的事项。</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-rose-600 text-white hover:bg-rose-700" disabled={deleteLocalUser.isPending} onClick={() => { if (deleteTarget) deleteLocalUser.mutate({ userId: deleteTarget.id }); }}>{deleteLocalUser.isPending ? "正在删除…" : "确认删除"}</AlertDialogAction></AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         <Card>
           <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色可以绑定已启用的所属部门/项目部，或直接绑定一个具体项目。两种方式均由服务端校验；项目级授权绝不扩大为全部项目权限。</CardDescription></CardHeader>
           <CardContent className="space-y-4">

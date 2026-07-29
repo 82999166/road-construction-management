@@ -26,7 +26,7 @@ function createCaller(user: typeof adminUser | null = adminUser) {
 }
 
 describe("后台普通管理人员本地账号管理", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it("超级管理员可创建普通本地账号，密码仅以不可逆摘要写入且审计不包含初始密码", async () => {
     const insertValues = vi.fn().mockResolvedValue({});
@@ -119,5 +119,80 @@ describe("后台普通管理人员本地账号管理", () => {
       validTo: null,
       status: "active",
     })).rejects.toMatchObject({ code: "FORBIDDEN", message: "普通管理人员账号不得被授予超级管理员权限" });
+  });
+
+  it("超级管理员可编辑普通账号资料并重置密码，密码明文不会进入数据库写入或审计", async () => {
+    const updateSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue({}) }));
+    const auditValues = vi.fn().mockResolvedValue({});
+    const limit = vi.fn()
+      .mockResolvedValueOnce([{ id: 7301, name: "张三", localAccountStatus: "active", loginMethod: "local_manager" }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 8301, status: "pending" }])
+      .mockResolvedValueOnce([{ id: 7301, name: "张三", loginMethod: "local_manager" }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    vi.mocked(getDb).mockResolvedValue({
+      select: vi.fn(() => ({ from })),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(createCaller().admin.personnel.updateLocalUser({
+      userId: 7301,
+      username: "zhangsan.new",
+      displayName: "张三（项目部）",
+      status: "active",
+      wecomUserId: "zhangsan-wecom-new",
+    })).resolves.toEqual({ success: true });
+    const resetPassword = "reset-any-6";
+    await expect(createCaller().admin.personnel.resetLocalUserPassword({ userId: 7301, newPassword: resetPassword })).resolves.toEqual({ success: true });
+
+    const writePayloads = updateSet.mock.calls.map(([payload]) => payload);
+    expect(writePayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({ openId: "local-manager:zhangsan.new", localUsername: "zhangsan.new", name: "张三（项目部）" }),
+      expect.objectContaining({ wecomUserId: "zhangsan-wecom-new" }),
+      expect.objectContaining({ localPasswordChangeRequired: false, localPasswordHash: expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/) }),
+    ]));
+    expect(JSON.stringify([...writePayloads, ...auditValues.mock.calls.map(([payload]) => payload)])).not.toContain(resetPassword);
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "update_local_manager_account" }));
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "reset_local_manager_password" }));
+  });
+
+  it("普通账号存在业务责任时，超级管理员删除会被服务端阻止", async () => {
+    const targetLimit = vi.fn().mockResolvedValue([{ id: 7301, name: "张三", loginMethod: "local_manager" }]);
+    const targetFrom = vi.fn(() => ({ where: vi.fn(() => ({ limit: targetLimit })) }));
+    const blockers = [[{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 2 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }]];
+    const select = vi.fn()
+      .mockImplementationOnce(() => ({ from: targetFrom }))
+      .mockImplementation(() => ({ from: () => ({ where: () => Promise.resolve(blockers.shift() ?? [{ total: 0 }]) }) }));
+    vi.mocked(getDb).mockResolvedValue({ select } as never);
+
+    await expect(createCaller().admin.personnel.deleteLocalUser({ userId: 7301 })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("施工日报 2 条"),
+    });
+  });
+
+  it("无业务责任的普通账号可删除，服务端会撤销授权、移除档案并保留删除审计", async () => {
+    const targetLimit = vi.fn().mockResolvedValue([{ id: 7301, name: "张三", loginMethod: "local_manager" }]);
+    const targetFrom = vi.fn(() => ({ where: vi.fn(() => ({ limit: targetLimit })) }));
+    const select = vi.fn()
+      .mockImplementationOnce(() => ({ from: targetFrom }))
+      .mockImplementation(() => ({ from: () => ({ where: () => Promise.resolve([{ total: 0 }]) }) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue({}) }));
+    const deleteWhere = vi.fn().mockResolvedValue({});
+    const auditValues = vi.fn().mockResolvedValue({});
+    vi.mocked(getDb).mockResolvedValue({
+      select,
+      update: vi.fn(() => ({ set: updateSet })),
+      delete: vi.fn(() => ({ where: deleteWhere })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(createCaller().admin.personnel.deleteLocalUser({ userId: 7301 })).resolves.toEqual({ success: true, revokedAssignmentCount: 0 });
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "revoked" }));
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ loginMethod: "deleted_local_manager", localAccountStatus: "disabled", localPasswordHash: null }));
+    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "delete_local_manager_account", targetId: "7301" }));
   });
 });

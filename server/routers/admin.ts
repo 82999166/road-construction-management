@@ -1,15 +1,23 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
   attendanceRecords,
   configPublishLogs,
+  constructionDailyReports,
   departmentBusinessScopes,
+  evidenceRecords,
+  inventoryTransactions,
   laborWorkers,
+  machines,
+  measurementClaims,
+  notificationRecords,
   organizations,
   positions,
   payrollStatements,
+  purchaseOrders,
+  purchaseRequests,
   projects,
   rolePermissions,
   systemPermissions,
@@ -94,6 +102,23 @@ const localManagerStatusInput = z.object({
   userId: z.number().int().positive(),
   status: z.enum(["active", "disabled"]),
 });
+
+/** 编辑账号资料时仅允许维护本地登录标识、展示资料和状态，角色与数据范围仍须通过独立授权流程配置。 */
+const localManagerAccountUpdateInput = z.object({
+  userId: z.number().int().positive(),
+  username: z.string().trim().min(3).max(48),
+  displayName: z.string().trim().min(2).max(128),
+  status: z.enum(["active", "disabled"]),
+  wecomUserId: z.string().trim().min(1).max(128).nullable().optional(),
+});
+
+/** 管理员重置密码不校验旧密码，但口令只在本次请求内生成不可逆摘要。 */
+const localManagerPasswordResetInput = z.object({
+  userId: z.number().int().positive(),
+  newPassword: z.string().min(6, "新密码至少 6 位").max(128),
+});
+
+const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
 
 /** 全业务治理统计仅支持已校验的项目和自然月筛选，避免模糊日期或越权项目参数进入聚合查询。 */
 const businessStatisticsInput = z.object({
@@ -592,6 +617,123 @@ export const adminRouter = router({
         summary: `${input.status === "active" ? "启用" : "停用"}普通管理人员本地账号：${target.name || `用户 #${target.id}`}`,
       });
       return { success: true };
+    }),
+    updateLocalUser: protectedProcedure.input(localManagerAccountUpdateInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const database = await getDb();
+      if (!database) throw new Error("数据库连接暂不可用");
+      const localUsername = normalizeLocalManagerUsername(input.username);
+      if (!isValidLocalManagerUsername(localUsername)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+      }
+      const [target] = await database.select({ id: users.id, name: users.name, localAccountStatus: users.localAccountStatus, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (!target || target.loginMethod !== "local_manager") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "仅可编辑由后台创建的普通本地账号" });
+      }
+      const [usernameOwner] = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
+      if (usernameOwner && usernameOwner.id !== target.id) {
+        throw new TRPCError({ code: "CONFLICT", message: "该本地账号已存在" });
+      }
+      const [profile] = await database.select({ id: userProfiles.id, status: userProfiles.status }).from(userProfiles).where(eq(userProfiles.userId, target.id)).limit(1);
+      const profileStatus = input.status === "disabled" ? "disabled" : target.localAccountStatus === "disabled" ? "pending" : profile?.status ?? "pending";
+      await database.update(users).set({
+        openId: createLocalManagerOpenId(localUsername),
+        localUsername,
+        name: input.displayName,
+        localAccountStatus: input.status,
+      }).where(and(eq(users.id, target.id), eq(users.loginMethod, "local_manager")));
+      if (profile) {
+        await database.update(userProfiles).set({ wecomUserId: input.wecomUserId ?? null, status: profileStatus }).where(eq(userProfiles.id, profile.id));
+      } else {
+        await database.insert(userProfiles).values({ userId: target.id, wecomUserId: input.wecomUserId ?? null, status: profileStatus });
+      }
+      await database.insert(auditLogs).values({
+        userId: admin.id,
+        module: "permission",
+        action: "update_local_manager_account",
+        targetType: "user",
+        targetId: String(target.id),
+        summary: `编辑普通管理人员本地账号：${input.displayName}`,
+      });
+      return { success: true };
+    }),
+    resetLocalUserPassword: protectedProcedure.input(localManagerPasswordResetInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const database = await getDb();
+      if (!database) throw new Error("数据库连接暂不可用");
+      const [target] = await database.select({ id: users.id, name: users.name, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (!target || target.loginMethod !== "local_manager") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "仅可重置由后台创建的普通本地账号密码" });
+      }
+      await database.update(users).set({ localPasswordHash: createLocalManagerPasswordHash(input.newPassword), localPasswordChangeRequired: false }).where(and(eq(users.id, target.id), eq(users.loginMethod, "local_manager")));
+      await database.insert(auditLogs).values({
+        userId: admin.id,
+        module: "security",
+        action: "reset_local_manager_password",
+        targetType: "user",
+        targetId: String(target.id),
+        summary: `重置普通管理人员账号密码：${target.name || `用户 #${target.id}`}`,
+      });
+      return { success: true };
+    }),
+    deleteLocalUser: protectedProcedure.input(localManagerDeleteInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const database = await getDb();
+      if (!database) throw new Error("数据库连接暂不可用");
+      const [target] = await database.select({ id: users.id, name: users.name, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (!target || target.loginMethod !== "local_manager") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "仅可删除由后台创建的普通本地账号" });
+      }
+      const [roleAssignments, managedOrganizations, operatedMachines, drivenVehicles, dailyReports, laborVerifications, payrolls, purchaseRequestsByUser, purchaseOrdersByUser, inventoryOperations, measurementClaimsByUser, evidenceUploads] = await Promise.all([
+        database.select({ total: count() }).from(userRoleAssignments).where(eq(userRoleAssignments.userId, target.id)),
+        database.select({ total: count() }).from(organizations).where(eq(organizations.managerUserId, target.id)),
+        database.select({ total: count() }).from(machines).where(eq(machines.operatorUserId, target.id)),
+        database.select({ total: count() }).from(transportVehicles).where(eq(transportVehicles.driverUserId, target.id)),
+        database.select({ total: count() }).from(constructionDailyReports).where(or(eq(constructionDailyReports.createdBy, target.id), eq(constructionDailyReports.reviewedBy, target.id))),
+        database.select({ total: count() }).from(laborWorkers).where(eq(laborWorkers.identityVerifiedBy, target.id)),
+        database.select({ total: count() }).from(payrollStatements).where(or(eq(payrollStatements.submittedBy, target.id), eq(payrollStatements.accountantId, target.id))),
+        database.select({ total: count() }).from(purchaseRequests).where(or(eq(purchaseRequests.requesterId, target.id), eq(purchaseRequests.approvedBy, target.id), eq(purchaseRequests.stockedBy, target.id))),
+        database.select({ total: count() }).from(purchaseOrders).where(or(eq(purchaseOrders.createdBy, target.id), eq(purchaseOrders.confirmedBy, target.id))),
+        database.select({ total: count() }).from(inventoryTransactions).where(eq(inventoryTransactions.operatorId, target.id)),
+        database.select({ total: count() }).from(measurementClaims).where(or(eq(measurementClaims.submittedBy, target.id), eq(measurementClaims.reviewedBy, target.id), eq(measurementClaims.accountantId, target.id))),
+        database.select({ total: count() }).from(evidenceRecords).where(eq(evidenceRecords.uploadedBy, target.id)),
+      ]);
+      const blockers = [
+        ["组织负责人", managedOrganizations[0]?.total],
+        ["机械操作员", operatedMachines[0]?.total],
+        ["车辆驾驶员", drivenVehicles[0]?.total],
+        ["施工日报", dailyReports[0]?.total],
+        ["劳务实名核验", laborVerifications[0]?.total],
+        ["工资审核或提交", payrolls[0]?.total],
+        ["采购申请", purchaseRequestsByUser[0]?.total],
+        ["采购订单", purchaseOrdersByUser[0]?.total],
+        ["库存流水", inventoryOperations[0]?.total],
+        ["计量申报", measurementClaimsByUser[0]?.total],
+        ["影像证据", evidenceUploads[0]?.total],
+      ].filter(([, total]) => Number(total ?? 0) > 0).map(([label, total]) => `${label} ${total} 条`);
+      if (blockers.length > 0) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: `该账号仍关联业务记录或资源责任：${blockers.join("、")}。请先完成交接或改派后再删除。` });
+      }
+      await database.update(userRoleAssignments).set({ status: "revoked" }).where(and(eq(userRoleAssignments.userId, target.id), eq(userRoleAssignments.status, "active")));
+      await database.delete(userProfiles).where(eq(userProfiles.userId, target.id));
+      await database.update(users).set({
+        openId: `deleted-local-manager:${target.id}:${Date.now()}`,
+        name: `已删除账号 #${target.id}`,
+        loginMethod: "deleted_local_manager",
+        localUsername: null,
+        localPasswordHash: null,
+        localAccountStatus: "disabled",
+        localPasswordChangeRequired: false,
+      }).where(and(eq(users.id, target.id), eq(users.loginMethod, "local_manager")));
+      await database.insert(auditLogs).values({
+        userId: admin.id,
+        module: "permission",
+        action: "delete_local_manager_account",
+        targetType: "user",
+        targetId: String(target.id),
+        summary: `删除普通管理人员本地账号并撤销 ${Number(roleAssignments[0]?.total ?? 0)} 项角色授权：${target.name || `用户 #${target.id}`}`,
+      });
+      return { success: true, revokedAssignmentCount: Number(roleAssignments[0]?.total ?? 0) };
     }),
     saveAssignment: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), userId: z.number().int().positive(), roleId: z.number().int().positive(), organizationId: z.number().int().positive().nullable().optional(), projectId: z.number().int().positive().nullable().optional(), validFrom: z.string().datetime().nullable().optional(), validTo: z.string().datetime().nullable().optional(), status: z.enum(["active", "revoked", "expired"]).default("active") }))
