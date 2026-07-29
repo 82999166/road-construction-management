@@ -49,13 +49,13 @@ describe("首页 OAuth 回跳", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/mobile/finance?project=project-1");
   });
 
-  it("未登录访问根路径时进入独立登录页并保留默认工作台回跳", () => {
+  it("未登录访问根路径时进入独立登录页并保留统一管理入口回跳", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false, isAuthenticated: false });
 
     Home();
 
     expect(mockConsumePostLoginReturnPath).not.toHaveBeenCalled();
-    expect(mockNavigate).toHaveBeenCalledWith("/login?returnTo=%2Fmobile");
+    expect(mockNavigate).toHaveBeenCalledWith("/login?returnTo=%2Fadmin");
   });
 
   it("认证查询超时降级为未登录后同样进入独立登录页", () => {
@@ -63,6 +63,6 @@ describe("首页 OAuth 回跳", () => {
 
     Home();
 
-    expect(mockNavigate).toHaveBeenCalledWith("/login?returnTo=%2Fmobile");
+    expect(mockNavigate).toHaveBeenCalledWith("/login?returnTo=%2Fadmin");
   });
 });

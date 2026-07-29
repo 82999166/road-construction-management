@@ -99,14 +99,14 @@ export default function LoginPage() {
             </div>
             <div className="mt-16 max-w-md">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />统一身份认证</span>
-              <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">安全进入施工业务与管理后台。</h1>
-              <p className="mt-5 text-sm leading-7 text-[#ead4bc]">企业人员通过统一身份认证进入系统，业务权限按岗位与项目范围校验。初始化期间，系统管理员可使用受控的临时本地登录入口；口令只在服务器端校验。</p>
+            <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">一个入口，进入相应管理版块。</h1>
+            <p className="mt-5 text-sm leading-7 text-[#ead4bc]">所有管理人员均从本页登录。认证成功后，超级管理员进入全局治理后台；普通管理人员仅进入其角色、部门、组织和项目范围已授权的业务管理版块。</p>
             </div>
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
             <p className="text-sm font-medium text-[#9a6036]">欢迎使用</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight">登录工程云管</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">完成身份核验后，系统会安全返回您刚才访问的业务页面；普通管理人员仅可访问已授权模块和项目范围。</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">统一管理登录</h2>
+            <p className="mt-4 text-sm leading-6 text-slate-600">完成身份核验后，系统会安全返回您刚才访问的页面；未指定目标时默认进入统一管理入口，并按账号权限呈现相应功能版块。</p>
             <Button className="mt-8 h-12 w-full bg-[#203c48] text-base hover:bg-[#17313b]" onClick={handleLogin} disabled={loading}>
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
@@ -124,18 +124,18 @@ export default function LoginPage() {
               </form>
             ) : <>
             <form className="mt-5 rounded-2xl border border-[#c7d7dc] bg-[#f4fafb] p-4" onSubmit={handleLocalManagerLogin}>
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />普通管理人员账号登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">账号由超级管理员在后台创建。登录后仅显示您获授权的业务模块、部门和项目范围。</p>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />管理人员账号登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">账号由超级管理员在后台创建。登录后系统自动进入您获授权的管理功能版块，不显示未获授权的菜单。</p>
               <div className="mt-3 grid gap-3">
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-username">账号</Label><Input id="local-manager-username" autoComplete="username" value={managerUsername} onChange={event => setManagerUsername(event.target.value)} disabled={managerLogin.isPending} required /></div>
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-password">密码</Label><Input id="local-manager-password" type="password" autoComplete="current-password" value={managerPassword} onChange={event => setManagerPassword(event.target.value)} disabled={managerLogin.isPending} required /></div>
               </div>
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
-              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "管理人员登录"}</Button>
+              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的管理版块"}</Button>
             </form>
             <form className="mt-4 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />临时管理后台登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">仅用于初始化或应急管理；登录成功后拥有超级管理员权限，请尽快替换临时口令。</p>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />超级管理员账号登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">用于全局治理与应急管理；登录成功后进入全局管理后台，口令仅在服务器端校验。</p>
               <div className="mt-3 grid gap-3">
                 <div className="grid gap-1.5">
                   <Label htmlFor="temporary-admin-username">账号</Label>
@@ -148,7 +148,7 @@ export default function LoginPage() {
               </div>
               {temporaryLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{temporaryLogin.error.message}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={temporaryLogin.isPending}>
-                {temporaryLogin.isPending ? "正在安全登录…" : "临时管理员登录"}
+                {temporaryLogin.isPending ? "正在安全登录…" : "登录全局管理后台"}
               </Button>
             </form>
             </>}

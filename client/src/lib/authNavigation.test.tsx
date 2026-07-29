@@ -20,7 +20,7 @@ describe("独立登录页认证导航", () => {
     expect(createLoginPath("/admin/settings?tab=security")).toBe("/login?returnTo=%2Fadmin%2Fsettings%3Ftab%3Dsecurity");
     expect(createLoginPath("/mobile/profile")).toBe("/login?returnTo=%2Fmobile%2Fprofile");
     expect(createLoginPath("/login")).toBe("/login");
-    expect(getLoginReturnPath("?returnTo=https%3A%2F%2Funsafe.example.com")).toBe("/mobile");
+    expect(getLoginReturnPath("?returnTo=https%3A%2F%2Funsafe.example.com")).toBe("/admin");
   });
 
   it("在认证成功后仅消费一次经过校验的原业务路径", () => {
@@ -33,7 +33,7 @@ describe("独立登录页认证导航", () => {
 
     rememberPostLoginReturnPath("/mobile/profile");
     expect(consumePostLoginReturnPath()).toBe("/mobile/profile");
-    expect(consumePostLoginReturnPath()).toBe("/mobile");
+    expect(consumePostLoginReturnPath()).toBe("/admin");
   });
 
   it("统一处理已登录访问和全局未授权时的登录页导航", () => {

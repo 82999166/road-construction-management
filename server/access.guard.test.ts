@@ -3,7 +3,7 @@ import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
 
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getCurrentDepartmentAccess, getDepartmentModuleDataScope, getEffectiveRoleCodes, getSuperAdminAccess } from "./access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSuperAdmin, getCurrentDataScope, getCurrentDepartmentAccess, getDepartmentModuleDataScope, getEffectiveRoleCodes, getSuperAdminAccess } from "./access";
 import { getDb } from "./db";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -51,6 +51,15 @@ describe("后台与项目范围访问控制", () => {
     await expect(getEffectiveRoleCodes(ctx)).resolves.toEqual(["ALL", "SUPER_ADMIN"]);
     await expect(getCurrentDataScope(ctx)).resolves.toMatchObject({ hasAllProjects: true, projectIds: [] });
     expect(getDb).not.toHaveBeenCalled();
+  });
+
+  it("普通管理人员即使猜到全局治理路由也会被服务端拒绝", async () => {
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([]) as never);
+
+    await expect(assertSuperAdmin(createContext())).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "仅超级管理员可访问 PC 管理后台",
+    });
   });
 
   it("普通账号的有效业务角色由服务端授权记录返回，未配置时不能伪装获得菜单权限", async () => {

@@ -8,7 +8,7 @@ export const LOGIN_ROUTE = "/login";
 export const POST_LOGIN_RETURN_KEY = "road-construction-management:post-login-return";
 
 export function getCurrentAppPath() {
-  if (typeof window === "undefined") return "/mobile";
+  if (typeof window === "undefined") return "/admin";
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
 
@@ -41,7 +41,8 @@ export function getUnauthorizedLoginRedirectPath(currentPath: string) {
   return createLoginPath(currentPath);
 }
 
-export function getLoginReturnPath(search: string, fallback = "/mobile") {
+/** 未携带 returnTo 的统一登录默认进入管理入口，再由角色决定全局治理或授权业务版块。 */
+export function getLoginReturnPath(search: string, fallback = "/admin") {
   const params = new URLSearchParams(search);
   return sanitizeReturnPath(params.get("returnTo"), fallback);
 }
@@ -54,7 +55,7 @@ export function rememberPostLoginReturnPath(returnTo: string) {
   }
 }
 
-export function consumePostLoginReturnPath(fallback = "/mobile") {
+export function consumePostLoginReturnPath(fallback = "/admin") {
   try {
     const stored = sessionStorage.getItem(POST_LOGIN_RETURN_KEY);
     sessionStorage.removeItem(POST_LOGIN_RETURN_KEY);

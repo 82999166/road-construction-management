@@ -3,6 +3,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import NotFound from "@/pages/NotFound";
 import { createLoginPath } from "@/lib/authNavigation";
+import { resolveManagementAccessMode } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
 import { ShieldAlert } from "lucide-react";
 import { useEffect } from "react";
@@ -12,6 +13,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import AdminPage from "./pages/AdminPage";
 import Home from "./pages/Home";
 import LoginPage from "./pages/LoginPage";
+import ManagementPortal from "./pages/ManagementPortal";
 import MobileConstructionPage from "./pages/MobileConstructionPage";
 import MobileEvidencePage from "./pages/MobileEvidencePage";
 import MobileFinancePage from "./pages/MobileFinancePage";
@@ -26,30 +28,36 @@ import MobileWorkbench from "./pages/MobileWorkbench";
 import { useAuth } from "./_core/hooks/useAuth";
 
 /**
- * PC 超级管理后台前端路由守卫。
- * 未登录人员不会触发后台数据请求；已登录但非超级管理员者会被引导回首页。
- * 服务端 admin 路由仍逐项调用 assertSuperAdmin，防止绕过前端直接调用接口。
+ * 统一管理入口前端路由守卫。
+ * 超级管理员进入全局治理后台；普通管理人员进入仅含其服务端授权业务模块的管理工作台。
+ * admin 路由仍逐项调用 assertSuperAdmin，防止绕过前端直接调用接口。
  */
 function AdminRouteGuard() {
   const { isAuthenticated, loading } = useAuth();
   const [, navigate] = useLocation();
   const access = trpc.admin.access.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const mode = resolveManagementAccessMode({
+    isAuthenticated,
+    authLoading: loading,
+    accessLoading: access.isLoading,
+    accessError: Boolean(access.error),
+    isSuperAdmin: Boolean(access.data?.canAccess),
+  });
 
   useEffect(() => {
     if (!loading && !isAuthenticated) navigate(createLoginPath("/admin"));
-    if (!access.isLoading && access.data && !access.data.canAccess) navigate("/");
-  }, [access.data, access.isLoading, isAuthenticated, loading, navigate]);
+  }, [isAuthenticated, loading, navigate]);
 
-  if (loading || (isAuthenticated && access.isLoading)) {
+  if (mode === "checking") {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在核验后台访问权限…</div>;
   }
-  if (!isAuthenticated) {
-    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">PC 超级管理后台需要先完成登录。</p><Button onClick={() => navigate(createLoginPath("/admin"))}>前往登录页</Button></div>;
+  if (mode === "login") {
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">统一管理后台需要先完成登录。</p><Button onClick={() => navigate(createLoginPath("/admin"))}>前往统一登录页</Button></div>;
   }
-  if (access.error || (access.data && !access.data.canAccess)) {
-    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-amber-600" /><p className="text-sm text-slate-600">当前账号未获超级管理后台授权，正在返回业务入口。</p></div>;
+  if (mode === "unavailable") {
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-amber-600" /><p className="text-sm text-slate-600">后台权限状态暂时无法核验，请稍后重新进入。</p><Button variant="outline" onClick={() => window.location.reload()}>重新加载</Button></div>;
   }
-  return <AdminPage />;
+  return mode === "super-admin" ? <AdminPage /> : <ManagementPortal />;
 }
 
 function Router() {

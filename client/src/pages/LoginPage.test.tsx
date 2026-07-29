@@ -27,14 +27,14 @@ vi.mock("wouter", () => ({
 import LoginPage from "./LoginPage";
 
 describe("独立登录页", () => {
-  it("保留统一身份认证入口，并展示普通管理人员与临时管理员的受控本地登录表单", () => {
+  it("保留统一身份认证入口，并展示普通管理人员与全局治理管理员的受控本地登录表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
     expect(markup).toContain("账号恢复与密码重置");
     expect(markup).toContain('href="/api/identity-recovery"');
-    expect(markup).toContain("临时管理后台登录");
-    expect(markup).toContain("仅用于初始化或应急管理");
-    expect(markup).toContain("普通管理人员账号登录");
+    expect(markup).toContain("超级管理员账号登录");
+    expect(markup).toContain("用于全局治理与应急管理");
+    expect(markup).toContain("管理人员账号登录");
     expect(markup).toContain("账号由超级管理员在后台创建");
     expect(markup).toContain('type="password"');
     expect(markup).not.toContain("admin123");

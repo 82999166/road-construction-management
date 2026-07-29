@@ -32,7 +32,7 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 
 /**
- * PC 端为独立的超级管理后台入口。菜单只负责界面导航，服务端仍会对每个后台接口执行超级管理员校验。
+ * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
  */
 const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: LayoutDashboard, label: "运营概览", path: "/admin" },
@@ -427,7 +427,7 @@ export default function AdminPage() {
   const renderOverview = () => (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium text-[#203c48]">超级管理后台</p>
+        <p className="text-sm font-medium text-[#203c48]">统一管理入口 · 全局治理</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">系统治理概览</h1>
         <p className="mt-2 text-sm text-slate-500">此处仅展示配置与治理对象，施工生产数据在移动业务工作台按岗位办理。</p>
       </div>
@@ -940,7 +940,7 @@ export default function AdminPage() {
   const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
-    <DashboardLayout title="工程云管 · 超级后台" menuItems={ADMIN_MENU}>
+    <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
           <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
