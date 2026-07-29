@@ -102,6 +102,13 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
+/** 权限页的组织范围选择必须区分加载中、尚未建节点和可正常选择三种状态，避免空下拉让管理员误以为页面失效。 */
+export function getDepartmentScopePickerState(isLoading: boolean, nodeCount: number) {
+  if (isLoading) return { disabled: true, placeholder: "正在加载组织节点…", needsOrganizationSetup: false };
+  if (nodeCount === 0) return { disabled: true, placeholder: "暂无部门或项目部", needsOrganizationSetup: true };
+  return { disabled: false, placeholder: "选择部门或项目部", needsOrganizationSetup: false };
+}
+
 export default function AdminPage() {
   const { isAuthenticated } = useAuth();
   const [location, setLocation] = useLocation();
@@ -340,6 +347,7 @@ export default function AdminPage() {
     () => (organizations.data ?? []).filter(item => item.type === "department" || item.type === "project_department"),
     [organizations.data],
   );
+  const departmentScopePickerState = getDepartmentScopePickerState(organizations.isLoading, departmentNodes.length);
   const organizationNameById = useMemo(
     () => new Map((organizations.data ?? []).map(item => [item.id, item.name])),
     [organizations.data],
@@ -628,10 +636,11 @@ export default function AdminPage() {
           <CardHeader><CardTitle className="text-base">部门可办理业务</CardTitle><CardDescription>先为部门或项目部启用业务模块，再向人员授予该部门角色。服务端会同时校验角色、部门模块和项目范围。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-              <Select value={departmentScopeForm.organizationId} onValueChange={value => setDepartmentScopeForm({ ...departmentScopeForm, organizationId: value })}><SelectTrigger><SelectValue placeholder="选择部门或项目部" /></SelectTrigger><SelectContent>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
+              <Select value={departmentScopeForm.organizationId} disabled={departmentScopePickerState.disabled} onValueChange={value => setDepartmentScopeForm({ ...departmentScopeForm, organizationId: value })}><SelectTrigger><SelectValue placeholder={departmentScopePickerState.placeholder} /></SelectTrigger><SelectContent>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
               <Select value={departmentScopeForm.module} onValueChange={value => setDepartmentScopeForm({ ...departmentScopeForm, module: value as DepartmentModuleCode })}><SelectTrigger><SelectValue placeholder="选择业务模块" /></SelectTrigger><SelectContent>{departmentModules.data?.map(module => <SelectItem key={module.code} value={module.code}>{module.name}</SelectItem>)}</SelectContent></Select>
               <Button disabled={!departmentScopeForm.organizationId || !departmentScopeForm.module || saveDepartmentScope.isPending} onClick={() => { if (departmentScopeForm.module) saveDepartmentScope.mutate({ organizationId: Number(departmentScopeForm.organizationId), module: departmentScopeForm.module, status: "active" }); }}>启用业务</Button>
             </div>
+            {departmentScopePickerState.needsOrganizationSetup ? <div className="flex flex-col gap-3 rounded-xl border border-dashed border-amber-200 bg-amber-50/70 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-medium text-amber-950">尚无可选择的部门或项目部</p><p className="mt-1 text-xs leading-5 text-amber-800">请先在“组织与项目”中新增类型为“部门”或“项目部”的启用节点；保存后返回本页即可选择并启用业务模块。</p></div><Button variant="outline" className="shrink-0 border-amber-300 bg-white text-amber-950 hover:bg-amber-100" onClick={() => setLocation("/admin/organization")}>建立组织节点</Button></div> : null}
             {departmentScopes.data?.length ? <div className="space-y-2">{departmentScopes.data.map(scope => {
               const module = departmentModules.data?.find(item => item.code === scope.module);
               return <div key={scope.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{scope.organizationName} · {module?.name ?? scope.module}</p><p className="mt-0.5 text-xs text-slate-500">{module?.description ?? "部门业务模块"} · 最后更新：{displayDate(scope.updatedAt)}</p></div><Button size="sm" variant="outline" disabled={saveDepartmentScope.isPending} onClick={() => saveDepartmentScope.mutate({ organizationId: scope.organizationId, module: scope.module, status: scope.status === "active" ? "disabled" : "active" })}>{scope.status === "active" ? "停用" : "启用"}</Button></div>;
