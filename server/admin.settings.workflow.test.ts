@@ -40,6 +40,7 @@ function createSettingsDb(selectResponses: unknown[][] = []) {
   const take = () => selectResponses[index++] ?? [];
   const insertedValues: unknown[] = [];
   const updatedValues: unknown[] = [];
+  const deletedTargets: unknown[] = [];
   const createQuery = () => {
     let settled = false;
     let rows: unknown[] = [];
@@ -57,13 +58,16 @@ function createSettingsDb(selectResponses: unknown[][] = []) {
     query.then = (onFulfilled?: (value: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) => Promise.resolve(readRows()).then(onFulfilled, onRejected);
     return query;
   };
-  const db = {
+  const db: Record<string, unknown> = {
     select: vi.fn(() => ({ from: vi.fn(() => createQuery()) })),
     insert: vi.fn(() => ({ values: vi.fn(async (value: unknown) => { insertedValues.push(value); }) })),
     update: vi.fn(() => ({ set: vi.fn((value: unknown) => { updatedValues.push(value); return { where: vi.fn(async () => undefined) }; }) })),
+    delete: vi.fn(() => ({ where: vi.fn(async (target: unknown) => { deletedTargets.push(target); return [{ affectedRows: 1 }]; }) })),
     insertedValues,
     updatedValues,
+    deletedTargets,
   };
+  db.transaction = vi.fn(async callback => callback(db));
   return db;
 }
 
@@ -208,6 +212,39 @@ describe("系统设置安全工作流", () => {
     await expect(adminRouter.createCaller(createAdminContext()).settings.saveDraft({ id: 21, category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "130", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.updatedValues).toHaveLength(0);
     expect(db.insertedValues).toHaveLength(0);
+  });
+
+  it("删除企业微信配置会校验当前版本、清除活动密文及历史快照可恢复内容，并仅保留最小化审计", async () => {
+    const webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=remove-test-key";
+    const existing = {
+      id: 31,
+      version: 4,
+      category: "wechat",
+      settingKey: "WECHAT_WORK_WEBHOOK",
+      displayName: "企业微信机器人",
+      valueJson: null,
+      secretEncrypted: "cipher:remove-test-webhook",
+      valuePreview: "********MASK",
+      isSensitive: true,
+      remarks: "待删除的机器人配置",
+    };
+    const historicalSnapshot = JSON.stringify({ ...existing, valueJson: webhook });
+    const db = createSettingsDb([[existing], [{ id: 71, snapshotJson: historicalSnapshot }]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.remove({ id: 31, expectedVersion: 4 })).resolves.toEqual({ success: true });
+
+    expect(db.deletedTargets).toHaveLength(1);
+    expect(db.updatedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ snapshotJson: expect.stringContaining("[已删除]") }),
+    ]));
+    expect(JSON.stringify(db.updatedValues)).not.toContain("cipher:remove-test-webhook");
+    expect(JSON.stringify(db.updatedValues)).not.toContain(webhook);
+    expect(JSON.stringify(db.insertedValues)).not.toContain("cipher:remove-test-webhook");
+    expect(JSON.stringify(db.insertedValues)).not.toContain(webhook);
+    expect(db.insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "delete", targetId: "WECHAT_WORK_WEBHOOK" }),
+    ]));
   });
 
   it("企业微信与业务参数均可在统一配置中心经历草稿、发布、历史脱敏与回滚闭环", async () => {

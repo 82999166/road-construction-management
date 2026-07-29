@@ -59,11 +59,18 @@ type VehicleForm = { id?: number; projectId: string; organizationId: string; pla
 type LocalAccountStatus = "active" | "disabled";
 type LocalAccountEditForm = { userId: number; username: string; displayName: string; wecomUserId: string; status: LocalAccountStatus };
 type LocalAccountActionTarget = { id: number; name: string; username: string };
+type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
+type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
+type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
+type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
+type MasterDataDeleteTarget = { resource: MasterDataResource; id: number; label: string; description: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
+const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
+const EMPTY_SETTING_FORM: SettingForm = { category: "企业微信", settingKey: "", displayName: "", value: "", isSensitive: true, remarks: "" };
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
@@ -173,7 +180,7 @@ export default function AdminPage() {
   const [projectForm, setProjectForm] = useState<ProjectForm>(EMPTY_PROJECT_FORM);
   const [positionForm, setPositionForm] = useState<PositionForm>(EMPTY_POSITION_FORM);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
-  const [roleForm, setRoleForm] = useState({ code: "", name: "", description: "" });
+  const [roleForm, setRoleForm] = useState<RoleForm>(EMPTY_ROLE_FORM);
   const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
   const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" as LocalAccountStatus });
   const [localAccountEditForm, setLocalAccountEditForm] = useState<LocalAccountEditForm | null>(null);
@@ -181,14 +188,9 @@ export default function AdminPage() {
   const [resetPassword, setResetPassword] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<LocalAccountActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
-  const [settingForm, setSettingForm] = useState({
-    category: "企业微信",
-    settingKey: "",
-    displayName: "",
-    value: "",
-    isSensitive: true,
-    remarks: "",
-  });
+  const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
+  const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
+  const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
 
   // 首次加载后默认选中第一个角色；角色切换后以服务端真实权限回显编辑矩阵。
   useEffect(() => {
@@ -246,7 +248,7 @@ export default function AdminPage() {
   const saveRole = trpc.admin.role.save.useMutation({
     onSuccess: async () => {
       toast.success("角色已保存");
-      setRoleForm({ code: "", name: "", description: "" });
+      setRoleForm(EMPTY_ROLE_FORM);
       await roles.refetch();
       await overview.refetch();
     },
@@ -307,12 +309,12 @@ export default function AdminPage() {
     },
   });
   const saveSetting = trpc.admin.settings.saveDraft.useMutation({
-    onSuccess: async () => {
-      toast.success("配置草稿已安全保存");
-      setSettingForm({ category: "企业微信", settingKey: "", displayName: "", value: "", isSensitive: true, remarks: "" });
-      await settings.refetch();
-      await overview.refetch();
+    onSuccess: async data => {
+      toast.success(settingForm.id ? `配置草稿已更新为 v${data.version ?? "新版本"}` : "配置草稿已安全保存");
+      setSettingForm(EMPTY_SETTING_FORM);
+      await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
     },
+    onError: refreshAfterSettingConflict,
   });
   const publishSetting = trpc.admin.settings.publish.useMutation({
     onSuccess: async () => {
@@ -334,6 +336,30 @@ export default function AdminPage() {
       await Promise.all([settings.refetch(), settingHistory.refetch(), audits.refetch()]);
     },
     onError: refreshAfterSettingConflict,
+  });
+  const removeSetting = trpc.admin.settings.remove.useMutation({
+    onSuccess: async () => {
+      toast.success("配置已删除，配置值与历史快照中的可恢复内容已清除");
+      setSettingDeleteTarget(null);
+      setSettingForm(current => current.id ? EMPTY_SETTING_FORM : current);
+      setSelectedSettingId(undefined);
+      await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: refreshAfterSettingConflict,
+  });
+  const removeMasterData = trpc.admin.masterData.remove.useMutation({
+    onSuccess: async result => {
+      const target = masterDataDeleteTarget;
+      toast.success(result.operation === "revoked" ? "角色授权已撤销并保留可追溯历史" : `${target?.label ?? "主数据"}已安全删除`);
+      setMasterDataDeleteTarget(null);
+      if (target?.resource === "organization") setOrganizationForm(EMPTY_ORGANIZATION_FORM);
+      if (target?.resource === "position") setPositionForm(EMPTY_POSITION_FORM);
+      if (target?.resource === "project") setProjectForm(EMPTY_PROJECT_FORM);
+      if (target?.resource === "vehicle") setVehicleForm(EMPTY_VEHICLE_FORM);
+      if (target?.resource === "role") setRoleForm(EMPTY_ROLE_FORM);
+      await Promise.all([organizations.refetch(), positions.refetch(), projects.refetch(), vehicles.refetch(), roles.refetch(), assignments.refetch(), departmentScopes.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const rollbackSetting = trpc.admin.settings.rollback.useMutation({
     onSuccess: async result => {
@@ -529,7 +555,7 @@ export default function AdminPage() {
               <div><Label>组织负责人</Label><Select value={organizationForm.managerUserId || "UNASSIGNED"} onValueChange={value => setOrganizationForm({ ...organizationForm, managerUserId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不设置</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-3"><div><Label>成本中心</Label><Input value={organizationForm.costCenterCode} placeholder="可选" onChange={event => setOrganizationForm({ ...organizationForm, costCenterCode: event.target.value.toUpperCase() })} /></div><div><Label>排序</Label><Input type="number" min="0" value={organizationForm.sortOrder} onChange={event => setOrganizationForm({ ...organizationForm, sortOrder: event.target.value })} /></div></div>
               <div><Label>状态</Label><Select value={organizationForm.status} onValueChange={(value: OrganizationStatus) => setOrganizationForm({ ...organizationForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
-              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!organizationForm.code || !organizationForm.name || saveOrganization.isPending} onClick={submitOrganization}>{organizationForm.id ? "保存组织变更" : "保存组织节点"}</Button>
+              <div className="grid gap-2 sm:grid-cols-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!organizationForm.code || !organizationForm.name || saveOrganization.isPending} onClick={submitOrganization}>{organizationForm.id ? "保存组织变更" : "保存组织节点"}</Button>{organizationForm.id ? <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "organization", id: organizationForm.id!, label: organizationForm.name, description: `确认删除组织“${organizationForm.name}”？若仍被下级节点、人员、项目、车辆、授权或部门业务范围引用，系统将拒绝删除并要求先迁移或停用。` })}>删除组织</Button> : null}</div>
             </CardContent>
           </Card>
           <Card>
@@ -543,12 +569,12 @@ export default function AdminPage() {
               <div className="grid grid-cols-2 gap-3"><div><Label>开始日期</Label><Input type="date" value={projectForm.startDate} onChange={event => setProjectForm({ ...projectForm, startDate: event.target.value })} /></div><div><Label>结束日期</Label><Input type="date" value={projectForm.endDate} onChange={event => setProjectForm({ ...projectForm, endDate: event.target.value })} /></div></div>
               <div className="grid grid-cols-2 gap-3"><div><Label>成本中心</Label><Input value={projectForm.costCenterCode} placeholder="可选" onChange={event => setProjectForm({ ...projectForm, costCenterCode: event.target.value.toUpperCase() })} /></div><div><Label>排序</Label><Input type="number" min="0" value={projectForm.sortOrder} onChange={event => setProjectForm({ ...projectForm, sortOrder: event.target.value })} /></div></div>
               <div><Label>状态</Label><Select value={projectForm.status} onValueChange={(value: ProjectStatus) => setProjectForm({ ...projectForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="planning">筹备</SelectItem><SelectItem value="active">进行中</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="completed">已完工</SelectItem><SelectItem value="archived">已归档</SelectItem></SelectContent></Select></div>
-              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!projectForm.code || !projectForm.name || !projectForm.nodeType || saveProject.isPending} onClick={submitProject}>{projectForm.id ? "保存项目变更" : "保存项目节点"}</Button>
+              <div className="grid gap-2 sm:grid-cols-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!projectForm.code || !projectForm.name || !projectForm.nodeType || saveProject.isPending} onClick={submitProject}>{projectForm.id ? "保存项目变更" : "保存项目节点"}</Button>{projectForm.id ? <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "project", id: projectForm.id!, label: projectForm.name, description: `确认删除项目节点“${projectForm.name}”？若仍有下级项目、授权、资源或业务单据，系统将拒绝删除并提示改为归档。` })}>删除项目</Button> : null}</div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><CardTitle className="text-base">{positionForm.id ? "维护岗位" : "新增岗位"}</CardTitle>{positionForm.id ? <Button size="sm" variant="ghost" onClick={() => setPositionForm(EMPTY_POSITION_FORM)}>新建</Button> : null}</CardHeader>
-            <CardContent className="space-y-3"><div><Label>岗位编码</Label><Input value={positionForm.code} placeholder="例如 TRANSPORT_MANAGER" onChange={event => setPositionForm({ ...positionForm, code: event.target.value.toUpperCase() })} /></div><div><Label>岗位名称</Label><Input value={positionForm.name} placeholder="例如 运输主管" onChange={event => setPositionForm({ ...positionForm, name: event.target.value })} /></div><div><Label>岗位分类</Label><Input value={positionForm.category} placeholder="例如 业务岗位" onChange={event => setPositionForm({ ...positionForm, category: event.target.value })} /></div><div><Label>职责说明</Label><Input value={positionForm.description} placeholder="可选" onChange={event => setPositionForm({ ...positionForm, description: event.target.value })} /></div><div><Label>状态</Label><Select value={positionForm.status} onValueChange={(value: OrganizationStatus) => setPositionForm({ ...positionForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div><Button variant="outline" className="w-full" disabled={!positionForm.code || !positionForm.name || !positionForm.category || savePosition.isPending} onClick={submitPosition}>{positionForm.id ? "保存岗位变更" : "保存岗位"}</Button></CardContent>
+            <CardContent className="space-y-3"><div><Label>岗位编码</Label><Input value={positionForm.code} placeholder="例如 TRANSPORT_MANAGER" onChange={event => setPositionForm({ ...positionForm, code: event.target.value.toUpperCase() })} /></div><div><Label>岗位名称</Label><Input value={positionForm.name} placeholder="例如 运输主管" onChange={event => setPositionForm({ ...positionForm, name: event.target.value })} /></div><div><Label>岗位分类</Label><Input value={positionForm.category} placeholder="例如 业务岗位" onChange={event => setPositionForm({ ...positionForm, category: event.target.value })} /></div><div><Label>职责说明</Label><Input value={positionForm.description} placeholder="可选" onChange={event => setPositionForm({ ...positionForm, description: event.target.value })} /></div><div><Label>状态</Label><Select value={positionForm.status} onValueChange={(value: OrganizationStatus) => setPositionForm({ ...positionForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div><div className="grid gap-2 sm:grid-cols-2"><Button variant="outline" disabled={!positionForm.code || !positionForm.name || !positionForm.category || savePosition.isPending} onClick={submitPosition}>{positionForm.id ? "保存岗位变更" : "保存岗位"}</Button>{positionForm.id ? <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "position", id: positionForm.id!, label: positionForm.name, description: `确认删除岗位“${positionForm.name}”？若仍被人员档案引用，系统将拒绝删除并提示改为停用。` })}>删除岗位</Button> : null}</div></CardContent>
           </Card>
         </aside>
       </div>
@@ -614,7 +640,7 @@ export default function AdminPage() {
               <div className="grid grid-cols-2 gap-3"><div><Label>产权/所属人</Label><Input value={vehicleForm.ownerName} placeholder="可选" onChange={event => setVehicleForm({ ...vehicleForm, ownerName: event.target.value })} /></div><div><Label>绑定司机</Label><Select value={vehicleForm.driverUserId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, driverUserId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不分配</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></div></div>
               <div className="grid grid-cols-3 gap-2"><div><Label>货厢长(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxLengthMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxLengthMeters: event.target.value })} /></div><div><Label>货厢宽(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxWidthMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxWidthMeters: event.target.value })} /></div><div><Label>货厢高(m)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.boxHeightMeters} onChange={event => setVehicleForm({ ...vehicleForm, boxHeightMeters: event.target.value })} /></div></div>
               <div className="grid grid-cols-3 gap-2"><div><Label>装载系数</Label><Input type="number" min="0.001" max="1.5" step="0.001" value={vehicleForm.loadFactor} onChange={event => setVehicleForm({ ...vehicleForm, loadFactor: event.target.value })} /></div><div><Label>核定载重(t)</Label><Input type="number" min="0.001" step="0.001" value={vehicleForm.payloadTons} placeholder="可选" onChange={event => setVehicleForm({ ...vehicleForm, payloadTons: event.target.value })} /></div><div><Label>调度状态</Label><Select value={vehicleForm.status} onValueChange={(value: VehicleStatus) => setVehicleForm({ ...vehicleForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">可调度</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div></div>
-              <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!vehicleForm.projectId || !vehicleForm.plateNo || !vehicleForm.boxLengthMeters || !vehicleForm.boxWidthMeters || !vehicleForm.boxHeightMeters || saveVehicle.isPending} onClick={submitVehicle}>{vehicleForm.id ? "保存车辆变更" : "保存车辆档案"}</Button>
+              <div className="grid gap-2 sm:grid-cols-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!vehicleForm.projectId || !vehicleForm.plateNo || !vehicleForm.boxLengthMeters || !vehicleForm.boxWidthMeters || !vehicleForm.boxHeightMeters || saveVehicle.isPending} onClick={submitVehicle}>{vehicleForm.id ? "保存车辆变更" : "保存车辆档案"}</Button>{vehicleForm.id ? <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "vehicle", id: vehicleForm.id!, label: vehicleForm.plateNo, description: `确认删除车辆“${vehicleForm.plateNo}”？已有运输趟次的车辆不可删除，应改为停用以保留责任链。` })}>删除车辆</Button> : null}</div>
             </CardContent>
           </Card>
         </div>
@@ -629,16 +655,17 @@ export default function AdminPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">角色列表</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {roles.data?.map(role => <button key={role.id} className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${selectedRoleId === role.id ? "border-[#203c48] bg-[#edf4f1]" : "border-slate-100 hover:bg-slate-50"}`} onClick={() => setSelectedRoleId(role.id)}><p className="text-sm font-medium">{role.name}</p><p className="mt-0.5 text-xs text-slate-500">{role.code} · {role.category === "system" ? "系统角色" : "业务角色"}</p></button>)}
+            {roles.data?.map(role => <button key={role.id} className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${selectedRoleId === role.id ? "border-[#203c48] bg-[#edf4f1]" : "border-slate-100 hover:bg-slate-50"}`} onClick={() => { setSelectedRoleId(role.id); setRoleForm(role.isSystem ? EMPTY_ROLE_FORM : { id: role.id, code: role.code, name: role.name, category: role.category, description: role.description ?? "", status: role.status, isSystem: role.isSystem }); }}><p className="text-sm font-medium">{role.name}</p><p className="mt-0.5 text-xs text-slate-500">{role.code} · {role.category === "system" ? "系统角色" : "业务角色"} · {role.status === "active" ? "启用" : "停用"}</p></button>)}
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">新增业务角色</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><CardTitle className="text-base">{roleForm.id ? "维护业务角色" : "新增业务角色"}</CardTitle>{roleForm.id ? <Button size="sm" variant="ghost" onClick={() => setRoleForm(EMPTY_ROLE_FORM)}>新建</Button> : null}</CardHeader>
           <CardContent className="space-y-3">
             <Input value={roleForm.code} placeholder="角色编码，例如 CONTRACT_MANAGER" onChange={event => setRoleForm({ ...roleForm, code: event.target.value.toUpperCase() })} />
             <Input value={roleForm.name} placeholder="角色名称" onChange={event => setRoleForm({ ...roleForm, name: event.target.value })} />
             <Input value={roleForm.description} placeholder="职责说明（可选）" onChange={event => setRoleForm({ ...roleForm, description: event.target.value })} />
-            <Button variant="outline" className="w-full" disabled={!roleForm.code || !roleForm.name || saveRole.isPending} onClick={() => saveRole.mutate({ ...roleForm, category: "business" })}>保存角色</Button>
+            <Select value={roleForm.status} onValueChange={(value: OrganizationStatus) => setRoleForm({ ...roleForm, status: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select>
+            <div className="grid gap-2 sm:grid-cols-2"><Button variant="outline" disabled={!roleForm.code || !roleForm.name || saveRole.isPending} onClick={() => { const { isSystem, ...input } = roleForm; saveRole.mutate(input); }}>{roleForm.id ? "保存角色变更" : "保存角色"}</Button>{roleForm.id ? <Button variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "role", id: roleForm.id!, label: roleForm.name, description: `确认删除自定义角色“${roleForm.name}”？系统内置角色和已有授权历史的角色不可删除，应改为停用并撤销现有授权。` })}>删除角色</Button> : null}</div>
           </CardContent>
         </Card>
       </section>
@@ -677,7 +704,7 @@ export default function AdminPage() {
             {departmentScopePickerState.needsOrganizationSetup ? <div className="flex flex-col gap-3 rounded-xl border border-dashed border-amber-200 bg-amber-50/70 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-medium text-amber-950">尚无可选择的部门或项目部</p><p className="mt-1 text-xs leading-5 text-amber-800">请先在“组织与项目”中新增类型为“部门”或“项目部”的启用节点；保存后返回本页即可选择并启用业务模块。</p></div><Button variant="outline" className="shrink-0 border-amber-300 bg-white text-amber-950 hover:bg-amber-100" onClick={() => setLocation("/admin/organization")}>建立组织节点</Button></div> : null}
             {departmentScopes.data?.length ? <div className="space-y-2">{departmentScopes.data.map(scope => {
               const module = departmentModules.data?.find(item => item.code === scope.module);
-              return <div key={scope.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{scope.organizationName} · {module?.name ?? scope.module}</p><p className="mt-0.5 text-xs text-slate-500">{module?.description ?? "部门业务模块"} · 最后更新：{displayDate(scope.updatedAt)}</p></div><Button size="sm" variant="outline" disabled={saveDepartmentScope.isPending} onClick={() => saveDepartmentScope.mutate({ organizationId: scope.organizationId, module: scope.module, status: scope.status === "active" ? "disabled" : "active" })}>{scope.status === "active" ? "停用" : "启用"}</Button></div>;
+              return <div key={scope.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{scope.organizationName} · {module?.name ?? scope.module}</p><p className="mt-0.5 text-xs text-slate-500">{module?.description ?? "部门业务模块"} · 最后更新：{displayDate(scope.updatedAt)}</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={saveDepartmentScope.isPending} onClick={() => saveDepartmentScope.mutate({ organizationId: scope.organizationId, module: scope.module, status: scope.status === "active" ? "disabled" : "active" })}>{scope.status === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "department_scope", id: scope.id, label: `${scope.organizationName} · ${module?.name ?? scope.module}`, description: `确认删除“${scope.organizationName}”的“${module?.name ?? scope.module}”业务范围？删除后该部门不再拥有该模块入口，可重新启用创建。` })}>删除</Button></div></div>;
             })}</div> : <EmptyState text="尚未配置部门可办理业务。请先建立部门节点，再按实际职责启用业务模块。" />}
           </CardContent>
         </Card>
@@ -743,7 +770,7 @@ export default function AdminPage() {
             <Button className="min-w-40 bg-[#203c48] hover:bg-[#17313b]" disabled={!assignmentReady || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: assignmentForm.organizationId ? Number(assignmentForm.organizationId) : null, projectId: assignmentForm.projectId ? Number(assignmentForm.projectId) : null, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>{saveAssignment.isPending ? "正在授权…" : "授权"}</Button>
           </CardContent>
           <CardContent className="pt-0">
-            {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 部门 {item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 项目 {item.projectId || "全部"}</span><Badge variant="outline">{item.status}</Badge></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
+            {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 部门 {item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 项目 {item.projectId || "全部"}</span><div className="flex items-center gap-2"><Badge variant="outline">{item.status}</Badge>{item.status !== "revoked" ? <Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "role_assignment", id: item.id, label: `用户 #${item.userId} 的角色授权`, description: "确认撤销该角色授权？系统将立即停止其权限，并保留原授权记录、操作人和审计历史。" })}>撤销</Button> : null}</div></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
           </CardContent>
         </Card>
       </section>
@@ -760,7 +787,16 @@ export default function AdminPage() {
             {settings.data?.length ? settings.data.map(item => (
               <div key={item.id} className={`flex flex-col gap-3 rounded-xl border p-4 transition-colors ${selectedSettingId === item.id ? "border-[#203c48] bg-[#f7faf9]" : "border-slate-100"}`}>
                 <button className="text-left" onClick={() => setSelectedSettingId(item.id)}><div className="flex items-center gap-2"><p className="text-sm font-medium">{item.displayName}</p>{item.isSensitive ? <Badge variant="outline">加密托管</Badge> : null}<Badge variant={item.status === "published" ? "secondary" : "outline"}>{item.status === "published" ? "已发布" : item.status === "draft" ? "草稿" : "已禁用"}</Badge></div><p className="mt-1 text-xs text-slate-500">{item.category} · {item.settingKey} · v{item.version} · {item.valuePreview || "未设置值"}</p></button>
-                <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id, expectedVersion: item.version })}>发布</Button><Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey === "WECHAT_WORK_WEBHOOK" ? "发送测试消息" : "校验 / 测试"}</Button>{item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id, expectedVersion: item.version }); }}>停用</Button> : null}</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => {
+                    setSelectedSettingId(item.id);
+                    setSettingForm({ id: item.id, expectedVersion: item.version, category: item.category, settingKey: item.settingKey, displayName: item.displayName, value: item.isSensitive ? "" : item.valueJson ?? "", isSensitive: item.isSensitive, remarks: item.remarks ?? "" });
+                  }}>编辑</Button>
+                  <Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id, expectedVersion: item.version })}>发布</Button>
+                  <Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey === "WECHAT_WORK_WEBHOOK" ? "发送测试消息" : "校验 / 测试"}</Button>
+                  {item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id, expectedVersion: item.version }); }}>停用</Button> : null}
+                  <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={removeSetting.isPending} onClick={() => setSettingDeleteTarget({ id: item.id, displayName: item.displayName, settingKey: item.settingKey, version: item.version, isSensitive: item.isSensitive })}>删除</Button>
+                </div>
               </div>
             )) : <EmptyState text="暂无配置项，请在右侧创建企业微信、消息模板或外部 API 配置草稿。" />}
           </CardContent>
@@ -788,17 +824,29 @@ export default function AdminPage() {
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份平台账号恢复地址", value: "", isSensitive: false, remarks: "仅限企业统一身份提供方的账号找回或密码重置页面；保存草稿后需发布才会对用户生效。" })}>填入身份恢复地址模板</Button></CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">新建配置草稿</CardTitle><CardDescription>该表单仅创建新的配置项；既有配置通过版本化发布、停用或回滚操作维护，密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">{settingForm.id ? "编辑配置草稿" : "新建配置草稿"}</CardTitle><CardDescription>{settingForm.id ? "编辑会生成新的草稿版本。敏感值留空时保留现有密文；输入完整新值才会替换。配置键与敏感等级需通过新建替代配置变更。" : "密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文；既有配置可从左侧编辑、停用或删除。"}</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="企业微信">企业微信接入</SelectItem><SelectItem value="企业微信消息模板">企业微信消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
-            <div><Label>配置键</Label><Input value={settingForm.settingKey} placeholder="WECOM:CORP_ID" onChange={event => setSettingForm({ ...settingForm, settingKey: event.target.value.toUpperCase() })} /></div>
+            <div><Label>配置键</Label><Input value={settingForm.settingKey} disabled={Boolean(settingForm.id)} placeholder="WECOM:CORP_ID" onChange={event => setSettingForm({ ...settingForm, settingKey: event.target.value.toUpperCase() })} /></div>
             <div><Label>显示名称</Label><Input value={settingForm.displayName} placeholder="企业微信企业 ID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /></div>
-            <div><Label>配置值</Label><Input value={settingForm.value} type={settingForm.isSensitive ? "password" : "text"} placeholder="输入值或密钥" onChange={event => setSettingForm({ ...settingForm, value: event.target.value })} /></div>
-            <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管</label>
+            <div><Label>配置值</Label><Input value={settingForm.value} type={settingForm.isSensitive ? "password" : "text"} placeholder={settingForm.id && settingForm.isSensitive ? "留空保留现有加密值；输入完整新值以替换" : "输入值或密钥"} onChange={event => setSettingForm({ ...settingForm, value: event.target.value })} />{settingForm.id && settingForm.isSensitive ? <p className="mt-1 text-xs leading-5 text-slate-500">为保护密钥，系统不会回显现有值。留空仅更新名称、分类或备注；填写完整新值才会替换。</p> : null}</div>
+            <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} disabled={Boolean(settingForm.id)} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管</label>
             <div><Label>备注</Label><Input value={settingForm.remarks} placeholder="用途、回调地址或维护说明" onChange={event => setSettingForm({ ...settingForm, remarks: event.target.value })} /></div>
-            <Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!settingForm.settingKey || !settingForm.displayName || !settingForm.value || saveSetting.isPending} onClick={() => saveSetting.mutate(settingForm)}>保存草稿</Button>
+            <div className="flex gap-2"><Button className="flex-1 bg-[#203c48] hover:bg-[#17313b]" disabled={!settingForm.settingKey || !settingForm.displayName || (!settingForm.value && !(settingForm.id && settingForm.isSensitive)) || saveSetting.isPending} onClick={() => saveSetting.mutate(settingForm)}>{settingForm.id ? "保存修订草稿" : "保存草稿"}</Button>{settingForm.id ? <Button variant="outline" onClick={() => setSettingForm(EMPTY_SETTING_FORM)}>取消编辑</Button> : null}</div>
           </CardContent>
         </Card>
+        <AlertDialog open={Boolean(settingDeleteTarget)} onOpenChange={open => { if (!open) setSettingDeleteTarget(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认删除配置？</AlertDialogTitle>
+              <AlertDialogDescription>将删除“{settingDeleteTarget?.displayName}”（{settingDeleteTarget?.settingKey}）。{settingDeleteTarget?.isSensitive ? "系统会同步抹除当前密文及历史快照中的可恢复内容；" : "系统会同步抹除当前值及历史快照中的可恢复内容；"}保留的审计记录仅包含操作标识，不含配置值。此操作不可恢复。</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removeSetting.isPending}>取消</AlertDialogCancel>
+              <AlertDialogAction className="bg-rose-700 hover:bg-rose-800" disabled={!settingDeleteTarget || removeSetting.isPending} onClick={() => { if (settingDeleteTarget) removeSetting.mutate({ id: settingDeleteTarget.id, expectedVersion: settingDeleteTarget.version }); }}>确认删除</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </aside>
     </div>
   );
@@ -898,6 +946,18 @@ export default function AdminPage() {
           <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
+        <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{masterDataDeleteTarget?.resource === "role_assignment" ? "确认撤销角色授权？" : "确认删除主数据？"}</AlertDialogTitle>
+              <AlertDialogDescription>{masterDataDeleteTarget?.description ?? "系统将在服务端校验关联业务数据。仍被引用的记录将被拒绝删除，并提示改为停用或归档。"}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removeMasterData.isPending}>取消</AlertDialogCancel>
+              <AlertDialogAction className="bg-rose-700 hover:bg-rose-800" disabled={!masterDataDeleteTarget || removeMasterData.isPending} onClick={() => { if (masterDataDeleteTarget) removeMasterData.mutate({ resource: masterDataDeleteTarget.resource, id: masterDataDeleteTarget.id }); }}>{masterDataDeleteTarget?.resource === "role_assignment" ? "确认撤销" : "确认删除"}</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );

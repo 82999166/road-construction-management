@@ -120,6 +120,15 @@ const localManagerPasswordResetInput = z.object({
 
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
 
+/** 删除配置必须携带当前版本，防止管理员基于旧页面误删已被他人修订的配置。 */
+const settingDeleteInput = z.object({ id: z.number().int().positive(), expectedVersion: z.number().int().positive() });
+
+/** 后台主数据删除统一走受控入口；角色授权仅撤销，不物理删除可追溯历史。 */
+const masterDataRemoveInput = z.object({
+  resource: z.enum(["organization", "position", "project", "vehicle", "role", "department_scope", "role_assignment"]),
+  id: z.number().int().positive(),
+});
+
 /** 全业务治理统计仅支持已校验的项目和自然月筛选，避免模糊日期或越权项目参数进入聚合查询。 */
 const businessStatisticsInput = z.object({
   projectId: z.number().int().positive().optional(),
@@ -178,6 +187,23 @@ function sanitizeConfigSnapshot(snapshotJson: string | null) {
     delete snapshot.secretEncrypted;
     if (snapshot.isSensitive) delete snapshot.valueJson;
     return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 配置被删除后，历史记录仅保留版本治理所需的对象标识；不再保留配置值、密文或可恢复预览。
+ * 审计索引独立保留“谁、何时、删除了哪个配置”，兼顾可追溯性与敏感信息最小化。
+ */
+function redactDeletedConfigSnapshot(snapshotJson: string | null) {
+  if (!snapshotJson) return null;
+  try {
+    const snapshot = JSON.parse(snapshotJson) as Record<string, unknown>;
+    delete snapshot.valueJson;
+    delete snapshot.secretEncrypted;
+    snapshot.valuePreview = "[已删除]";
+    return JSON.stringify(snapshot);
   } catch {
     return null;
   }
@@ -547,6 +573,106 @@ export const adminRouter = router({
     }),
   }),
 
+  /**
+   * 所有配置型主数据统一从此入口删除。任何仍被组织层级、人员、授权或业务单据引用的对象均不可物理删除，
+   * 管理员应改为停用或归档；角色授权仅撤销以确保历史责任可追溯。
+   */
+  masterData: router({
+    remove: protectedProcedure.input(masterDataRemoveInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+
+      if (input.resource === "organization") {
+        const [existing] = await db.select({ id: organizations.id, name: organizations.name }).from(organizations).where(eq(organizations.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "组织节点不存在或已删除" });
+        const dependencies = await Promise.all([
+          db.select({ id: organizations.id }).from(organizations).where(eq(organizations.parentId, input.id)).limit(1),
+          db.select({ id: projects.id }).from(projects).where(eq(projects.organizationId, input.id)).limit(1),
+          db.select({ id: userProfiles.id }).from(userProfiles).where(eq(userProfiles.organizationId, input.id)).limit(1),
+          db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.organizationId, input.id)).limit(1),
+          db.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(eq(userRoleAssignments.organizationId, input.id)).limit(1),
+          db.select({ id: departmentBusinessScopes.id }).from(departmentBusinessScopes).where(eq(departmentBusinessScopes.organizationId, input.id)).limit(1),
+        ]);
+        if (dependencies.some(rows => rows.length > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "该组织仍被下级节点、项目、人员、车辆、授权或部门业务范围引用，不能删除；请先迁移关联数据或将其停用" });
+        await db.delete(organizations).where(eq(organizations.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "organization", action: "delete", targetType: "organization", targetId: String(input.id), summary: `删除未被引用的组织节点：${existing.name}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      if (input.resource === "position") {
+        const [existing] = await db.select({ id: positions.id, name: positions.name }).from(positions).where(eq(positions.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "岗位不存在或已删除" });
+        const profiles = await db.select({ id: userProfiles.id }).from(userProfiles).where(eq(userProfiles.positionId, input.id)).limit(1);
+        if (profiles.length > 0) throw new TRPCError({ code: "BAD_REQUEST", message: "该岗位仍被人员档案引用，不能删除；请先调整人员岗位或将岗位停用" });
+        await db.delete(positions).where(eq(positions.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "position", action: "delete", targetType: "position", targetId: String(input.id), summary: `删除未被引用的岗位：${existing.name}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      if (input.resource === "project") {
+        const [existing] = await db.select({ id: projects.id, name: projects.name }).from(projects).where(eq(projects.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "项目节点不存在或已删除" });
+        const dependencies = await Promise.all([
+          db.select({ id: projects.id }).from(projects).where(eq(projects.parentId, input.id)).limit(1),
+          db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.projectId, input.id)).limit(1),
+          db.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(eq(userRoleAssignments.projectId, input.id)).limit(1),
+          db.select({ id: constructionDailyReports.id }).from(constructionDailyReports).where(eq(constructionDailyReports.projectId, input.id)).limit(1),
+          db.select({ id: transportTrips.id }).from(transportTrips).where(eq(transportTrips.projectId, input.id)).limit(1),
+          db.select({ id: laborWorkers.id }).from(laborWorkers).where(eq(laborWorkers.projectId, input.id)).limit(1),
+          db.select({ id: attendanceRecords.id }).from(attendanceRecords).where(eq(attendanceRecords.projectId, input.id)).limit(1),
+          db.select({ id: payrollStatements.id }).from(payrollStatements).where(eq(payrollStatements.projectId, input.id)).limit(1),
+          db.select({ id: purchaseRequests.id }).from(purchaseRequests).where(eq(purchaseRequests.projectId, input.id)).limit(1),
+          db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.projectId, input.id)).limit(1),
+          db.select({ id: measurementClaims.id }).from(measurementClaims).where(eq(measurementClaims.projectId, input.id)).limit(1),
+          db.select({ id: inventoryTransactions.id }).from(inventoryTransactions).where(eq(inventoryTransactions.projectId, input.id)).limit(1),
+          db.select({ id: evidenceRecords.id }).from(evidenceRecords).where(eq(evidenceRecords.projectId, input.id)).limit(1),
+          db.select({ id: machines.id }).from(machines).where(eq(machines.projectId, input.id)).limit(1),
+        ]);
+        if (dependencies.some(rows => rows.length > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "该项目仍被下级项目、授权、资源或业务单据引用，不能删除；请先归档或迁移关联数据" });
+        await db.delete(projects).where(eq(projects.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "project", action: "delete", targetType: "project", targetId: String(input.id), summary: `删除未被引用的项目节点：${existing.name}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      if (input.resource === "vehicle") {
+        const [existing] = await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或已删除" });
+        const trips = await db.select({ id: transportTrips.id }).from(transportTrips).where(eq(transportTrips.vehicleId, input.id)).limit(1);
+        if (trips.length > 0) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆已有运输趟次记录，不能删除；请改为停用以保留运输责任链" });
+        await db.delete(transportVehicles).where(eq(transportVehicles.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "transport", action: "delete_vehicle", targetType: "transport_vehicle", targetId: String(input.id), summary: `删除未被引用的车辆台账：${existing.plateNo}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      if (input.resource === "role") {
+        const [existing] = await db.select({ id: systemRoles.id, name: systemRoles.name, isSystem: systemRoles.isSystem }).from(systemRoles).where(eq(systemRoles.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在或已删除" });
+        if (existing.isSystem) throw new TRPCError({ code: "FORBIDDEN", message: "系统内置角色不可删除；如需停止使用，请在角色维护中停用" });
+        const assignments = await db.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(eq(userRoleAssignments.roleId, input.id)).limit(1);
+        if (assignments.length > 0) throw new TRPCError({ code: "BAD_REQUEST", message: "该角色已有授权历史，不能删除；请停用角色并撤销现有授权" });
+        await db.delete(rolePermissions).where(eq(rolePermissions.roleId, input.id));
+        await db.delete(systemRoles).where(eq(systemRoles.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "delete", targetType: "role", targetId: String(input.id), summary: `删除未被授权的自定义角色：${existing.name}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      if (input.resource === "department_scope") {
+        const [existing] = await db.select({ id: departmentBusinessScopes.id, organizationId: departmentBusinessScopes.organizationId, module: departmentBusinessScopes.module }).from(departmentBusinessScopes).where(eq(departmentBusinessScopes.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "部门业务范围不存在或已删除" });
+        await db.delete(departmentBusinessScopes).where(eq(departmentBusinessScopes.id, input.id));
+        await db.insert(auditLogs).values({ userId: admin.id, module: "department", action: "delete_business_scope", targetType: "department_business_scope", targetId: `${existing.organizationId}:${existing.module}`, summary: `删除部门业务范围：${existing.module}` });
+        return { success: true, operation: "deleted" as const };
+      }
+
+      const [existing] = await db.select({ id: userRoleAssignments.id, userId: userRoleAssignments.userId, roleId: userRoleAssignments.roleId, status: userRoleAssignments.status }).from(userRoleAssignments).where(eq(userRoleAssignments.id, input.id)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "角色授权不存在或已撤销" });
+      if (existing.status !== "revoked") await db.update(userRoleAssignments).set({ status: "revoked", grantedBy: admin.id }).where(eq(userRoleAssignments.id, input.id));
+      await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: "revoke_assignment", targetType: "user_role_assignment", targetId: String(existing.id), summary: `撤销用户 #${existing.userId} 的角色授权 #${existing.roleId}` });
+      return { success: true, operation: "revoked" as const };
+    }),
+  }),
+
   personnel: router({
     listUsers: protectedProcedure.query(async ({ ctx }) => {
       await assertSuperAdmin(ctx);
@@ -810,10 +936,55 @@ export const adminRouter = router({
         if (requiresSecretStorage(input.settingKey) && !input.isSensitive) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "API 密钥、令牌和密码类配置必须勾选“加密托管”" });
         }
-        if (input.settingKey === "WECHAT_WORK_WEBHOOK") assertWecomWebhookUrl(input.value);
         if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY && input.isSensitive) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须以公开 HTTPS 配置保存，不得作为密码或密钥加密托管" });
         }
+
+        const hasSubmittedValue = input.value.trim().length > 0;
+        if (input.id) {
+          if (!input.expectedVersion) throw new TRPCError({ code: "BAD_REQUEST", message: "编辑既有配置必须携带当前版本号" });
+          const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
+          if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在" });
+          assertExpectedSettingVersion(existing.version, input.expectedVersion);
+          if (existing.settingKey !== input.settingKey) throw new TRPCError({ code: "BAD_REQUEST", message: "既有配置键不允许直接修改；如需变更标识，请新建配置后删除旧项" });
+          if (existing.isSensitive !== input.isSensitive) throw new TRPCError({ code: "BAD_REQUEST", message: "既有配置的敏感等级不允许直接变更；请新建替代配置后删除旧项" });
+
+          const preserveExistingSecret = existing.isSensitive && !hasSubmittedValue;
+          if (!preserveExistingSecret && !hasSubmittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: "请填写配置值；敏感配置仅可在保留现有密文时留空" });
+          if (preserveExistingSecret && !existing.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "现有敏感配置缺少可用密文，请重新输入完整配置值" });
+          if (input.settingKey === "WECHAT_WORK_WEBHOOK" && !preserveExistingSecret) assertWecomWebhookUrl(input.value);
+
+          let normalizedValue = input.value;
+          if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY && !preserveExistingSecret) {
+            try {
+              normalizedValue = normalizeIdentityRecoveryUrl(input.value);
+            } catch {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须是公开 HTTPS 地址，且不得包含账号、密码、内网或本机地址" });
+            }
+          }
+          const payload = {
+            category: input.category,
+            settingKey: input.settingKey,
+            displayName: input.displayName,
+            valueJson: input.isSensitive ? null : normalizedValue,
+            secretEncrypted: input.isSensitive ? (preserveExistingSecret ? existing.secretEncrypted : encryptSecret(normalizedValue)) : null,
+            valuePreview: input.isSensitive ? (preserveExistingSecret ? existing.valuePreview : maskSecret(normalizedValue)) : normalizedValue.slice(0, 256),
+            isSensitive: input.isSensitive,
+            status: "draft" as const,
+            remarks: input.remarks ?? null,
+            updatedBy: admin.id,
+          };
+          const nextVersion = existing.version + 1;
+          const writeResult = await db.update(systemSettings).set({ ...payload, version: nextVersion }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          await db.insert(configPublishLogs).values({ settingId: input.id, operation: "update", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+          await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_draft", targetType: "setting", targetId: input.settingKey, summary: `保存配置草稿：${input.displayName}（v${nextVersion}）` });
+          return { success: true, version: nextVersion };
+        }
+
+        if (!hasSubmittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: "新建配置必须填写配置值" });
+        if (input.settingKey === "WECHAT_WORK_WEBHOOK") assertWecomWebhookUrl(input.value);
         let normalizedValue = input.value;
         if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY) {
           try {
@@ -822,7 +993,7 @@ export const adminRouter = router({
             throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须是公开 HTTPS 地址，且不得包含账号、密码、内网或本机地址" });
           }
         }
-        const payload = {
+        await db.insert(systemSettings).values({
           category: input.category,
           settingKey: input.settingKey,
           displayName: input.displayName,
@@ -830,25 +1001,10 @@ export const adminRouter = router({
           secretEncrypted: input.isSensitive ? encryptSecret(normalizedValue) : null,
           valuePreview: input.isSensitive ? maskSecret(normalizedValue) : normalizedValue.slice(0, 256),
           isSensitive: input.isSensitive,
-          status: "draft" as const,
+          status: "draft",
           remarks: input.remarks ?? null,
           updatedBy: admin.id,
-        };
-        if (input.id) {
-          if (!input.expectedVersion) throw new TRPCError({ code: "BAD_REQUEST", message: "编辑既有配置必须携带当前版本号" });
-          const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
-          if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在" });
-          assertExpectedSettingVersion(existing.version, input.expectedVersion);
-          const nextVersion = existing.version + 1;
-          const writeResult = await db.update(systemSettings).set({ ...payload, version: nextVersion }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
-          assertVersionedSettingWrite(writeResult);
-          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
-          await db.insert(configPublishLogs).values({ settingId: input.id, operation: "update", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
-          await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_draft", targetType: "setting", targetId: input.settingKey, summary: `保存配置草稿：${input.displayName}（v${nextVersion}）` });
-          return { success: true, version: nextVersion };
-        } else {
-          await db.insert(systemSettings).values(payload);
-        }
+        });
         await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_draft", targetType: "setting", targetId: input.settingKey, summary: `保存配置草稿：${input.displayName}` });
         return { success: true };
       }),
@@ -887,6 +1043,28 @@ export const adminRouter = router({
       await db.insert(configPublishLogs).values({ settingId: existing.id, operation: "disable", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
       await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "disable", targetType: "setting", targetId: String(existing.id), summary: `停用配置：${existing.displayName}` });
       return { success: true, version: nextVersion };
+    }),
+    /**
+     * 受控删除仅允许使用当前版本执行。删除会抹除活动记录与全部历史快照中的值和密文；
+     * 审计索引只保留操作者、时间和配置标识，避免被删除的密钥或业务参数被重新恢复。
+     */
+    remove: protectedProcedure.input(settingDeleteInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      return db.transaction(async tx => {
+        const [existing] = await tx.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在或已删除" });
+        assertExpectedSettingVersion(existing.version, input.expectedVersion);
+        const deleteResult = await tx.delete(systemSettings).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
+        assertVersionedSettingWrite(deleteResult);
+        const histories = await tx.select({ id: configPublishLogs.id, snapshotJson: configPublishLogs.snapshotJson }).from(configPublishLogs).where(eq(configPublishLogs.settingId, input.id));
+        for (const history of histories) {
+          await tx.update(configPublishLogs).set({ snapshotJson: redactDeletedConfigSnapshot(history.snapshotJson) }).where(eq(configPublishLogs.id, history.id));
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "delete", targetType: "setting", targetId: existing.settingKey, summary: `删除配置：${existing.displayName}；已清除配置值及历史快照中的可恢复内容` });
+        return { success: true };
+      });
     }),
     /** 验证密钥是否能在服务端安全解密，或验证公开 HTTPS 连接器的基础可达性。 */
     test: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {

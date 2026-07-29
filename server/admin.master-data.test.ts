@@ -37,6 +37,7 @@ function createSequentialLimitDb(...responses: unknown[][]) {
   let queryIndex = 0;
   const values = vi.fn(async () => undefined);
   const nextResponse = async () => responses[queryIndex++] ?? [];
+  const writeWhere = vi.fn(async () => undefined);
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -50,7 +51,10 @@ function createSequentialLimitDb(...responses: unknown[][]) {
       })),
     })),
     insert: vi.fn(() => ({ values })),
+    delete: vi.fn(() => ({ where: writeWhere })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: writeWhere })) })),
     values,
+    writeWhere,
   };
 }
 
@@ -191,6 +195,49 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
     expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", projectId: 20 }));
     expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
+  });
+
+  it("仅删除未被人员档案引用的岗位，并记录最小化审计", async () => {
+    const db = createSequentialLimitDb(
+      [{ id: 6, name: "运输调度员" }],
+      [],
+    );
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "position", id: 6 })).resolves.toEqual({ success: true, operation: "deleted" });
+
+    expect(db.delete).toHaveBeenCalledTimes(1);
+    expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "position", action: "delete", targetType: "position", targetId: "6" }));
+  });
+
+  it("阻止删除已产生运输趟次的车辆，要求改为停用", async () => {
+    const db = createSequentialLimitDb(
+      [{ id: 9, plateNo: "粤A88888" }],
+      [{ id: 501 }],
+    );
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "vehicle", id: 9 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("运输趟次") });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("禁止删除系统内置角色，避免破坏基础权限模型", async () => {
+    const db = createSequentialLimitDb([{ id: 1, name: "超级管理员", isSystem: true }]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "role", id: 1 })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("系统内置角色") });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("撤销角色授权而非物理删除，保留权限历史和审计证据", async () => {
+    const db = createSequentialLimitDb([{ id: 31, userId: 18, roleId: 4, status: "active" }]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "role_assignment", id: 31 })).resolves.toEqual({ success: true, operation: "revoked" });
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "permission", action: "revoke_assignment", targetType: "user_role_assignment", targetId: "31" }));
   });
 
   it("超级管理员创建业务数据备份时仅归档脱敏业务快照并保留审计", async () => {
