@@ -12,6 +12,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import AdminPage from "./pages/AdminPage";
 import Home from "./pages/Home";
 import LoginPage from "./pages/LoginPage";
+import MobileConstructionPage from "./pages/MobileConstructionPage";
 import MobileEvidencePage from "./pages/MobileEvidencePage";
 import MobileFinancePage from "./pages/MobileFinancePage";
 import MobileLaborPage from "./pages/MobileLaborPage";
@@ -58,6 +59,7 @@ function Router() {
       <Route path={"/login"} component={LoginPage} />
       <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
+      <Route path={"/mobile/construction"} component={MobileConstructionPage} />
       <Route path={"/mobile/labor"} component={MobileLaborPage} />
       <Route path={"/mobile/machinery"} component={MobileMachineryPage} />
       <Route path={"/mobile/transport"} component={MobileTransportPage} />

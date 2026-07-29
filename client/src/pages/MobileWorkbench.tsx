@@ -159,7 +159,10 @@ export default function MobileWorkbench() {
           <div className="pointer-events-none absolute -right-14 -top-14 h-44 w-44 rounded-full bg-[#c9854a]/20 blur-2xl" />
           <div className="relative flex items-center justify-between">
             <div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.24)]"><HardHat className="h-5 w-5" /></div><div><p className="text-sm font-semibold">工程云管</p><p className="mt-0.5 text-xs text-[#e8cfb2]">施工承包移动工作台</p></div></div>
-            <button aria-label="进入消息中心" disabled={!isOnline} className="relative grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" />{(statistics?.unreadMessages ?? 0) > 0 ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[#f3bf6b]" /> : null}</button>
+            <div className="flex items-center gap-2">
+              {hasGlobalBusinessAccess ? <button aria-label="返回超级管理后台" title="返回超级管理后台" disabled={!isOnline} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/admin")}><ShieldCheck className="h-5 w-5" /></button> : null}
+              <button aria-label="进入消息中心" disabled={!isOnline} className="relative grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" />{(statistics?.unreadMessages ?? 0) > 0 ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[#f3bf6b]" /> : null}</button>
+            </div>
           </div>
           <div className="relative mt-8"><p className="text-sm text-[#e8cfb2]">您好，{greetingName}</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">今天先完成最重要的事</h1><p className="mt-2 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{hasGlobalBusinessAccess ? "当前权限：超级管理员（全局业务授权）" : departmentNames.length ? `当前部门：${departmentNames.join("、")}` : "当前账号尚未配置业务部门"}</p></div>
         </header>

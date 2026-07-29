@@ -148,6 +148,12 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+/** 自动生成带日期与随机后缀的趟次编号，避免并发录入仅依赖毫秒时间戳发生冲突。 */
+function createTransportTripNo(projectId: number) {
+  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `TR-${projectId}-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
 /**
  * 运输异常仅由服务端按已固化的趟次快照计算，前端只负责展示；
  * 这避免司机通过修改浏览器状态规避核验提示。
@@ -568,7 +574,7 @@ export const transportRouter = router({
     try {
       price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
     } catch (error) { throwDomainAsBadRequest(error); }
-    const tripNo = input.tripNo ?? `TR-${input.projectId}-${Date.now()}`;
+    const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
     const routeSnapshot = { source: "mobile", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
     await db.insert(transportTrips).values({
       tripNo,

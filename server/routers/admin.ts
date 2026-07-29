@@ -26,6 +26,7 @@ import { calculateTheoreticalVolume } from "../../shared/domain";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
+import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { notifyWecomBusinessEvent } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
@@ -93,6 +94,12 @@ const localManagerStatusInput = z.object({
   userId: z.number().int().positive(),
   status: z.enum(["active", "disabled"]),
 });
+
+/** 全业务治理统计仅支持已校验的项目和自然月筛选，避免模糊日期或越权项目参数进入聚合查询。 */
+const businessStatisticsInput = z.object({
+  projectId: z.number().int().positive().optional(),
+  period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "统计期间须为 YYYY-MM").optional(),
+}).optional();
 
 /** API 密钥、令牌和密码类配置必须使用服务端加密托管，避免被当作普通参数保存。 */
 function requiresSecretStorage(settingKey: string) {
@@ -604,8 +611,8 @@ export const adminRouter = router({
         if (targetUser.loginMethod === "local_manager" && assignedRole.code === "SUPER_ADMIN") {
           throw new TRPCError({ code: "FORBIDDEN", message: "普通管理人员账号不得被授予超级管理员权限" });
         }
-        if (assignedRole.code !== "SUPER_ADMIN" && !input.organizationId) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "业务角色授权必须选择所属部门或项目部" });
+        if (assignedRole.code !== "SUPER_ADMIN" && !input.organizationId && !input.projectId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "业务角色至少须选择所属部门/项目部或具体项目范围" });
         }
         if (input.organizationId) {
           const [department] = await db.select({ type: organizations.type, status: organizations.status }).from(organizations).where(eq(organizations.id, input.organizationId)).limit(1);
@@ -846,6 +853,46 @@ export const adminRouter = router({
         attendanceRecords: Number(attendance?.total ?? 0),
         payrollStatements: Number(payroll?.total ?? 0),
       });
+    }),
+  }),
+
+  /** 超级管理员总览：统计只提供真实业务记录数量，具体明细继续由各业务模块的服务端权限控制。 */
+  business: router({
+    statistics: protectedProcedure.input(businessStatisticsInput).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      return getBusinessModuleStatistics(input ?? {});
+    }),
+  }),
+
+  /** 业务数据逻辑备份只允许超级管理员发起；不提供在线恢复，避免误覆盖生产数据。 */
+  backup: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      return listBusinessDataBackups();
+    }),
+    create: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      try {
+        const backup = await createBusinessDataBackup(admin.id);
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "create", targetType: "business_data_backup", targetId: String(backup.id), summary: `创建业务数据逻辑备份：${backup.fileName}（${backup.recordCount} 条）` });
+        return backup;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "创建业务数据备份失败";
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
+      }
+    }),
+    download: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      try {
+        const backup = await getBusinessDataBackupDownload(input.id);
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "download", targetType: "business_data_backup", targetId: String(input.id), summary: `下载业务数据逻辑备份：${backup.fileName}` });
+        return backup;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "读取业务数据备份失败";
+        throw new TRPCError({ code: "NOT_FOUND", message });
+      }
     }),
   }),
 

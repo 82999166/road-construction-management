@@ -1,6 +1,6 @@
 import { MOBILE_MENU_CATALOG } from "../../shared/domain";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
-import { measurementClaims, notificationRecords, payrollStatements, projects, purchaseRequests, transportTrips } from "../../drizzle/schema";
+import { constructionDailyReports, measurementClaims, notificationRecords, payrollStatements, projects, purchaseRequests, transportTrips } from "../../drizzle/schema";
 import { getCurrentDataScope, getCurrentDepartmentAccess, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { DEPARTMENT_AGNOSTIC_MOBILE_MENUS } from "../../shared/department";
 import { getDb } from "../db";
@@ -80,8 +80,11 @@ export const mobileRouter = router({
     const { start: todayStart, end: tomorrowStart } = getUtcDayWindow();
 
     // 统计仅查询当前岗位具有菜单入口的业务类别，并继续施加项目范围，避免通过数字泄露无权项目的业务规模。
-    const [pendingPurchaseRows, pendingMeasurementRows, pendingTransportRows, todayTripRows, pendingPayrollRows] = canViewScopedRecords
+    const [pendingConstructionRows, pendingPurchaseRows, pendingMeasurementRows, pendingTransportRows, todayTripRows, pendingPayrollRows] = canViewScopedRecords
       ? await Promise.all([
+        hasAnyRole(roleCodes, ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "SAFETY_MANAGER"])
+          ? db.select({ id: constructionDailyReports.id }).from(constructionDailyReports).where(and(eq(constructionDailyReports.status, "submitted"), scopedProjectIds === null ? undefined : inArray(constructionDailyReports.projectId, scopedProjectIds)))
+          : Promise.resolve([]),
         hasAnyRole(roleCodes, ["PROJECT_MANAGER", "FINANCE_MANAGER"])
           ? db.select({ id: purchaseRequests.id }).from(purchaseRequests).where(and(eq(purchaseRequests.status, "submitted"), scopedProjectIds === null ? undefined : inArray(purchaseRequests.projectId, scopedProjectIds)))
           : Promise.resolve([]),
@@ -98,7 +101,7 @@ export const mobileRouter = router({
           ? db.select({ id: payrollStatements.id }).from(payrollStatements).where(and(eq(payrollStatements.status, "reviewing"), scopedProjectIds === null ? undefined : inArray(payrollStatements.projectId, scopedProjectIds)))
           : Promise.resolve([]),
       ])
-      : [[], [], [], [], []];
+      : [[], [], [], [], [], []];
 
     return {
       user: { id: user.id, name: user.name, roleCodes, departments: departmentAccess.departments, departmentModules: departmentAccess.moduleCodes },
@@ -108,7 +111,7 @@ export const mobileRouter = router({
       // 普通移动端不接收身份证、银行卡、完整手机号等敏感字段，详情接口也必须复用同一脱敏策略。
       maskedFields: ["identityNo", "bankAccount", "mobile"],
       statistics: {
-        pendingApprovals: pendingPurchaseRows.length + pendingMeasurementRows.length + pendingTransportRows.length,
+        pendingApprovals: pendingConstructionRows.length + pendingPurchaseRows.length + pendingMeasurementRows.length + pendingTransportRows.length,
         unreadMessages,
         todayTrips: todayTripRows.length,
         pendingPayroll: pendingPayrollRows.length,

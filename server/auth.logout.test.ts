@@ -42,6 +42,30 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
 }
 
 describe("auth.logout", () => {
+  it("auth.me 仅返回前端认证与权限投影所需资料，不暴露本地账号认证材料", async () => {
+    const { ctx } = createAuthContext();
+    ctx.user = {
+      ...ctx.user!,
+      loginMethod: "local_manager",
+      localUsername: "field-manager",
+      localPasswordHash: "scrypt$never-expose-this",
+      localAccountStatus: "active",
+      localPasswordChangeRequired: true,
+    };
+
+    const result = await appRouter.createCaller(ctx).auth.me();
+
+    expect(result).toMatchObject({
+      id: 1,
+      name: "Sample User",
+      loginMethod: "local_manager",
+      localPasswordChangeRequired: true,
+    });
+    expect(result).not.toHaveProperty("localPasswordHash");
+    expect(result).not.toHaveProperty("localUsername");
+    expect(result).not.toHaveProperty("localAccountStatus");
+  });
+
   it("clears the session cookie and reports success", async () => {
     const { ctx, clearedCookies } = createAuthContext();
     const caller = appRouter.createCaller(ctx);

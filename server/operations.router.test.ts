@@ -119,6 +119,24 @@ describe("机械与运输 tRPC 路由", () => {
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ evidenceId: null, routeSnapshot: expect.objectContaining({ startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null }) }));
   });
 
+  it("未提供趟次编号时由服务端生成带随机后缀的项目内审计编号", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const values = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
+        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+      ),
+      insert: vi.fn(() => ({ values })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).saveTrip({ vehicleId: 11, projectId: 10, freightRuleId: 12, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 1, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: null, startLongitude: null, endLatitude: null, endLongitude: null });
+
+    expect(result.tripNo).toMatch(/^TR-10-\d{8}-[A-F0-9]{8}$/);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ tripNo: result.tripNo }));
+  });
+
   it("机械成本和运输趟次的状态流转均保留项目范围校验，已结算记录不可回退", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const machineCostDb = {

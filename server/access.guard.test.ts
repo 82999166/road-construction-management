@@ -69,6 +69,7 @@ describe("后台与项目范围访问控制", () => {
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
       [],
       [{ projectId: null, organizationId: 88, roleCode: "PROJECT_MANAGER", module: "CONSTRUCTION" }],
+      [],
       [{ organizationId: 88 }],
     ) as never);
 
@@ -104,6 +105,7 @@ describe("后台与项目范围访问控制", () => {
       [],
       [{ organizationId: 31, organizationName: "劳务管理部", organizationType: "department", roleCode: "LABOR_MANAGER", module: "LABOR" }],
       [],
+      [],
       [{ projectId: 101, organizationId: 31, roleCode: "LABOR_MANAGER", module: "LABOR" }],
     ) as never);
 
@@ -135,6 +137,7 @@ describe("后台与项目范围访问控制", () => {
         { organizationId: 41, organizationName: "财务管理部", organizationType: "department", roleCode: "FINANCE_MANAGER", module: "FINANCE" },
       ],
       [],
+      [],
       [
         { projectId: 101, organizationId: 31, roleCode: "LABOR_MANAGER", module: "FINANCE" },
         { projectId: 202, organizationId: 41, roleCode: "FINANCE_MANAGER", module: "FINANCE" },
@@ -142,5 +145,34 @@ describe("后台与项目范围访问控制", () => {
     ) as never);
 
     await expect(getDepartmentModuleDataScope(createContext(), "FINANCE")).resolves.toMatchObject({ projectIds: [202], organizationIds: [41] });
+  });
+
+  it("项目级业务角色授权仅投影角色可办理模块且严格限制到被选项目", async () => {
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [],
+      [],
+      [{ projectId: 101, roleCode: "LOGISTICS_MANAGER" }],
+    ) as never);
+
+    await expect(getCurrentDepartmentAccess(createContext())).resolves.toEqual({
+      departments: [],
+      moduleCodes: ["PURCHASING", "EVIDENCE"],
+      hasAllDepartments: false,
+    });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [],
+      [],
+      [{ projectId: 101, roleCode: "LOGISTICS_MANAGER" }],
+      [],
+      [],
+      [{ projectId: 101, roleCode: "LOGISTICS_MANAGER" }],
+    ) as never);
+
+    await expect(getDepartmentModuleDataScope(createContext(), "PURCHASING")).resolves.toMatchObject({
+      hasAllProjects: false,
+      projectIds: [101],
+      organizationIds: [],
+    });
   });
 });

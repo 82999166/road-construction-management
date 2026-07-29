@@ -49,7 +49,23 @@ export const APPROVAL_STATUS_TRANSITIONS = {
   void: [],
 } as const;
 
-/** 校验单据状态是否允许流转，供审批、资金和业务台账接口统一调用。 */
+/** 施工日报从现场草稿到归档的受控状态机；已锁定日报不得回退或修改。 */
+export const CONSTRUCTION_DAILY_REPORT_STATUS_TRANSITIONS = {
+  draft: ["submitted"],
+  submitted: ["approved", "rejected"],
+  approved: ["locked"],
+  rejected: ["draft"],
+  locked: [],
+} as const;
+
+/** 校验施工日报的提交、审核、退回及锁定状态，避免绕过现场记录的追溯边界。 */
+export function assertConstructionDailyReportStatusTransition(from: keyof typeof CONSTRUCTION_DAILY_REPORT_STATUS_TRANSITIONS, to: string): void {
+  if (!CONSTRUCTION_DAILY_REPORT_STATUS_TRANSITIONS[from].includes(to as never)) {
+    throw new ConstructionDomainError("INVALID_STATUS_TRANSITION", `施工日报不允许从“${from}”流转至“${to}”`);
+  }
+}
+
+/** 校验单据状态是否允许流转，供审批、资金和业务单据计算的校验失败均应优先使用该异常类型。 */
 export function assertApprovalTransition(from: keyof typeof APPROVAL_STATUS_TRANSITIONS, to: string): void {
   if (!APPROVAL_STATUS_TRANSITIONS[from].includes(to as never)) {
     throw new ConstructionDomainError("INVALID_STATUS_TRANSITION", `单据状态不允许从“${from}”流转至“${to}”`);

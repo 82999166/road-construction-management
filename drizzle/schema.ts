@@ -266,6 +266,58 @@ export const auditLogs = mysqlTable(
   table => ({ moduleIndex: index("audit_logs_module_index").on(table.module, table.createdAt) }),
 );
 
+/**
+ * 超级管理员主动发起的业务数据备份索引。
+ * 文件本体位于受控对象存储；本表不保存数据库凭据、密码摘要或可直接访问的外链。
+ */
+export const dataBackups = mysqlTable(
+  "data_backups",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    fileKey: varchar("fileKey", { length: 512 }).notNull(),
+    fileName: varchar("fileName", { length: 255 }).notNull(),
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    recordCount: int("recordCount").notNull(),
+    scopeVersion: varchar("scopeVersion", { length: 32 }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    createdAtIndex: index("data_backups_created_at_index").on(table.createdAt),
+    fileKeyUnique: uniqueIndex("data_backups_file_key_unique").on(table.fileKey),
+  }),
+);
+
+/**
+ * 施工日报是施工现场的受控业务主单。
+ * 每条日报必须归属具体项目，现场内容、问题和安全说明只保存业务文字，禁止录入身份证、银行卡或密钥等敏感信息。
+ */
+export const constructionDailyReports = mysqlTable(
+  "construction_daily_reports",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    reportDate: date("reportDate").notNull(),
+    workArea: varchar("workArea", { length: 200 }).notNull(),
+    weather: mysqlEnum("weather", ["sunny", "cloudy", "rainy", "snowy", "windy", "other"]).default("other").notNull(),
+    workContent: text("workContent").notNull(),
+    safetyNotes: varchar("safetyNotes", { length: 1000 }),
+    issueNotes: varchar("issueNotes", { length: 1000 }),
+    /** 由现场管理人员申报的累计完成比例，范围由服务端校验为 0 至 100。 */
+    progressPercent: decimal("progressPercent", { precision: 5, scale: 2 }).default("0").notNull(),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "rejected", "locked"]).default("draft").notNull(),
+    createdBy: int("createdBy").notNull(),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectDateIndex: index("construction_daily_reports_project_date_index").on(table.projectId, table.reportDate),
+    projectStatusIndex: index("construction_daily_reports_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
 /** 企业微信消息发送记录，支持幂等、失败重试和阅读回执。 */
 export const notificationRecords = mysqlTable(
   "notification_records",

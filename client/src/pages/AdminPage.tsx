@@ -11,9 +11,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import {
   Building2,
+  BarChart3,
+  DatabaseBackup,
+  ExternalLink,
   FolderKanban,
   KeyRound,
   LayoutDashboard,
+  Printer,
   ScrollText,
   Settings2,
   ShieldCheck,
@@ -33,6 +37,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Building2, label: "组织与项目", path: "/admin/organization" },
   { icon: Truck, label: "车辆与资源", path: "/admin/vehicles" },
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
+  { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
 ];
@@ -102,32 +107,53 @@ export default function AdminPage() {
   const [location, setLocation] = useLocation();
   const activeSection = location.split("/")[2] || "overview";
 
-  // 未登录时不触发受保护接口；DashboardLayout 负责登录引导，服务端负责真正的超级管理员鉴权。
-  const queryOptions = { enabled: isAuthenticated };
-  const overview = trpc.admin.overview.useQuery(undefined, queryOptions);
-  const organizations = trpc.admin.organization.list.useQuery(undefined, queryOptions);
-  const positions = trpc.admin.position.list.useQuery(undefined, queryOptions);
-  const projects = trpc.admin.project.list.useQuery(undefined, queryOptions);
-  const roles = trpc.admin.role.list.useQuery(undefined, queryOptions);
-  const permissions = trpc.admin.role.permissions.useQuery(undefined, queryOptions);
-  const users = trpc.admin.personnel.listUsers.useQuery(undefined, queryOptions);
-  const assignments = trpc.admin.personnel.listAssignments.useQuery(undefined, queryOptions);
-  const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, queryOptions);
-  const departmentModules = trpc.admin.department.modules.useQuery(undefined, queryOptions);
-  const settings = trpc.admin.settings.list.useQuery(undefined, queryOptions);
-  const audits = trpc.admin.audit.list.useQuery(undefined, queryOptions);
-  const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, queryOptions);
-  const vehicles = trpc.admin.vehicle.list.useQuery(undefined, queryOptions);
+  /**
+   * tRPC 会将同一渲染周期内的查询合并为一个批次。后台全部 17 个数据域若在首屏同时请求，任何慢查询都会阻塞运营概览。
+   * 因此只为当前分区和该分区实际依赖的数据源发起查询；服务端权限校验仍是最终边界。
+   */
+  const canQuery = isAuthenticated;
+  const isOverview = activeSection === "overview";
+  const isOrganization = activeSection === "organization";
+  const isVehicle = activeSection === "vehicles";
+  const isPermission = activeSection === "permission";
+  const isBusiness = activeSection === "business";
+  const isSettings = activeSection === "settings";
+  const isAudit = activeSection === "audit";
+  const needsOrganizations = isOrganization || isVehicle || isPermission;
+  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness;
+  const needsUsers = isOrganization || isVehicle || isPermission;
+
+  const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
+  const organizations = trpc.admin.organization.list.useQuery(undefined, { enabled: canQuery && needsOrganizations });
+  const positions = trpc.admin.position.list.useQuery(undefined, { enabled: canQuery && isOrganization });
+  const projects = trpc.admin.project.list.useQuery(undefined, { enabled: canQuery && needsProjects });
+  const roles = trpc.admin.role.list.useQuery(undefined, { enabled: canQuery && isPermission });
+  const permissions = trpc.admin.role.permissions.useQuery(undefined, { enabled: canQuery && isPermission });
+  const users = trpc.admin.personnel.listUsers.useQuery(undefined, { enabled: canQuery && needsUsers });
+  const assignments = trpc.admin.personnel.listAssignments.useQuery(undefined, { enabled: canQuery && isPermission });
+  const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, { enabled: canQuery && isPermission });
+  const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
+  const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
+  const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
+  const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, { enabled: canQuery && isOverview });
+  const vehicles = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isVehicle });
+  const [businessFilter, setBusinessFilter] = useState({ projectId: "all", period: "" });
+  const businessStatisticsInput = useMemo(() => ({
+    projectId: businessFilter.projectId === "all" ? undefined : Number(businessFilter.projectId),
+    period: businessFilter.period || undefined,
+  }), [businessFilter.period, businessFilter.projectId]);
+  const businessStatistics = trpc.admin.business.statistics.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
+  const backups = trpc.admin.backup.list.useQuery(undefined, { enabled: canQuery && isBusiness });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
   const settingHistory = trpc.admin.settings.history.useQuery(
     { settingId: selectedSettingId ?? 0 },
-    { enabled: isAuthenticated && selectedSettingId !== undefined },
+    { enabled: canQuery && isSettings && selectedSettingId !== undefined },
   );
   const rolePermissionIds = trpc.admin.role.permissionIds.useQuery(
     { roleId: selectedRoleId ?? 0 },
-    { enabled: isAuthenticated && selectedRoleId !== undefined },
+    { enabled: canQuery && isPermission && selectedRoleId !== undefined },
   );
   const [draftPermissionIds, setDraftPermissionIds] = useState<number[]>([]);
 
@@ -160,6 +186,8 @@ export default function AdminPage() {
     if (!selectedSettingId && settings.data?.[0]) setSelectedSettingId(settings.data[0].id);
   }, [selectedSettingId, settings.data]);
   const selectedSetting = settings.data?.find(item => item.id === selectedSettingId);
+  const selectedBusinessProject = projects.data?.find(project => String(project.id) === businessFilter.projectId);
+  const businessFilterLabel = `${selectedBusinessProject?.name ?? "全部项目"}${businessFilter.period ? ` · ${businessFilter.period}` : " · 全部期间"}`;
 
   /** 配置版本冲突后强制刷新列表与历史，避免管理员继续在旧版本上操作。 */
   const refreshAfterSettingConflict = async () => {
@@ -211,8 +239,9 @@ export default function AdminPage() {
     onSuccess: async () => {
       toast.success("人员授权已保存");
       setAssignmentForm({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
-      await assignments.refetch();
+      await Promise.all([assignments.refetch(), audits.refetch(), users.refetch()]);
     },
+    onError: error => toast.error(error.message),
   });
   const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
     onSuccess: async () => {
@@ -278,6 +307,26 @@ export default function AdminPage() {
       await rolePermissionIds.refetch();
     },
   });
+  const createBackup = trpc.admin.backup.create.useMutation({
+    onSuccess: async backup => {
+      toast.success(`业务数据逻辑备份已归档：${backup.recordCount} 条记录`);
+      await Promise.all([backups.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const downloadBackup = trpc.admin.backup.download.useMutation({
+    onSuccess: async backup => {
+      const anchor = document.createElement("a");
+      anchor.href = backup.url;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.download = backup.fileName;
+      anchor.click();
+      toast.success("已生成受控下载链接，下载行为已记录审计");
+      await audits.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
 
   // 按功能模块分组展示权限，避免管理员在长列表中难以辨识业务归属。
   const permissionGroups = useMemo(() => {
@@ -299,6 +348,13 @@ export default function AdminPage() {
     () => new Map((users.data ?? []).map(user => [user.id, user.name || `用户 #${user.id}`])),
     [users.data],
   );
+  const selectedAssignmentRole = useMemo(
+    () => roles.data?.find(role => role.id === Number(assignmentForm.roleId)),
+    [assignmentForm.roleId, roles.data],
+  );
+  const assignmentRequiresBusinessScope = Boolean(selectedAssignmentRole && selectedAssignmentRole.code !== "SUPER_ADMIN");
+  const assignmentHasScope = Boolean(assignmentForm.organizationId || assignmentForm.projectId);
+  const assignmentReady = Boolean(assignmentForm.userId && selectedAssignmentRole && (!assignmentRequiresBusinessScope || assignmentHasScope));
 
   const renderOverview = () => (
     <div className="space-y-6">
@@ -597,15 +653,19 @@ export default function AdminPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色必须绑定所属部门或项目部；项目范围和有效期继续由服务端统一校验，账号敏感字段不在此界面展示。</CardDescription></CardHeader>
-          <CardContent className="grid gap-3 lg:grid-cols-3">
-            <Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}{user.localUsername ? `（${user.localUsername}）` : ""}</SelectItem>)}</SelectContent></Select>
-            <Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}</SelectItem>)}</SelectContent></Select>
-            <Select value={assignmentForm.organizationId || "UNASSIGNED"} onValueChange={value => setAssignmentForm({ ...assignmentForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择所属部门" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">不设置（仅超级管理员）</SelectItem>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select>
-            <Select value={assignmentForm.projectId || "ALL"} onValueChange={value => setAssignmentForm({ ...assignmentForm, projectId: value === "ALL" ? "" : value })}><SelectTrigger><SelectValue placeholder="项目范围（可选）" /></SelectTrigger><SelectContent><SelectItem value="ALL">全部项目（按角色权限）</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select>
-            <Input type="datetime-local" aria-label="授权生效时间" value={assignmentForm.validFrom} onChange={event => setAssignmentForm({ ...assignmentForm, validFrom: event.target.value })} />
-            <Input type="datetime-local" aria-label="授权失效时间" value={assignmentForm.validTo} onChange={event => setAssignmentForm({ ...assignmentForm, validTo: event.target.value })} />
-            <Button disabled={!assignmentForm.userId || !assignmentForm.roleId || (!assignmentForm.organizationId && roles.data?.find(role => role.id === Number(assignmentForm.roleId))?.code !== "SUPER_ADMIN") || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: assignmentForm.organizationId ? Number(assignmentForm.organizationId) : null, projectId: assignmentForm.projectId ? Number(assignmentForm.projectId) : null, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>授权</Button>
+          <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色可以绑定已启用的所属部门/项目部，或直接绑定一个具体项目。两种方式均由服务端校验；项目级授权绝不扩大为全部项目权限。</CardDescription></CardHeader>
+          <CardContent className="space-y-4">
+            {assignmentRequiresBusinessScope && !assignmentHasScope ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">请为业务角色至少选择一个所属部门/项目部或一个具体项目范围；未选择时不会提交授权。</div> : null}
+            {!departmentNodes.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-sm text-sky-900"><span>当前未配置可用部门或项目部。您仍可直接按具体项目授权；如需部门级范围，请先建立项目部并启用对应业务模块。</span><Button size="sm" variant="outline" onClick={() => setLocation("/admin/organization")}>配置组织与项目</Button></div> : null}
+            <div className="grid gap-3 lg:grid-cols-3">
+              <div className="grid gap-1.5"><Label>管理人员</Label><Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}{user.localUsername ? `（${user.localUsername}）` : ""}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label>业务角色</Label><Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label>所属部门 / 项目部</Label><Select value={assignmentForm.organizationId || "UNASSIGNED"} onValueChange={value => setAssignmentForm({ ...assignmentForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择所属部门" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">不设置（可改用具体项目范围）</SelectItem>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label>具体项目范围</Label><Select value={assignmentForm.projectId || "ALL"} onValueChange={value => setAssignmentForm({ ...assignmentForm, projectId: value === "ALL" ? "" : value })}><SelectTrigger><SelectValue placeholder="项目范围（可选）" /></SelectTrigger><SelectContent><SelectItem value="ALL">不设置项目范围</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label htmlFor="assignment-valid-from">授权生效时间</Label><Input id="assignment-valid-from" type="datetime-local" value={assignmentForm.validFrom} onChange={event => setAssignmentForm({ ...assignmentForm, validFrom: event.target.value })} /></div>
+              <div className="grid gap-1.5"><Label htmlFor="assignment-valid-to">授权失效时间</Label><Input id="assignment-valid-to" type="datetime-local" value={assignmentForm.validTo} onChange={event => setAssignmentForm({ ...assignmentForm, validTo: event.target.value })} /></div>
+            </div>
+            <Button className="min-w-40 bg-[#203c48] hover:bg-[#17313b]" disabled={!assignmentReady || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: assignmentForm.organizationId ? Number(assignmentForm.organizationId) : null, projectId: assignmentForm.projectId ? Number(assignmentForm.projectId) : null, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>{saveAssignment.isPending ? "正在授权…" : "授权"}</Button>
           </CardContent>
           <CardContent className="pt-0">
             {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 部门 {item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 项目 {item.projectId || "全部"}</span><Badge variant="outline">{item.status}</Badge></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
@@ -680,13 +740,87 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "permission" ? renderPermissions() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const renderBusiness = () => (
+    <div className="space-y-6" id="business-governance-report">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-[#203c48]">全业务治理</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">业务模块、统计与安全备份</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500">超级管理员可从本页进入各业务模块维护真实数据。原有审批、状态流转、项目范围与敏感字段保护仍由服务端执行，不因后台入口而放宽。</p>
+        </div>
+        <div className="flex gap-2 print:hidden">
+          <Button size="sm" variant="outline" onClick={() => businessStatistics.refetch()} disabled={businessStatistics.isFetching}>刷新统计</Button>
+          <Button size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>
+        </div>
+      </div>
+
+      <Card className="print:border-0 print:shadow-none">
+        <CardContent className="flex flex-wrap items-end gap-3 p-4">
+          <div className="min-w-[220px] flex-1">
+            <Label htmlFor="business-project-filter">统计项目</Label>
+            <Select value={businessFilter.projectId} onValueChange={projectId => setBusinessFilter(current => ({ ...current, projectId }))}>
+              <SelectTrigger id="business-project-filter" className="mt-1"><SelectValue placeholder="选择项目" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部项目</SelectItem>
+                {(projects.data ?? []).filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[180px]">
+            <Label htmlFor="business-period-filter">统计期间</Label>
+            <Input id="business-period-filter" className="mt-1" type="month" value={businessFilter.period} onChange={event => setBusinessFilter(current => ({ ...current, period: event.target.value }))} />
+          </div>
+          <Button className="print:hidden" size="sm" variant="outline" onClick={() => setBusinessFilter({ projectId: "all", period: "" })} disabled={businessFilter.projectId === "all" && !businessFilter.period}>清除筛选</Button>
+          <p className="w-full text-xs text-slate-500">当前统计与打印口径：{businessFilterLabel}。基础档案按创建时间、业务单据按发生日期或结算期间统计。</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">全业务管理入口</CardTitle>
+          <CardDescription>每个入口均跳转至已部署的真实业务工作台；超级管理员可维护记录，普通人员仍会受到角色、部门与项目范围限制。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取真实业务统计。" /> : businessStatistics.isLoading ? <EmptyState text="正在汇总真实业务记录…" /> : businessStatistics.isError ? <EmptyState text="暂无法读取全业务统计，请确认当前账号具有超级管理员权限。" /> : businessStatistics.data?.length ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {businessStatistics.data.map(module => (
+                <div key={module.code} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3"><div><p className="font-medium text-slate-900">{module.name}</p><p className="mt-1 text-xs text-slate-500">当前真实记录</p></div><Badge variant="secondary">{module.recordCount} 条</Badge></div>
+                  <Button className="mt-4 w-full print:hidden" size="sm" variant="outline" onClick={() => setLocation(module.route)}><ExternalLink className="mr-1.5 h-4 w-4" />进入维护</Button>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyState text="暂无业务模块统计结果。" />}
+        </CardContent>
+      </Card>
+
+      <Card className="border-[#d8e3e0]">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle className="text-base">业务数据逻辑备份</CardTitle>
+            <CardDescription>创建只包含业务数据与关联元数据的 JSON 快照；不包含口令摘要、接口密钥、敏感系统配置、审计日志或影像文件本体。在线恢复未开放，防止误覆盖生产数据。</CardDescription>
+          </div>
+          <Button className="shrink-0 print:hidden" size="sm" onClick={() => createBackup.mutate()} disabled={createBackup.isPending}><DatabaseBackup className="mr-1.5 h-4 w-4" />{createBackup.isPending ? "正在归档…" : "创建备份"}</Button>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取已归档备份。" /> : backups.isLoading ? <EmptyState text="正在读取已归档备份…" /> : backups.isError ? <EmptyState text="暂无法读取备份目录，请稍后重试。" /> : backups.data?.length ? backups.data.map(backup => (
+            <div key={backup.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <div className="min-w-0"><p className="truncate text-sm font-medium text-slate-800">{backup.fileName}</p><p className="mt-1 text-xs text-slate-500">{displayDate(backup.createdAt)} · {backup.recordCount} 条 · SHA-256：{backup.sha256.slice(0, 12)}… · 范围 {backup.scopeVersion}</p></div>
+              <Button className="print:hidden" size="sm" variant="outline" onClick={() => downloadBackup.mutate({ id: Number(backup.id) })} disabled={downloadBackup.isPending}>下载</Button>
+            </div>
+          )) : <EmptyState text="尚无已归档备份。首次创建备份前不会生成任何示例文件。" />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 超级后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
-          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
+          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
       </div>

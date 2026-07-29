@@ -7,10 +7,12 @@ vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return { ...actual, assertSuperAdmin: vi.fn() };
 });
+vi.mock("./storage", () => ({ storagePut: vi.fn(), storageGetSignedUrl: vi.fn() }));
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
 import { adminRouter } from "./routers/admin";
+import { storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -124,6 +126,26 @@ describe("超级管理主数据约束", () => {
     })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("未归档") });
   });
 
+  it("业务角色可直接绑定具体项目范围，不要求重复设置部门范围", async () => {
+    const db = createSequentialLimitDb(
+      [{ id: 12, loginMethod: "oauth" }],
+      [{ code: "LOGISTICS_MANAGER" }],
+      [{ status: "active" }],
+    );
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({
+      userId: 12,
+      roleId: 9,
+      organizationId: null,
+      projectId: 20,
+      status: "active",
+    })).resolves.toEqual({ success: true });
+
+    expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ userId: 12, roleId: 9, organizationId: null, projectId: 20 }));
+    expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ module: "permission", action: "grant_role", targetType: "user" }));
+  });
+
   it("保存有效组织负责人时写入组织记录与最小化审计", async () => {
     const db = createSequentialLimitDb([{ id: 18 }]);
     vi.mocked(getDb).mockResolvedValue(db as never);
@@ -169,5 +191,23 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
     expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", projectId: 20 }));
     expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
+  });
+
+  it("超级管理员创建业务数据备份时仅归档脱敏业务快照并保留审计", async () => {
+    const values = vi.fn(() => ({ $returningId: async () => [{ id: 77 }] }));
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn(async () => [{ total: 0 }]) })),
+      insert: vi.fn(() => ({ values })),
+      values,
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(storagePut).mockResolvedValue({ key: "admin-backups/verified.json", url: "/manus-storage/admin-backups/verified.json" });
+
+    await expect(adminRouter.createCaller(createAdminContext()).backup.create()).resolves.toMatchObject({ id: 77, recordCount: 0, scopeVersion: "business-v1" });
+
+    const snapshot = String(vi.mocked(storagePut).mock.calls[0]?.[1] ?? "");
+    expect(snapshot).toContain("road-construction-management-logical-backup");
+    expect(snapshot).not.toContain("localPasswordHash");
+    expect(values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "backup", action: "create", targetType: "business_data_backup" }));
   });
 });

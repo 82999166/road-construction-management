@@ -1,7 +1,7 @@
-import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { departmentBusinessScopes, organizations, projects, systemRoles, userRoleAssignments, users } from "../drizzle/schema";
-import { type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
+import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
 import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
 import type { TrpcContext } from "./_core/context";
@@ -15,6 +15,39 @@ function canRoleHandleDepartmentModule(roleCode: string, module: DepartmentBusin
   if (!menu) return false;
   const permittedRoles = menu.roles as readonly string[];
   return permittedRoles.includes("ALL") || permittedRoles.includes(roleCode);
+}
+
+/** 项目级角色授权沿用同一移动菜单目录推导可办理模块，避免前后端维护两套岗位规则。 */
+function getRoleDepartmentModules(roleCode: string): DepartmentBusinessModule[] {
+  return DEPARTMENT_BUSINESS_MODULES
+    .filter(item => canRoleHandleDepartmentModule(roleCode, item.code))
+    .map(item => item.code);
+}
+
+/**
+ * 没有部门归属但明确限定到具体项目的有效业务角色授权。
+ * 该查询绝不产生全项目范围，且归档项目会被排除。
+ */
+async function getProjectScopedRoleAssignments(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  userId: number,
+  now: Date,
+) {
+  return db
+    .select({ projectId: userRoleAssignments.projectId, roleCode: systemRoles.code })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .innerJoin(projects, eq(userRoleAssignments.projectId, projects.id))
+    .where(
+      and(
+        eq(userRoleAssignments.userId, userId),
+        eq(userRoleAssignments.status, "active"),
+        isNull(userRoleAssignments.organizationId),
+        ne(projects.status, "archived"),
+        or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
+        or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
+      ),
+    );
 }
 
 /** 将角色授权记录安全收敛为项目与组织数据范围；空集合始终表示无数据访问权。 */
@@ -171,6 +204,8 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
     );
 
   const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
+  const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const projectModuleCodes = projectScopedRows.flatMap(row => getRoleDepartmentModules(row.roleCode));
   const departmentMap = new Map<number, { id: number; name: string; type: "department" | "project_department" }>();
   for (const row of authorizedRows) {
     // 查询条件已限制为两类部门节点；显式保护让未来扩展组织枚举时仍不会放宽部门边界。
@@ -180,7 +215,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   }
   return {
     departments: Array.from(departmentMap.values()),
-    moduleCodes: Array.from(new Set(authorizedRows.map(row => row.module))) as DepartmentBusinessModule[],
+    moduleCodes: Array.from(new Set([...authorizedRows.map(row => row.module), ...projectModuleCodes])) as DepartmentBusinessModule[],
     hasAllDepartments: false,
   };
 }
@@ -224,7 +259,12 @@ async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: Dep
         or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
       ),
     );
-  return toDataScope(user.id, rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule)));
+  const departmentScopedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
+  const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const directProjectRows = projectScopedRows
+    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module))
+    .map(row => ({ projectId: row.projectId, organizationId: null }));
+  return toDataScope(user.id, [...departmentScopedRows, ...directProjectRows]);
 }
 
 /**
@@ -272,7 +312,9 @@ export async function getCurrentDataScope(ctx: TrpcContext) {
     );
 
   const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
-  return toDataScope(user.id, authorizedRows);
+  const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const directProjectRows = projectScopedRows.map(row => ({ projectId: row.projectId, organizationId: null }));
+  return toDataScope(user.id, [...authorizedRows, ...directProjectRows]);
 }
 
 /**

@@ -306,10 +306,18 @@ export const purchasingRouter = router({
       contactPhoneMasked: input.contactPhoneMasked ?? null,
       status: input.status,
     };
-    if (input.id) await db.update(suppliers).set(values).where(eq(suppliers.id, input.id));
-    else await db.insert(suppliers).values(values);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: input.id ? "update_supplier" : "create_supplier", targetType: "supplier", targetId: String(input.id ?? input.name), summary: `${input.id ? "维护" : "新建"}供应商：${input.name}` });
-    return { success: true };
+    let supplierId = input.id;
+    if (supplierId) {
+      await db.update(suppliers).set(values).where(eq(suppliers.id, supplierId));
+    } else {
+      const [created] = await db.insert(suppliers).values(values).$returningId();
+      supplierId = Number(created?.id);
+      if (!Number.isInteger(supplierId) || supplierId <= 0) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "供应商创建失败，请稍后重试" });
+      }
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: input.id ? "update_supplier" : "create_supplier", targetType: "supplier", targetId: String(supplierId), summary: `${input.id ? "维护" : "新建"}供应商：${input.name}` });
+    return { success: true, id: supplierId };
   }),
 
   listRequests: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

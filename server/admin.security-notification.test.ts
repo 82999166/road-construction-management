@@ -88,9 +88,9 @@ describe("后台安全通知", () => {
     const db = createAdminDb([[{ id: 18, loginMethod: "oauth" }], [{ code: "LABOR_MANAGER" }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).rejects.toMatchObject({
+    await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: null, organizationId: null, validFrom: null, validTo: null, status: "active" })).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message: "业务角色授权必须选择所属部门或项目部",
+      message: "业务角色至少须选择所属部门/项目部或具体项目范围",
     });
   });
 

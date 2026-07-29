@@ -127,6 +127,18 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(purchasingRouter.createCaller(createAuthContext()).createOrder({ requestId: 36, projectId: 10, supplierId: null, amount: 100.01, orderedAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "采购订单金额不得高于申请批准金额" });
   });
 
+  it("新增供应商审计记录使用数据库生成的唯一供应商 ID，而非可重复名称", async () => {
+    const supplierValues = vi.fn(() => ({ $returningId: vi.fn(async () => [{ id: 51 }]) }));
+    const auditValues = vi.fn(async () => undefined);
+    let insertCount = 0;
+    vi.mocked(getDb).mockResolvedValue({
+      insert: vi.fn(() => (insertCount++ === 0 ? { values: supplierValues } : { values: auditValues })),
+    } as never);
+
+    await expect(purchasingRouter.createCaller(createAuthContext()).saveSupplier({ name: "华南建材供应商", organizationId: null, unifiedSocialCreditCode: null, contactName: "张工", contactPhoneMasked: "***1234", status: "active" })).resolves.toEqual({ success: true, id: 51 });
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "create_supplier", targetType: "supplier", targetId: "51" }));
+  });
+
   it("库存余额和库存成本仅按服务端不可变收发流水汇总", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["WAREHOUSE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([

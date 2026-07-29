@@ -75,5 +75,6 @@ describe("移动工作台部门业务投影", () => {
 
     expect(markup).toContain("当前权限：超级管理员（全局业务授权）");
     expect(markup).toContain("已启用超级管理员全局业务授权，接口仍执行服务端校验");
+    expect(markup).toContain("返回超级管理后台");
   });
 });
