@@ -202,6 +202,17 @@ function throwDomainAsBadRequest(error: unknown): never {
   throw error;
 }
 
+/**
+ * 状态迁移必须同时校验读取时的旧状态，避免两名用户基于同一旧状态提交不同流转而发生后写覆盖。
+ * MySQL 驱动返回 0 个受影响行时，说明记录已经被其他请求更新；此时不得继续记录审计或投递通知。
+ */
+function assertConditionalStatusWrite(result: unknown, recordName: string) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: `${recordName}状态已被其他用户更新，请刷新后重试` });
+  }
+}
+
 /** 返回用户有权访问的项目选项，项目/组织范围均以服务端授权记录为准。 */
 async function listScopedProjects(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   const scope = await getCurrentDataScope(ctx);
@@ -397,7 +408,10 @@ export const machineryRouter = router({
     const [record] = await db.select().from(machineCostRecords).where(eq(machineCostRecords.id, input.id)).limit(1);
     if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械成本记录不存在" });
     try { assertMachineCostStatusTransition(record.status, input.nextStatus); } catch (error) { throwDomainAsBadRequest(error); }
-    await db.update(machineCostRecords).set({ status: input.nextStatus }).where(eq(machineCostRecords.id, input.id));
+    const updateResult = await db.update(machineCostRecords)
+      .set({ status: input.nextStatus })
+      .where(and(eq(machineCostRecords.id, input.id), eq(machineCostRecords.status, record.status)));
+    assertConditionalStatusWrite(updateResult, "机械成本记录");
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_cost", targetType: "machine_cost", targetId: String(input.id), summary: `机械成本状态变更为：${input.nextStatus}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "machinery", eventCode: `machine_cost_${input.nextStatus}`, targetType: "machine_cost", targetId: String(input.id), title: `机械成本已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
     return { success: true };
@@ -612,7 +626,10 @@ export const transportRouter = router({
     if (["verified", "void"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权核验或作废运输趟次" });
     if (input.nextStatus === "settled" && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可确认运输结算" });
     try { assertTransportTripStatusTransition(trip.status, input.nextStatus); } catch (error) { throwDomainAsBadRequest(error); }
-    await db.update(transportTrips).set({ status: input.nextStatus }).where(eq(transportTrips.id, input.id));
+    const updateResult = await db.update(transportTrips)
+      .set({ status: input.nextStatus })
+      .where(and(eq(transportTrips.id, input.id), eq(transportTrips.status, trip.status)));
+    assertConditionalStatusWrite(updateResult, "运输趟次");
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
     return { success: true };

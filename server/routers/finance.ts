@@ -65,6 +65,17 @@ function throwDomainAsBadRequest(error: unknown): never {
   throw error;
 }
 
+/**
+ * 单据状态写入必须携带读取时的旧状态。受影响行数为 0 时说明有并发请求
+ * 已完成状态迁移，调用方必须立即中止，避免追加错误审计或重复通知。
+ */
+function assertConditionalBusinessWrite(result: unknown, conflictMessage: string) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: conflictMessage });
+  }
+}
+
 /** 返回当前用户被授权的项目选项，组织范围授权仅覆盖其直属项目。 */
 async function listScopedProjects(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   const scope = await getCurrentDataScope(ctx);
@@ -343,7 +354,10 @@ export const purchasingRouter = router({
       if (request.status !== "draft" && request.status !== "rejected") {
         throw new TRPCError({ code: "CONFLICT", message: "仅草稿或被退回采购申请可以修改" });
       }
-      await db.update(purchaseRequests).set({ ...values, status: request.status === "rejected" ? "draft" : "draft" }).where(eq(purchaseRequests.id, input.id));
+      const updateResult = await db.update(purchaseRequests)
+        .set({ ...values, status: "draft" })
+        .where(and(eq(purchaseRequests.id, input.id), eq(purchaseRequests.status, request.status)));
+      assertConditionalBusinessWrite(updateResult, "采购申请已被其他用户更新，请刷新后重试");
     } else {
       await db.insert(purchaseRequests).values({ ...values, requestNo: input.requestNo ?? createBusinessNo("PR"), requesterId: user.id, status: "draft" });
     }
@@ -372,7 +386,10 @@ export const purchasingRouter = router({
     if (input.targetStatus === "approved") { patch.approvedBy = user.id; patch.approvedAt = now; }
     if (input.targetStatus === "stocked") { patch.stockedBy = user.id; patch.stockedAt = now; }
     if (input.targetStatus === "closed") patch.closedAt = now;
-    await db.update(purchaseRequests).set(patch).where(eq(purchaseRequests.id, input.id));
+    const updateResult = await db.update(purchaseRequests)
+      .set(patch)
+      .where(and(eq(purchaseRequests.id, input.id), eq(purchaseRequests.status, request.status)));
+    assertConditionalBusinessWrite(updateResult, "采购申请已被其他用户更新，请刷新后重试");
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: `采购申请状态变更为：${input.targetStatus}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${input.targetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: `采购申请已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true };
@@ -441,7 +458,10 @@ export const purchasingRouter = router({
     if (input.targetStatus === "received" && !canManageInventory(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无采购订单收货权限" });
     const patch: Partial<typeof purchaseOrders.$inferInsert> = { status: input.targetStatus };
     if (input.targetStatus === "confirmed") { patch.confirmedBy = user.id; patch.confirmedAt = new Date(); }
-    await db.update(purchaseOrders).set(patch).where(eq(purchaseOrders.id, input.id));
+    const updateResult = await db.update(purchaseOrders)
+      .set(patch)
+      .where(and(eq(purchaseOrders.id, input.id), eq(purchaseOrders.status, order.status)));
+    assertConditionalBusinessWrite(updateResult, "采购订单已被其他用户更新，请刷新后重试");
     if (input.targetStatus === "received") await db.update(purchaseRequests).set({ status: "received" }).where(eq(purchaseRequests.id, order.requestId));
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_order", targetType: "purchase_order", targetId: String(input.id), summary: `采购订单状态变更为：${input.targetStatus}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "purchasing", eventCode: `purchase_order_${input.targetStatus}`, targetType: "purchase_order", targetId: String(input.id), title: `采购订单已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
@@ -534,7 +554,10 @@ export const measurementRouter = router({
       const [claim] = await db.select().from(measurementClaims).where(eq(measurementClaims.id, input.id)).limit(1);
       if (!claim || claim.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定工程计量申报" });
       if (claim.status !== "draft" && claim.status !== "rejected") throw new TRPCError({ code: "CONFLICT", message: "仅草稿或被退回计量申报可修改" });
-      await db.update(measurementClaims).set({ ...values, status: "draft", reviewNote: null }).where(eq(measurementClaims.id, input.id));
+      const updateResult = await db.update(measurementClaims)
+        .set({ ...values, status: "draft", reviewNote: null })
+        .where(and(eq(measurementClaims.id, input.id), eq(measurementClaims.status, claim.status)));
+      assertConditionalBusinessWrite(updateResult, "工程计量申报已被其他用户更新，请刷新后重试");
     } else {
       await db.insert(measurementClaims).values({ ...values, claimNo: input.claimNo ?? createBusinessNo("MC"), submittedBy: user.id, status: "draft" });
     }
@@ -564,7 +587,10 @@ export const measurementRouter = router({
     if (["reviewing", "approved", "rejected"].includes(input.targetStatus)) { patch.reviewedBy = user.id; patch.reviewedAt = now; }
     if (input.targetStatus === "approved") { patch.approvedAmount = String(roundMoney(input.approvedAmount!)); patch.accountantId = user.id; }
     if (input.targetStatus === "settled") patch.settledAt = now;
-    await db.update(measurementClaims).set(patch).where(eq(measurementClaims.id, input.id));
+    const updateResult = await db.update(measurementClaims)
+      .set(patch)
+      .where(and(eq(measurementClaims.id, input.id), eq(measurementClaims.status, claim.status)));
+    assertConditionalBusinessWrite(updateResult, "工程计量申报已被其他用户更新，请刷新后重试");
     if (input.targetStatus === "settled") {
       const sourceId = String(input.id);
       const existing = await db.select({ id: financialRecords.id }).from(financialRecords).where(and(eq(financialRecords.sourceType, "measurement_claim"), eq(financialRecords.sourceId, sourceId))).limit(1);
@@ -681,7 +707,10 @@ export const financeRouter = router({
     if (record.sourceType) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接作废" });
     if (record.settlementStatus === "paid") throw new TRPCError({ code: "CONFLICT", message: "已支付流水不可作废，请使用冲销流程" });
     if (record.settlementStatus === "void") throw new TRPCError({ code: "CONFLICT", message: "该财务流水已作废" });
-    await db.update(financialRecords).set({ settlementStatus: "void" }).where(eq(financialRecords.id, record.id));
+    const updateResult = await db.update(financialRecords)
+      .set({ settlementStatus: "void" })
+      .where(and(eq(financialRecords.id, record.id), eq(financialRecords.settlementStatus, record.settlementStatus)));
+    assertConditionalBusinessWrite(updateResult, "财务流水已被其他用户更新，请刷新后重试");
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "void_financial_record", targetType: "financial_record", targetId: String(record.id), summary: `财务流水已作废：${record.recordNo}；原因：${input.reason}` });
     void notifyWecomBusinessEvent({ userId: user.id, module: "finance", eventCode: "financial_voided", targetType: "financial_record", targetId: String(record.id), title: "项目财务流水已作废", deepLink: "/mobile/finance" }).catch(() => undefined);
     return { success: true, status: "void" as const };

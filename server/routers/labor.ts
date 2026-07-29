@@ -93,6 +93,17 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+/**
+ * 工资条状态是发放与审计的核心凭据。写入必须以读取时的旧状态为条件，
+ * 0 行受影响说明已有并发操作完成，后续审计和通知均不得继续执行。
+ */
+function assertConditionalPayrollWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "工资条已被其他用户更新，请刷新后重试" });
+  }
+}
+
 /** 将 YYYY-MM-DD 业务日期固定转换为 UTC 零点，避免客户端时区影响项目日考勤口径。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -539,7 +550,10 @@ export const laborRouter = router({
         paidAt: null,
       };
       if (existing) {
-        await db.update(payrollStatements).set(values).where(eq(payrollStatements.id, existing.id));
+        const updateResult = await db.update(payrollStatements)
+          .set(values)
+          .where(and(eq(payrollStatements.id, existing.id), eq(payrollStatements.status, existing.status)));
+        assertConditionalPayrollWrite(updateResult);
       } else {
         await db.insert(payrollStatements).values(values);
       }
@@ -562,7 +576,10 @@ export const laborRouter = router({
       } catch {
         throw new TRPCError({ code: "CONFLICT", message: "仅工资草稿可以提交会计审核" });
       }
-      await db.update(payrollStatements).set({ status: "reviewing", submittedBy: user.id, submittedAt: new Date(), accountantId: null, reviewedAt: null }).where(eq(payrollStatements.id, payroll.id));
+      const updateResult = await db.update(payrollStatements)
+        .set({ status: "reviewing", submittedBy: user.id, submittedAt: new Date(), accountantId: null, reviewedAt: null })
+        .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
+      assertConditionalPayrollWrite(updateResult);
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "submit_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条提交会计审核` });
       try {
         const messageResult = await createInAppMessage({
@@ -609,7 +626,10 @@ export const laborRouter = router({
           throw new TRPCError({ code: "CONFLICT", message: "仅审核中的工资条可以办理会计审核" });
         }
         const reviewedAt = new Date();
-        await db.update(payrollStatements).set({ status: isApproved ? "approved" : "draft", accountantId: user.id, reviewedAt }).where(eq(payrollStatements.id, payroll.id));
+        const updateResult = await db.update(payrollStatements)
+          .set({ status: isApproved ? "approved" : "draft", accountantId: user.id, reviewedAt })
+          .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
+        assertConditionalPayrollWrite(updateResult);
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: isApproved ? "approve_payroll" : "return_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已${isApproved ? "审核通过" : "退回草稿"}` });
         // 通知只写入审核结论和业务入口，不写入工资金额、银行卡等敏感工资信息。
         if (payroll.submittedBy) {
@@ -661,7 +681,10 @@ export const laborRouter = router({
           throw new TRPCError({ code: "CONFLICT", message: "仅审核通过的工资条可以确认发放" });
         }
         const paidAt = new Date();
-        await db.update(payrollStatements).set({ status: "paid", paidAt, paymentReference: input.paymentReference }).where(eq(payrollStatements.id, payroll.id));
+        const updateResult = await db.update(payrollStatements)
+          .set({ status: "paid", paidAt, paymentReference: input.paymentReference })
+          .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
+        assertConditionalPayrollWrite(updateResult);
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "pay_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已确认发放，付款凭证：${input.paymentReference}` });
         const recipientUserId = payroll.submittedBy ?? user.id;
         try {
@@ -708,7 +731,10 @@ export const laborRouter = router({
           throw new TRPCError({ code: "CONFLICT", message: "已发放或已作废的工资条不可作废" });
         }
         const voidedAt = new Date();
-        await db.update(payrollStatements).set({ status: "void" }).where(eq(payrollStatements.id, payroll.id));
+        const updateResult = await db.update(payrollStatements)
+          .set({ status: "void" })
+          .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
+        assertConditionalPayrollWrite(updateResult);
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "void_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已作废，原因：${input.reason}` });
         const recipientUserId = payroll.submittedBy ?? user.id;
         try {

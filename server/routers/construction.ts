@@ -55,6 +55,17 @@ function asBadRequest(error: unknown): never {
   throw error;
 }
 
+/**
+ * 施工日报的草稿维护和状态流转均以读取时的状态作为写入条件。
+ * 若受影响行数为 0，表示另一请求已先行更新，禁止继续写入审计。
+ */
+function assertConditionalDailyReportWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "施工日报已被其他用户更新，请刷新后重试" });
+  }
+}
+
 /** 施工日报路由：项目范围、岗位权限、终态锁定及审计均由服务端强制执行。 */
 export const constructionRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
@@ -114,7 +125,10 @@ export const constructionRouter = router({
       if (existing.status !== "draft" && existing.status !== "rejected") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "仅草稿或退回的施工日报可修改" });
       }
-      await db.update(constructionDailyReports).set(values).where(eq(constructionDailyReports.id, input.id));
+      const updateResult = await db.update(constructionDailyReports)
+        .set(values)
+        .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
+      assertConditionalDailyReportWrite(updateResult);
       await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "update_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `更新施工日报：${input.reportDate} ${input.workArea}` });
       return { id: input.id, updated: true };
     }
@@ -140,7 +154,10 @@ export const constructionRouter = router({
       asBadRequest(error);
     }
     const reviewed = input.nextStatus === "approved" || input.nextStatus === "rejected" || input.nextStatus === "locked";
-    await db.update(constructionDailyReports).set({ status: input.nextStatus, reviewedBy: reviewed ? user.id : null, reviewedAt: reviewed ? new Date() : null }).where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId)));
+    const updateResult = await db.update(constructionDailyReports)
+      .set({ status: input.nextStatus, reviewedBy: reviewed ? user.id : null, reviewedAt: reviewed ? new Date() : null })
+      .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
+    assertConditionalDailyReportWrite(updateResult);
     await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "transition_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报状态从 ${existing.status} 变更为 ${input.nextStatus}` });
     return { success: true };
   }),

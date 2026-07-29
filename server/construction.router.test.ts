@@ -98,4 +98,19 @@ describe("施工日报 tRPC 路由", () => {
     await expect(constructionRouter.createCaller(createAuthContext()).transitionReport({ id: 91, projectId: 10, nextStatus: "draft" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.update).not.toHaveBeenCalled();
   });
+
+  it("日报状态条件更新冲突时不追加审计记录", async () => {
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
+    const db = {
+      ...createSelectDb([{ id: 92, projectId: 10, status: "submitted" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).transitionReport({ id: 92, projectId: 10, nextStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).not.toHaveBeenCalled();
+  });
 });

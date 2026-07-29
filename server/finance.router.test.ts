@@ -98,6 +98,22 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(purchasingRouter.createCaller(createAuthContext()).transitionRequest({ id: 32, projectId: 10, targetStatus: "approved" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("采购申请条件状态更新冲突时不写审计或投递通知", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 321, projectId: 10, status: "submitted" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(purchasingRouter.createCaller(createAuthContext()).transitionRequest({ id: 321, projectId: 10, targetStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).not.toHaveBeenCalled();
+    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+  });
+
   it("采购订单只能由已批准申请创建，创建后申请状态同步为已下单", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
     const requestStatusUpdate = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
@@ -208,6 +224,22 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 43, projectId: 10, status: "approved", declaredAmount: "1000.00", approvedAmount: "900.00" }]) as never);
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 43, projectId: 10, targetStatus: "settled", approvedAmount: null, reviewNote: null })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("工程计量状态条件更新冲突时不确认收入、不写审计或投递通知", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 431, projectId: 10, status: "submitted", declaredAmount: "1000.00", approvedAmount: null }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 431, projectId: 10, targetStatus: "reviewing", approvedAmount: null, reviewNote: null })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).not.toHaveBeenCalled();
+    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
   });
 
   it("工程计量仅可在收入确认前由复核岗位作废，且作废会留下审计和通知深链", async () => {
@@ -371,6 +403,22 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ ...manualPaidRecord, sourceType: "measurement_payment" }]) as never);
     await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "不应跨模块调整" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("人工财务流水条件作废冲突时不写审计或投递通知", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 721, recordNo: "FIN-20260725-CCCC", projectId: 10, settlementStatus: "unpaid", sourceType: null }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(financeRouter.createCaller(createAuthContext()).voidRecord({ id: 721, projectId: 10, reason: "并发作废验证" })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).not.toHaveBeenCalled();
+    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
   });
 
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {

@@ -134,6 +134,22 @@ describe("labor tRPC 路由", () => {
     expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已提交会计审核，请相关责任人在系统内处理。");
   });
 
+  it("工资状态条件更新发生冲突时不写审计或投递站内及企业微信消息", async () => {
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 18, projectId: 10, period: "2026-07", status: "draft" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.submit({ id: 18 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(auditValues).not.toHaveBeenCalled();
+    expect(vi.mocked(createInAppMessage)).not.toHaveBeenCalled();
+    expect(vi.mocked(sendWecomTextNotification)).not.toHaveBeenCalled();
+  });
+
   it("实名核验完成会写入无身份信息的幂等站内消息", async () => {
     const worker = { id: 7, projectId: 10, identityNoEncrypted: "cipher:110101199001011234", identityVerificationStatus: "pending" };
     const db = {
