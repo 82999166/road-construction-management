@@ -76,7 +76,7 @@ async function upsertPayrollActor(db, { key, username, displayName, roleCode, em
   const assignedRole = await selectOne(db, db.select().from(systemRoles).where(eq(systemRoles.code, roleCode)).limit(1));
   if (!assignedRole) throw new Error(`基础角色不存在：${roleCode}`);
   const assignments = await db.select().from(userRoleAssignments).where(eq(userRoleAssignments.userId, testUser.id));
-  const matchingAssignment = assignments.find(item => item.roleId === assignedRole.id && item.organizationId === project.organizationId && item.projectId === project.id);
+  const matchingAssignment = assignments.find(item => item.roleId === assignedRole.id && item.projectId === project.id);
   const staleIds = assignments.filter(item => item.id !== matchingAssignment?.id && item.status === "active").map(item => item.id);
   if (staleIds.length) {
     await db.update(userRoleAssignments).set({ status: "revoked", grantedBy: superAdminId ?? null }).where(inArray(userRoleAssignments.id, staleIds));
@@ -84,7 +84,7 @@ async function upsertPayrollActor(db, { key, username, displayName, roleCode, em
   const assignmentValues = {
     userId: testUser.id,
     roleId: assignedRole.id,
-    organizationId: project.organizationId,
+    organizationId: null,
     projectId: project.id,
     validFrom,
     validTo,

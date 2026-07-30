@@ -239,7 +239,7 @@ try {
   const laborRole = await selectOne(db, db.select().from(systemRoles).where(eq(systemRoles.code, "LABOR_MANAGER")).limit(1));
   if (!laborRole) throw new Error("基础角色 LABOR_MANAGER 不存在");
   const assignments = await db.select().from(userRoleAssignments).where(eq(userRoleAssignments.userId, testUser.id));
-  const matchingAssignment = assignments.find(item => item.roleId === laborRole.id && item.organizationId === laborDepartmentId && item.projectId === authorizedProjectId);
+  const matchingAssignment = assignments.find(item => item.roleId === laborRole.id && item.projectId === authorizedProjectId);
   const otherAssignmentIds = assignments.filter(item => item.id !== matchingAssignment?.id).map(item => item.id);
   if (otherAssignmentIds.length) {
     await db.update(userRoleAssignments).set({ status: "revoked", grantedBy: superAdmin?.id ?? null }).where(inArray(userRoleAssignments.id, otherAssignmentIds));
@@ -247,7 +247,7 @@ try {
   const assignmentValues = {
     userId: testUser.id,
     roleId: laborRole.id,
-    organizationId: laborDepartmentId,
+    organizationId: null,
     projectId: authorizedProjectId,
     validFrom,
     validTo,

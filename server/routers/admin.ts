@@ -894,10 +894,13 @@ export const adminRouter = router({
             throw new TRPCError({ code: "BAD_REQUEST", message: "授权项目必须是未归档的有效项目节点" });
           }
         }
-        const values = { ...input, organizationId: input.organizationId ?? null, projectId: input.projectId ?? null, validFrom, validTo, grantedBy: admin.id };
+        // 具体项目是最小范围。保存时主动清空部门字段，避免“部门 + 项目”历史组合被运行时误判为部门级授权。
+        const projectId = input.projectId ?? null;
+        const organizationId = projectId ? null : input.organizationId ?? null;
+        const values = { ...input, organizationId, projectId, validFrom, validTo, grantedBy: admin.id };
         if (input.id) await db.update(userRoleAssignments).set(values).where(eq(userRoleAssignments.id, input.id));
         else await db.insert(userRoleAssignments).values(values);
-        await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: input.id ? "update_assignment" : "grant_role", targetType: "user", targetId: String(input.userId), summary: "维护用户角色与数据范围" });
+        await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: input.id ? "update_assignment" : "grant_role", targetType: "user", targetId: String(input.userId), summary: projectId ? `维护用户角色与具体项目范围 #${projectId}` : "维护用户角色与部门数据范围" });
         const assignmentEventCode = input.status === "revoked" ? "user_access_revoked" : "user_access_updated";
         dispatchInAppSecurityNotification({
           eventCode: assignmentEventCode,

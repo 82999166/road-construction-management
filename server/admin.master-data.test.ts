@@ -150,6 +150,26 @@ describe("超级管理主数据约束", () => {
     expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ module: "permission", action: "grant_role", targetType: "user" }));
   });
 
+  it("同时选择部门和具体项目时保存为最小的具体项目范围", async () => {
+    const db = createSequentialLimitDb(
+      [{ id: 12, loginMethod: "oauth" }],
+      [{ code: "LOGISTICS_MANAGER" }],
+      [{ type: "department", status: "active" }],
+      [{ status: "active" }],
+    );
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({
+      userId: 12,
+      roleId: 9,
+      organizationId: 31,
+      projectId: 20,
+      status: "active",
+    })).resolves.toEqual({ success: true });
+
+    expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ userId: 12, roleId: 9, organizationId: null, projectId: 20 }));
+  });
+
   it("保存有效组织负责人时写入组织记录与最小化审计", async () => {
     const db = createSequentialLimitDb([{ id: 18 }]);
     vi.mocked(getDb).mockResolvedValue(db as never);
