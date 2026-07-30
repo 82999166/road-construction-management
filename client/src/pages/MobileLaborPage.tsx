@@ -121,9 +121,29 @@ export function canPayPayrollFromMobile(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
 }
 
+/** 工资草稿只允许劳资负责人或系统级应急角色提交至会计审核。 */
+export function canSubmitPayrollFromMobile(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("LABOR_MANAGER");
+}
+
+/** 审核中的工资条仅向会计或系统级应急角色显示审核操作。 */
+export function canApprovePayrollFromMobile(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("ACCOUNTANT");
+}
+
 /** 未确认发放的工资条仅向会计、财务负责人或系统级应急角色显示作废入口。 */
 export function canVoidPayrollFromMobile(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("ACCOUNTANT") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/** 将工资状态和服务端投影的岗位代码收敛为页面可见操作，避免 UI 与接口权限规则漂移。 */
+export function getMobilePayrollActions(status: "draft" | "reviewing" | "approved" | "paid" | "void", roleCodes: readonly string[]) {
+  return {
+    submit: status === "draft" && canSubmitPayrollFromMobile(roleCodes),
+    approve: status === "reviewing" && canApprovePayrollFromMobile(roleCodes),
+    pay: status === "approved" && canPayPayrollFromMobile(roleCodes),
+    void: ["draft", "reviewing", "approved"].includes(status) && canVoidPayrollFromMobile(roleCodes),
+  };
 }
 
 /** 考勤人员的默认表单状态，集中维护可避免多处表单字段漂移。 */
@@ -177,7 +197,7 @@ export default function MobileLaborPage() {
     if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id);
   }, [projectId, projectOptions.data]);
 
-  const selectedProjectId = projectId ?? 0;
+  const selectedProjectId = projectId ?? projectOptions.data?.[0]?.id ?? 0;
   // 所有 tRPC 输入均 memo 化，避免渲染时新建对象导致不必要的查询。
   const workersInput = useMemo(() => ({ projectId: selectedProjectId, includeLeft: true }), [selectedProjectId]);
   const attendanceInput = useMemo(() => ({ projectId: selectedProjectId, startDate: `${period}-01`, endDate: getPeriodEndDate(period) }), [period, selectedProjectId]);
@@ -265,9 +285,10 @@ export default function MobileLaborPage() {
 
   /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管页面渲染。 */
   const activeRoleCodes = workbench.data?.user?.roleCodes ?? [];
-  const canApprovePayroll = isSuperAdmin && Boolean(activeRoleCodes.includes("ALL") || activeRoleCodes.includes("ACCOUNTANT"));
-  const canPayPayroll = isSuperAdmin && canPayPayrollFromMobile(activeRoleCodes);
-  const canVoidPayroll = isSuperAdmin && canVoidPayrollFromMobile(activeRoleCodes);
+  const canSubmitPayroll = canSubmitPayrollFromMobile(activeRoleCodes);
+  const canApprovePayroll = canApprovePayrollFromMobile(activeRoleCodes);
+  const canPayPayroll = canPayPayrollFromMobile(activeRoleCodes);
+  const canVoidPayroll = canVoidPayrollFromMobile(activeRoleCodes);
   const existingAttendanceForDraft = Boolean(attendance.data?.some(record => record.workerId === Number(attendanceDraft.workerId) && getBusinessDateText(record.attendanceDate) === attendanceDraft.attendanceDate));
   const existingPayrollForDraft = Boolean(payroll.data?.some(statement => statement.workerId === Number(payrollDraft.workerId) && statement.period === period));
   const isBusy = workers.isLoading || attendance.isLoading || payroll.isLoading || summary.isLoading;
@@ -395,7 +416,7 @@ export default function MobileLaborPage() {
 
         <main className="space-y-5 px-5 pt-5">
           <section className="grid grid-cols-[1fr_auto] gap-3 print:hidden">
-            <Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}>
+            <Select value={selectedProjectId ? String(selectedProjectId) : undefined} onValueChange={value => setProjectId(Number(value))}>
               <SelectTrigger className="h-11 border-[#e9d8c6] bg-white text-[#4d2e22]"><SelectValue placeholder="选择已授权项目" /></SelectTrigger>
               <SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent>
             </Select>
@@ -454,8 +475,8 @@ export default function MobileLaborPage() {
                 {!payroll.data?.length && !payroll.isLoading ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">当前结算期间尚未生成工资条。</div> : null}
                 {payroll.data?.map(statement => {
                   const status = getPayrollStatus(statement.status);
-                  const canVoidCurrent = ["draft", "reviewing", "approved"].includes(statement.status) && canVoidPayroll;
-                  const hasAction = isSuperAdmin && (statement.status === "draft" || (statement.status === "reviewing" && canApprovePayroll) || (statement.status === "approved" && canPayPayroll) || canVoidCurrent);
+                  const payrollActions = getMobilePayrollActions(statement.status, activeRoleCodes);
+                  const hasAction = Object.values(payrollActions).some(Boolean);
                   return (
                     <Card key={statement.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.06)]">
                       <CardContent className="p-4">
@@ -468,10 +489,10 @@ export default function MobileLaborPage() {
                           <div className="text-right"><p className="text-base font-semibold text-[#75351e]">{formatMoney(statement.actualAmount)}</p><p className="mt-1 text-[10px] text-[#8f7566]">应发 {formatMoney(statement.payableAmount)} · 扣 {formatMoney(statement.deductionAmount)}</p></div>
                         </div>
                         {hasAction ? <div className="mt-3 flex flex-wrap justify-end gap-2 print:hidden">
-                          {statement.status === "draft" ? <Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={submitPayroll.isPending} onClick={() => submitPayroll.mutate({ id: statement.id })}>提交审核 <ChevronRight className="ml-1 h-3.5 w-3.5" /></Button> : null}
-                          {statement.status === "reviewing" && canApprovePayroll ? <><Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "returned" })}>退回</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "approved" })}><BadgeCheck className="mr-1 h-3.5 w-3.5" />审核通过</Button></> : null}
-                          {statement.status === "approved" && canPayPayroll ? <Button size="sm" className="h-8 bg-[#3e746a] text-white hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { setPayrollPaymentDraft({ id: statement.id, paymentReference: "" }); setPayrollPaymentDialogOpen(true); }}>确认发放</Button> : null}
-                          {canVoidCurrent ? <Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" disabled={voidPayroll.isPending} onClick={() => { setPayrollVoidDraft({ id: statement.id, reason: "" }); setPayrollVoidDialogOpen(true); }}><Ban className="mr-1 h-3.5 w-3.5" />作废</Button> : null}
+                          {payrollActions.submit ? <Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={submitPayroll.isPending} onClick={() => submitPayroll.mutate({ id: statement.id })}>提交审核 <ChevronRight className="ml-1 h-3.5 w-3.5" /></Button> : null}
+                          {payrollActions.approve ? <><Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "returned" })}>退回</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "approved" })}><BadgeCheck className="mr-1 h-3.5 w-3.5" />审核通过</Button></> : null}
+                          {payrollActions.pay ? <Button size="sm" className="h-8 bg-[#3e746a] text-white hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { setPayrollPaymentDraft({ id: statement.id, paymentReference: "" }); setPayrollPaymentDialogOpen(true); }}>确认发放</Button> : null}
+                          {payrollActions.void ? <Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" disabled={voidPayroll.isPending} onClick={() => { setPayrollVoidDraft({ id: statement.id, reason: "" }); setPayrollVoidDialogOpen(true); }}><Ban className="mr-1 h-3.5 w-3.5" />作废</Button> : null}
                         </div> : null}
                       </CardContent>
                     </Card>

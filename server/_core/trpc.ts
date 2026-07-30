@@ -17,6 +17,16 @@ export const publicProcedure = t.procedure;
  */
 const BUSINESS_ROUTER_PREFIXES = ["labor.", "machinery.", "transport.", "purchasing.", "measurement.", "finance.", "evidence."] as const;
 const HIGH_IMPACT_MUTATION_SEGMENTS = ["transition", "approve", "pay", "void", "reverse", "ocr", "recordSettlement", "recordPayment"] as const;
+/**
+ * 工资条的提交、审核、发放和作废已在 labor 路由内分别实施劳资、会计、财务负责人角色、部门模块、项目范围及状态机校验。
+ * 因此不应再由泛化守卫一律要求超级管理员；其余高影响业务突变仍保持统一管理员兜底。
+ */
+const ROLE_GUARDED_LABOR_MUTATIONS = new Set([
+  "labor.payroll.submit",
+  "labor.payroll.approve",
+  "labor.payroll.pay",
+  "labor.payroll.void",
+]);
 
 function isScopedBusinessMutation(path: string) {
   return BUSINESS_ROUTER_PREFIXES.some(prefix => path.startsWith(prefix));
@@ -61,7 +71,8 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   }
 
   const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
-  if (!isSuperAdmin && (hasExistingRecordId(input) || isHighImpactBusinessMutation(path))) {
+  const usesDedicatedLaborRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path);
+  if (!isSuperAdmin && !usesDedicatedLaborRoleGuard && (hasExistingRecordId(input) || isHighImpactBusinessMutation(path))) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "普通管理人员仅可在已授权业务范围内新增和查看数据；修改既有记录、审批、结算及作废操作仅限超级管理员",
