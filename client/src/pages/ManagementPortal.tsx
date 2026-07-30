@@ -1,7 +1,7 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { getAuthorizedManagementModules, getManagementModulePath } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
 import {
@@ -101,7 +101,13 @@ export default function ManagementPortal() {
               const path = getManagementModulePath(module.code);
               return <button key={module.code} className="group flex min-h-36 flex-col items-start rounded-2xl border border-[#ead8c5] bg-white p-5 text-left shadow-[0_8px_24px_rgba(71,42,30,.05)] transition-all hover:-translate-y-0.5 hover:border-[#c98d5a] hover:shadow-[0_14px_30px_rgba(71,42,30,.11)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#a96032]" onClick={() => path && navigate(path)}><span className="grid h-11 w-11 place-items-center rounded-2xl bg-[#fbecdc] text-[#a55d2d] transition-colors group-hover:bg-[#f4d5b2]"><Icon className="h-5 w-5" /></span><span className="mt-4 text-base font-semibold text-[#482b20]">{module.title}</span><span className="mt-1 text-xs leading-5 text-[#927565]">进入已授权的业务管理页面</span></button>;
             })}
-            {!modules.length ? <div className="sm:col-span-2 xl:col-span-3 rounded-2xl border border-dashed border-[#dcc5ae] bg-[#fffaf5] px-5 py-9 text-center"><UserRound className="mx-auto h-6 w-6 text-[#b7825c]" /><p className="mt-3 text-sm font-semibold text-[#624233]">当前尚未分配业务管理版块</p><p className="mt-1 text-xs leading-5 text-[#8c7060]">请由超级管理员为该账号分配角色、部门可办理业务与项目范围后重新登录。</p></div> : null}
+            {!modules.length ? (
+              <div className="sm:col-span-2 xl:col-span-3 rounded-2xl border border-dashed border-[#dcc5ae] bg-[#fffaf5] px-5 py-9 text-center">
+                <UserRound className="mx-auto h-6 w-6 text-[#b7825c]" />
+                <p className="mt-3 text-sm font-semibold text-[#624233]">当前尚未分配业务管理版块</p>
+                <p className="mt-1 text-xs leading-5 text-[#8c7060]">请由超级管理员为该账号分配角色、部门可办理业务与项目范围后重新登录。</p>
+              </div>
+            ) : null}
           </div>
         </div>
       </section>

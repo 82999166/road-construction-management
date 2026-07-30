@@ -38,11 +38,23 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: LayoutDashboard, label: "运营概览", path: "/admin" },
   { icon: Building2, label: "组织与项目", path: "/admin/organization" },
   { icon: Truck, label: "车辆与资源", path: "/admin/vehicles" },
+  { icon: FolderKanban, label: "施工执行", path: "/admin/construction" },
+  { icon: UsersRound, label: "劳务工资", path: "/admin/labor" },
+  { icon: Settings2, label: "机械资源", path: "/admin/machinery" },
+  { icon: Truck, label: "运输调度", path: "/admin/transport" },
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
 ];
+
+/** 超级管理员从业务治理页进入时，优先落在 PC 端受控台账；其他模块仍使用已部署的既有工作台。 */
+export const ADMIN_BUSINESS_ROUTE_BY_MODULE: Record<string, string> = {
+  CONSTRUCTION: "/admin/construction",
+  LABOR: "/admin/labor",
+  MACHINERY: "/admin/machinery",
+  TRANSPORT: "/admin/transport",
+};
 
 type OrganizationType = "group" | "company" | "project_department" | "department" | "team";
 type DepartmentModuleCode = "CONSTRUCTION" | "LABOR" | "MACHINERY" | "TRANSPORT" | "PURCHASING" | "MEASUREMENT" | "FINANCE" | "EVIDENCE";
@@ -64,6 +76,7 @@ type SettingForm = { id?: number; expectedVersion?: number; category: string; se
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
 type MasterDataDeleteTarget = { resource: MasterDataResource; id: number; label: string; description: string };
+type PayrollPaymentTarget = { id: number; workerName: string; period: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
@@ -75,6 +88,43 @@ const EMPTY_SETTING_FORM: SettingForm = { category: "企业微信", settingKey: 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+}
+
+/** 本地日期筛选以用户浏览器日历为准，避免将 UTC 日期偏移带入运输日结算口径。 */
+function toLocalDateInput(value = new Date()) {
+  const localValue = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return localValue.toISOString().slice(0, 10);
+}
+
+/** 空、非整数或非正项目号一律不作为业务查询范围，避免前端误把缺省条件视为全项目。 */
+export function getBusinessWorkspaceProjectState(value: string) {
+  const projectId = Number(value);
+  return {
+    projectId: Number.isSafeInteger(projectId) && projectId > 0 ? projectId : 0,
+    hasProject: Number.isSafeInteger(projectId) && projectId > 0,
+  };
+}
+
+function displayMoney(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "—";
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
+}
+
+/** 只用于展示服务端返回的真实状态，按钮是否可操作仍由后端状态机二次判定。 */
+function BusinessStatusBadge({ status }: { status: string }) {
+  const labels: Record<string, string> = {
+    pending: "待进场", active: "可用", left: "已退场", idle: "闲置", working: "作业中", repairing: "维修中", offsite: "场外", retired: "已退役",
+    draft: "草稿", submitted: "待审核", reviewing: "审核中", approved: "已审核", verified: "已核验", paid: "已发放", settled: "已结算", rejected: "已退回", locked: "已归档", void: "已作废", suspended: "已暂停", disabled: "已停用",
+  };
+  const tone = ["approved", "verified", "paid", "settled", "active", "working"].includes(status)
+    ? "bg-emerald-50 text-emerald-700"
+    : ["rejected", "void", "disabled", "retired"].includes(status)
+      ? "bg-rose-50 text-rose-700"
+      : ["submitted", "reviewing", "pending", "repairing", "suspended"].includes(status)
+        ? "bg-amber-50 text-amber-700"
+        : "bg-slate-100 text-slate-600";
+  return <Badge className={tone}>{labels[status] ?? status}</Badge>;
 }
 
 /** 用于治理概览的统一统计卡片，不展示任何虚构项目业务数据。 */
@@ -134,12 +184,17 @@ export default function AdminPage() {
   const isOverview = activeSection === "overview";
   const isOrganization = activeSection === "organization";
   const isVehicle = activeSection === "vehicles";
+  const isConstruction = activeSection === "construction";
+  const isLabor = activeSection === "labor";
+  const isMachinery = activeSection === "machinery";
+  const isTransport = activeSection === "transport";
+  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
   const isSettings = activeSection === "settings";
   const isAudit = activeSection === "audit";
   const needsOrganizations = isOrganization || isVehicle || isPermission;
-  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness;
+  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace;
   const needsUsers = isOrganization || isVehicle || isPermission;
 
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
@@ -157,12 +212,35 @@ export default function AdminPage() {
   const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, { enabled: canQuery && isOverview });
   const vehicles = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isVehicle });
   const [businessFilter, setBusinessFilter] = useState({ projectId: "all", period: "" });
+  const [businessWorkspaceProjectId, setBusinessWorkspaceProjectId] = useState("");
+  const [selectedMachineId, setSelectedMachineId] = useState("");
+  const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
+  const [laborPeriod, setLaborPeriod] = useState("");
+  const [payrollPaymentTarget, setPayrollPaymentTarget] = useState<PayrollPaymentTarget | null>(null);
+  const [paymentReference, setPaymentReference] = useState("");
   const businessStatisticsInput = useMemo(() => ({
     projectId: businessFilter.projectId === "all" ? undefined : Number(businessFilter.projectId),
     period: businessFilter.period || undefined,
   }), [businessFilter.period, businessFilter.projectId]);
   const businessStatistics = trpc.admin.business.statistics.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
   const backups = trpc.admin.backup.list.useQuery(undefined, { enabled: canQuery && isBusiness });
+  const workspaceProjectState = getBusinessWorkspaceProjectState(businessWorkspaceProjectId);
+  const workspaceProjectId = workspaceProjectState.projectId;
+  const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
+  const workspaceProjectInput = useMemo(() => ({ projectId: workspaceProjectId }), [workspaceProjectId]);
+  const laborWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, includeLeft: true }), [workspaceProjectId]);
+  const payrollWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, period: laborPeriod || undefined }), [laborPeriod, workspaceProjectId]);
+  const machineCostWorkspaceInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId }), [selectedMachineId, workspaceProjectId]);
+  const transportWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, date: transportDate || undefined }), [transportDate, workspaceProjectId]);
+  const constructionDailyReports = trpc.construction.listReports.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
+  const constructionDailySummary = trpc.construction.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
+  const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
+  const laborAttendance = trpc.labor.attendance.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
+  const payrollStatements = trpc.labor.payroll.list.useQuery(payrollWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
+  const machineryLedger = trpc.machinery.listMachines.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
+  const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
+  const transportVehicleLedger = trpc.transport.listVehicles.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
+  const transportTrips = trpc.transport.listTrips.useQuery(transportWorkspaceInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -203,8 +281,23 @@ export default function AdminPage() {
   useEffect(() => {
     if (!selectedSettingId && settings.data?.[0]) setSelectedSettingId(settings.data[0].id);
   }, [selectedSettingId, settings.data]);
+  useEffect(() => {
+    if (!isBusinessWorkspace || businessWorkspaceProjectId || !projects.data?.length) return;
+    const firstAvailableProject = projects.data.find(project => project.status !== "archived");
+    if (firstAvailableProject) setBusinessWorkspaceProjectId(String(firstAvailableProject.id));
+  }, [businessWorkspaceProjectId, isBusinessWorkspace, projects.data]);
+  useEffect(() => {
+    setSelectedMachineId("");
+  }, [businessWorkspaceProjectId]);
+  useEffect(() => {
+    if (!isMachinery || !machineryLedger.data?.length) return;
+    if (!machineryLedger.data.some(machine => String(machine.id) === selectedMachineId)) {
+      setSelectedMachineId(String(machineryLedger.data[0].id));
+    }
+  }, [isMachinery, machineryLedger.data, selectedMachineId]);
   const selectedSetting = settings.data?.find(item => item.id === selectedSettingId);
   const selectedBusinessProject = projects.data?.find(project => String(project.id) === businessFilter.projectId);
+  const selectedWorkspaceProject = projects.data?.find(project => String(project.id) === businessWorkspaceProjectId);
   const businessFilterLabel = `${selectedBusinessProject?.name ?? "全部项目"}${businessFilter.period ? ` · ${businessFilter.period}` : " · 全部期间"}`;
 
   /** 配置版本冲突后强制刷新列表与历史，避免管理员继续在旧版本上操作。 */
@@ -391,6 +484,50 @@ export default function AdminPage() {
       anchor.click();
       toast.success("已生成受控下载链接，下载行为已记录审计");
       await audits.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const transitionConstructionReport = trpc.construction.transitionReport.useMutation({
+    onSuccess: async () => {
+      toast.success("施工日报状态已更新");
+      await Promise.all([constructionDailyReports.refetch(), constructionDailySummary.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const submitPayroll = trpc.labor.payroll.submit.useMutation({
+    onSuccess: async () => {
+      toast.success("工资条已提交会计审核");
+      await payrollStatements.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const approvePayroll = trpc.labor.payroll.approve.useMutation({
+    onSuccess: async () => {
+      toast.success("工资条审核状态已更新");
+      await payrollStatements.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const payPayroll = trpc.labor.payroll.pay.useMutation({
+    onSuccess: async () => {
+      toast.success("工资条已确认发放");
+      setPayrollPaymentTarget(null);
+      setPaymentReference("");
+      await payrollStatements.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const transitionMachineCost = trpc.machinery.transitionCost.useMutation({
+    onSuccess: async () => {
+      toast.success("机械成本状态已更新");
+      await machineCosts.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const transitionTransportTrip = trpc.transport.transitionTrip.useMutation({
+    onSuccess: async () => {
+      toast.success("运输趟次状态已更新");
+      await transportTrips.refetch();
     },
     onError: error => toast.error(error.message),
   });
@@ -863,6 +1000,128 @@ export default function AdminPage() {
     </div>
   );
 
+  /** 业务台账不把空项目解释为全量范围；数据读取仍由各业务路由在服务端复核权限。 */
+  const renderWorkspaceProjectFilter = (title: string, description: string) => (
+    <Card className="border-[#d8e3e0]">
+      <CardContent className="flex flex-wrap items-end gap-3 p-4">
+        <div className="min-w-[240px] flex-1">
+          <Label htmlFor="business-workspace-project">当前项目</Label>
+          <Select value={businessWorkspaceProjectId || "UNASSIGNED"} onValueChange={value => setBusinessWorkspaceProjectId(value === "UNASSIGNED" ? "" : value)}>
+            <SelectTrigger id="business-workspace-project" className="mt-1"><SelectValue placeholder="选择已授权项目" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="UNASSIGNED">请选择项目</SelectItem>
+              {(projects.data ?? []).filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-[260px] flex-[2]"><p className="text-sm font-medium text-slate-800">{title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{description}</p></div>
+        <Button size="sm" variant="outline" onClick={() => projects.refetch()} disabled={projects.isFetching}>刷新项目</Button>
+      </CardContent>
+    </Card>
+  );
+
+  const renderConstruction = () => {
+    const rows = constructionDailyReports.data ?? [];
+    const summary = constructionDailySummary.data;
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div><p className="text-sm font-medium text-[#203c48]">施工执行 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">施工日报与现场进度</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">仅查询所选项目的真实施工日报。提交、审核、退回和归档均继续通过服务端项目范围、岗位和状态机校验。</p></div>
+          <Button variant="outline" onClick={() => setLocation("/mobile/construction")}><ExternalLink className="mr-2 h-4 w-4" />进入完整施工维护</Button>
+        </div>
+        {renderWorkspaceProjectFilter("施工项目范围", "选择项目后加载日报、累计进度和待处理状态；未选择项目时不会请求或展示施工生产记录。")}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实施工日报。" /> : constructionDailyReports.isLoading || constructionDailySummary.isLoading ? <EmptyState text="正在读取施工日报与进度汇总…" /> : constructionDailyReports.isError || constructionDailySummary.isError ? <EmptyState text="暂无法读取施工业务数据，请确认当前账号的服务端授权后重试。" /> : (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard title="日报总数" value={summary?.total} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={FolderKanban} />
+              <MetricCard title="待审核日报" value={summary?.submitted} description="已提交，待处理" icon={ScrollText} />
+              <MetricCard title="已归档日报" value={summary?.locked} description="不可再回退" icon={ShieldCheck} />
+              <MetricCard title="平均进度" value={summary?.averageProgressPercent} description="来自真实日报申报比例" icon={BarChart3} />
+            </section>
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0"><div><CardTitle className="text-base">施工日报台账</CardTitle><CardDescription>展示施工部位、天气、内容摘要、安全与问题记录。点击状态操作后会由服务端重新验证当前日报状态。</CardDescription></div><Button size="sm" variant="outline" onClick={() => Promise.all([constructionDailyReports.refetch(), constructionDailySummary.refetch()])} disabled={constructionDailyReports.isFetching || constructionDailySummary.isFetching}>刷新</Button></CardHeader>
+              <CardContent className="space-y-3">
+                {rows.length ? rows.map(item => (
+                  <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.workArea}</p><BusinessStatusBadge status={item.status} /><Badge variant="outline">{item.weather}</Badge></div><p className="mt-1 text-xs text-slate-500">{displayDate(item.reportDate)} · 累计完成 {Number(item.progressPercent).toFixed(2)}%</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setLocation("/mobile/construction")}>查看/编辑</Button>{item.status === "draft" ? <Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "submitted" })} disabled={transitionConstructionReport.isPending}>提交</Button> : null}{item.status === "submitted" ? <><Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "approved" })} disabled={transitionConstructionReport.isPending}>审核通过</Button><Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "rejected" })} disabled={transitionConstructionReport.isPending}>退回</Button></> : null}{item.status === "approved" ? <Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "locked" })} disabled={transitionConstructionReport.isPending}>归档</Button> : null}</div></div>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{item.workContent}</p>
+                    {(item.safetyNotes || item.issueNotes) ? <div className="mt-3 grid gap-2 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600 md:grid-cols-2"><p><b className="text-slate-700">安全：</b>{item.safetyNotes || "未记录"}</p><p><b className="text-slate-700">问题：</b>{item.issueNotes || "未记录"}</p></div> : null}
+                  </div>
+                )) : <EmptyState text="当前项目尚无真实施工日报。请通过完整施工维护入口新建现场记录。" />}
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderLabor = () => {
+    const workers = laborWorkers.data ?? [];
+    const attendance = laborAttendance.data ?? [];
+    const payrolls = payrollStatements.data ?? [];
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">劳务工资 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">实名制、考勤与工资条</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">人员证件、手机号和银行卡均由服务端脱敏后返回；工资发放只保存付款凭证引用，不会在系统内发起转账。</p></div><Button variant="outline" onClick={() => setLocation("/mobile/labor")}><ExternalLink className="mr-2 h-4 w-4" />进入完整劳务维护</Button></div>
+        {renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实劳务工资台账。" /> : laborWorkers.isLoading || laborAttendance.isLoading || payrollStatements.isLoading ? <EmptyState text="正在读取实名制、考勤和工资条数据…" /> : laborWorkers.isError || laborAttendance.isError || payrollStatements.isError ? <EmptyState text="暂无法读取劳务工资数据，请确认当前账号的服务端授权后重试。" /> : (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="实名制人员" value={workers.length} description="已按敏感字段脱敏" icon={UsersRound} /><MetricCard title="在场人员" value={workers.filter(item => item.attendanceStatus === "active").length} description="可计入当前项目考勤" icon={ShieldCheck} /><MetricCard title="考勤记录" value={attendance.length} description="当前项目全部真实记录" icon={ScrollText} /><MetricCard title="待会计处理" value={payrolls.filter(item => item.status === "reviewing").length} description="审核中工资条" icon={BarChart3} /></section>
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Card><CardHeader><CardTitle className="text-base">劳务人员台账</CardTitle><CardDescription>展示实名核验与进退场状态；个人身份和资金字段保持脱敏。</CardDescription></CardHeader><CardContent className="space-y-2">{workers.length ? workers.map(worker => <div key={worker.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{worker.realName}</p><BusinessStatusBadge status={worker.attendanceStatus} /><Badge variant="outline">实名：{worker.identityVerificationStatus === "verified" ? "已核验" : worker.identityVerificationStatus === "rejected" ? "已驳回" : "待核验"}</Badge></div><p className="mt-1 text-xs text-slate-500">班组：{worker.teamName || "未设置"} · 入场：{worker.entryDate ? displayDate(worker.entryDate) : "未登记"} · 退场：{worker.exitDate ? displayDate(worker.exitDate) : "—"}</p></div><Button size="sm" variant="outline" onClick={() => setLocation("/mobile/labor")}>维护档案</Button></div>) : <EmptyState text="当前项目尚无真实劳务人员档案。" />}</CardContent></Card>
+              <Card><CardHeader><CardTitle className="text-base">考勤记录</CardTitle><CardDescription>按人员与日期幂等保存；锁定记录不可由前端覆盖。</CardDescription></CardHeader><CardContent className="space-y-2">{attendance.length ? attendance.slice(0, 20).map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><p className="text-sm font-medium text-slate-800">{item.workerName} <span className="font-normal text-slate-400">{item.teamName ? `· ${item.teamName}` : ""}</span></p><p className="mt-1 text-xs text-slate-500">{displayDate(item.attendanceDate)} · 正常 {item.workHours} h · 加班 {item.overtimeHours} h · {item.source}</p></div><BusinessStatusBadge status={item.status} /></div>) : <EmptyState text="当前项目尚无真实考勤记录。" />}</CardContent></Card>
+            </div>
+            <Card><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">工资条与结算状态</CardTitle><CardDescription>应发、扣款与实发金额均由服务端计算；付款凭证只对获授权财务岗位返回。</CardDescription></div><div className="min-w-[180px]"><Label htmlFor="labor-period">工资期间</Label><Input id="labor-period" className="mt-1" type="month" value={laborPeriod} onChange={event => setLaborPeriod(event.target.value)} /></div></CardHeader><CardContent className="space-y-2">{payrolls.length ? payrolls.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{item.workerName}</p><BusinessStatusBadge status={item.status} /><Badge variant="outline">{item.period}</Badge></div><p className="mt-1 text-xs text-slate-500">应发 ¥{displayMoney(item.payableAmount)} · 扣款 ¥{displayMoney(item.deductionAmount)} · 实发 ¥{displayMoney(item.actualAmount)} · {item.bankAccountMasked || "未登记收款账户"}{item.paymentReference ? ` · 凭证 ${item.paymentReference}` : ""}</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setLocation("/mobile/labor")}>查看明细</Button>{item.status === "draft" ? <Button size="sm" onClick={() => submitPayroll.mutate({ id: item.id })} disabled={submitPayroll.isPending}>提交审核</Button> : null}{item.status === "reviewing" ? <><Button size="sm" onClick={() => approvePayroll.mutate({ id: item.id, decision: "approved" })} disabled={approvePayroll.isPending}>审核通过</Button><Button size="sm" variant="outline" onClick={() => approvePayroll.mutate({ id: item.id, decision: "returned" })} disabled={approvePayroll.isPending}>退回</Button></> : null}{item.status === "approved" ? <Button size="sm" onClick={() => { setPayrollPaymentTarget({ id: item.id, workerName: item.workerName, period: item.period }); setPaymentReference(""); }}>确认发放</Button> : null}</div></div>) : <EmptyState text={laborPeriod ? "当前项目和工资期间尚无真实工资条。" : "当前项目尚无真实工资条。"} />}</CardContent></Card>
+          </>
+        )}
+        <Dialog open={Boolean(payrollPaymentTarget)} onOpenChange={open => { if (!open) { setPayrollPaymentTarget(null); setPaymentReference(""); } }}><DialogContent><DialogHeader><DialogTitle>确认工资发放</DialogTitle><DialogDescription>系统不会发起银行转账。请在外部资金流程完成后，填写付款凭证号或资金流水号，服务端会复核财务岗位、项目范围和工资条状态。</DialogDescription></DialogHeader><div className="space-y-2"><Label htmlFor="payment-reference">付款凭证号 / 资金流水号</Label><Input id="payment-reference" value={paymentReference} placeholder="至少 4 个字符" onChange={event => setPaymentReference(event.target.value)} /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollPaymentTarget(null)} disabled={payPayroll.isPending}>取消</Button><Button disabled={!payrollPaymentTarget || paymentReference.trim().length < 4 || payPayroll.isPending} onClick={() => payrollPaymentTarget && payPayroll.mutate({ id: payrollPaymentTarget.id, paymentReference: paymentReference.trim() })}>{payPayroll.isPending ? "正在确认…" : `确认 ${payrollPaymentTarget?.workerName ?? "工资条"} 发放`}</Button></DialogFooter></DialogContent></Dialog>
+      </div>
+    );
+  };
+
+  const renderMachinery = () => {
+    const machines = machineryLedger.data ?? [];
+    const costs = machineCosts.data ?? [];
+    const selectedMachine = machines.find(machine => String(machine.id) === selectedMachineId);
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">机械资源 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">机械台账与成本结算</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">机械归属、租赁规则、油料、维修、加班和进退场成本均使用现有服务端业务接口。结算仅由获授权财务岗位确认。</p></div><Button variant="outline" onClick={() => setLocation("/mobile/machinery")}><ExternalLink className="mr-2 h-4 w-4" />进入完整机械维护</Button></div>
+        {renderWorkspaceProjectFilter("机械项目范围", "选择项目后读取机械资源台账。选择具体机械后再读取其真实成本记录，避免无筛选的成本明细暴露。")}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实机械资源台账。" /> : machineryLedger.isLoading ? <EmptyState text="正在读取机械资源台账…" /> : machineryLedger.isError ? <EmptyState text="暂无法读取机械资源，请确认当前账号的服务端授权后重试。" /> : (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="机械总数" value={machines.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Settings2} /><MetricCard title="作业中" value={machines.filter(item => item.status === "working").length} description="当前可见机械资源" icon={BarChart3} /><MetricCard title="维修中" value={machines.filter(item => item.status === "repairing").length} description="需关注维修安排" icon={ScrollText} /><MetricCard title="已选成本记录" value={costs.length} description={selectedMachine ? selectedMachine.name : "请先选择机械"} icon={ShieldCheck} /></section>
+            <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
+              <Card><CardHeader><CardTitle className="text-base">机械资源列表</CardTitle><CardDescription>点击机械后读取该机械的真实成本记录。机械档案编辑和计价规则维护仍走完整业务入口。</CardDescription></CardHeader><CardContent className="space-y-2">{machines.length ? machines.map(machine => <button key={machine.id} className={`w-full rounded-xl border p-3 text-left transition-colors ${String(machine.id) === selectedMachineId ? "border-[#203c48] bg-[#edf4f1]" : "border-slate-100 hover:bg-slate-50"}`} onClick={() => setSelectedMachineId(String(machine.id))}><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{machine.name}</p><Badge variant="outline">{machine.code}</Badge><BusinessStatusBadge status={machine.status} /></div><Badge variant="outline">{machine.ownership === "owned" ? "自有" : "外租"}</Badge></div><p className="mt-1 text-xs text-slate-500">型号：{machine.model || "未登记"} · 资产/车牌：{machine.plateOrAssetNo || "未登记"} · 供应商：{machine.supplierName || "—"}</p></button>) : <EmptyState text="当前项目尚无真实机械台账。" />}</CardContent></Card>
+              <Card><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">{selectedMachine ? `${selectedMachine.name} · 成本记录` : "机械成本记录"}</CardTitle><CardDescription>审核、结算和作废操作会由服务端按机械成本状态机、项目范围与财务岗位重新校验。</CardDescription></div><Button size="sm" variant="outline" onClick={() => setLocation("/mobile/machinery")}>录入/维护成本</Button></CardHeader><CardContent className="space-y-2">{!selectedMachineId ? <EmptyState text="请选择左侧机械，查看其真实成本记录。" /> : machineCosts.isLoading ? <EmptyState text="正在读取机械成本记录…" /> : machineCosts.isError ? <EmptyState text="暂无法读取机械成本记录。" /> : costs.length ? costs.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{item.costType === "fuel" ? "油料" : item.costType === "repair" ? "维修" : item.costType === "overtime" ? "加班" : item.costType === "mobilization" ? "进退场" : "其他"}</p><BusinessStatusBadge status={item.status} /></div><p className="mt-1 text-xs text-slate-500">{displayDate(item.occurredAt)} · 数量 {item.quantity} · 单价 ¥{displayMoney(item.unitPrice)} · 金额 ¥{displayMoney(item.amount)}</p></div><div className="flex flex-wrap gap-2">{item.status === "draft" ? <Button size="sm" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "approved" })} disabled={transitionMachineCost.isPending}>审核</Button> : null}{item.status === "approved" ? <Button size="sm" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "settled" })} disabled={transitionMachineCost.isPending}>确认结算</Button> : null}{["draft", "approved"].includes(item.status) ? <Button size="sm" variant="outline" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionMachineCost.isPending}>作废</Button> : null}</div></div>) : <EmptyState text="当前机械尚无真实成本记录。" />}</CardContent></Card>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const renderTransport = () => {
+    const vehiclesForProject = transportVehicleLedger.data ?? [];
+    const trips = transportTrips.data ?? [];
+    const activeTrips = trips.filter(item => item.status !== "void");
+    const totalAmount = activeTrips.reduce((sum, item) => sum + Number(item.calculatedAmount ?? 0), 0);
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">运输调度 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">车辆、趟次与结算状态</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">展示真实车辆资源与指定自然日趟次。运价快照、理论方量、异常检测、核验和结算继续在既有服务端接口中完成。</p></div><Button variant="outline" onClick={() => setLocation("/mobile/transport")}><ExternalLink className="mr-2 h-4 w-4" />进入完整运输维护</Button></div>
+        {renderWorkspaceProjectFilter("运输项目范围", "选择项目后读取车辆台账和实际运输趟次。司机、运输管理和财务操作由服务端按角色、项目和状态分别校验。")}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实运输调度台账。" /> : transportVehicleLedger.isLoading || transportTrips.isLoading ? <EmptyState text="正在读取车辆和运输趟次…" /> : transportVehicleLedger.isError || transportTrips.isError ? <EmptyState text="暂无法读取运输调度数据，请确认当前账号的服务端授权后重试。" /> : (
+          <>
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="可见车辆" value={vehiclesForProject.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Truck} /><MetricCard title="可调度车辆" value={vehiclesForProject.filter(item => item.status === "active").length} description="车辆状态来自真实台账" icon={ShieldCheck} /><MetricCard title="当日有效趟次" value={activeTrips.length} description={transportDate || "全部日期"} icon={ScrollText} /><MetricCard title="可结算金额" value={Math.round(totalAmount * 100) / 100} description="非作废趟次金额合计" icon={BarChart3} /></section>
+            <div className="grid gap-6 xl:grid-cols-[.85fr_1.15fr]">
+              <Card><CardHeader><CardTitle className="text-base">车辆资源台账</CardTitle><CardDescription>与统一车辆主数据使用同一真实数据源。车辆档案、运价规则和趟次新建通过完整运输维护入口办理。</CardDescription></CardHeader><CardContent className="space-y-2">{vehiclesForProject.length ? vehiclesForProject.map(vehicle => <div key={vehicle.id} className="rounded-xl border border-slate-100 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{vehicle.plateNo}</p><BusinessStatusBadge status={vehicle.status} /></div><Badge variant="outline">理论 {vehicle.theoreticalVolumeCubicMeters} m³</Badge></div><p className="mt-1 text-xs text-slate-500">{vehicle.vehicleType} · 所属人：{vehicle.ownerName || "未登记"} · 货厢 {vehicle.boxLengthMeters} × {vehicle.boxWidthMeters} × {vehicle.boxHeightMeters} m · 载重 {vehicle.payloadTons ?? "—"} t</p></div>) : <EmptyState text="当前项目尚无真实运输车辆台账。" />}</CardContent></Card>
+              <Card><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">运输趟次</CardTitle><CardDescription>每条记录的运价和参数取自创建时的服务端快照，历史金额不会被后续运价规则修改。</CardDescription></div><div className="min-w-[170px]"><Label htmlFor="transport-date">运输日期</Label><Input id="transport-date" className="mt-1" type="date" value={transportDate} onChange={event => setTransportDate(event.target.value)} /></div></CardHeader><CardContent className="space-y-2">{trips.length ? trips.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{item.tripNo}</p><BusinessStatusBadge status={item.status} />{item.anomalies.length ? <Badge className="bg-amber-50 text-amber-700">{item.anomalies.length} 项提示</Badge> : null}</div><p className="mt-1 text-xs text-slate-500">{displayDate(item.startAt)} · 车辆 #{item.vehicleId} · 距离 {item.actualDistanceKm ?? "—"} km · 方量 {item.volumeCubicMeters ?? "—"} m³ · 运费 ¥{displayMoney(item.calculatedAmount)}</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setLocation("/mobile/transport")}>查看明细</Button>{item.status === "draft" ? <Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "submitted" })} disabled={transitionTransportTrip.isPending}>提交</Button> : null}{item.status === "submitted" ? <><Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "verified" })} disabled={transitionTransportTrip.isPending}>核验</Button><Button size="sm" variant="outline" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionTransportTrip.isPending}>作废</Button></> : null}{item.status === "verified" ? <><Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "settled" })} disabled={transitionTransportTrip.isPending}>确认结算</Button><Button size="sm" variant="outline" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionTransportTrip.isPending}>作废</Button></> : null}</div></div>) : <EmptyState text={transportDate ? "当前项目和日期尚无真实运输趟次。" : "当前项目尚无真实运输趟次。"} />}</CardContent></Card>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
   const renderBusiness = () => (
     <div className="space-y-6" id="business-governance-report">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -909,7 +1168,7 @@ export default function AdminPage() {
               {businessStatistics.data.map(module => (
                 <div key={module.code} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="flex items-start justify-between gap-3"><div><p className="font-medium text-slate-900">{module.name}</p><p className="mt-1 text-xs text-slate-500">当前真实记录</p></div><Badge variant="secondary">{module.recordCount} 条</Badge></div>
-                  <Button className="mt-4 w-full print:hidden" size="sm" variant="outline" onClick={() => setLocation(module.route)}><ExternalLink className="mr-1.5 h-4 w-4" />进入维护</Button>
+                  <Button className="mt-4 w-full print:hidden" size="sm" variant="outline" onClick={() => setLocation(ADMIN_BUSINESS_ROUTE_BY_MODULE[module.code] ?? module.route)}><ExternalLink className="mr-1.5 h-4 w-4" />进入维护</Button>
                 </div>
               ))}
             </div>
@@ -937,13 +1196,13 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? renderTransport() : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
-          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
+          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="construction">施工</TabsTrigger><TabsTrigger value="labor">劳务</TabsTrigger><TabsTrigger value="machinery">机械</TabsTrigger><TabsTrigger value="transport">运输</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
