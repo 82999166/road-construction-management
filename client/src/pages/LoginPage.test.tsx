@@ -44,4 +44,15 @@ describe("独立登录页", () => {
     expect(getAuthenticatedLoginRedirectTarget(true, false, "/mobile/labor")).toBe("/mobile/labor");
     expect(getAuthenticatedLoginRedirectTarget(true, true, "/mobile/labor")).toBeNull();
   });
+
+  it("专用超级管理入口只显示本地超级管理员表单，不泄露测试密码", () => {
+    const markup = renderToStaticMarkup(<LoginPage localAdminOnly />);
+
+    expect(markup).toContain("超级管理后台登录");
+    expect(markup).toContain("登录全局管理后台");
+    expect(markup).toContain("切换至统一登录");
+    expect(markup).not.toContain("企业身份登录");
+    expect(markup).not.toContain("管理人员账号登录");
+    expect(markup).not.toContain("admin123");
+  });
 });
