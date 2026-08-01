@@ -17,7 +17,9 @@ import { useLocation } from "wouter";
  * 企业人员默认走统一身份认证；普通管理人员由超级管理员在后台创建本地账号。
  * 本页面从不保存口令，输入值仅随本次 HTTPS 请求发送给服务端进行不可逆摘要校验。
  */
-export default function LoginPage() {
+export type LoginPageProps = { localAdminOnly?: boolean };
+
+export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {}) {
   const { isAuthenticated, loading, user } = useAuth();
   const utils = trpc.useUtils();
   const [location, navigate] = useLocation();
@@ -105,12 +107,12 @@ export default function LoginPage() {
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
             <p className="text-sm font-medium text-[#9a6036]">欢迎使用</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight">统一管理登录</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">完成身份核验后，系统会安全返回您刚才访问的页面；未指定目标时默认进入统一管理入口，并按账号权限呈现相应功能版块。</p>
-            <Button className="mt-8 h-12 w-full bg-[#203c48] text-base hover:bg-[#17313b]" onClick={handleLogin} disabled={loading}>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">{localAdminOnly ? "超级管理后台登录" : "统一管理登录"}</h2>
+            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "这是测试环境的本地超级管理员入口。认证成功后将直接进入全局管理后台；请勿将测试凭据用于生产环境。" : "完成身份核验后，系统会安全返回您刚才访问的页面；未指定目标时默认进入统一管理入口，并按账号权限呈现相应功能版块。"}</p>
+            {!localAdminOnly ? <Button className="mt-8 h-12 w-full bg-[#203c48] text-base hover:bg-[#17313b]" onClick={handleLogin} disabled={loading}>
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
+            </Button> : null}
             {requiresLocalPasswordChange ? (
               <form className="mt-5 rounded-2xl border border-[#b8d1ca] bg-[#f2faf7] p-4" onSubmit={handleLocalPasswordChange}>
                 <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><KeyRound className="h-4 w-4" />首次登录，请先更新密码</div>
@@ -123,7 +125,7 @@ export default function LoginPage() {
                 <Button type="submit" className="mt-4 h-10 w-full bg-[#245344] hover:bg-[#1c4336]" disabled={changeLocalPassword.isPending}>{changeLocalPassword.isPending ? "正在更新密码…" : "更新密码并进入工作台"}</Button>
               </form>
             ) : <>
-            <form className="mt-5 rounded-2xl border border-[#c7d7dc] bg-[#f4fafb] p-4" onSubmit={handleLocalManagerLogin}>
+            {!localAdminOnly ? <form className="mt-5 rounded-2xl border border-[#c7d7dc] bg-[#f4fafb] p-4" onSubmit={handleLocalManagerLogin}>
               <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />管理人员账号登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-500">账号由超级管理员在后台创建。登录后系统自动进入您获授权的管理功能版块，不显示未获授权的菜单。</p>
               <div className="mt-3 grid gap-3">
@@ -132,10 +134,10 @@ export default function LoginPage() {
               </div>
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的管理版块"}</Button>
-            </form>
-            <form className="mt-4 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
+            </form> : null}
+            <form className={`${localAdminOnly ? "mt-6" : "mt-4"} rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4`} onSubmit={handleTemporaryAdminLogin}>
               <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />超级管理员账号登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">用于全局治理与应急管理；登录成功后进入全局管理后台，口令仅在服务器端校验。</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">{localAdminOnly ? "仅供测试环境全局治理与应急管理使用；登录成功后进入全局管理后台，口令仅在服务器端校验。" : "用于全局治理与应急管理；登录成功后进入全局管理后台，口令仅在服务器端校验。"}</p>
               <div className="mt-3 grid gap-3">
                 <div className="grid gap-1.5">
                   <Label htmlFor="temporary-admin-username">账号</Label>
@@ -152,8 +154,7 @@ export default function LoginPage() {
               </Button>
             </form>
             </>}
-            <a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a>
-            <p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请联系系统管理员核查账号状态与项目授权。</p>
+            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />切换至统一登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请联系系统管理员核查账号状态与项目授权。</p></>}
           </div>
         </section>
       </div>

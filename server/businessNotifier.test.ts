@@ -1,54 +1,44 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockGetDb, mockSendWecom } = vi.hoisted(() => ({
-  mockGetDb: vi.fn(),
-  mockSendWecom: vi.fn(),
+const { mockNotifyOfficialAccountBusinessEvent } = vi.hoisted(() => ({
+  mockNotifyOfficialAccountBusinessEvent: vi.fn(),
 }));
 
-vi.mock("./db", () => ({ getDb: mockGetDb }));
-vi.mock("./services/wecomNotifier", () => ({ sendWecomTextNotification: mockSendWecom }));
+vi.mock("./services/officialAccountNotifier", () => ({ notifyOfficialAccountBusinessEvent: mockNotifyOfficialAccountBusinessEvent }));
 
-import { notifyWecomBusinessEvent } from "./services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
 
-describe("统一企业微信业务节点通知", () => {
-  const values = vi.fn().mockResolvedValue(undefined);
-  const insert = vi.fn(() => ({ values }));
+describe("统一公众号业务节点通知", () => {
+  beforeEach(() => vi.clearAllMocks());
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetDb.mockResolvedValue({ insert });
-  });
-
-  it("仅投递模块、状态、单据标识和深链，并记录未配置原因", async () => {
-    mockSendWecom.mockResolvedValue({ delivered: false, reason: "not_configured" });
-
-    await expect(notifyWecomBusinessEvent({
+  it("仅将最小化业务事件转交给公众号投递服务", async () => {
+    const expected = [{ recipientUserId: 9, delivered: false, reason: "not_configured" }];
+    mockNotifyOfficialAccountBusinessEvent.mockResolvedValue(expected);
+    const event = {
       userId: 9,
-      module: "finance",
+      module: "finance" as const,
       eventCode: "financial_expense",
       targetType: "financial_record",
       targetId: "material_cost",
       title: "项目支出流水已登记",
       deepLink: "/mobile/finance",
-    })).resolves.toEqual({ delivered: false, reason: "not_configured" });
+    };
 
-    const content = mockSendWecom.mock.calls[0]?.[0] as string;
-    expect(content).toContain("项目支出流水已登记");
-    expect(content).toContain("/mobile/finance");
-    expect(content).not.toMatch(/\d+(?:\.\d+)?元|身份证|银行卡|Webhook/i);
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 9,
+    await expect(notifyOfficialAccountBusinessEventSafely(event)).resolves.toEqual(expected);
+    expect(mockNotifyOfficialAccountBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({
       module: "finance",
-      action: "wecom_delivery",
+      eventCode: "financial_expense",
+      targetType: "financial_record",
       targetId: "material_cost",
-      summary: "企业微信业务提醒 financial_expense：not_configured",
+      deepLink: "/mobile/finance",
     }));
+    expect(JSON.stringify(mockNotifyOfficialAccountBusinessEvent.mock.calls)).not.toMatch(/身份证|银行卡|Webhook/i);
   });
 
-  it("企业微信投递失败仍返回结果并留下可追溯审计", async () => {
-    mockSendWecom.mockResolvedValue({ delivered: false, reason: "delivery_failed" });
+  it("公众号投递服务异常会向调用方抛出，由业务路由的非阻塞调用边界负责吞没", async () => {
+    mockNotifyOfficialAccountBusinessEvent.mockRejectedValue(new Error("delivery_failed"));
 
-    const result = await notifyWecomBusinessEvent({
+    await expect(notifyOfficialAccountBusinessEventSafely({
       userId: 7,
       module: "transport",
       eventCode: "transport_trip_settled",
@@ -56,9 +46,6 @@ describe("统一企业微信业务节点通知", () => {
       targetId: "42",
       title: "运输趟次已结算",
       deepLink: "/mobile/transport",
-    });
-
-    expect(result).toEqual({ delivered: false, reason: "delivery_failed" });
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ summary: "企业微信业务提醒 transport_trip_settled：delivery_failed" }));
+    })).rejects.toThrow("delivery_failed");
   });
 });

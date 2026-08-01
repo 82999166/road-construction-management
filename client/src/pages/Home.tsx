@@ -35,7 +35,7 @@ export default function Home() {
       </header>
       <main className="mx-auto grid w-full max-w-6xl gap-12 px-5 pb-14 pt-12 lg:grid-cols-[1.15fr_.85fr] lg:px-8 lg:pt-20">
         <section className="max-w-2xl">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-[#e9f0ed] px-3 py-1.5 text-xs font-medium text-[#285847]"><ShieldCheck className="h-3.5 w-3.5" /> 企业微信唯一通知与账号安全通道</div>
+          <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-[#e9f0ed] px-3 py-1.5 text-xs font-medium text-[#285847]"><ShieldCheck className="h-3.5 w-3.5" /> 微信公众号唯一通知与账号安全通道</div>
           <h1 className="text-4xl font-semibold leading-tight tracking-tight text-[#172b34] sm:text-5xl">让施工现场、经营数据与管理决策处于同一节奏。</h1>
           <p className="mt-6 max-w-xl text-base leading-7 text-slate-600">所有管理人员从同一登录地址进入管理入口。超级管理员可进入全局治理与配置；普通管理人员仅看到经角色、部门、组织和项目范围授权的业务版块。</p>
           <div className="mt-8 flex flex-wrap gap-3">

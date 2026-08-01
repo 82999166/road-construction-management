@@ -110,6 +110,32 @@ describe("系统设置安全工作流", () => {
     expect(templateDraft).toMatchObject({ settingKey: "MESSAGE_TEMPLATE_PAYROLL", valueJson: "工资单已审核，请在移动端查看。", secretEncrypted: null, isSensitive: false });
   });
 
+  it("认证服务号仅 AppSecret 使用密文托管，公开字段必须符合 HTTPS 与 JSON 安全约束", async () => {
+    const db = createSettingsDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    const caller = adminRouter.createCaller(createAdminContext());
+
+    await caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "服务号 AppID", value: "wx1234567890abcdef", isSensitive: false, remarks: null });
+    await caller.settings.saveDraft({ category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "字段映射", value: "{\"first\":\"{title}\"}", isSensitive: false, remarks: null });
+    await caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "跳转地址", value: "https://road.example.com", isSensitive: false, remarks: null });
+    await caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "服务号 AppSecret", value: "official-account-secret", isSensitive: true, remarks: null });
+
+    await expect(caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "服务号 AppID", value: "wx1234567890abcdef", isSensitive: true, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "服务号 AppSecret", value: "official-account-secret", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.settings.saveDraft({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "跳转地址", value: "http://localhost:3000", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.settings.saveDraft({ category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "字段映射", value: "[]", isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.settings.saveDraft({ category: "通知", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人", value: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=retired", isSensitive: true, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const officialDrafts = db.insertedValues.filter(value => (value as { settingKey?: string }).settingKey?.startsWith("WECHAT_OFFICIAL_"));
+    expect(officialDrafts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_ID", valueJson: "wx1234567890abcdef", secretEncrypted: null, isSensitive: false }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", valueJson: "{\"first\":\"{title}\"}", secretEncrypted: null, isSensitive: false }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_URL", valueJson: "https://road.example.com", secretEncrypted: null, isSensitive: false }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_SECRET", valueJson: null, secretEncrypted: "cipher:opaque-value", isSensitive: true }),
+    ]));
+    expect(JSON.stringify(db.insertedValues)).not.toContain("official-account-secret");
+  });
+
   it("身份恢复地址必须以非敏感公开 HTTPS 配置保存，并移除浏览器片段", async () => {
     const db = createSettingsDb();
     vi.mocked(getDb).mockResolvedValue(db as never);
@@ -214,21 +240,21 @@ describe("系统设置安全工作流", () => {
     expect(db.insertedValues).toHaveLength(0);
   });
 
-  it("删除企业微信配置会校验当前版本、清除活动密文及历史快照可恢复内容，并仅保留最小化审计", async () => {
-    const webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=remove-test-key";
+  it("删除认证服务号密钥会校验当前版本、清除活动密文及历史快照可恢复内容，并仅保留最小化审计", async () => {
+    const appSecret = "official-account-remove-secret";
     const existing = {
       id: 31,
       version: 4,
-      category: "wechat",
-      settingKey: "WECHAT_WORK_WEBHOOK",
-      displayName: "企业微信机器人",
+      category: "wechat_official",
+      settingKey: "WECHAT_OFFICIAL_APP_SECRET",
+      displayName: "认证服务号 AppSecret",
       valueJson: null,
-      secretEncrypted: "cipher:remove-test-webhook",
+      secretEncrypted: "cipher:remove-test-secret",
       valuePreview: "********MASK",
       isSensitive: true,
-      remarks: "待删除的机器人配置",
+      remarks: "待删除的服务号密钥",
     };
-    const historicalSnapshot = JSON.stringify({ ...existing, valueJson: webhook });
+    const historicalSnapshot = JSON.stringify({ ...existing, valueJson: appSecret });
     const db = createSettingsDb([[existing], [{ id: 71, snapshotJson: historicalSnapshot }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
@@ -238,26 +264,26 @@ describe("系统设置安全工作流", () => {
     expect(db.updatedValues).toEqual(expect.arrayContaining([
       expect.objectContaining({ snapshotJson: expect.stringContaining("[已删除]") }),
     ]));
-    expect(JSON.stringify(db.updatedValues)).not.toContain("cipher:remove-test-webhook");
-    expect(JSON.stringify(db.updatedValues)).not.toContain(webhook);
-    expect(JSON.stringify(db.insertedValues)).not.toContain("cipher:remove-test-webhook");
-    expect(JSON.stringify(db.insertedValues)).not.toContain(webhook);
+    expect(JSON.stringify(db.updatedValues)).not.toContain("cipher:remove-test-secret");
+    expect(JSON.stringify(db.updatedValues)).not.toContain(appSecret);
+    expect(JSON.stringify(db.insertedValues)).not.toContain("cipher:remove-test-secret");
+    expect(JSON.stringify(db.insertedValues)).not.toContain(appSecret);
     expect(db.insertedValues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: "delete", targetId: "WECHAT_WORK_WEBHOOK" }),
+      expect.objectContaining({ action: "delete", targetId: "WECHAT_OFFICIAL_APP_SECRET" }),
     ]));
   });
 
-  it("企业微信与业务参数均可在统一配置中心经历草稿、发布、历史脱敏与回滚闭环", async () => {
-    const webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=unit-test-key";
-    const wecomSnapshot = {
-      category: "wechat",
-      settingKey: "WECHAT_WORK_WEBHOOK",
-      displayName: "企业微信机器人",
+  it("认证服务号密钥与业务参数均可在统一配置中心经历草稿、发布、历史脱敏与回滚闭环", async () => {
+    const appSecret = "official-account-unit-secret";
+    const officialSnapshot = {
+      category: "wechat_official",
+      settingKey: "WECHAT_OFFICIAL_APP_SECRET",
+      displayName: "认证服务号 AppSecret",
       valueJson: null,
-      secretEncrypted: "cipher:wecom-webhook",
+      secretEncrypted: "cipher:official-secret",
       valuePreview: "********MASK",
       isSensitive: true,
-      remarks: "用于业务待办通知",
+      remarks: "用于服务号模板通知",
     };
     const businessSnapshot = {
       category: "business_parameter",
@@ -269,18 +295,18 @@ describe("系统设置安全工作流", () => {
       isSensitive: false,
       remarks: "按元/趟配置",
     };
-    const wecomSetting = { id: 42, version: 1, ...wecomSnapshot };
+    const officialSetting = { id: 42, version: 1, ...officialSnapshot };
     const businessSetting = { id: 43, version: 5, ...businessSnapshot };
-    const wecomLog = { id: 81, settingId: 42, version: 1, operation: "publish", snapshotJson: JSON.stringify(wecomSnapshot) };
+    const officialLog = { id: 81, settingId: 42, version: 1, operation: "publish", snapshotJson: JSON.stringify(officialSnapshot) };
     const businessLog = { id: 82, settingId: 43, version: 5, operation: "publish", snapshotJson: JSON.stringify(businessSnapshot) };
-    const db = createSettingsDb([[wecomSetting], [wecomLog], [{ ...wecomSetting, version: 2 }], [wecomLog], [businessSetting], [businessLog], [{ ...businessSetting, version: 6 }], [businessLog]]);
+    const db = createSettingsDb([[officialSetting], [officialLog], [{ ...officialSetting, version: 2 }], [officialLog], [businessSetting], [businessLog], [{ ...businessSetting, version: 6 }], [businessLog]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
     const caller = adminRouter.createCaller(createAdminContext());
 
-    await expect(caller.settings.saveDraft({ category: "wechat", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人", value: "https://example.com/webhook", isSensitive: true, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    await caller.settings.saveDraft({ category: "wechat", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人", value: webhook, isSensitive: true, remarks: "用于业务待办通知" });
+    await expect(caller.settings.saveDraft({ category: "wechat_official", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "认证服务号 AppSecret", value: appSecret, isSensitive: false, remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await caller.settings.saveDraft({ category: "wechat_official", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "认证服务号 AppSecret", value: appSecret, isSensitive: true, remarks: "用于服务号模板通知" });
     await expect(caller.settings.publish({ id: 42, expectedVersion: 1 })).resolves.toEqual({ success: true, version: 2 });
-    const wecomHistory = await caller.settings.history({ settingId: 42 });
+    const officialHistory = await caller.settings.history({ settingId: 42 });
     await expect(caller.settings.rollback({ settingId: 42, publishLogId: 81, expectedVersion: 2 })).resolves.toEqual({ success: true, version: 3 });
 
     await caller.settings.saveDraft({ category: "business_parameter", settingKey: "TRANSPORT_START_PRICE", displayName: "运输起步价", value: "120", isSensitive: false, remarks: "按元/趟配置" });
@@ -288,11 +314,11 @@ describe("系统设置安全工作流", () => {
     const businessHistory = await caller.settings.history({ settingId: 43 });
     await expect(caller.settings.rollback({ settingId: 43, publishLogId: 82, expectedVersion: 6 })).resolves.toEqual({ success: true, version: 7 });
 
-    expect(JSON.stringify(db.insertedValues)).not.toContain(webhook);
-    expect(JSON.stringify(wecomHistory)).not.toContain("cipher:wecom-webhook");
+    expect(JSON.stringify(db.insertedValues)).not.toContain(appSecret);
+    expect(JSON.stringify(officialHistory)).not.toContain("cipher:official-secret");
     expect(JSON.stringify(businessHistory)).toContain("TRANSPORT_START_PRICE");
     expect(db.updatedValues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ secretEncrypted: "cipher:wecom-webhook", valueJson: null, status: "published" }),
+      expect.objectContaining({ secretEncrypted: "cipher:official-secret", valueJson: null, status: "published" }),
       expect.objectContaining({ valueJson: "120", secretEncrypted: null, status: "published" }),
     ]));
   });
@@ -303,7 +329,7 @@ describe("系统设置安全工作流", () => {
       ["OCR_API_TOKEN", "ocr-secret-value"],
       ["CAMERA_APP_KEY", "camera-secret-value"],
       ["LOCATION_CREDENTIAL", "location-secret-value"],
-      ["WECHAT_WORK_WEBHOOK", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret-webhook"],
+      ["WECHAT_OFFICIAL_APP_SECRET", "official-account-secret-value"],
     ] as const;
     const writeDb = createSettingsDb();
     vi.mocked(getDb).mockResolvedValue(writeDb as never);
@@ -318,7 +344,7 @@ describe("系统设置安全工作流", () => {
     expect(JSON.stringify(writeDb.insertedValues)).not.toContain("ocr-secret-value");
     expect(JSON.stringify(writeDb.insertedValues)).not.toContain("camera-secret-value");
     expect(JSON.stringify(writeDb.insertedValues)).not.toContain("location-secret-value");
-    expect(JSON.stringify(writeDb.insertedValues)).not.toContain("secret-webhook");
+    expect(JSON.stringify(writeDb.insertedValues)).not.toContain("official-account-secret-value");
 
     const safeRows = secretEntries.map(([settingKey]) => ({ id: settingKey.length, settingKey, valueJson: null, valuePreview: "********MASK", isSensitive: true, status: "published" }));
     const historyLog = { id: 91, settingId: 9, version: 1, snapshotJson: JSON.stringify({ settingKey: "MAP_API_KEY", isSensitive: true, secretEncrypted: "cipher:opaque-value", valueJson: null }) };

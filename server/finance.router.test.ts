@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 /** 防止路由回归测试对外投递真实消息，同时验证每个业务模块传递正确的深链。 */
-const { mockNotifyWecomBusinessEvent } = vi.hoisted(() => ({
-  mockNotifyWecomBusinessEvent: vi.fn(),
+const { mockNotifyOfficialAccountBusinessEventSafely } = vi.hoisted(() => ({
+  mockNotifyOfficialAccountBusinessEventSafely: vi.fn(),
 }));
 
 /** 路由测试隔离数据库与范围授权基础设施，只验证采购、计量和财务的业务安全边界。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
-vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mockNotifyWecomBusinessEvent }));
+vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: mockNotifyOfficialAccountBusinessEventSafely }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
@@ -80,7 +80,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAuthContext().user);
-    mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
+    mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([]);
   });
 
   it("已关闭采购申请不可回退，且状态操作始终保留项目范围校验", async () => {
@@ -111,7 +111,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(purchasingRouter.createCaller(createAuthContext()).transitionRequest({ id: 321, projectId: 10, targetStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
-    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 
   it("采购订单只能由已批准申请创建，创建后申请状态同步为已下单", async () => {
@@ -195,7 +195,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 38, projectId: 10, amount: 500, settledAt: "2026-07-25T08:00:00.000Z", remarks: "首笔付款" })).resolves.toEqual({ success: true, settledAmount: 800, remainingAmount: 200 });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ category: "采购结算", sourceType: "purchase_order_settlement", sourceId: "38", amount: "500" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "purchasing", eventCode: "purchase_order_settlement", targetId: "38", deepLink: "/mobile/purchasing" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "purchasing", eventCode: "purchase_order_settlement", targetId: "38", deepLink: "/mobile/purchasing" }));
 
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
@@ -239,7 +239,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 431, projectId: 10, targetStatus: "reviewing", approvedAmount: null, reviewNote: null })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
-    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 
   it("工程计量仅可在收入确认前由复核岗位作废，且作废会留下审计和通知深链", async () => {
@@ -256,7 +256,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 44, projectId: 10, targetStatus: "void", approvedAmount: null, reviewNote: "业主计量口径变更，取消本次申报" })).resolves.toEqual({ success: true });
     expect(updateWhere).toHaveBeenCalled();
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", action: "transition_claim", targetId: "44" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_void", targetId: "44", deepLink: "/mobile/measurement" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_void", targetId: "44", deepLink: "/mobile/measurement" }));
 
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 45, projectId: 10, status: "settled", declaredAmount: "1000.00", approvedAmount: "900.00" }]) as never);
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 45, projectId: 10, targetStatus: "void", approvedAmount: null, reviewNote: "不得冲销已确认收入" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -278,7 +278,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 51, projectId: 10, amount: 300, receivedAt: "2026-07-25T08:00:00.000Z", remarks: "第一笔回款" })).resolves.toEqual({ success: true, receivedAmount: 700, remainingAmount: 300 });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ category: "工程计量回款", sourceType: "measurement_payment", sourceId: "51", settlementStatus: "partial" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_payment", targetId: "51", deepLink: "/mobile/measurement" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "measurement_payment", targetId: "51", deepLink: "/mobile/measurement" }));
 
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
       [{ id: 52, projectId: 10, status: "settled", declaredAmount: "1000.00", approvedAmount: "1000.00" }],
@@ -313,7 +313,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     })).resolves.toEqual({ success: true });
 
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", action: "create_record", targetId: "项目材料费用" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
   });
 
   it("普通管理人员只能新增未结清财务流水，结算和作废状态必须由超级管理员办理", async () => {
@@ -389,7 +389,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "供应商退款已核实" })).resolves.toEqual({ success: true, reversalDirection: "income" });
     expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ direction: "income", amount: "800", settlementStatus: "paid", sourceType: "financial_reversal", sourceId: "71" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "financial_reversed", deepLink: "/mobile/finance" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "financial_reversed", deepLink: "/mobile/finance" }));
 
     const unpaidRecord = { ...manualPaidRecord, id: 72, recordNo: "FIN-20260725-BBBB", settlementStatus: "unpaid" };
     const voidDb = {
@@ -418,7 +418,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(financeRouter.createCaller(createAuthContext()).voidRecord({ id: 721, projectId: 10, reason: "并发作废验证" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
-    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {

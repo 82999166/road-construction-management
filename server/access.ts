@@ -367,6 +367,6 @@ export async function listLoginUsers() {
     localAccountStatus: users.localAccountStatus,
     localPasswordChangeRequired: users.localPasswordChangeRequired,
     lastSignedIn: users.lastSignedIn,
-    wecomUserId: userProfiles.wecomUserId,
+    profileStatus: userProfiles.status,
   }).from(users).leftJoin(userProfiles, eq(userProfiles.userId, users.id));
 }

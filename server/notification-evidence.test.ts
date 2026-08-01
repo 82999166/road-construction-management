@@ -16,7 +16,7 @@ import { getDb } from "./db";
 import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
 import { createInAppMessage, messageRouter } from "./routers/messages";
-import { sendWecomTextNotification } from "./services/wecomNotifier";
+import { loadPublishedOfficialAccountConfig } from "./services/officialAccountNotifier";
 import { storageGet, storageGetSignedUrl, storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -109,13 +109,18 @@ describe("消息、影像与企业微信通知安全边界", () => {
     expect(db.update).toHaveBeenCalledTimes(1);
   });
 
-  it("企业微信通知仅使用已发布、加密且官方域名的配置，非法地址不会发起网络请求", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    const db = createSelectDb([{ status: "published", isSensitive: true, secretEncrypted: "cipher:https://invalid.example/webhook?key=x" }]);
+  it("公众号通知仅使用已发布的 AppID、加密 AppSecret 和模板标识，缺少任何必要项均不可用", async () => {
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-test-app" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:super-secret" },
+      { settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", status: "published", isSensitive: false, valueJson: "template-001" },
+      { settingKey: "WECHAT_OFFICIAL_APP_URL", status: "published", isSensitive: false, valueJson: "https://app.example" },
+    ]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(sendWecomTextNotification("【系统】测试通知")).resolves.toEqual({ delivered: false, reason: "invalid_config" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual(expect.objectContaining({ config: expect.objectContaining({ appId: "wx-test-app", appSecret: "super-secret", templateId: "template-001", appUrl: "https://app.example" }) }));
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-test-app" }]) as never);
+    await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual({ reason: "disabled" });
   });
 });

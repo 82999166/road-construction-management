@@ -5,6 +5,8 @@ import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerIdentityRecoveryRoute } from "../identityRecovery";
+import { registerOfficialAccountBindingRoutes } from "../officialAccountBinding";
+import { registerDailyProjectDigestHeartbeatRoute } from "../dailyProjectDigestHeartbeat";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -38,6 +40,8 @@ async function startServer() {
   registerStorageProxy(app);
   registerIdentityRecoveryRoute(app);
   registerOAuthRoutes(app);
+  registerOfficialAccountBindingRoutes(app);
+  registerDailyProjectDigestHeartbeatRoute(app);
   // tRPC API
   app.use(
     "/api/trpc",

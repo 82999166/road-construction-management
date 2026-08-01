@@ -7,7 +7,7 @@ import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAcces
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
 import { decryptSecret, encryptSecret } from "../services/secretVault";
-import { sendWecomTextNotification } from "../services/wecomNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { storageGet, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 
@@ -274,11 +274,8 @@ export const laborRouter = router({
         } catch (error) {
           await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "labor_worker", targetId: String(input.id), summary: `实名核验站内消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
         }
-        // 外部群提醒不携带姓名、身份证号等个人信息，实名详情只能在受权限保护的台账中查看。
-        const wecomResult = await sendWecomTextNotification("【道路施工承包管理系统】一名劳务人员实名核验已完成，请相关责任人在系统内查看台账。");
-        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "labor_worker", targetId: String(input.id), summary: `实名核验企业微信通知未送达：${wecomResult.reason}` });
-        }
+        // 公众号通知不携带姓名、身份证号等个人信息，实名详情只能在受权限保护的台账中查看。
+        void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "labor", eventCode: "labor_identity_verified", targetType: "labor_worker", targetId: String(input.id), title: "劳务实名核验已完成", content: "一项劳务实名核验已完成，请进入系统查看受控台账。", deepLink: "/mobile/labor" }).catch(() => undefined);
       }
       return { success: true, id: input.id };
     }
@@ -313,10 +310,7 @@ export const laborRouter = router({
       } catch (error) {
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "labor_worker", targetId: String(insertId || input.realName), summary: `实名核验站内消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
       }
-      const wecomResult = await sendWecomTextNotification("【道路施工承包管理系统】一名劳务人员实名核验已完成，请相关责任人在系统内查看台账。");
-      if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "labor_worker", targetId: String(insertId || input.realName), summary: `实名核验企业微信通知未送达：${wecomResult.reason}` });
-      }
+      void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "labor", eventCode: "labor_identity_verified", targetType: "labor_worker", targetId: String(insertId || input.realName), title: "劳务实名核验已完成", content: "一项劳务实名核验已完成，请进入系统查看受控台账。", deepLink: "/mobile/labor" }).catch(() => undefined);
     }
     return { success: true, id: insertId || null };
   }),
@@ -386,11 +380,8 @@ export const laborRouter = router({
       } catch (error) {
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "evidence_record", targetId: String(insertId || `${input.workerId}-${safeFileName}`), summary: `证照归档站内消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
       }
-      // 仅提醒“证照已归档”这一流程节点，证照名称和人员身份信息不发送到外部群。
-      const wecomResult = await sendWecomTextNotification("【道路施工承包管理系统】劳务人员证照已归档，请相关责任人在系统内完成核验。");
-      if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "evidence_record", targetId: String(insertId || `${input.workerId}-${safeFileName}`), summary: `证照归档企业微信通知未送达：${wecomResult.reason}` });
-      }
+      // 仅提醒“证照已归档”这一流程节点，证照名称和人员身份信息不发送到公众号。
+      void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "labor", eventCode: "labor_certificate_archived", targetType: "evidence_record", targetId: String(insertId || `${input.workerId}-${safeFileName}`), title: "劳务人员证照已归档", content: "一份劳务人员证照已归档，请进入系统完成受控核验。", deepLink: "/mobile/labor" }).catch(() => undefined);
       return { success: true, id: insertId || null, url: upload.url };
     }),
   }),
@@ -596,11 +587,8 @@ export const laborRouter = router({
       } catch (error) {
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资提交站内消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
       }
-      // 企业微信只投递通用业务节点摘要，不携带姓名、金额、银行卡等工资敏感信息。
-      const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已提交会计审核，请相关责任人在系统内处理。`);
-      if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资提交企业微信通知未送达：${wecomResult.reason}` });
-      }
+      // 公众号只投递通用业务节点摘要，不携带姓名、金额、银行卡等工资敏感信息。
+      void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "labor", eventCode: "payroll_submitted", targetType: "payroll_statement", targetId: String(payroll.id), title: "工资条已提交会计审核", content: "一份工资条已提交会计审核，请进入系统办理。", deepLink: "/mobile/labor" }).catch(() => undefined);
       return { success: true };
     }),
 
@@ -649,11 +637,8 @@ export const laborRouter = router({
             await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资审核结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
           }
         }
-        // 外部群通知仅表述流程结论，详细工资信息必须在受权限保护的系统内查看。
-        const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已${isApproved ? "完成会计审核" : "退回修订"}，请相关责任人在系统内查看。`);
-        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资审核企业微信通知未送达：${wecomResult.reason}` });
-        }
+        // 公众号通知仅表述流程结论，详细工资信息必须在受权限保护的系统内查看。
+        void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: payroll.submittedBy ? [payroll.submittedBy] : undefined, module: "labor", eventCode: isApproved ? "payroll_approved" : "payroll_returned", targetType: "payroll_statement", targetId: String(payroll.id), title: isApproved ? "工资条已完成会计审核" : "工资条已退回修订", content: "工资条审核状态已更新，请进入系统查看受控处理记录。", deepLink: "/mobile/labor" }).catch(() => undefined);
         return { success: true, status: isApproved ? "approved" : "draft" };
       }),
 
@@ -702,11 +687,8 @@ export const laborRouter = router({
         } catch (error) {
           await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资发放结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
         }
-        // 企业微信不传递金额、人员身份、银行卡或付款凭证，仅提醒责任人在受控页面查看结果。
-        const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已确认发放，请相关责任人在系统内查看。`);
-        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资发放企业微信通知未送达：${wecomResult.reason}` });
-        }
+        // 公众号不传递金额、人员身份、银行卡或付款凭证，仅提醒责任人在受控页面查看结果。
+        void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [recipientUserId], module: "labor", eventCode: "payroll_paid", targetType: "payroll_statement", targetId: String(payroll.id), title: "工资条已确认发放", content: "工资条已完成发放确认，请进入系统查看受控处理记录。", deepLink: "/mobile/labor" }).catch(() => undefined);
         return { success: true, status: "paid" as const, paidAt };
       }),
 
@@ -752,10 +734,7 @@ export const laborRouter = router({
         } catch (error) {
           await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资作废结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
         }
-        const wecomResult = await sendWecomTextNotification(`【道路施工承包管理系统】${payroll.period} 工资条已作废，请相关责任人在系统内查看。`);
-        if (!wecomResult.delivered && !["not_configured", "disabled"].includes(wecomResult.reason)) {
-          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "wecom_notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资作废企业微信通知未送达：${wecomResult.reason}` });
-        }
+        void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [recipientUserId], module: "labor", eventCode: "payroll_voided", targetType: "payroll_statement", targetId: String(payroll.id), title: "工资条已作废", content: "一份工资条已作废，请进入系统查看受控处理记录。", deepLink: "/mobile/labor" }).catch(() => undefined);
         return { success: true, status: "void" as const };
       }),
   }),

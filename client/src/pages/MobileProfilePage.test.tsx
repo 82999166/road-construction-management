@@ -37,9 +37,13 @@ vi.mock("@/lib/trpc", () => ({
         }),
       },
     },
+    officialAccount: {
+      bindingStatus: { useQuery: () => ({ data: { status: "unbound" }, isLoading: false, refetch: vi.fn() }) },
+      beginBinding: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
+    },
   },
 }));
-vi.mock("wouter", () => ({ useLocation: () => ["/mobile/profile", mockNavigate] }));
+vi.mock("wouter", () => ({ useLocation: () => ["/mobile/profile", mockNavigate], useSearch: () => "" }));
 
 import MobileProfilePage from "./MobileProfilePage";
 

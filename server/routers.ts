@@ -12,6 +12,8 @@ import { laborRouter } from "./routers/labor";
 import { messageRouter } from "./routers/messages";
 import { mobileRouter } from "./routers/mobile";
 import { machineryRouter, transportRouter } from "./routers/operations";
+import { officialAccountRouter } from "./routers/officialAccount";
+import { dailyDigestRouter } from "./routers/dailyDigest";
 import { z } from "zod";
 
 /**
@@ -67,6 +69,8 @@ export const appRouter = router({
   admin: adminRouter,
   construction: constructionRouter,
   mobile: mobileRouter,
+  officialAccount: officialAccountRouter,
+  dailyDigest: dailyDigestRouter,
   labor: laborRouter,
   messages: messageRouter,
   evidence: evidenceRouter,

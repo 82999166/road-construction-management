@@ -35,8 +35,9 @@ import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
-import { notifyWecomBusinessEvent } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
+import { testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -95,7 +96,6 @@ const localManagerAccountInput = z.object({
   displayName: z.string().trim().min(2).max(128),
   initialPassword: z.string().min(6, "初始密码至少 6 位").max(128),
   status: z.enum(["active", "disabled"]).default("active"),
-  wecomUserId: z.string().trim().min(1).max(128).nullable().optional(),
 });
 
 const localManagerStatusInput = z.object({
@@ -109,7 +109,6 @@ const localManagerAccountUpdateInput = z.object({
   username: z.string().trim().min(3).max(48),
   displayName: z.string().trim().min(2).max(128),
   status: z.enum(["active", "disabled"]),
-  wecomUserId: z.string().trim().min(1).max(128).nullable().optional(),
 });
 
 /** 管理员重置密码不校验旧密码，但口令只在本次请求内生成不可逆摘要。 */
@@ -140,6 +139,50 @@ function requiresSecretStorage(settingKey: string) {
   return /(TOKEN|SECRET|API_KEY|APP_KEY|PRIVATE_KEY|PASSWORD|CREDENTIAL|WEBHOOK)/.test(settingKey);
 }
 
+const OFFICIAL_ACCOUNT_APP_SECRET_KEY = "WECHAT_OFFICIAL_APP_SECRET";
+const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
+  "WECHAT_OFFICIAL_APP_ID",
+  "WECHAT_OFFICIAL_TEMPLATE_ID",
+  "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
+  "WECHAT_OFFICIAL_APP_URL",
+]);
+const RETIRED_NOTIFICATION_SETTING_KEYS = new Set(["WECHAT_WORK_WEBHOOK"]);
+
+/** 用户已确认系统统一使用认证服务号，禁止旧企业微信机器人配置重新进入任何可生效流程。 */
+function assertSupportedSettingKey(settingKey: string) {
+  if (RETIRED_NOTIFICATION_SETTING_KEYS.has(settingKey)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "企业微信 Webhook 通道已退役，系统通知仅支持认证服务号" });
+  }
+}
+
+/**
+ * 认证服务号配置在数据库中与其他系统设置共用版本治理，但字段敏感级别必须固定：
+ * AppSecret 只允许密文托管，其余四项为发布后的受控公开参数，避免因误标敏感导致运行时无法读取。
+ */
+function assertOfficialAccountSettingContract(input: { settingKey: string; value: string; isSensitive: boolean }) {
+  if (input.settingKey === OFFICIAL_ACCOUNT_APP_SECRET_KEY && !input.isSensitive) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "认证服务号 AppSecret 必须使用加密托管" });
+  }
+  if (OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS.has(input.settingKey) && input.isSensitive) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "认证服务号 AppID、模板和跳转地址必须作为受控公开参数保存，不得标记为密钥" });
+  }
+  if (input.settingKey === "WECHAT_OFFICIAL_APP_URL" && input.value.trim()) {
+    try {
+      assertSafeIntegrationUrl(input.value.trim());
+    } catch {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "公众号业务跳转地址必须是公开 HTTPS 地址，且不得指向内网或本机" });
+    }
+  }
+  if (input.settingKey === "WECHAT_OFFICIAL_TEMPLATE_FIELDS" && input.value.trim()) {
+    try {
+      const templateFields = JSON.parse(input.value) as unknown;
+      if (!templateFields || Array.isArray(templateFields) || typeof templateFields !== "object") throw new Error("not-object");
+    } catch {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "公众号模板字段映射必须为 JSON 对象" });
+    }
+  }
+}
+
 /** 只允许测试公开 HTTPS 地址，防止系统设置被误用为内网探测器。 */
 function assertSafeIntegrationUrl(rawValue: string) {
   const url = new URL(rawValue);
@@ -148,35 +191,6 @@ function assertSafeIntegrationUrl(rawValue: string) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "接口测试仅允许公开 HTTPS 地址，禁止内网或本机地址" });
   }
   return url;
-}
-
-/** 企业微信机器人只允许官方 webhook 地址，避免配置被误用为任意外部请求或 SSRF 跳板。 */
-function assertWecomWebhookUrl(rawValue: string) {
-  const url = assertSafeIntegrationUrl(rawValue);
-  if (url.hostname !== "qyapi.weixin.qq.com" || url.pathname !== "/cgi-bin/webhook/send" || !url.searchParams.get("key")) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "企业微信机器人地址必须为 qyapi.weixin.qq.com/cgi-bin/webhook/send 且包含 key 参数" });
-  }
-  return url;
-}
-
-/** 仅在超级管理员主动点击测试时发送不含业务敏感数据的企业微信连通性消息。 */
-async function testWecomWebhook(rawValue: string) {
-  const url = assertWecomWebhookUrl(rawValue);
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      redirect: "error",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ msgtype: "text", text: { content: "【道路施工承包管理系统】企业微信机器人连通性测试。该消息由超级管理员在后台主动发起，不含业务敏感数据。" } }),
-      signal: AbortSignal.timeout(6_000),
-    });
-    let payload: { errcode?: number; errmsg?: string } | null = null;
-    try { payload = await response.json() as { errcode?: number; errmsg?: string }; } catch { payload = null; }
-    if (response.ok && payload?.errcode === 0) return { success: true, message: "企业微信机器人连通性测试成功", statusCode: response.status };
-    return { success: false, message: "企业微信机器人未确认接收测试消息，请检查机器人密钥和群聊状态", statusCode: response.status };
-  } catch {
-    return { success: false, message: "未能在 6 秒内向企业微信建立安全连接，请检查网络或机器人地址" };
-  }
 }
 
 /** 发布日志返回给前端前必须删除敏感密文；配置历史同样不得泄露密钥。 */
@@ -213,8 +227,8 @@ function redactDeletedConfigSnapshot(snapshotJson: string | null) {
  * 安全类通知不得阻断已经完成的权限或配置写入。
  * 调用方仅传递角色、用户、配置等最小化业务标识，通知服务自身负责记录投递结果审计。
  */
-function dispatchWecomSecurityNotification(event: Parameters<typeof notifyWecomBusinessEvent>[0]) {
-  void notifyWecomBusinessEvent(event).catch(() => undefined);
+function dispatchOfficialAccountSecurityNotification(event: Parameters<typeof notifyOfficialAccountBusinessEventSafely>[0]) {
+  void notifyOfficialAccountBusinessEventSafely(event).catch(() => undefined);
 }
 
 /** 站内安全提醒采用幂等键，投递故障只留待后续重试，不允许回滚既有授权和配置操作。 */
@@ -560,7 +574,7 @@ export const adminRouter = router({
         await db.insert(rolePermissions).values(input.permissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: "更新角色权限集合" });
-      dispatchWecomSecurityNotification({
+      dispatchOfficialAccountSecurityNotification({
         userId: admin.id,
         module: "security",
         eventCode: "role_permissions_updated",
@@ -711,7 +725,6 @@ export const adminRouter = router({
 
       await database.insert(userProfiles).values({
         userId: createdUser.id,
-        wecomUserId: input.wecomUserId ?? null,
         status: input.status === "active" ? "pending" : "disabled",
       });
       await database.insert(auditLogs).values({
@@ -769,9 +782,9 @@ export const adminRouter = router({
         localAccountStatus: input.status,
       }).where(and(eq(users.id, target.id), eq(users.loginMethod, "local_manager")));
       if (profile) {
-        await database.update(userProfiles).set({ wecomUserId: input.wecomUserId ?? null, status: profileStatus }).where(eq(userProfiles.id, profile.id));
+        await database.update(userProfiles).set({ status: profileStatus }).where(eq(userProfiles.id, profile.id));
       } else {
-        await database.insert(userProfiles).values({ userId: target.id, wecomUserId: input.wecomUserId ?? null, status: profileStatus });
+        await database.insert(userProfiles).values({ userId: target.id, status: profileStatus });
       }
       await database.insert(auditLogs).values({
         userId: admin.id,
@@ -910,7 +923,7 @@ export const adminRouter = router({
           content: input.status === "revoked" ? "管理员已调整您的系统授权。请重新打开工作台以同步最新权限。" : "管理员已更新您的岗位或数据范围。请重新打开工作台以同步最新权限。",
           deepLink: "/mobile/profile",
         });
-        dispatchWecomSecurityNotification({
+        dispatchOfficialAccountSecurityNotification({
           userId: admin.id,
           module: "security",
           eventCode: assignmentEventCode,
@@ -928,7 +941,8 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
-      return db.select({ id: systemSettings.id, category: systemSettings.category, settingKey: systemSettings.settingKey, displayName: systemSettings.displayName, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, isSensitive: systemSettings.isSensitive, status: systemSettings.status, version: systemSettings.version, publishedAt: systemSettings.publishedAt, updatedAt: systemSettings.updatedAt, remarks: systemSettings.remarks }).from(systemSettings).orderBy(systemSettings.category, systemSettings.settingKey);
+      const settings = await db.select({ id: systemSettings.id, category: systemSettings.category, settingKey: systemSettings.settingKey, displayName: systemSettings.displayName, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, isSensitive: systemSettings.isSensitive, status: systemSettings.status, version: systemSettings.version, publishedAt: systemSettings.publishedAt, updatedAt: systemSettings.updatedAt, remarks: systemSettings.remarks }).from(systemSettings).orderBy(systemSettings.category, systemSettings.settingKey);
+      return settings.filter(setting => !RETIRED_NOTIFICATION_SETTING_KEYS.has(setting.settingKey));
     }),
     saveDraft: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))
@@ -936,9 +950,11 @@ export const adminRouter = router({
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
         if (!db) throw new Error("数据库连接暂不可用");
+        assertSupportedSettingKey(input.settingKey);
         if (requiresSecretStorage(input.settingKey) && !input.isSensitive) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "API 密钥、令牌和密码类配置必须勾选“加密托管”" });
         }
+        assertOfficialAccountSettingContract(input);
         if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY && input.isSensitive) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "身份恢复地址必须以公开 HTTPS 配置保存，不得作为密码或密钥加密托管" });
         }
@@ -955,8 +971,6 @@ export const adminRouter = router({
           const preserveExistingSecret = existing.isSensitive && !hasSubmittedValue;
           if (!preserveExistingSecret && !hasSubmittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: "请填写配置值；敏感配置仅可在保留现有密文时留空" });
           if (preserveExistingSecret && !existing.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "现有敏感配置缺少可用密文，请重新输入完整配置值" });
-          if (input.settingKey === "WECHAT_WORK_WEBHOOK" && !preserveExistingSecret) assertWecomWebhookUrl(input.value);
-
           let normalizedValue = input.value;
           if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY && !preserveExistingSecret) {
             try {
@@ -987,7 +1001,6 @@ export const adminRouter = router({
         }
 
         if (!hasSubmittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: "新建配置必须填写配置值" });
-        if (input.settingKey === "WECHAT_WORK_WEBHOOK") assertWecomWebhookUrl(input.value);
         let normalizedValue = input.value;
         if (input.settingKey === IDENTITY_PROVIDER_RECOVERY_URL_KEY) {
           try {
@@ -1017,6 +1030,7 @@ export const adminRouter = router({
       if (!db) throw new Error("数据库连接暂不可用");
       const existing = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
       if (existing.length === 0) throw new Error("配置项不存在");
+      assertSupportedSettingKey(existing[0]!.settingKey);
       assertExpectedSettingVersion(existing[0]!.version, input.expectedVersion);
       const nextVersion = existing[0]!.version + 1;
       const writeResult = await db.update(systemSettings).set({ status: "published", version: nextVersion, publishedAt: new Date(), updatedBy: admin.id }).where(and(eq(systemSettings.id, input.id), eq(systemSettings.version, input.expectedVersion)));
@@ -1076,9 +1090,10 @@ export const adminRouter = router({
       if (!db) throw new Error("数据库连接暂不可用");
       const setting = await db.select().from(systemSettings).where(eq(systemSettings.id, input.id)).limit(1);
       if (!setting[0]) throw new TRPCError({ code: "NOT_FOUND", message: "待测试配置不存在" });
+      assertSupportedSettingKey(setting[0].settingKey);
       let result: { success: boolean; message: string; statusCode?: number };
-      if (setting[0].settingKey === "WECHAT_WORK_WEBHOOK") {
-        result = await testWecomWebhook(decryptSecret(setting[0].secretEncrypted || ""));
+      if (setting[0].settingKey.startsWith("WECHAT_OFFICIAL_")) {
+        result = await testPublishedOfficialAccountConfiguration();
       } else if (setting[0].isSensitive) {
         decryptSecret(setting[0].secretEncrypted || "");
         result = { success: true, message: "敏感配置加密完整性校验通过" };
@@ -1104,7 +1119,7 @@ export const adminRouter = router({
           content: "系统检测到一项连接配置未通过安全连通性测试，请在系统设置与审计记录中核查。",
           deepLink: "/admin/settings",
         });
-        dispatchWecomSecurityNotification({
+        dispatchOfficialAccountSecurityNotification({
           userId: admin.id,
           module: "security",
           eventCode: "system_connector_test_failed",
@@ -1131,6 +1146,7 @@ export const adminRouter = router({
       const [setting] = await db.select().from(systemSettings).where(eq(systemSettings.id, input.settingId)).limit(1);
       const [log] = await db.select().from(configPublishLogs).where(and(eq(configPublishLogs.id, input.publishLogId), eq(configPublishLogs.settingId, input.settingId))).limit(1);
       if (!setting || !log?.snapshotJson) throw new TRPCError({ code: "NOT_FOUND", message: "未找到可回滚的配置版本" });
+      assertSupportedSettingKey(setting.settingKey);
       assertExpectedSettingVersion(setting.version, input.expectedVersion);
       let snapshot: Record<string, unknown>;
       try { snapshot = JSON.parse(log.snapshotJson) as Record<string, unknown>; } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "历史配置快照已损坏，无法回滚" }); }

@@ -1,4 +1,5 @@
-import { and, desc, eq, gte, lt, ne } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, ne } from "drizzle-orm";
+import { createHash } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -9,6 +10,7 @@ import {
   machineLeaseRules,
   machines,
   projects,
+  transportCardEvents,
   transportTrips,
   transportVehicles,
 } from "../../drizzle/schema";
@@ -23,7 +25,7 @@ import {
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
-import { notifyWecomBusinessEvent } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -125,6 +127,16 @@ const tripInput = z.object({
   path: ["endAt"],
 });
 
+/** 读卡设备只上传不可逆卡片指纹；服务端以幂等键和载荷摘要识别重传或冲突重放。 */
+const transportCardEventInput = z.object({
+  tripId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  idempotencyKey: z.string().trim().min(8).max(160),
+  deviceId: z.string().trim().min(1).max(128).optional(),
+  cardFingerprint: z.string().regex(/^[a-fA-F0-9]{64}$/, "卡片标识必须是 SHA-256 指纹").optional(),
+  occurredAt: isoDateTimeSchema,
+});
+
 /** 统一将前端日期解释为 UTC 业务日零点，避免月结边界受浏览器时区影响。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -159,7 +171,7 @@ function createTransportTripNo(projectId: number) {
  * 这避免司机通过修改浏览器状态规避核验提示。
  */
 type TransportAnomaly = {
-  code: "MISSING_EVIDENCE" | "MISSING_GPS" | "MISSING_END_TIME" | "ABNORMAL_DISTANCE" | "ABNORMAL_VOLUME" | "ABNORMAL_DURATION";
+  code: "MISSING_EVIDENCE" | "MISSING_GPS" | "MISSING_END_TIME" | "ABNORMAL_DISTANCE" | "ABNORMAL_VOLUME" | "ABNORMAL_DURATION" | "CARD_EVENT_EXCEPTION";
   severity: "warning" | "notice";
   label: string;
 };
@@ -175,6 +187,7 @@ function calculateTransportAnomalies(trip: {
   actualDistanceKm: string | null;
   volumeCubicMeters: string | null;
   routeSnapshot: unknown;
+  exceptionStatus?: "none" | "open" | "resolved";
 }): TransportAnomaly[] {
   const snapshot = getRouteSnapshot(trip.routeSnapshot);
   const hasStartGps = typeof snapshot.startLatitude === "number" && typeof snapshot.startLongitude === "number";
@@ -191,6 +204,7 @@ function calculateTransportAnomalies(trip: {
   if (trip.endAt && trip.endAt.getTime() - trip.startAt.getTime() < 2 * 60 * 1000) {
     anomalies.push({ code: "ABNORMAL_DURATION", severity: "warning", label: "运输时长不足 2 分钟，请核验" });
   }
+  if (trip.exceptionStatus === "open") anomalies.push({ code: "CARD_EVENT_EXCEPTION", severity: "warning", label: "刷卡事件存在待复核异常" });
   return anomalies;
 }
 
@@ -211,6 +225,85 @@ function assertConditionalStatusWrite(result: unknown, recordName: string) {
   if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
     throw new TRPCError({ code: "CONFLICT", message: `${recordName}状态已被其他用户更新，请刷新后重试` });
   }
+}
+
+function didConditionalWriteApply(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  return !(header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0);
+}
+
+function createCardEventPayloadFingerprint(input: { tripId: number; projectId: number; idempotencyKey: string; deviceId?: string; cardFingerprint?: string; occurredAt: string }, eventType: "load" | "unload") {
+  return createHash("sha256").update(JSON.stringify({ eventType, tripId: input.tripId, projectId: input.projectId, idempotencyKey: input.idempotencyKey, deviceId: input.deviceId ?? null, cardFingerprint: input.cardFingerprint ?? null, occurredAt: new Date(input.occurredAt).toISOString() })).digest("hex");
+}
+
+async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload") {
+  const user = requireAuthenticatedUser(ctx);
+  const roleCodes = await assertTransportAccess(ctx);
+  await assertProjectInCurrentScope(ctx, input.projectId);
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.tripId)).limit(1);
+  if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输趟次不存在或不属于当前项目" });
+  const { vehicle } = await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
+  const occurredAt = new Date(input.occurredAt);
+  const payloadFingerprint = createCardEventPayloadFingerprint(input, eventType);
+  const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+  if (existing) {
+    if (existing.tripId !== input.tripId || existing.eventType !== eventType || existing.payloadFingerprint !== payloadFingerprint) {
+      throw new TRPCError({ code: "CONFLICT", message: "该刷卡幂等键已用于其他事件，已拒绝重复写入" });
+    }
+    return { success: existing.validationStatus === "accepted" || existing.validationStatus === "duplicate", duplicate: true, needsReview: existing.validationStatus === "needs_review", eventId: existing.id, validationStatus: existing.validationStatus, reason: existing.validationReason ?? undefined, driverNotificationQueued: Boolean(vehicle.driverUserId) };
+  }
+  try {
+    await db.insert(transportCardEvents).values({
+      tripId: input.tripId,
+      vehicleId: trip.vehicleId,
+      projectId: input.projectId,
+      eventType,
+      source: "card_reader",
+      idempotencyKey: input.idempotencyKey,
+      deviceId: input.deviceId ?? null,
+      cardFingerprint: input.cardFingerprint ?? null,
+      payloadFingerprint,
+      occurredAt,
+      validationStatus: "accepted",
+    });
+  } catch {
+    const [concurrent] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+    if (concurrent && concurrent.tripId === input.tripId && concurrent.eventType === eventType && concurrent.payloadFingerprint === payloadFingerprint) {
+      return { success: concurrent.validationStatus === "accepted" || concurrent.validationStatus === "duplicate", duplicate: true, needsReview: concurrent.validationStatus === "needs_review", eventId: concurrent.id, validationStatus: concurrent.validationStatus, reason: concurrent.validationReason ?? undefined, driverNotificationQueued: Boolean(vehicle.driverUserId) };
+    }
+    throw new TRPCError({ code: "CONFLICT", message: "刷卡事件写入冲突，请使用新的读卡事件重试" });
+  }
+  const [event] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+  if (!event) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "刷卡事件审计记录创建失败" });
+
+  const markNeedsReview = async (reason: string) => {
+    await db.update(transportCardEvents).set({ validationStatus: "needs_review", validationReason: reason }).where(eq(transportCardEvents.id, event.id));
+    await db.update(transportTrips).set({ exceptionStatus: "open" }).where(eq(transportTrips.id, trip.id));
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "record_card_event_needs_review", targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡事件进入人工复核：${reason}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_card_event_exception", targetType: "transport_card_event", targetId: String(event.id), title: "运输刷卡异常待复核", content: `一笔运输${eventType === "load" ? "装土" : "卸土"}刷卡事件需要人工复核。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    return { success: false, duplicate: false, needsReview: true, eventId: event.id, validationStatus: "needs_review" as const, reason, driverNotificationQueued: false };
+  };
+
+  if (trip.status === "void" || trip.status === "settled") return markNeedsReview("趟次已关闭，不能再确认刷卡事件");
+  if (eventType === "load" && trip.unloadConfirmedAt) return markNeedsReview("检测到卸土已确认后的装土刷卡，疑似乱序事件");
+  if (eventType === "load" && trip.loadConfirmedAt) return markNeedsReview("该趟次已存在装土确认，疑似重复刷卡事件");
+  if (eventType === "unload" && !trip.loadConfirmedAt) return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
+  if (eventType === "unload" && trip.unloadConfirmedAt) return markNeedsReview("该趟次已存在卸土确认，疑似重复刷卡事件");
+
+  const updateResult = eventType === "load"
+    ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
+    : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+  if (!didConditionalWriteApply(updateResult)) return markNeedsReview("趟次已被其他刷卡事件更新，请人工核验事件顺序");
+
+  await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功` });
+  const eventLabel = eventType === "load" ? "装土" : "卸土";
+  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `一笔运输${eventLabel}刷卡已完成确认。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  if (vehicle.driverUserId) {
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: eventType === "load" ? "本次运输装土刷卡已确认，请按流程前往卸土点。" : "本次运输卸土刷卡已确认，运输闭环已记录。", deepLink: "/mobile/transport" }).catch(() => undefined);
+  }
+  return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, driverNotificationQueued: Boolean(vehicle.driverUserId) };
 }
 
 /** 返回用户有权访问的项目选项，项目/组织范围均以服务端授权记录为准。 */
@@ -413,7 +506,7 @@ export const machineryRouter = router({
       .where(and(eq(machineCostRecords.id, input.id), eq(machineCostRecords.status, record.status)));
     assertConditionalStatusWrite(updateResult, "机械成本记录");
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_cost", targetType: "machine_cost", targetId: String(input.id), summary: `机械成本状态变更为：${input.nextStatus}` });
-    void notifyWecomBusinessEvent({ userId: user.id, module: "machinery", eventCode: `machine_cost_${input.nextStatus}`, targetType: "machine_cost", targetId: String(input.id), title: `机械成本已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "machinery", eventCode: `machine_cost_${input.nextStatus}`, targetType: "machine_cost", targetId: String(input.id), title: `机械成本已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -611,6 +704,12 @@ export const transportRouter = router({
     return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, anomalies };
   }),
 
+  /** 装土读卡成功后确认趟次起始环节；重复上报按幂等键安全返回，乱序事件留痕进入人工复核。 */
+  recordLoadEvent: protectedProcedure.input(transportCardEventInput).mutation(async ({ ctx, input }) => recordTransportCardEvent(ctx, input, "load")),
+
+  /** 卸土读卡成功后确认运输闭环，并向已绑定服务号的司机发送即时提醒。 */
+  recordUnloadEvent: protectedProcedure.input(transportCardEventInput).mutation(async ({ ctx, input }) => recordTransportCardEvent(ctx, input, "unload")),
+
   /** 提交、核验、结算或作废运输趟次，确保历史运价快照与已结算金额不可回退。 */
   transitionTrip: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), nextStatus: z.enum(["submitted", "verified", "settled", "void"]) })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
@@ -631,7 +730,7 @@ export const transportRouter = router({
       .where(and(eq(transportTrips.id, input.id), eq(transportTrips.status, trip.status)));
     assertConditionalStatusWrite(updateResult, "运输趟次");
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}` });
-    void notifyWecomBusinessEvent({ userId: user.id, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
     return { success: true };
   }),
 

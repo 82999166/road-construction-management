@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
-/** 后台设置测试使用内存桩，避免访问真实数据库、密文或外部企业微信服务。 */
+/** 后台设置测试使用内存桩，避免访问真实数据库、密文或外部服务号接口。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
@@ -56,34 +56,51 @@ describe("后台敏感配置读取边界", () => {
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAdminContext().user!);
   });
 
-  it("企业微信 Webhook 在配置列表中只返回掩码预览，不返回密文或明文", async () => {
-    const realWebhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=real-secret-key";
-    const db = createListDb([{
-      id: 9,
-      category: "notification",
-      settingKey: "WECHAT_WORK_WEBHOOK",
-      displayName: "企业微信机器人",
-      valueJson: null,
-      valuePreview: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=****",
-      isSensitive: true,
-      status: "published",
-      version: 1,
-      publishedAt: new Date(),
-      updatedAt: new Date(),
-      remarks: "加密托管",
-    }]);
+  it("认证服务号 AppSecret 在配置列表中只返回掩码预览，并过滤已退役的企业微信 Webhook", async () => {
+    const appSecret = "official-account-secret-value";
+    const db = createListDb([
+      {
+        id: 8,
+        category: "notification",
+        settingKey: "WECHAT_WORK_WEBHOOK",
+        displayName: "企业微信机器人",
+        valueJson: null,
+        valuePreview: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=****",
+        isSensitive: true,
+        status: "disabled",
+        version: 1,
+        publishedAt: null,
+        updatedAt: new Date(),
+        remarks: "历史配置",
+      },
+      {
+        id: 9,
+        category: "wechat_official",
+        settingKey: "WECHAT_OFFICIAL_APP_SECRET",
+        displayName: "认证服务号 AppSecret",
+        valueJson: null,
+        valuePreview: "offi****alue",
+        isSensitive: true,
+        status: "published",
+        version: 1,
+        publishedAt: new Date(),
+        updatedAt: new Date(),
+        remarks: "加密托管",
+      },
+    ]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     const result = await adminRouter.createCaller(createAdminContext()).settings.list();
 
     expect(result).toHaveLength(1);
+    expect(result[0]?.settingKey).toBe("WECHAT_OFFICIAL_APP_SECRET");
     expect(result[0]).not.toHaveProperty("secretEncrypted");
-    expect(JSON.stringify(result)).not.toContain(realWebhook);
+    expect(JSON.stringify(result)).not.toContain(appSecret);
     expect(result[0]?.valuePreview).toContain("****");
   });
 
-  it("敏感配置版本历史删除密文、明文快照和原始快照字符串", async () => {
-    const realWebhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=history-secret";
+  it("认证服务号敏感配置版本历史删除密文、明文快照和原始快照字符串", async () => {
+    const appSecret = "official-account-history-secret";
     const db = createHistoryDb([{
       id: 17,
       settingId: 9,
@@ -92,11 +109,11 @@ describe("后台敏感配置读取边界", () => {
       operatorId: 1,
       createdAt: new Date(),
       snapshotJson: JSON.stringify({
-        category: "notification",
-        settingKey: "WECHAT_WORK_WEBHOOK",
-        displayName: "企业微信机器人",
-        valueJson: realWebhook,
-        secretEncrypted: `cipher:${realWebhook}`,
+        category: "wechat_official",
+        settingKey: "WECHAT_OFFICIAL_APP_SECRET",
+        displayName: "认证服务号 AppSecret",
+        valueJson: appSecret,
+        secretEncrypted: `cipher:${appSecret}`,
         valuePreview: "****",
         isSensitive: true,
       }),
@@ -109,6 +126,6 @@ describe("后台敏感配置读取边界", () => {
     expect(result[0]).not.toHaveProperty("snapshotJson");
     expect(result[0]?.snapshot).not.toHaveProperty("secretEncrypted");
     expect(result[0]?.snapshot).not.toHaveProperty("valueJson");
-    expect(JSON.stringify(result)).not.toContain(realWebhook);
+    expect(JSON.stringify(result)).not.toContain(appSecret);
   });
 });

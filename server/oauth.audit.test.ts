@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   getUserByOpenId: vi.fn(),
   getDb: vi.fn(),
   auditValues: vi.fn(),
-  notifyWecomBusinessEvent: vi.fn(),
+  notifyOfficialAccountBusinessEventSafely: vi.fn(),
 }));
 
 vi.mock("./_core/sdk", () => ({
@@ -27,7 +27,7 @@ vi.mock("./db", () => ({
   getDb: mocks.getDb,
 }));
 
-vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mocks.notifyWecomBusinessEvent }));
+vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: mocks.notifyOfficialAccountBusinessEventSafely }));
 
 import { registerOAuthRoutes } from "./_core/oauth";
 
@@ -71,7 +71,7 @@ describe("OAuth 登录安全审计", () => {
     mocks.getUserByOpenId.mockResolvedValue({ id: 42, openId: "oauth-user-1" });
     mocks.auditValues.mockResolvedValue(undefined);
     mocks.getDb.mockResolvedValue({ insert: vi.fn(() => ({ values: mocks.auditValues })) });
-    mocks.notifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
+    mocks.notifyOfficialAccountBusinessEventSafely.mockResolvedValue([]);
   });
 
   it("成功登录只记录最小化安全审计并异步发送不含身份敏感信息的提醒", async () => {
@@ -95,7 +95,7 @@ describe("OAuth 登录安全审计", () => {
     expect(JSON.stringify(mocks.auditValues.mock.calls[0]?.[0])).not.toContain("member@example.com");
     expect(JSON.stringify(mocks.auditValues.mock.calls[0]?.[0])).not.toContain("authorization-code");
     expect(JSON.stringify(mocks.auditValues.mock.calls[0]?.[0])).not.toContain("access-should-not-be-audited");
-    expect(mocks.notifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({
       userId: 42,
       module: "security",
       eventCode: "oauth_login_success",
@@ -129,7 +129,7 @@ describe("OAuth 登录安全审计", () => {
     expect(JSON.stringify(mocks.auditValues.mock.calls[0]?.[0])).not.toContain("secret details");
     expect(response.status).toHaveBeenCalledWith(500);
     expect(response.json).toHaveBeenCalledWith({ error: "OAuth callback failed" });
-    expect(mocks.notifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mocks.notifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 });

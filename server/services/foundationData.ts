@@ -37,7 +37,7 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
     ["admin:settings:publish", "系统设置发布", "admin", "publish"],
     ["admin:settings:rollback", "系统设置版本回滚", "admin", "rollback"],
     ["admin:integration:test", "外部接口测试", "admin", "test"],
-    ["admin:message_template:manage", "企业微信消息模板管理", "admin", "manage"],
+    ["admin:message_template:manage", "微信公众号消息模板管理", "admin", "manage"],
     ["admin:assignment:expiry", "授权有效期管理", "admin", "manage"],
     ["admin:data_scope:manage", "组织项目数据范围管理", "admin", "manage"],
     ["admin:sensitive_field:manage", "敏感字段脱敏规则管理", "admin", "manage"],

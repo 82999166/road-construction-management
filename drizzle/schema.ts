@@ -112,7 +112,6 @@ export const userProfiles = mysqlTable(
     userId: int("userId").notNull(),
     employeeNo: varchar("employeeNo", { length: 64 }),
     phoneMasked: varchar("phoneMasked", { length: 32 }),
-    wecomUserId: varchar("wecomUserId", { length: 128 }),
     organizationId: int("organizationId"),
     positionId: int("positionId"),
     status: mysqlEnum("status", ["pending", "active", "disabled"]).default("pending").notNull(),
@@ -121,7 +120,6 @@ export const userProfiles = mysqlTable(
   },
   table => ({
     userUnique: uniqueIndex("user_profiles_user_unique").on(table.userId),
-    wecomIndex: index("user_profiles_wecom_index").on(table.wecomUserId),
   }),
 );
 
@@ -318,7 +316,7 @@ export const constructionDailyReports = mysqlTable(
   }),
 );
 
-/** 企业微信消息发送记录，支持幂等、失败重试和阅读回执。 */
+/** 统一消息投递记录；历史企业微信记录仅保留审计，新业务只写入公众号或站内通道。 */
 export const notificationRecords = mysqlTable(
   "notification_records",
   {
@@ -329,13 +327,93 @@ export const notificationRecords = mysqlTable(
     title: varchar("title", { length: 200 }).notNull(),
     content: text("content").notNull(),
     deepLink: varchar("deepLink", { length: 512 }),
-    status: mysqlEnum("status", ["pending", "sent", "failed", "read"]).default("pending").notNull(),
+    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped", "read"]).default("pending").notNull(),
     retryCount: int("retryCount").default(0).notNull(),
     sentAt: datetime("sentAt"),
     readAt: datetime("readAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    channel: mysqlEnum("channel", ["legacy_wecom", "official_account", "in_app"]).default("legacy_wecom").notNull(),
+    providerMessageId: varchar("providerMessageId", { length: 128 }),
+    failureCode: varchar("failureCode", { length: 64 }),
+    lastAttemptedAt: datetime("lastAttemptedAt"),
   },
   table => ({ idempotencyUnique: uniqueIndex("notification_idempotency_unique").on(table.idempotencyKey) }),
+);
+
+/**
+ * 项目每日经营汇总的唯一调度配置。任务 UID 由平台 Heartbeat 返回并持久化，
+ * 回调只能按该 UID 查找配置，不能信任请求体中的任意业务标识。
+ */
+export const dailyProjectDigestSchedules = mysqlTable(
+  "daily_project_digest_schedules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    scopeKey: varchar("scopeKey", { length: 64 }).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    timezone: varchar("timezone", { length: 64 }).default("Asia/Shanghai").notNull(),
+    deliveryHour: int("deliveryHour").default(20).notNull(),
+    deliveryMinute: int("deliveryMinute").default(0).notNull(),
+    includeEmptyProjects: boolean("includeEmptyProjects").default(false).notNull(),
+    scheduleCronTaskUid: varchar("scheduleCronTaskUid", { length: 65 }),
+    lastAttemptedAt: datetime("lastAttemptedAt"),
+    lastSuccessfulBusinessDate: date("lastSuccessfulBusinessDate"),
+    lastResultJson: text("lastResultJson"),
+    createdBy: int("createdBy"),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scopeKeyUnique: uniqueIndex("daily_project_digest_schedules_scope_unique").on(table.scopeKey),
+    cronTaskUidIndex: index("daily_project_digest_schedules_task_uid_index").on(table.scheduleCronTaskUid),
+  }),
+);
+
+/** 每个项目、每个业务日的一份汇总运行快照，用于幂等、审计与失败复核。 */
+export const dailyProjectDigestRuns = mysqlTable(
+  "daily_project_digest_runs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    scheduleId: int("scheduleId").notNull(),
+    projectId: int("projectId").notNull(),
+    businessDate: date("businessDate").notNull(),
+    status: mysqlEnum("status", ["pending", "completed", "partial", "skipped", "failed"]).default("pending").notNull(),
+    summaryJson: text("summaryJson").notNull(),
+    recipientCount: int("recipientCount").default(0).notNull(),
+    deliveredCount: int("deliveredCount").default(0).notNull(),
+    failedCount: int("failedCount").default(0).notNull(),
+    completedAt: datetime("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scheduleProjectDateUnique: uniqueIndex("daily_project_digest_runs_schedule_project_date_unique").on(table.scheduleId, table.projectId, table.businessDate),
+    scheduleDateIndex: index("daily_project_digest_runs_schedule_date_index").on(table.scheduleId, table.businessDate),
+  }),
+);
+
+/** 员工关注认证服务号后的通知身份；OpenID 仅保存密文与不可逆指纹。 */
+export const officialAccountBindings = mysqlTable(
+  "official_account_bindings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    openIdEncrypted: text("openIdEncrypted").notNull(),
+    openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
+    bindingSource: mysqlEnum("bindingSource", ["wechat_oauth", "admin_verified"]).default("wechat_oauth").notNull(),
+    status: mysqlEnum("status", ["pending", "active", "unsubscribed", "revoked", "disabled"]).default("pending").notNull(),
+    boundAt: datetime("boundAt"),
+    lastVerifiedAt: datetime("lastVerifiedAt"),
+    lastFailureAt: datetime("lastFailureAt"),
+    failureCount: int("failureCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    userUnique: uniqueIndex("official_account_bindings_user_unique").on(table.userId),
+    openIdUnique: uniqueIndex("official_account_bindings_openid_fingerprint_unique").on(table.openIdFingerprint),
+    statusIndex: index("official_account_bindings_status_index").on(table.status),
+  }),
 );
 
 /** 固定 12 类采购字典，后台仅可调整排序和停启用，不能变更标准编码。 */
@@ -533,29 +611,63 @@ export const freightRateRules = mysqlTable(
 
 /** 运输趟次及其由规则快照计算出的金额。 */
 export const transportTrips = mysqlTable(
-  "transport_trips",
+ "transport_trips",
+ {
+   id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+   tripNo: varchar("tripNo", { length: 64 }).notNull(),
+   vehicleId: int("vehicleId").notNull(),
+   projectId: int("projectId").notNull(),
+   freightRuleId: int("freightRuleId").notNull(),
+   startAt: datetime("startAt").notNull(),
+   endAt: datetime("endAt"),
+   actualDistanceKm: decimal("actualDistanceKm", { precision: 10, scale: 3 }),
+   volumeCubicMeters: decimal("volumeCubicMeters", { precision: 12, scale: 3 }),
+   weightTons: decimal("weightTons", { precision: 12, scale: 3 }),
+   calculatedUnitPrice: decimal("calculatedUnitPrice", { precision: 16, scale: 2 }),
+   calculatedAmount: decimal("calculatedAmount", { precision: 16, scale: 2 }),
+   routeSnapshot: json("routeSnapshot"),
+   evidenceId: bigint("evidenceId", { mode: "number" }),
+   status: mysqlEnum("status", ["draft", "submitted", "verified", "settled", "void"]).default("draft").notNull(),
+   createdAt: timestamp("createdAt").defaultNow().notNull(),
+   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+   loadConfirmedAt: datetime("loadConfirmedAt"),
+   unloadConfirmedAt: datetime("unloadConfirmedAt"),
+   loadEventId: bigint("loadEventId", { mode: "number" }),
+   unloadEventId: bigint("unloadEventId", { mode: "number" }),
+   exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"]).default("none").notNull(),
+ },
+ table => ({
+   tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
+   vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
+ }),
+);
+
+/** 装土与卸土刷卡原子事件；设备重传和乱序均留痕并进入人工复核。 */
+export const transportCardEvents = mysqlTable(
+  "transport_card_events",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    tripNo: varchar("tripNo", { length: 64 }).notNull(),
+    tripId: bigint("tripId", { mode: "number" }).notNull(),
     vehicleId: int("vehicleId").notNull(),
     projectId: int("projectId").notNull(),
-    freightRuleId: int("freightRuleId").notNull(),
-    startAt: datetime("startAt").notNull(),
-    endAt: datetime("endAt"),
-    actualDistanceKm: decimal("actualDistanceKm", { precision: 10, scale: 3 }),
-    volumeCubicMeters: decimal("volumeCubicMeters", { precision: 12, scale: 3 }),
-    weightTons: decimal("weightTons", { precision: 12, scale: 3 }),
-    calculatedUnitPrice: decimal("calculatedUnitPrice", { precision: 16, scale: 2 }),
-    calculatedAmount: decimal("calculatedAmount", { precision: 16, scale: 2 }),
-    routeSnapshot: json("routeSnapshot"),
-    evidenceId: bigint("evidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["draft", "submitted", "verified", "settled", "void"]).default("draft").notNull(),
+    eventType: mysqlEnum("eventType", ["load", "unload"]).notNull(),
+    source: mysqlEnum("source", ["card_reader", "manual_review", "offline_replay"]).default("card_reader").notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull(),
+    deviceId: varchar("deviceId", { length: 128 }),
+    cardFingerprint: varchar("cardFingerprint", { length: 64 }),
+    payloadFingerprint: varchar("payloadFingerprint", { length: 64 }),
+    occurredAt: datetime("occurredAt").notNull(),
+    receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+    validationStatus: mysqlEnum("validationStatus", ["accepted", "duplicate", "rejected", "needs_review"]).default("accepted").notNull(),
+    validationReason: varchar("validationReason", { length: 500 }),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
-    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
+    idempotencyUnique: uniqueIndex("transport_card_events_idempotency_unique").on(table.idempotencyKey),
+    tripIndex: index("transport_card_events_trip_index").on(table.tripId, table.occurredAt),
+    vehicleIndex: index("transport_card_events_vehicle_index").on(table.vehicleId, table.occurredAt),
   }),
 );
 

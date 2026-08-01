@@ -60,11 +60,21 @@ function AdminRouteGuard() {
   return mode === "super-admin" ? <AdminPage /> : <ManagementPortal />;
 }
 
+/** 测试环境专用的独立本地超级管理员入口，不改变企业身份统一登录页。 */
+function LocalAdminLoginRoute() {
+  return <LoginPage localAdminOnly />;
+}
+
+function UnifiedLoginRoute() {
+  return <LoginPage />;
+}
+
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
-      <Route path={"/login"} component={LoginPage} />
+      <Route path={"/login"} component={UnifiedLoginRoute} />
+      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
       <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/construction"} component={MobileConstructionPage} />

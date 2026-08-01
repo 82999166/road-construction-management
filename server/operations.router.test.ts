@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "crypto";
 import type { TrpcContext } from "./_core/context";
 
-/** 业务节点通知在路由中异步投递；测试仅校验调用契约，不发起真实企业微信请求。 */
-const { mockNotifyWecomBusinessEvent } = vi.hoisted(() => ({
-  mockNotifyWecomBusinessEvent: vi.fn(),
+/** 业务节点通知在路由中异步投递；测试仅校验公众号调用契约，不发起真实外部请求。 */
+const { mockNotifyOfficialAccountBusinessEventSafely } = vi.hoisted(() => ({
+  mockNotifyOfficialAccountBusinessEventSafely: vi.fn(),
 }));
 
 /** 路由测试隔离数据库和数据范围基础设施，只验证机械、运输的业务权限与状态边界。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
-vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mockNotifyWecomBusinessEvent }));
+vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: mockNotifyOfficialAccountBusinessEventSafely }));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
@@ -77,7 +78,7 @@ describe("机械与运输 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
-    mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true });
+    mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
   });
 
   it("机械台账列表在读取前强制校验调用方的项目数据范围", async () => {
@@ -159,7 +160,7 @@ describe("机械与运输 tRPC 路由", () => {
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("机械与运输正向流转同时留下审计和企业微信业务深链", async () => {
+  it("机械与运输正向流转同时留下审计和公众号业务深链", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     const machineAuditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
@@ -170,7 +171,7 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 22, projectId: 10, nextStatus: "approved" })).resolves.toEqual({ success: true });
     expect(machineAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "machinery", action: "transition_cost", targetId: "22" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
       module: "machinery", eventCode: "machine_cost_approved", targetId: "22", deepLink: "/mobile/machinery",
     }));
 
@@ -184,7 +185,7 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 32, projectId: 10, nextStatus: "submitted" })).resolves.toEqual({ success: true });
     expect(tripAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "transition_trip", targetId: "32" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
       module: "transport", eventCode: "transport_trip_submitted", targetId: "32", deepLink: "/mobile/transport",
     }));
   });
@@ -202,7 +203,7 @@ describe("机械与运输 tRPC 路由", () => {
     await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 41, projectId: 10, nextStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(machineUpdateWhere).toHaveBeenCalledTimes(1);
     expect(machineAuditValues).not.toHaveBeenCalled();
-    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const tripAuditValues = vi.fn(async () => undefined);
@@ -216,6 +217,74 @@ describe("机械与运输 tRPC 路由", () => {
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 42, projectId: 10, nextStatus: "submitted" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(tripUpdateWhere).toHaveBeenCalledTimes(1);
     expect(tripAuditValues).not.toHaveBeenCalled();
-    expect(mockNotifyWecomBusinessEvent).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
+  });
+
+  it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 50, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [],
+        [{ id: 100, tripId: 50, eventType: "load", validationStatus: "accepted", validationReason: null }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 50, projectId: 10, idempotencyKey: "reader-load-0001", occurredAt: "2026-07-25T08:00:00.000Z" });
+
+    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 100, driverNotificationQueued: true });
+    expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({ tripId: 50, vehicleId: 11, eventType: "load", validationStatus: "accepted" }));
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(insertValues).toHaveBeenNthCalledWith(2, expect.objectContaining({ module: "transport", action: "record_load_card_event", targetId: "100" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_card_confirmed", targetId: "100" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserIds: [7], targetId: "100" }));
+  });
+
+  it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const input = { tripId: 50, projectId: 10, idempotencyKey: "reader-load-0002", occurredAt: "2026-07-25T08:00:00.000Z" };
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ eventType: "load", tripId: 50, projectId: 10, idempotencyKey: "reader-load-0002", deviceId: null, cardFingerprint: null, occurredAt: "2026-07-25T08:00:00.000Z" })).digest("hex");
+    const insertValues = vi.fn(async () => undefined);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 50, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [{ id: 101, tripId: 50, eventType: "load", payloadFingerprint, validationStatus: "accepted", validationReason: null }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent(input)).resolves.toMatchObject({ success: true, duplicate: true, eventId: 101 });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
+  });
+
+  it("卸土先于装土时将事件留痕并标记待人工复核，而不关闭运输闭环", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 51, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [],
+        [{ id: 102, tripId: 51, eventType: "unload", validationStatus: "accepted", validationReason: null }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, idempotencyKey: "reader-unload-0001", occurredAt: "2026-07-25T08:10:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
+    expect(updateWhere).toHaveBeenCalledTimes(2);
+    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "102" }));
   });
 });

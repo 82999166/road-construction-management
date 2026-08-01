@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
-const { mockCreateInAppMessage, mockNotifyWecomBusinessEvent } = vi.hoisted(() => ({
+const { mockCreateInAppMessage, mockNotifyOfficialAccountBusinessEventSafely } = vi.hoisted(() => ({
   mockCreateInAppMessage: vi.fn(),
-  mockNotifyWecomBusinessEvent: vi.fn(),
+  mockNotifyOfficialAccountBusinessEventSafely: vi.fn(),
 }));
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
@@ -12,7 +12,7 @@ vi.mock("./access", async importOriginal => {
   return { ...actual, assertSuperAdmin: vi.fn() };
 });
 vi.mock("./routers/messages", () => ({ createInAppMessage: mockCreateInAppMessage }));
-vi.mock("./services/businessNotifier", () => ({ notifyWecomBusinessEvent: mockNotifyWecomBusinessEvent }));
+vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: mockNotifyOfficialAccountBusinessEventSafely }));
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
@@ -59,29 +59,29 @@ describe("后台安全通知", () => {
     vi.clearAllMocks();
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAdminContext().user!);
     mockCreateInAppMessage.mockResolvedValue({ created: true });
-    mockNotifyWecomBusinessEvent.mockResolvedValue({ delivered: true, reason: "sent" });
+    mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([]);
   });
 
-  it("角色权限更新后发送最小化企业微信安全通知，且投递失败不回滚权限写入", async () => {
+  it("角色权限更新后发送最小化公众号安全通知，且投递失败不回滚权限写入", async () => {
     const db = createAdminDb();
     vi.mocked(getDb).mockResolvedValue(db as never);
-    mockNotifyWecomBusinessEvent.mockRejectedValueOnce(new Error("通知通道暂不可用"));
+    mockNotifyOfficialAccountBusinessEventSafely.mockRejectedValueOnce(new Error("通知通道暂不可用"));
 
     await expect(adminRouter.createCaller(createAdminContext()).role.setPermissions({ roleId: 12, permissionIds: [3, 4] })).resolves.toEqual({ success: true });
 
     expect(db.delete).toHaveBeenCalledTimes(1);
-    expect(db.insertedValues).toEqual(expect.arrayContaining([expect.arrayContaining([expect.objectContaining({ roleId: 12, permissionId: 3 })])]));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "role_permissions_updated", targetType: "role", targetId: "12", deepLink: "/admin/permission" }));
+    expect(db.insertedValues).toEqual(expect.arrayContaining([expect.arrayContaining([expect.objectContaining({ roleId: 12, permissionId: 3 })]) ]));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "role_permissions_updated", targetType: "role", targetId: "12", deepLink: "/admin/permission" }));
   });
 
-  it("人员授权变更同时写入用户可见的站内提醒和企业微信审计事件", async () => {
+  it("人员授权变更同时写入用户可见的站内提醒和公众号投递事件", async () => {
     const db = createAdminDb([[{ id: 18, loginMethod: "oauth" }], [{ code: "SUPER_ADMIN" }], [{ id: 88, status: "active" }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).personnel.saveAssignment({ userId: 18, roleId: 6, projectId: 88, organizationId: null, validFrom: null, validTo: null, status: "active" })).resolves.toEqual({ success: true });
 
     expect(mockCreateInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 18, eventCode: "user_access_updated", deepLink: "/mobile/profile" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "user_access_updated", targetType: "user", targetId: "18" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "user_access_updated", targetType: "user", targetId: "18" }));
   });
 
   it("普通业务角色授权必须绑定启用的部门或项目部", async () => {
@@ -115,7 +115,7 @@ describe("后台安全通知", () => {
 
     expect(result.success).toBe(false);
     expect(mockCreateInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "system_connector_test_failed", recipientUserId: 1, deepLink: "/admin/settings" }));
-    expect(mockNotifyWecomBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "system_connector_test_failed", targetType: "setting", targetId: "9" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "system_connector_test_failed", targetType: "setting", targetId: "9" }));
     expect(JSON.stringify(mockCreateInAppMessage.mock.calls)).not.toContain("https://example.com/service");
     vi.unstubAllGlobals();
   });

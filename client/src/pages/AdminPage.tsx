@@ -69,11 +69,12 @@ type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus };
 type LocalAccountStatus = "active" | "disabled";
-type LocalAccountEditForm = { userId: number; username: string; displayName: string; wecomUserId: string; status: LocalAccountStatus };
+type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus };
 type LocalAccountActionTarget = { id: number; name: string; username: string };
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
+type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
 type MasterDataDeleteTarget = { resource: MasterDataResource; id: number; label: string; description: string };
 type PayrollPaymentTarget = { id: number; workerName: string; period: string };
@@ -83,7 +84,21 @@ const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
-const EMPTY_SETTING_FORM: SettingForm = { category: "企业微信", settingKey: "", displayName: "", value: "", isSensitive: true, remarks: "" };
+const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
+const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
+const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expectedVersion">> = [
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: "", isSensitive: false, remarks: "用于公众号业务通知和员工微信身份绑定；保存后请先发布，再执行服务号连通性校验。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "微信公众号服务号 AppSecret", value: "", isSensitive: true, remarks: "仅在服务端 AES-GCM 加密保存，不会回显或导出。" },
+  { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", value: "", isSensitive: false, remarks: "使用一个已获授权的模板消息 ID，用于业务提交、刷卡和每日汇总提醒。" },
+  { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", value: "{\"first\":\"{title}\",\"keyword1\":\"{targetType} #{targetId}\",\"keyword2\":\"{content}\",\"remark\":\"点击查看系统详情\"}", isSensitive: false, remarks: "JSON 对象；可使用 {title}、{content}、{eventCode}、{targetType}、{targetId} 占位符。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: "", isSensitive: false, remarks: "必须是正式 HTTPS 站点根地址；用于模板消息跳转至系统对应业务页。" },
+];
+/** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */
+function resolveOfficialAccountSensitivity(settingKey: string, fallback: boolean) {
+  if (settingKey === "WECHAT_OFFICIAL_APP_SECRET") return true;
+  if (settingKey.startsWith("WECHAT_OFFICIAL_")) return false;
+  return fallback;
+}
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
@@ -210,7 +225,7 @@ export default function AdminPage() {
   const isSettings = activeSection === "settings";
   const isAudit = activeSection === "audit";
   const needsOrganizations = isOrganization || isVehicle || isPermission;
-  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace;
+  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace || isSettings;
   const needsUsers = isOrganization || isVehicle || isPermission;
 
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
@@ -224,6 +239,7 @@ export default function AdminPage() {
   const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, { enabled: canQuery && isPermission });
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
+  const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
   const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, { enabled: canQuery && isOverview });
   const vehicles = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isVehicle });
@@ -276,13 +292,16 @@ export default function AdminPage() {
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
   const [roleForm, setRoleForm] = useState<RoleForm>(EMPTY_ROLE_FORM);
   const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
-  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" as LocalAccountStatus });
+  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", status: "active" as LocalAccountStatus });
   const [localAccountEditForm, setLocalAccountEditForm] = useState<LocalAccountEditForm | null>(null);
   const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<LocalAccountActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
+  const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
+  const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
+  const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
   const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
   const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
 
@@ -294,9 +313,23 @@ export default function AdminPage() {
     setDraftPermissionIds(rolePermissionIds.data ?? []);
   }, [rolePermissionIds.data]);
   // 默认选中第一条配置，方便管理员直接查看其发布历史和回滚入口。
+  const visibleSettings = settings.data ?? [];
   useEffect(() => {
-    if (!selectedSettingId && settings.data?.[0]) setSelectedSettingId(settings.data[0].id);
-  }, [selectedSettingId, settings.data]);
+    if (!visibleSettings.length) {
+      if (selectedSettingId !== undefined) setSelectedSettingId(undefined);
+      return;
+    }
+    if (!visibleSettings.some(item => item.id === selectedSettingId)) setSelectedSettingId(visibleSettings[0].id);
+  }, [selectedSettingId, visibleSettings]);
+  useEffect(() => {
+    if (!dailyDigestSettings.data) return;
+    setDailyDigestForm({
+      enabled: dailyDigestSettings.data.enabled,
+      deliveryHour: String(dailyDigestSettings.data.deliveryHour).padStart(2, "0"),
+      deliveryMinute: String(dailyDigestSettings.data.deliveryMinute).padStart(2, "0"),
+      includeEmptyProjects: dailyDigestSettings.data.includeEmptyProjects,
+    });
+  }, [dailyDigestSettings.data]);
   useEffect(() => {
     if (!isBusinessWorkspace || businessWorkspaceProjectId || !projects.data?.length) return;
     const firstAvailableProject = projects.data.find(project => project.status !== "archived");
@@ -311,10 +344,12 @@ export default function AdminPage() {
       setSelectedMachineId(String(machineryLedger.data[0].id));
     }
   }, [isMachinery, machineryLedger.data, selectedMachineId]);
-  const selectedSetting = settings.data?.find(item => item.id === selectedSettingId);
+  const selectedSetting = visibleSettings.find(item => item.id === selectedSettingId);
   const selectedBusinessProject = projects.data?.find(project => String(project.id) === businessFilter.projectId);
   const selectedWorkspaceProject = projects.data?.find(project => String(project.id) === businessWorkspaceProjectId);
   const businessFilterLabel = `${selectedBusinessProject?.name ?? "全部项目"}${businessFilter.period ? ` · ${businessFilter.period}` : " · 全部期间"}`;
+  const dailyDigestPreviewInput = useMemo(() => ({ projectId: Number(dailyDigestPreviewProjectId || 0), businessDate: dailyDigestPreviewDate }), [dailyDigestPreviewDate, dailyDigestPreviewProjectId]);
+  const dailyDigestPreview = trpc.dailyDigest.preview.useQuery(dailyDigestPreviewInput, { enabled: canQuery && isSettings && Number(dailyDigestPreviewProjectId) > 0 && Boolean(dailyDigestPreviewDate) });
 
   /** 配置版本冲突后强制刷新列表与历史，避免管理员继续在旧版本上操作。 */
   const refreshAfterSettingConflict = async () => {
@@ -373,7 +408,7 @@ export default function AdminPage() {
   const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
     onSuccess: async () => {
       toast.success("普通管理人员账号已创建，请继续配置角色、部门和项目范围");
-      setLocalAccountForm({ username: "", displayName: "", initialPassword: "", wecomUserId: "", status: "active" });
+      setLocalAccountForm({ username: "", displayName: "", initialPassword: "", status: "active" });
       await Promise.all([users.refetch(), audits.refetch(), overview.refetch()]);
     },
     onError: error => toast.error(error.message),
@@ -438,6 +473,20 @@ export default function AdminPage() {
       result.success ? toast.success(result.message) : toast.error(result.message);
       await audits.refetch();
     },
+  });
+  const saveDailyDigest = trpc.dailyDigest.saveSettings.useMutation({
+    onSuccess: async data => {
+      toast.success(data.taskUid ? "每日项目汇总已保存，定时任务已同步" : "每日项目汇总设置已保存");
+      await Promise.all([dailyDigestSettings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const runDailyDigestNow = trpc.dailyDigest.runNow.useMutation({
+    onSuccess: async result => {
+      toast.success(`每日汇总已执行：${result.projectCount} 个项目，成功/幂等投递 ${result.deliveredCount} 次，失败 ${result.failedCount} 次`);
+      await Promise.all([dailyDigestSettings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const disableSetting = trpc.admin.settings.disable.useMutation({
     onSuccess: async result => {
@@ -599,7 +648,7 @@ export default function AdminPage() {
         <CardContent className="grid gap-3 text-sm text-slate-600 md:grid-cols-3">
           <div className="rounded-xl bg-slate-50 p-4"><b className="text-slate-800">01 组织与项目</b><p className="mt-1 text-xs leading-5">建立公司、部门、项目、标段和成本中心。</p></div>
           <div className="rounded-xl bg-slate-50 p-4"><b className="text-slate-800">02 人员与角色</b><p className="mt-1 text-xs leading-5">设置岗位、角色、项目数据范围和有效期。</p></div>
-          <div className="rounded-xl bg-slate-50 p-4"><b className="text-slate-800">03 系统设置</b><p className="mt-1 text-xs leading-5">配置企业微信及外部 API，校验后发布。</p></div>
+          <div className="rounded-xl bg-slate-50 p-4"><b className="text-slate-800">03 系统设置</b><p className="mt-1 text-xs leading-5">配置微信公众号服务号及外部 API，校验后发布。</p></div>
         </CardContent>
       </Card>
       <Card className="border-[#d8e3e0]">
@@ -869,24 +918,23 @@ export default function AdminPage() {
               <div className="grid gap-1.5"><Label htmlFor="local-account-username">登录账号</Label><Input id="local-account-username" autoComplete="off" value={localAccountForm.username} onChange={event => setLocalAccountForm({ ...localAccountForm, username: event.target.value })} placeholder="例如：zhangsan" /></div>
               <div className="grid gap-1.5"><Label htmlFor="local-account-name">显示姓名</Label><Input id="local-account-name" value={localAccountForm.displayName} onChange={event => setLocalAccountForm({ ...localAccountForm, displayName: event.target.value })} placeholder="例如：张三" /></div>
               <div className="grid gap-1.5"><Label htmlFor="local-account-password">初始密码</Label><Input id="local-account-password" type="password" autoComplete="new-password" value={localAccountForm.initialPassword} onChange={event => setLocalAccountForm({ ...localAccountForm, initialPassword: event.target.value })} placeholder="至少 6 位，任意数字或字符" /></div>
-              <div className="grid gap-1.5"><Label htmlFor="local-account-wecom">企业微信员工标识（可选）</Label><Input id="local-account-wecom" value={localAccountForm.wecomUserId} onChange={event => setLocalAccountForm({ ...localAccountForm, wecomUserId: event.target.value })} placeholder="企业微信 UserID" /></div>
               <div className="grid gap-1.5"><Label>初始状态</Label><Select value={localAccountForm.status} onValueChange={value => setLocalAccountForm({ ...localAccountForm, status: value as "active" | "disabled" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
-              <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate({ ...localAccountForm, wecomUserId: localAccountForm.wecomUserId.trim() || null })}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
+              <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate(localAccountForm)}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
             </div>
             {users.data?.some(user => user.loginMethod === "local_manager") ? <div className="space-y-2">{users.data.filter(user => user.loginMethod === "local_manager").map(user => {
               const accountTarget = { id: user.id, name: user.name || `用户 #${user.id}`, username: user.localUsername || "" };
-              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{accountTarget.name} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">密码已设置 · 企业微信：{user.wecomUserId || "未绑定"} · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, wecomUserId: user.wecomUserId || "", status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
+              const bindingLabel = user.profileStatus === "active" ? "已完成关注绑定" : user.profileStatus === "disabled" ? "绑定已停用" : "待关注绑定";
+              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{accountTarget.name} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">密码已设置 · 公众号：{bindingLabel} · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
             })}</div> : <EmptyState text="尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。" />}
           </CardContent>
         </Card>
         <Dialog open={Boolean(localAccountEditForm)} onOpenChange={open => { if (!open) setLocalAccountEditForm(null); }}>
           <DialogContent className="sm:max-w-xl">
-            <DialogHeader><DialogTitle>编辑普通管理人员账号</DialogTitle><DialogDescription>可修改登录账号、显示姓名、企业微信标识和启停状态；角色及数据范围请在下方“管理人员角色授权”中单独维护。</DialogDescription></DialogHeader>
-            {localAccountEditForm ? <form className="space-y-4" onSubmit={event => { event.preventDefault(); updateLocalUser.mutate({ ...localAccountEditForm, wecomUserId: localAccountEditForm.wecomUserId.trim() || null }); }}>
+            <DialogHeader><DialogTitle>编辑普通管理人员账号</DialogTitle><DialogDescription>可修改登录账号、显示姓名和启停状态；公众号关注绑定请由员工在移动端个人中心自主完成，角色及数据范围请在下方“管理人员角色授权”中单独维护。</DialogDescription></DialogHeader>
+            {localAccountEditForm ? <form className="space-y-4" onSubmit={event => { event.preventDefault(); updateLocalUser.mutate(localAccountEditForm); }}>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5"><Label htmlFor="edit-local-account-username">登录账号</Label><Input id="edit-local-account-username" autoComplete="off" value={localAccountEditForm.username} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, username: event.target.value })} /><p className="text-xs text-slate-500">以字母开头，可使用小写字母、数字、点、下划线或连字符。</p></div>
                 <div className="grid gap-1.5"><Label htmlFor="edit-local-account-name">显示姓名</Label><Input id="edit-local-account-name" value={localAccountEditForm.displayName} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, displayName: event.target.value })} /></div>
-                <div className="grid gap-1.5"><Label htmlFor="edit-local-account-wecom">企业微信员工标识（可选）</Label><Input id="edit-local-account-wecom" value={localAccountEditForm.wecomUserId} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, wecomUserId: event.target.value })} placeholder="企业微信 UserID" /></div>
                 <div className="grid gap-1.5"><Label>账号状态</Label><Select value={localAccountEditForm.status} onValueChange={value => setLocalAccountEditForm({ ...localAccountEditForm, status: value as LocalAccountStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
               </div>
               <DialogFooter><Button type="button" variant="outline" onClick={() => setLocalAccountEditForm(null)}>取消</Button><Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountEditForm.username || !localAccountEditForm.displayName || updateLocalUser.isPending}>{updateLocalUser.isPending ? "正在保存…" : "保存修改"}</Button></DialogFooter>
@@ -935,11 +983,26 @@ export default function AdminPage() {
   const renderSettings = () => (
     <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
       <section className="space-y-6">
-        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">企业微信是唯一通知通道；地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">微信公众号服务号是唯一通知通道；地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <Card className="border-[#d8e3e0]">
+          <CardHeader><CardTitle className="text-base">每日项目汇总推送</CardTitle><CardDescription>每天按中国标准时间汇总施工日报、收入开支、计量申报与运输装卸数据，并向项目/组织上级主管及已授权管理岗位推送。定时任务、运行结果和配置修改均保留审计记录。</CardDescription></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-[1.1fr_.8fr_.8fr]">
+              <label className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700"><Checkbox checked={dailyDigestForm.enabled} onCheckedChange={checked => setDailyDigestForm(current => ({ ...current, enabled: Boolean(checked) }))} />启用每日自动汇总</label>
+              <div><Label>发送时</Label><Select value={dailyDigestForm.deliveryHour} onValueChange={value => setDailyDigestForm(current => ({ ...current, deliveryHour: value }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{Array.from({ length: 24 }, (_, hour) => <SelectItem key={hour} value={String(hour).padStart(2, "0")}>{String(hour).padStart(2, "0")} 时</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>发送分</Label><Select value={dailyDigestForm.deliveryMinute} onValueChange={value => setDailyDigestForm(current => ({ ...current, deliveryMinute: value }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{["00", "15", "30", "45"].map(minute => <SelectItem key={minute} value={minute}>{minute} 分</SelectItem>)}</SelectContent></Select></div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={dailyDigestForm.includeEmptyProjects} onCheckedChange={checked => setDailyDigestForm(current => ({ ...current, includeEmptyProjects: Boolean(checked) }))} />无业务数据的项目也发送“无新增数据”汇总</label>
+            <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600"><BusinessStatusBadge status={dailyDigestSettings.data?.enabled ? "active" : "disabled"} /><span>最近尝试：{displayDate(dailyDigestSettings.data?.lastAttemptedAt)}</span><span>最近完整业务日：{dailyDigestSettings.data?.lastSuccessfulBusinessDate ? new Date(dailyDigestSettings.data.lastSuccessfulBusinessDate).toISOString().slice(0, 10) : "—"}</span>{dailyDigestSettings.data?.scheduleCronTaskUid ? <span className="font-mono">任务已登记</span> : null}</div>
+            <div className="flex flex-wrap gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveDailyDigest.isPending} onClick={() => saveDailyDigest.mutate({ enabled: dailyDigestForm.enabled, deliveryHour: Number(dailyDigestForm.deliveryHour), deliveryMinute: Number(dailyDigestForm.deliveryMinute), includeEmptyProjects: dailyDigestForm.includeEmptyProjects })}>{dailyDigestForm.enabled ? "保存并启用定时汇总" : "保存并停用定时汇总"}</Button><Button variant="outline" disabled={!dailyDigestSettings.data?.enabled || runDailyDigestNow.isPending} onClick={() => runDailyDigestNow.mutate({ businessDate: dailyDigestPreviewDate || undefined })}>立即执行所选日期汇总</Button></div>
+            <div className="grid gap-3 rounded-xl border border-slate-100 p-3 lg:grid-cols-[1fr_180px_auto]"><div><Label>预览项目</Label><Select value={dailyDigestPreviewProjectId || "UNASSIGNED"} onValueChange={value => setDailyDigestPreviewProjectId(value === "UNASSIGNED" ? "" : value)}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{(projects.data ?? []).filter(project => project.status === "active").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div><div><Label>业务日期</Label><Input className="mt-1" type="date" value={dailyDigestPreviewDate} onChange={event => setDailyDigestPreviewDate(event.target.value)} /></div><Button className="self-end" variant="outline" disabled={!dailyDigestPreviewProjectId || dailyDigestPreview.isFetching} onClick={() => dailyDigestPreview.refetch()}>刷新预览</Button></div>
+            {dailyDigestPreview.data ? <div className="grid gap-2 rounded-xl bg-[#f7faf9] p-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4"><div><b>施工日报</b><p className="mt-1">{dailyDigestPreview.data.construction.reportCount} 份 · 进度 {dailyDigestPreview.data.construction.averageProgressPercent}%</p></div><div><b>收入 / 开支</b><p className="mt-1">¥{displayMoney(dailyDigestPreview.data.finance.incomeAmount)} / ¥{displayMoney(dailyDigestPreview.data.finance.expenseAmount)}</p></div><div><b>计量申报</b><p className="mt-1">{dailyDigestPreview.data.measurement.claimCount} 笔 · ¥{displayMoney(dailyDigestPreview.data.measurement.declaredAmount)}</p></div><div><b>运输闭环</b><p className="mt-1">{dailyDigestPreview.data.transport.tripCount} 趟 · 装/卸 {dailyDigestPreview.data.transport.loadConfirmedCount}/{dailyDigestPreview.data.transport.unloadConfirmedCount} · 异常 {dailyDigestPreview.data.transport.exceptionTripCount}</p></div></div> : dailyDigestPreviewProjectId && !dailyDigestPreview.isLoading ? <p className="text-xs text-slate-500">选择项目和业务日期后可查看真实聚合结果；预览不会发送通知。</p> : null}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle className="text-base">配置项清单</CardTitle><CardDescription>敏感值仅以掩码展示。发布后生成版本与审计日志；不提供明文导出。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
-            {settings.data?.length ? settings.data.map(item => (
+            {visibleSettings.length ? visibleSettings.map(item => (
               <div key={item.id} className={`flex flex-col gap-3 rounded-xl border p-4 transition-colors ${selectedSettingId === item.id ? "border-[#203c48] bg-[#f7faf9]" : "border-slate-100"}`}>
                 <button className="text-left" onClick={() => setSelectedSettingId(item.id)}><div className="flex items-center gap-2"><p className="text-sm font-medium">{item.displayName}</p>{item.isSensitive ? <Badge variant="outline">加密托管</Badge> : null}<Badge variant={item.status === "published" ? "secondary" : "outline"}>{item.status === "published" ? "已发布" : item.status === "draft" ? "草稿" : "已禁用"}</Badge></div><p className="mt-1 text-xs text-slate-500">{item.category} · {item.settingKey} · v{item.version} · {item.valuePreview || "未设置值"}</p></button>
                 <div className="flex flex-wrap gap-2">
@@ -948,12 +1011,12 @@ export default function AdminPage() {
                     setSettingForm({ id: item.id, expectedVersion: item.version, category: item.category, settingKey: item.settingKey, displayName: item.displayName, value: item.isSensitive ? "" : item.valueJson ?? "", isSensitive: item.isSensitive, remarks: item.remarks ?? "" });
                   }}>编辑</Button>
                   <Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id, expectedVersion: item.version })}>发布</Button>
-                  <Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey === "WECHAT_WORK_WEBHOOK" ? "发送测试消息" : "校验 / 测试"}</Button>
+                  <Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey.startsWith("WECHAT_OFFICIAL_") ? "校验服务号" : "校验 / 测试"}</Button>
                   {item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id, expectedVersion: item.version }); }}>停用</Button> : null}
                   <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={removeSetting.isPending} onClick={() => setSettingDeleteTarget({ id: item.id, displayName: item.displayName, settingKey: item.settingKey, version: item.version, isSensitive: item.isSensitive })}>删除</Button>
                 </div>
               </div>
-            )) : <EmptyState text="暂无配置项，请在右侧创建企业微信、消息模板或外部 API 配置草稿。" />}
+            )) : <EmptyState text="暂无配置项，请在右侧创建公众号服务号、消息模板或外部 API 配置草稿。" />}
           </CardContent>
         </Card>
         <Card>
@@ -965,14 +1028,14 @@ export default function AdminPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">统一配置分类</CardTitle></CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {["基础品牌与多语言", "账号安全与密码策略", "企业微信与消息模板", "地图 / OCR / 定位连接器", "油卡 / 地磅 / 外部 API", "业务参数与编号规则", "文档影像与归档规则", "运行监控与审计", "发布、回滚与版本"].map(item => <div key={item} className="rounded-lg bg-slate-50 px-3 py-3 text-sm text-slate-600">{item}</div>)}
+            {["基础品牌与多语言", "账号安全与密码策略", "微信公众号服务号与消息模板", "地图 / OCR / 定位连接器", "油卡 / 地磅 / 外部 API", "业务参数与编号规则", "文档影像与归档规则", "运行监控与审计", "发布、回滚与版本"].map(item => <div key={item} className="rounded-lg bg-slate-50 px-3 py-3 text-sm text-slate-600">{item}</div>)}
           </CardContent>
         </Card>
       </section>
       <aside className="space-y-4">
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
-          <CardHeader><CardTitle className="text-base">企业微信机器人快速配置</CardTitle><CardDescription>仅支持企业微信官方 HTTPS Webhook。地址会被 AES-GCM 加密保存，列表与审计日志只显示掩码。</CardDescription></CardHeader>
-          <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "企业微信", settingKey: "WECHAT_WORK_WEBHOOK", displayName: "企业微信机器人 Webhook", value: "", isSensitive: true, remarks: "用于工程业务节点通知；保存后请先发布，再由超级管理员主动发送测试消息。" })}>填入企业微信机器人模板</Button></CardContent>
+          <CardHeader><CardTitle className="text-base">微信公众号服务号配置向导</CardTitle><CardDescription>按顺序建立并发布 AppID、AppSecret、模板 ID、字段映射与 HTTPS 跳转地址。密钥只会加密保存；“校验服务号”不会向员工推送测试消息。</CardDescription></CardHeader>
+          <CardContent className="space-y-2">{OFFICIAL_ACCOUNT_SETTING_PRESETS.map(preset => <Button key={preset.settingKey} variant="outline" className="w-full justify-start border-[#203c48] text-left text-[#203c48]" onClick={() => setSettingForm(preset)}>{preset.displayName}</Button>)}</CardContent>
         </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
           <CardHeader><CardTitle className="text-base">企业身份账号恢复</CardTitle><CardDescription>仅配置身份提供方公开 HTTPS 恢复页面。系统不保存企业密码，登录页和个人中心将通过受控端点跳转至该地址。</CardDescription></CardHeader>
@@ -981,11 +1044,11 @@ export default function AdminPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">{settingForm.id ? "编辑配置草稿" : "新建配置草稿"}</CardTitle><CardDescription>{settingForm.id ? "编辑会生成新的草稿版本。敏感值留空时保留现有密文；输入完整新值才会替换。配置键与敏感等级需通过新建替代配置变更。" : "密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文；既有配置可从左侧编辑、停用或删除。"}</CardDescription></CardHeader>
           <CardContent className="space-y-3">
-            <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="企业微信">企业微信接入</SelectItem><SelectItem value="企业微信消息模板">企业微信消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
-            <div><Label>配置键</Label><Input value={settingForm.settingKey} disabled={Boolean(settingForm.id)} placeholder="WECOM:CORP_ID" onChange={event => setSettingForm({ ...settingForm, settingKey: event.target.value.toUpperCase() })} /></div>
-            <div><Label>显示名称</Label><Input value={settingForm.displayName} placeholder="企业微信企业 ID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /></div>
+            <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="微信公众号服务号">微信公众号服务号</SelectItem><SelectItem value="公众号消息模板">公众号消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
+            <div><Label>配置键</Label><Input value={settingForm.settingKey} disabled={Boolean(settingForm.id)} placeholder="WECHAT_OFFICIAL_APP_ID" onChange={event => { const settingKey = event.target.value.toUpperCase(); setSettingForm({ ...settingForm, settingKey, isSensitive: resolveOfficialAccountSensitivity(settingKey, settingForm.isSensitive) }); }} /></div>
+            <div><Label>显示名称</Label><Input value={settingForm.displayName} placeholder="微信公众号服务号 AppID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /></div>
             <div><Label>配置值</Label><Input value={settingForm.value} type={settingForm.isSensitive ? "password" : "text"} placeholder={settingForm.id && settingForm.isSensitive ? "留空保留现有加密值；输入完整新值以替换" : "输入值或密钥"} onChange={event => setSettingForm({ ...settingForm, value: event.target.value })} />{settingForm.id && settingForm.isSensitive ? <p className="mt-1 text-xs leading-5 text-slate-500">为保护密钥，系统不会回显现有值。留空仅更新名称、分类或备注；填写完整新值才会替换。</p> : null}</div>
-            <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} disabled={Boolean(settingForm.id)} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管</label>
+            <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} disabled={Boolean(settingForm.id) || settingForm.settingKey.startsWith("WECHAT_OFFICIAL_")} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管{settingForm.settingKey.startsWith("WECHAT_OFFICIAL_") ? <span className="text-xs text-slate-400">（服务号字段按安全规则自动设置）</span> : null}</label>
             <div><Label>备注</Label><Input value={settingForm.remarks} placeholder="用途、回调地址或维护说明" onChange={event => setSettingForm({ ...settingForm, remarks: event.target.value })} /></div>
             <div className="flex gap-2"><Button className="flex-1 bg-[#203c48] hover:bg-[#17313b]" disabled={!settingForm.settingKey || !settingForm.displayName || (!settingForm.value && !(settingForm.id && settingForm.isSensitive)) || saveSetting.isPending} onClick={() => saveSetting.mutate(settingForm)}>{settingForm.id ? "保存修订草稿" : "保存草稿"}</Button>{settingForm.id ? <Button variant="outline" onClick={() => setSettingForm(EMPTY_SETTING_FORM)}>取消编辑</Button> : null}</div>
           </CardContent>

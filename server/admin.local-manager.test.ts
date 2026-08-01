@@ -46,7 +46,6 @@ describe("后台普通管理人员本地账号管理", () => {
       displayName: "张三",
       initialPassword,
       status: "active",
-      wecomUserId: "zhangsan-wecom",
     })).resolves.toEqual({ success: true, userId: 7301 });
 
     const payloads = insertValues.mock.calls.map(([payload]) => payload);
@@ -60,7 +59,7 @@ describe("后台普通管理人员本地账号管理", () => {
         localPasswordChangeRequired: false,
         localPasswordHash: expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/),
       }),
-      expect.objectContaining({ userId: 7301, wecomUserId: "zhangsan-wecom" }),
+      expect.objectContaining({ userId: 7301, status: "pending" }),
       expect.objectContaining({ action: "create_local_manager_account", targetId: "7301" }),
     ]));
     expect(JSON.stringify(payloads)).not.toContain(initialPassword);
@@ -97,7 +96,6 @@ describe("后台普通管理人员本地账号管理", () => {
       displayName: "李四",
       initialPassword: "ManagerPass2026",
       status: "active",
-      wecomUserId: null,
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(createCaller(ordinaryUser).admin.overview()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
@@ -142,7 +140,6 @@ describe("后台普通管理人员本地账号管理", () => {
       username: "zhangsan.new",
       displayName: "张三（项目部）",
       status: "active",
-      wecomUserId: "zhangsan-wecom-new",
     })).resolves.toEqual({ success: true });
     const resetPassword = "reset-any-6";
     await expect(createCaller().admin.personnel.resetLocalUserPassword({ userId: 7301, newPassword: resetPassword })).resolves.toEqual({ success: true });
@@ -150,7 +147,7 @@ describe("后台普通管理人员本地账号管理", () => {
     const writePayloads = updateSet.mock.calls.map(([payload]) => payload);
     expect(writePayloads).toEqual(expect.arrayContaining([
       expect.objectContaining({ openId: "local-manager:zhangsan.new", localUsername: "zhangsan.new", name: "张三（项目部）" }),
-      expect.objectContaining({ wecomUserId: "zhangsan-wecom-new" }),
+      expect.objectContaining({ status: "pending" }),
       expect.objectContaining({ localPasswordChangeRequired: false, localPasswordHash: expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/) }),
     ]));
     expect(JSON.stringify([...writePayloads, ...auditValues.mock.calls.map(([payload]) => payload)])).not.toContain(resetPassword);

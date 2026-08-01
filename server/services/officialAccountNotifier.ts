@@ -1,0 +1,240 @@
+import { createHash } from "node:crypto";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { auditLogs, notificationRecords, officialAccountBindings, organizations, systemRoles, systemSettings, userProfiles, userRoleAssignments } from "../../drizzle/schema";
+import { getDb } from "../db";
+import { decryptSecret } from "./secretVault";
+
+const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
+  "WECHAT_OFFICIAL_APP_ID",
+  "WECHAT_OFFICIAL_APP_SECRET",
+  "WECHAT_OFFICIAL_TEMPLATE_ID",
+  "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
+  "WECHAT_OFFICIAL_APP_URL",
+] as const;
+
+type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
+export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null };
+
+export type OfficialAccountNotificationResult = {
+  delivered: boolean;
+  reason: "sent" | "duplicate" | "not_bound" | "not_configured" | "disabled" | "invalid_config" | "delivery_failed" | "database_unavailable";
+  providerMessageId?: string;
+};
+
+export type OfficialAccountBusinessEvent = {
+  userId: number;
+  recipientUserIds?: number[];
+  /** 可选业务范围，用于将项目或组织内的管理岗位纳入上级主管收件人。 */
+  projectId?: number;
+  organizationId?: number;
+  module: "purchasing" | "measurement" | "finance" | "machinery" | "transport" | "security" | "labor" | "construction";
+  eventCode: string;
+  targetType: string;
+  targetId: string;
+  title: string;
+  content?: string;
+  deepLink?: string;
+};
+
+let tokenCache: { appId: string; token: string; expiresAt: number } | null = null;
+
+function buildDeepLink(appUrl: string | null, deepLink: string | undefined) {
+  if (!appUrl || !deepLink || !deepLink.startsWith("/") || deepLink.startsWith("//")) return undefined;
+  try {
+    const base = new URL(appUrl);
+    if (base.protocol !== "https:" || ["localhost", "127.0.0.1"].includes(base.hostname)) return undefined;
+    return new URL(deepLink, base).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTemplateFields(rawValue: string | null) {
+  if (!rawValue?.trim()) return { first: "{title}", keyword1: "{targetType} #{targetId}", keyword2: "{content}", remark: "点击查看系统详情" };
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not object");
+    const values = Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string");
+    if (!values.length || values.length > 12) throw new Error("invalid fields");
+    return Object.fromEntries(values.map(([key, value]) => [key.slice(0, 64), value.slice(0, 180)]));
+  } catch {
+    throw new Error("服务号模板字段映射必须是 JSON 对象");
+  }
+}
+
+function renderTemplate(value: string, variables: Record<string, string>) {
+  return value.replace(/\{(title|content|eventCode|targetType|targetId)\}/g, (_match, key: string) => variables[key] ?? "");
+}
+
+export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: OfficialAccountConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
+  const db = await getDb();
+  if (!db) return { reason: "database_unavailable" };
+  const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, [...OFFICIAL_ACCOUNT_CONFIG_KEYS])));
+  const settings = new Map<OfficialAccountConfigKey, (typeof rows)[number]>();
+  for (const row of rows) if ((OFFICIAL_ACCOUNT_CONFIG_KEYS as readonly string[]).includes(row.settingKey)) settings.set(row.settingKey as OfficialAccountConfigKey, row);
+  const appId = settings.get("WECHAT_OFFICIAL_APP_ID")?.valueJson?.trim();
+  const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
+  const templateId = settings.get("WECHAT_OFFICIAL_TEMPLATE_ID")?.valueJson?.trim();
+  if (!appId || !appSecretEncrypted || !templateId) return { reason: rows.length ? "disabled" : "not_configured" };
+  try {
+    return {
+      config: {
+        appId,
+        appSecret: decryptSecret(appSecretEncrypted),
+        templateId,
+        templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null),
+        appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
+      },
+    };
+  } catch {
+    return { reason: "invalid_config" };
+  }
+}
+
+async function getAccessToken(config: OfficialAccountConfig) {
+  if (tokenCache && tokenCache.appId === config.appId && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token;
+  const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
+  url.searchParams.set("grant_type", "client_credential");
+  url.searchParams.set("appid", config.appId);
+  url.searchParams.set("secret", config.appSecret);
+  const response = await fetch(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
+  const payload = await response.json().catch(() => null) as { access_token?: string; expires_in?: number; errcode?: number } | null;
+  if (!response.ok || !payload?.access_token) throw new Error(`token_${payload?.errcode ?? response.status}`);
+  tokenCache = { appId: config.appId, token: payload.access_token, expiresAt: Date.now() + Math.max(60, Number(payload.expires_in ?? 7200) - 120) * 1_000 };
+  return tokenCache.token;
+}
+
+async function resolveSupervisorRecipientIds(event: OfficialAccountBusinessEvent) {
+  const db = await getDb();
+  if (!db) return [];
+  const [profile] = await db.select().from(userProfiles).where(eq(userProfiles.userId, event.userId)).limit(1);
+  const originOrganizationId = event.organizationId ?? profile?.organizationId ?? null;
+  const recipientIds = new Set<number>();
+  const organizationIds = new Set<number>();
+  if (originOrganizationId) {
+    const rows = await db.select({ id: organizations.id, parentId: organizations.parentId, managerUserId: organizations.managerUserId, status: organizations.status }).from(organizations);
+    const byId = new Map(rows.map(row => [row.id, row]));
+    let currentId: number | null = originOrganizationId;
+    for (let depth = 0; currentId && depth < 16; depth += 1) {
+      const organization = byId.get(currentId);
+      if (!organization) break;
+      organizationIds.add(organization.id);
+      if (organization.status === "active" && organization.managerUserId) recipientIds.add(organization.managerUserId);
+      currentId = organization.parentId;
+    }
+  }
+  const now = new Date();
+  const managementRoleCodes = ["PROJECT_MANAGER", "FINANCE_MANAGER", "TRANSPORT_MANAGER", "CONSTRUCTION_MANAGER", "SUPER_ADMIN"];
+  const assignments = await db
+    .select({ userId: userRoleAssignments.userId, projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId, validFrom: userRoleAssignments.validFrom, validTo: userRoleAssignments.validTo, roleCode: systemRoles.code })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .where(and(eq(userRoleAssignments.status, "active"), eq(systemRoles.status, "active"), inArray(systemRoles.code, managementRoleCodes)));
+  for (const assignment of assignments) {
+    const isEffective = (!assignment.validFrom || assignment.validFrom <= now) && (!assignment.validTo || assignment.validTo > now);
+    const isScopeMatch = assignment.roleCode === "SUPER_ADMIN" ||
+      (event.projectId !== undefined && assignment.projectId === event.projectId) ||
+      (assignment.organizationId !== null && organizationIds.has(assignment.organizationId));
+    if (isEffective && isScopeMatch) recipientIds.add(assignment.userId);
+  }
+  recipientIds.delete(event.userId);
+  return Array.from(recipientIds);
+}
+
+async function writeAudit(userId: number, event: OfficialAccountBusinessEvent, recipientUserId: number, reason: OfficialAccountNotificationResult["reason"]) {
+  try {
+    const db = await getDb();
+    if (!db) return;
+    await db.insert(auditLogs).values({ userId, module: event.module, action: "official_account_delivery", targetType: event.targetType, targetId: event.targetId, summary: `公众号通知 ${event.eventCode} -> 用户 #${recipientUserId}：${reason}` });
+  } catch {
+    // 投递审计失败不能反向影响已完成的主业务。
+  }
+}
+
+/** 向一个已绑定人员发送服务号模板通知；失败只落审计和站内记录，不回滚业务。 */
+export async function sendOfficialAccountNotification(input: { eventCode: string; idempotencyKey: string; recipientUserId: number; title: string; content: string; deepLink?: string }): Promise<OfficialAccountNotificationResult> {
+  const db = await getDb();
+  if (!db) return { delivered: false, reason: "database_unavailable" };
+  const idempotencyKey = input.idempotencyKey.slice(0, 160);
+  const [existing] = await db.select({ id: notificationRecords.id, status: notificationRecords.status }).from(notificationRecords).where(eq(notificationRecords.idempotencyKey, idempotencyKey)).limit(1);
+  if (existing?.status === "sent" || existing?.status === "pending" || existing?.status === "read") return { delivered: false, reason: "duplicate" };
+  if (existing) {
+    await db.update(notificationRecords).set({
+      status: "pending",
+      retryCount: sql`${notificationRecords.retryCount} + 1`,
+      failureCode: null,
+      lastAttemptedAt: new Date(),
+      title: input.title.slice(0, 200),
+      content: input.content.slice(0, 1500),
+      deepLink: input.deepLink?.slice(0, 512) ?? null,
+    }).where(eq(notificationRecords.id, existing.id));
+  } else {
+    try {
+      await db.insert(notificationRecords).values({
+        eventCode: input.eventCode.slice(0, 128), idempotencyKey, recipientUserId: input.recipientUserId,
+        title: input.title.slice(0, 200), content: input.content.slice(0, 1500), deepLink: input.deepLink?.slice(0, 512) ?? null,
+        channel: "official_account", status: "pending", lastAttemptedAt: new Date(),
+      });
+    } catch {
+      return { delivered: false, reason: "duplicate" };
+    }
+  }
+  const update = async (result: OfficialAccountNotificationResult, values: Record<string, unknown>) => {
+    await db.update(notificationRecords).set(values).where(eq(notificationRecords.idempotencyKey, idempotencyKey));
+    return result;
+  };
+  const [binding] = await db.select().from(officialAccountBindings).where(and(eq(officialAccountBindings.userId, input.recipientUserId), eq(officialAccountBindings.status, "active"))).limit(1);
+  if (!binding) return update({ delivered: false, reason: "not_bound" }, { status: "skipped", failureCode: "not_bound" });
+  const configResult = await loadPublishedOfficialAccountConfig();
+  if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
+  try {
+    const openId = decryptSecret(binding.openIdEncrypted);
+    const token = await getAccessToken(configResult.config);
+    const variables = { title: input.title.slice(0, 120), content: input.content.slice(0, 160), eventCode: input.eventCode.slice(0, 64), targetType: "业务事项", targetId: input.eventCode.slice(0, 64) };
+    const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, { value: renderTemplate(value, variables).slice(0, 200) }]));
+    const response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
+      method: "POST", redirect: "error", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    const payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
+    if (!response.ok || payload?.errcode !== 0) {
+      const failureCode = String(payload?.errcode ?? response.status).slice(0, 64);
+      await db.update(officialAccountBindings).set({ lastFailureAt: new Date(), failureCount: binding.failureCount + 1 }).where(eq(officialAccountBindings.id, binding.id));
+      return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode });
+    }
+    await db.update(officialAccountBindings).set({ lastVerifiedAt: new Date(), failureCount: 0 }).where(eq(officialAccountBindings.id, binding.id));
+    return update({ delivered: true, reason: "sent", providerMessageId: payload.msgid ? String(payload.msgid) : undefined }, { status: "sent", sentAt: new Date(), providerMessageId: payload.msgid ? String(payload.msgid) : null, failureCode: null });
+  } catch {
+    return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode: "request_failed" });
+  }
+}
+
+/** 默认收件人为发起人的直属主管；审核人、司机等可由调用方明确传入。 */
+export async function notifyOfficialAccountBusinessEvent(event: OfficialAccountBusinessEvent) {
+  const resolved = event.recipientUserIds?.length ? event.recipientUserIds : await resolveSupervisorRecipientIds(event);
+  const recipients = Array.from(new Set((resolved.length ? resolved : [event.userId]).filter(Number.isInteger)));
+  const content = (event.content || `${event.title}，请进入系统查看。`).replace(/[\r\n]+/g, " ").slice(0, 180);
+  return Promise.all(recipients.map(async recipientUserId => {
+    const result = await sendOfficialAccountNotification({ eventCode: event.eventCode, idempotencyKey: `oa:${event.eventCode}:${event.targetType}:${event.targetId}:${recipientUserId}`, recipientUserId, title: event.title, content, deepLink: event.deepLink });
+    await writeAudit(event.userId, event, recipientUserId, result.reason);
+    return { recipientUserId, ...result };
+  }));
+}
+
+/** 后台测试只验证已发布服务号凭据可换取令牌，不向员工推送任何测试消息。 */
+export async function testPublishedOfficialAccountConfiguration() {
+  const configResult = await loadPublishedOfficialAccountConfig();
+  if (!configResult.config) return { success: false, message: configResult.reason === "not_configured" ? "尚未配置完整的认证服务号信息" : "服务号配置未发布或格式无效" };
+  try {
+    await getAccessToken(configResult.config);
+    return { success: true, message: "服务号凭据校验通过，未向任何人员发送测试消息" };
+  } catch {
+    return { success: false, message: "无法使用已发布服务号凭据获取访问令牌，请检查 AppID、AppSecret 和发布状态" };
+  }
+}
+
+/** OpenID 仅以该指纹进行去重查询，永不返回或展示原始值。 */
+export function fingerprintOfficialAccountOpenId(openId: string) {
+  return createHash("sha256").update(openId, "utf8").digest("hex");
+}

@@ -7,8 +7,8 @@ vi.mock("./services/secretVault", () => ({
   encryptSecret: vi.fn((value: string) => `cipher:${value}`),
   decryptSecret: vi.fn((value: string) => value.replace(/^cipher:/, "")),
 }));
-vi.mock("./services/wecomNotifier", () => ({
-  sendWecomTextNotification: vi.fn().mockResolvedValue({ delivered: false, reason: "not_configured" }),
+vi.mock("./services/businessNotifier", () => ({
+  notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("./routers/messages", () => ({
   createInAppMessage: vi.fn().mockResolvedValue({ created: true }),
@@ -29,7 +29,7 @@ import { assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { laborRouter } from "./routers/labor";
 import { createInAppMessage } from "./routers/messages";
-import { sendWecomTextNotification } from "./services/wecomNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
 import { storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -131,7 +131,7 @@ describe("labor tRPC 路由", () => {
     }));
     const submissionMessage = vi.mocked(createInAppMessage).mock.calls[0]?.[0];
     expect(submissionMessage?.content).not.toMatch(/金额|银行卡|张三|13800138000/);
-    expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已提交会计审核，请相关责任人在系统内处理。");
+    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "payroll_submitted", targetType: "payroll_statement", deepLink: "/mobile/labor" }));
   });
 
   it("工资状态条件更新发生冲突时不写审计或投递站内及企业微信消息", async () => {
@@ -147,7 +147,7 @@ describe("labor tRPC 路由", () => {
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
     expect(vi.mocked(createInAppMessage)).not.toHaveBeenCalled();
-    expect(vi.mocked(sendWecomTextNotification)).not.toHaveBeenCalled();
+    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).not.toHaveBeenCalled();
   });
 
   it("实名核验完成会写入无身份信息的幂等站内消息", async () => {
@@ -203,10 +203,10 @@ describe("labor tRPC 路由", () => {
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "approved" })).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
-    vi.mocked(sendWecomTextNotification).mockResolvedValueOnce({ delivered: false, reason: "request_failed" });
+    vi.mocked(notifyOfficialAccountBusinessEventSafely).mockResolvedValueOnce([]);
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "approved" })).resolves.toEqual({ success: true, status: "approved" });
     expect(updateSet).toHaveBeenLastCalledWith(expect.objectContaining({ status: "approved", accountantId: 1 }));
-    expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已完成会计审核，请相关责任人在系统内查看。");
+    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "payroll_approved", targetType: "payroll_statement", deepLink: "/mobile/labor" }));
     expect(db.insert).toHaveBeenCalled();
 
     await expect(laborRouter.createCaller(createAuthContext()).payroll.approve({ id: 8, decision: "returned" })).resolves.toEqual({ success: true, status: "draft" });
@@ -251,7 +251,7 @@ describe("labor tRPC 路由", () => {
     expect(financeRows[0]?.paymentReference).toBe("PAY-202607-0001");
   });
 
-  it("工资发放只允许财务负责人确认，并保留最小化通知和企业微信失败审计", async () => {
+  it("工资发放只允许财务负责人确认，并保留最小化通知和公众号安全投递", async () => {
     const payroll = { id: 8, projectId: 10, period: "2026-07", status: "approved", submittedBy: 7 };
     const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
     const insertValues = vi.fn(async () => undefined);
@@ -265,13 +265,13 @@ describe("labor tRPC 路由", () => {
     await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
-    vi.mocked(sendWecomTextNotification).mockResolvedValueOnce({ delivered: false, reason: "request_failed" });
+    vi.mocked(notifyOfficialAccountBusinessEventSafely).mockResolvedValueOnce([]);
     await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).resolves.toMatchObject({ success: true, status: "paid" });
 
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "paid", paymentReference: "PAY-202607-0001" }));
     expect(vi.mocked(createInAppMessage)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "PAYROLL_PAID", recipientUserId: 7, deepLink: "/mobile/labor" }));
-    expect(vi.mocked(sendWecomTextNotification)).toHaveBeenCalledWith("【道路施工承包管理系统】2026-07 工资条已确认发放，请相关责任人在系统内查看。");
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "wecom_notification_failed", targetId: "8" }));
+    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "payroll_paid", targetType: "payroll_statement", targetId: "8", deepLink: "/mobile/labor" }));
+    expect(insertValues).toHaveBeenCalled();
   });
 
   it("工资条只能在发放确认前由会计或财务负责人作废，已发放记录保持终态锁定", async () => {

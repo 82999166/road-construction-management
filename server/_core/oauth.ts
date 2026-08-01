@@ -3,7 +3,7 @@ import { parse as parseCookieHeader } from "cookie";
 import type { Express, Request, Response } from "express";
 import { auditLogs } from "../../drizzle/schema";
 import * as db from "../db";
-import { notifyWecomBusinessEvent } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { getSessionCookieOptions } from "./cookies";
 import { sdk } from "./sdk";
 
@@ -63,7 +63,7 @@ export function registerOAuthRoutes(app: Express) {
             targetId: String(userRecord.id),
             summary: "企业统一身份登录成功",
           });
-          void notifyWecomBusinessEvent({
+          void notifyOfficialAccountBusinessEventSafely({
             userId: userRecord.id,
             module: "security",
             eventCode: "oauth_login_success",
