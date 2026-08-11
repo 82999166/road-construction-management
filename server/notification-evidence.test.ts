@@ -137,4 +137,18 @@ describe("消息、影像与企业微信通知安全边界", () => {
     await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual({ reason: "disabled" });
     await expect(testPublishedOfficialAccountConfiguration()).resolves.toEqual({ success: true, message: "服务号凭据校验通过；模板消息尚未配置，员工绑定可继续，业务通知将在模板配置发布后启用" });
   });
+
+  it("服务号开发密钥校验会安全返回微信 40164 的出口 IP 诊断，且不会泄露 AppSecret", async () => {
+    const secret = "credential-secret-must-not-leak";
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-ip-whitelist-check" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: `cipher:${secret}` },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ errcode: 40164, errmsg: "invalid ip 203.0.113.10, not in whitelist" }) })));
+
+    const result = await testPublishedOfficialAccountConfiguration();
+    expect(result).toMatchObject({ success: false, message: expect.stringContaining("203.0.113.10") });
+    expect(result.message).not.toContain(secret);
+  });
 });

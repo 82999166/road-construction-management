@@ -120,8 +120,12 @@ async function getAccessToken(config: OfficialAccountConfig | (OfficialAccountCr
   url.searchParams.set("appid", config.appId);
   url.searchParams.set("secret", config.appSecret);
   const response = await fetch(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
-  const payload = await response.json().catch(() => null) as { access_token?: string; expires_in?: number; errcode?: number } | null;
-  if (!response.ok || !payload?.access_token) throw new Error(`token_${payload?.errcode ?? response.status}`);
+  const payload = await response.json().catch(() => null) as { access_token?: string; expires_in?: number; errcode?: number; errmsg?: string } | null;
+  if (!response.ok || !payload?.access_token) {
+    const code = String(payload?.errcode ?? response.status).slice(0, 24);
+    const detail = typeof payload?.errmsg === "string" ? payload.errmsg.replace(/[\r\n]+/g, " ").slice(0, 220) : "";
+    throw new Error(`token_${code}${detail ? `:${detail}` : ""}`);
+  }
   tokenCache = { appId: config.appId, token: payload.access_token, expiresAt: Date.now() + Math.max(60, Number(payload.expires_in ?? 7200) - 120) * 1_000 };
   return tokenCache.token;
 }
@@ -252,8 +256,14 @@ export async function testPublishedOfficialAccountConfiguration() {
     await getAccessToken(credentialResult.config);
     const messageConfig = await loadPublishedOfficialAccountConfig();
     return { success: true, message: messageConfig.config ? "服务号凭据校验通过，模板消息已配置；未向任何人员发送测试消息" : "服务号凭据校验通过；模板消息尚未配置，员工绑定可继续，业务通知将在模板配置发布后启用" };
-  } catch {
-    return { success: false, message: "无法使用已发布服务号凭据获取 access_token；请在微信开发者平台确认 AppSecret 已启用、密钥正确且未受 API IP 白名单限制" };
+  } catch (error) {
+    const providerError = error instanceof Error ? error.message.match(/^token_([^:]+)(?::(.+))?$/) : null;
+    const code = providerError?.[1];
+    const detail = providerError?.[2]?.replace(/[\r\n]+/g, " ").slice(0, 220);
+    if (code === "40164") return { success: false, message: `微信返回 40164：当前调用出口不在 API IP 白名单。${detail ? `微信诊断：${detail}。` : ""}请将提示中的实际 IP 追加到“微信开发者平台 → 我的业务 → 服务号 → 基础信息 → 开发密钥 → API IP 白名单”。` };
+    if (code === "40243") return { success: false, message: "微信返回 40243：AppSecret 当前处于冻结状态。请在微信开发者平台 → 我的业务 → 服务号 → 基础信息 → 开发密钥中解冻，等待约 10 分钟后再校验。" };
+    if (code) return { success: false, message: `微信拒绝 access_token 请求（错误码 ${code}${detail ? `，${detail}` : ""}）。请核对 AppSecret 是否已启用、未被重置，并检查 API IP 白名单。` };
+    return { success: false, message: "无法连接微信 access_token 接口。请检查网络、AppSecret 启用状态和 API IP 白名单后重试。" };
   }
 }
 
