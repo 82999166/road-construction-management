@@ -127,6 +127,13 @@
       "when": 1786469125050,
       "tag": "0017_complex_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1786473509162,
+      "tag": "0018_lean_george_stacy",
+      "breakpoints": true
     }
   ]
 }

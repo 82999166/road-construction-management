@@ -10,6 +10,8 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
   "WECHAT_OFFICIAL_APP_URL",
+  "WECHAT_OFFICIAL_EVENT_TOKEN",
+  "WECHAT_OFFICIAL_EVENT_AES_KEY",
 ] as const;
 
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
@@ -119,7 +121,7 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
   }
 }
 
-async function getAccessToken(config: OfficialAccountConfig | (OfficialAccountCredentialConfig & { templateId?: string; templateFields?: Record<string, string> })) {
+export async function getOfficialAccountAccessToken(config: OfficialAccountConfig | (OfficialAccountCredentialConfig & { templateId?: string; templateFields?: Record<string, string> })) {
   if (tokenCache && tokenCache.appId === config.appId && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token;
   const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
   url.searchParams.set("grant_type", "client_credential");
@@ -221,7 +223,7 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
   if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
   try {
     const openId = decryptSecret(binding.openIdEncrypted);
-    const token = await getAccessToken(configResult.config);
+    const token = await getOfficialAccountAccessToken(configResult.config);
     const variables = { title: input.title.slice(0, 120), content: input.content.slice(0, 160), eventCode: input.eventCode.slice(0, 64), targetType: "业务事项", targetId: input.eventCode.slice(0, 64) };
     const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, { value: renderTemplate(value, variables).slice(0, 200) }]));
     const response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
@@ -259,7 +261,7 @@ export async function testPublishedOfficialAccountConfiguration() {
   const credentialResult = await loadPublishedOfficialAccountCredentials();
   if (!credentialResult.config) return { success: false, message: credentialResult.reason === "not_configured" ? "尚未发布 AppID 与 AppSecret；请在微信开发者平台启用 AppSecret 后保存并发布" : "AppID 或 AppSecret 未发布、已冻结或格式无效" };
   try {
-    await getAccessToken(credentialResult.config);
+    await getOfficialAccountAccessToken(credentialResult.config);
     const messageConfig = await loadPublishedOfficialAccountConfig();
     return { success: true, message: messageConfig.config ? "服务号凭据校验通过，模板消息已配置；未向任何人员发送测试消息" : "服务号凭据校验通过；模板消息尚未配置，员工绑定可继续，业务通知将在模板配置发布后启用" };
   } catch (error) {
@@ -289,7 +291,7 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
   const credentialResult = await loadPublishedOfficialAccountCredentials();
   if (!credentialResult.config) return { success: false, message: "请先发布 AppID 与 AppSecret，再读取服务号私有模板库。", templates: [] };
   try {
-    const token = await getAccessToken(credentialResult.config);
+    const token = await getOfficialAccountAccessToken(credentialResult.config);
     const response = await fetch(`https://api.weixin.qq.com/cgi-bin/template/get_all_private_template?access_token=${encodeURIComponent(token)}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000),
     });

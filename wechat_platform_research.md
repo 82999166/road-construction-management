@@ -57,3 +57,14 @@ https://developers.weixin.qq.com/doc/service/guide/product/template_message/Temp
 微信新版“订阅通知”也可由认证服务号开通，但它要求用户在图文或网页中主动订阅；一次性订阅每次授权仅能下发一条，长期订阅仅向政务民生、医疗等公共服务领域开放。道路施工管理系统需要审核、装卸刷卡和日汇总等持续业务提醒，因此不应把现有连续提醒默认替换为一次性订阅通知。正确主方案仍是：在服务号后台开通**模板消息功能插件**，选择合规服务类目和业务通知模板，再将模板 ID 配置至系统；订阅通知可作为员工主动选择的补充能力，而非替代通道。
 
 相关官方接口：模板消息 `/cgi-bin/message/template/send`；订阅通知 `/cgi-bin/message/subscribe/bizsend`。两种能力的模板与发送接口不可混用。
+
+## 扫码事件绑定补充（服务号新版平台）
+
+微信官方文档说明，服务号可在 **微信开发者平台 → 我的业务 → 服务号 → 消息与事件推送** 配置 URL、Token 与 EncodingAESKey。提交时微信会对 URL 发起携带 `signature`、`timestamp`、`nonce`、`echostr` 的 GET 验证；服务端须以 Token、timestamp、nonce 字典序拼接并 SHA-1 校验，再原样返回 `echostr`。安全模式消息体为 XML 加密内容。
+
+认证服务号可在服务端创建带参数的临时二维码（最长 30 天），用于账号绑定；已关注用户扫码会推送扫描事件，未关注用户关注后会推送带场景值关注事件。因此，在用户新版平台未显示网页授权域名入口时，系统改用带参数二维码和消息事件回调完成员工绑定，不再要求用户在 JS 接口安全域名或第三方授权关系界面配置 OAuth 域名。
+
+来源：
+
+1. https://developers.weixin.qq.com/doc/service/guide/dev/push/
+2. https://developers.weixin.qq.com/doc/service/api/qrcode/qrcodes/api_createqrcode.html

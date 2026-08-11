@@ -1,9 +1,9 @@
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import type { Express, Request, Response } from "express";
 import { and, eq } from "drizzle-orm";
-import { auditLogs, officialAccountBindings, users } from "../drizzle/schema";
+import { auditLogs, officialAccountBindingRequests, officialAccountBindings, users } from "../drizzle/schema";
 import { getDb } from "./db";
-import { fingerprintOfficialAccountOpenId, loadPublishedOfficialAccountCredentials } from "./services/officialAccountNotifier";
+import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials } from "./services/officialAccountNotifier";
 import { encryptSecret } from "./services/secretVault";
 
 const BINDING_STATE_MAX_AGE_MS = 10 * 60 * 1_000;

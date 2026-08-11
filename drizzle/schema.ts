@@ -418,6 +418,19 @@ export const officialAccountBindings = mysqlTable(
   }),
 );
 
+/** 服务号扫码绑定的短时请求；仅保存令牌指纹，扫码事件到达后一次性消费。 */
+export const officialAccountBindingRequests = mysqlTable("official_account_binding_requests", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  tokenFingerprint: varchar("tokenFingerprint", { length: 64 }).notNull(),
+  expiresAt: datetime("expiresAt").notNull(),
+  consumedAt: datetime("consumedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => ({
+  tokenUnique: uniqueIndex("official_account_binding_requests_token_unique").on(table.tokenFingerprint),
+  userIndex: index("official_account_binding_requests_user_index").on(table.userId),
+}));
+
 /** 固定 12 类采购字典，后台仅可调整排序和停启用，不能变更标准编码。 */
 export const purchaseCategories = mysqlTable(
   "purchase_categories",

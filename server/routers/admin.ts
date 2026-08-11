@@ -142,6 +142,10 @@ function requiresSecretStorage(settingKey: string) {
 }
 
 const OFFICIAL_ACCOUNT_APP_SECRET_KEY = "WECHAT_OFFICIAL_APP_SECRET";
+const OFFICIAL_ACCOUNT_EVENT_SECRET_KEYS = new Set([
+  "WECHAT_OFFICIAL_EVENT_TOKEN",
+  "WECHAT_OFFICIAL_EVENT_AES_KEY",
+]);
 const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
   "WECHAT_OFFICIAL_TEMPLATE_ID",
@@ -162,7 +166,7 @@ function assertSupportedSettingKey(settingKey: string) {
  * AppSecret 只允许密文托管，其余四项为发布后的受控公开参数，避免因误标敏感导致运行时无法读取。
  */
 function assertOfficialAccountSettingContract(input: { settingKey: string; value: string; isSensitive: boolean }) {
-  if (input.settingKey === OFFICIAL_ACCOUNT_APP_SECRET_KEY && !input.isSensitive) {
+  if ((input.settingKey === OFFICIAL_ACCOUNT_APP_SECRET_KEY || OFFICIAL_ACCOUNT_EVENT_SECRET_KEYS.has(input.settingKey)) && !input.isSensitive) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "认证服务号 AppSecret 必须使用加密托管" });
   }
   if (OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS.has(input.settingKey) && input.isSensitive) {
