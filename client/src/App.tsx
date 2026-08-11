@@ -9,6 +9,7 @@ import { ShieldAlert } from "lucide-react";
 import { useEffect } from "react";
 import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import AdminPage from "./pages/AdminPage";
 import Home from "./pages/Home";
@@ -72,6 +73,7 @@ function UnifiedLoginRoute() {
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
+    <>
     <Switch>
       <Route path={"/login"} component={UnifiedLoginRoute} />
       <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
@@ -93,6 +95,8 @@ function Router() {
       {/* Final fallback route */}
       <Route component={NotFound} />
     </Switch>
+    <MobileEvidenceShortcut />
+    </>
   );
 }
 

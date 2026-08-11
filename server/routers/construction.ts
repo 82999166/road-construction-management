@@ -6,6 +6,7 @@ import { assertConstructionDailyReportStatusTransition, ConstructionDomainError 
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const reportStatusSchema = z.enum(["draft", "submitted", "approved", "rejected", "locked"]);
@@ -130,12 +131,14 @@ export const constructionRouter = router({
         .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
       assertConditionalDailyReportWrite(updateResult);
       await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "update_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `更新施工日报：${input.reportDate} ${input.workArea}` });
+      void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: "construction_daily_report_updated", targetType: "construction_daily_report", targetId: String(input.id), title: "施工日报已更新", content: "一份施工日报已更新，请进入系统查看受控记录。", deepLink: "/mobile/construction" }).catch(() => undefined);
       return { id: input.id, updated: true };
     }
 
     const [created] = await db.insert(constructionDailyReports).values({ ...values, createdBy: user.id }).$returningId();
     const id = Number(created?.id);
     await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "create_daily_report", targetType: "construction_daily_report", targetId: String(id), summary: `新建施工日报：${input.reportDate} ${input.workArea}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: "construction_daily_report_created", targetType: "construction_daily_report", targetId: String(id), title: "施工日报已提交记录", content: "一份施工日报已录入，请进入系统办理或查看。", deepLink: "/mobile/construction" }).catch(() => undefined);
     return { id, created: true };
   }),
 
@@ -159,6 +162,7 @@ export const constructionRouter = router({
       .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
     assertConditionalDailyReportWrite(updateResult);
     await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "transition_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报状态从 ${existing.status} 变更为 ${input.nextStatus}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: `construction_daily_report_${input.nextStatus}`, targetType: "construction_daily_report", targetId: String(input.id), title: `施工日报已${input.nextStatus}`, content: "施工日报处理状态已更新，请进入系统查看受控记录。", deepLink: "/mobile/construction" }).catch(() => undefined);
     return { success: true };
   }),
 });

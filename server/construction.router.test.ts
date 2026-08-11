@@ -13,10 +13,12 @@ vi.mock("./access", async importOriginal => {
     getEffectiveRoleCodes: vi.fn(),
   };
 });
+vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue(undefined) }));
 
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { constructionRouter } from "./routers/construction";
+import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -88,6 +90,7 @@ describe("施工日报 tRPC 路由", () => {
 
     expect(reportValues).toHaveBeenCalledWith(expect.objectContaining({ projectId: 10, createdBy: 1, progressPercent: "35.5" }));
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "construction", action: "create_daily_report", targetId: "88" }));
+    expect(notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ projectId: 10, eventCode: "construction_daily_report_created", targetId: "88" }));
   });
 
   it("已归档施工日报不允许回退，且拒绝发生在写库之前", async () => {
@@ -112,5 +115,6 @@ describe("施工日报 tRPC 路由", () => {
     await expect(constructionRouter.createCaller(createAuthContext()).transitionReport({ id: 92, projectId: 10, nextStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
+    expect(notifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 });
