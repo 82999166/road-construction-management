@@ -42,6 +42,7 @@ async function getProjectScopedRoleAssignments(
       and(
         eq(userRoleAssignments.userId, userId),
         eq(userRoleAssignments.status, "active"),
+        eq(systemRoles.status, "active"),
         isNull(userRoleAssignments.organizationId),
         ne(projects.status, "archived"),
         or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
@@ -131,6 +132,7 @@ export async function getSuperAdminAccess(ctx: TrpcContext) {
         eq(userRoleAssignments.userId, user.id),
         eq(userRoleAssignments.status, "active"),
         eq(systemRoles.code, "SUPER_ADMIN"),
+        eq(systemRoles.status, "active"),
         or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
         or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
       ),
@@ -201,6 +203,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
       and(
         eq(userRoleAssignments.userId, user.id),
         eq(userRoleAssignments.status, "active"),
+        eq(systemRoles.status, "active"),
         eq(organizations.status, "active"),
         or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
         eq(departmentBusinessScopes.status, "active"),
@@ -257,6 +260,7 @@ async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: Dep
       and(
         eq(userRoleAssignments.userId, user.id),
         eq(userRoleAssignments.status, "active"),
+        eq(systemRoles.status, "active"),
         eq(organizations.status, "active"),
         or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
         eq(departmentBusinessScopes.module, module),
@@ -309,6 +313,7 @@ export async function getCurrentDataScope(ctx: TrpcContext) {
       and(
         eq(userRoleAssignments.userId, user.id),
         eq(userRoleAssignments.status, "active"),
+        eq(systemRoles.status, "active"),
         eq(organizations.status, "active"),
         or(eq(organizations.type, "department"), eq(organizations.type, "project_department")),
         eq(departmentBusinessScopes.status, "active"),

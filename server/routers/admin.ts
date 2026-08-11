@@ -696,7 +696,31 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
-      return db.select().from(userRoleAssignments).orderBy(desc(userRoleAssignments.createdAt));
+      return db.select({
+        id: userRoleAssignments.id,
+        userId: userRoleAssignments.userId,
+        roleId: userRoleAssignments.roleId,
+        organizationId: userRoleAssignments.organizationId,
+        projectId: userRoleAssignments.projectId,
+        validFrom: userRoleAssignments.validFrom,
+        validTo: userRoleAssignments.validTo,
+        status: userRoleAssignments.status,
+        grantedBy: userRoleAssignments.grantedBy,
+        createdAt: userRoleAssignments.createdAt,
+        userName: users.name,
+        localUsername: users.localUsername,
+        localAccountStatus: users.localAccountStatus,
+        roleName: systemRoles.name,
+        roleCode: systemRoles.code,
+        roleStatus: systemRoles.status,
+        organizationName: organizations.name,
+        projectName: projects.name,
+      }).from(userRoleAssignments)
+        .innerJoin(users, eq(userRoleAssignments.userId, users.id))
+        .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+        .leftJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
+        .leftJoin(projects, eq(userRoleAssignments.projectId, projects.id))
+        .orderBy(desc(userRoleAssignments.createdAt));
     }),
     createLocalUser: protectedProcedure.input(localManagerAccountInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);

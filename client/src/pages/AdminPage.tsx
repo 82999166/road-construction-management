@@ -71,6 +71,7 @@ type VehicleForm = { id?: number; projectId: string; organizationId: string; pla
 type LocalAccountStatus = "active" | "disabled";
 type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus };
 type LocalAccountActionTarget = { id: number; name: string; username: string };
+type AssignmentForm = { id?: number; userId: string; roleId: string; organizationId: string; projectId: string; validFrom: string; validTo: string };
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
@@ -84,6 +85,7 @@ const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
+const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expectedVersion">> = [
@@ -117,6 +119,24 @@ function displayDate(value: Date | string | null | undefined) {
 function toLocalDateInput(value = new Date()) {
   const localValue = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
   return localValue.toISOString().slice(0, 10);
+}
+
+/** 将服务端 UTC 时间转换为 datetime-local 控件可编辑的本地值，避免维护授权有效期时出现时区偏移。 */
+function toLocalDateTimeInput(value: Date | string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+/** 后台仅展示推导状态；服务端仍以授权记录、角色状态和当前时间作为最终访问边界。 */
+function getAssignmentLifecycle(input: { status: string; roleStatus: string; validFrom: Date | string | null; validTo: Date | string | null }) {
+  if (input.status === "revoked") return { label: "已撤销", tone: "outline" as const };
+  if (input.roleStatus !== "active") return { label: "角色已停用", tone: "destructive" as const };
+  const now = Date.now();
+  if (input.validFrom && new Date(input.validFrom).getTime() > now) return { label: "尚未生效", tone: "outline" as const };
+  if (input.validTo && new Date(input.validTo).getTime() <= now) return { label: "已过期", tone: "outline" as const };
+  return { label: "有效", tone: "secondary" as const };
 }
 
 /** 空、非整数或非正项目号一律不作为业务查询范围，避免前端误把缺省条件视为全项目。 */
@@ -299,7 +319,9 @@ export default function AdminPage() {
   const [positionForm, setPositionForm] = useState<PositionForm>(EMPTY_POSITION_FORM);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
   const [roleForm, setRoleForm] = useState<RoleForm>(EMPTY_ROLE_FORM);
-  const [assignmentForm, setAssignmentForm] = useState({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
+  const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(EMPTY_ASSIGNMENT_FORM);
+  const [personnelSearch, setPersonnelSearch] = useState("");
+  const [assignmentSearch, setAssignmentSearch] = useState("");
   const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", status: "active" as LocalAccountStatus });
   const [localAccountEditForm, setLocalAccountEditForm] = useState<LocalAccountEditForm | null>(null);
   const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
@@ -411,8 +433,8 @@ export default function AdminPage() {
   });
   const saveAssignment = trpc.admin.personnel.saveAssignment.useMutation({
     onSuccess: async () => {
-      toast.success("人员授权已保存");
-      setAssignmentForm({ userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" });
+      toast.success(assignmentForm.id ? "人员授权已更新" : "人员授权已保存");
+      setAssignmentForm(EMPTY_ASSIGNMENT_FORM);
       await Promise.all([assignments.refetch(), audits.refetch(), users.refetch()]);
     },
     onError: error => toast.error(error.message),
@@ -661,6 +683,19 @@ export default function AdminPage() {
   const assignmentHasScope = Boolean(assignmentForm.organizationId || assignmentForm.projectId);
   const assignmentReady = Boolean(assignmentForm.userId && selectedAssignmentRole && (!assignmentRequiresBusinessScope || assignmentHasScope));
   const normalizedAssignmentScope = getAssignmentScopeSaveInput(assignmentForm);
+  const localManagerUsers = useMemo(() => (users.data ?? []).filter(user => user.loginMethod === "local_manager"), [users.data]);
+  const filteredLocalManagerUsers = useMemo(() => {
+    const keyword = personnelSearch.trim().toLowerCase();
+    if (!keyword) return localManagerUsers;
+    return localManagerUsers.filter(user => `${user.name ?? ""} ${user.localUsername ?? ""}`.toLowerCase().includes(keyword));
+  }, [localManagerUsers, personnelSearch]);
+  const filteredAssignments = useMemo(() => {
+    const keyword = assignmentSearch.trim().toLowerCase();
+    const rows = assignments.data ?? [];
+    if (!keyword) return rows;
+    return rows.filter(item => `${item.userName ?? ""} ${item.localUsername ?? ""} ${item.roleName} ${item.roleCode} ${item.organizationName ?? ""} ${item.projectName ?? ""}`.toLowerCase().includes(keyword));
+  }, [assignmentSearch, assignments.data]);
+  const activeAssignmentCount = useMemo(() => (assignments.data ?? []).filter(item => getAssignmentLifecycle(item).label === "有效").length, [assignments.data]);
 
   const renderOverview = () => (
     <div className="space-y-6">
@@ -889,7 +924,8 @@ export default function AdminPage() {
   const renderPermissions = () => (
     <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
       <section className="space-y-4">
-        <div><p className="text-sm font-medium text-[#203c48]">人员与授权</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">角色权限矩阵</h1><p className="mt-2 text-sm text-slate-500">角色、菜单、操作和项目数据范围均在后台维护；超级管理员拥有独立 PC 入口。</p></div>
+        <div><p className="text-sm font-medium text-[#203c48]">人员与授权</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">人员、角色与数据范围</h1><p className="mt-2 text-sm text-slate-500">先维护账号与岗位，再以部门或具体项目配置数据范围；所有实际访问均由服务端按角色状态、有效期和范围实时裁决。</p></div>
+        <div className="grid grid-cols-2 gap-2"><div className="rounded-xl border border-slate-100 bg-white p-3"><p className="text-xs text-slate-500">普通管理账号</p><p className="mt-1 text-2xl font-semibold text-slate-800">{localManagerUsers.length}</p></div><div className="rounded-xl border border-slate-100 bg-white p-3"><p className="text-xs text-slate-500">账号已启用</p><p className="mt-1 text-2xl font-semibold text-emerald-700">{localManagerUsers.filter(user => user.localAccountStatus === "active").length}</p></div><div className="rounded-xl border border-slate-100 bg-white p-3"><p className="text-xs text-slate-500">当前有效授权</p><p className="mt-1 text-2xl font-semibold text-[#203c48]">{activeAssignmentCount}</p></div><div className="rounded-xl border border-slate-100 bg-white p-3"><p className="text-xs text-slate-500">待关注绑定</p><p className="mt-1 text-2xl font-semibold text-amber-700">{localManagerUsers.filter(user => user.profileStatus !== "active").length}</p></div></div>
         <Card>
           <CardHeader><CardTitle className="text-base">角色列表</CardTitle></CardHeader>
           <CardContent className="space-y-2">
@@ -956,11 +992,12 @@ export default function AdminPage() {
               <div className="grid gap-1.5"><Label>初始状态</Label><Select value={localAccountForm.status} onValueChange={value => setLocalAccountForm({ ...localAccountForm, status: value as "active" | "disabled" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
               <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate(localAccountForm)}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
             </div>
-            {users.data?.some(user => user.loginMethod === "local_manager") ? <div className="space-y-2">{users.data.filter(user => user.loginMethod === "local_manager").map(user => {
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 p-2.5"><p className="text-xs text-slate-600">账号目录 · {localManagerUsers.length} 人</p><Input className="h-8 w-full sm:w-56" value={personnelSearch} onChange={event => setPersonnelSearch(event.target.value)} placeholder="搜索姓名或登录账号" /></div>
+            {localManagerUsers.length ? <div className="space-y-2">{filteredLocalManagerUsers.map(user => {
               const accountTarget = { id: user.id, name: user.name || `用户 #${user.id}`, username: user.localUsername || "" };
               const bindingLabel = user.profileStatus === "active" ? "已完成关注绑定" : user.profileStatus === "disabled" ? "绑定已停用" : "待关注绑定";
-              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2.5"><div><p className="text-sm font-medium text-slate-800">{accountTarget.name} <span className="ml-1 font-mono text-xs text-slate-500">{user.localUsername}</span></p><p className="mt-0.5 text-xs text-slate-500">密码已设置 · 公众号：{bindingLabel} · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
-            })}</div> : <EmptyState text="尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。" />}
+              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5 shadow-sm"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{accountTarget.name}</p><span className="font-mono text-xs text-slate-500">{user.localUsername}</span><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Badge variant="outline">公众号：{bindingLabel}</Badge></div><p className="mt-1 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
+            })}</div> : <EmptyState text={personnelSearch ? "未找到匹配的普通管理账号。" : "尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。"} />}
           </CardContent>
         </Card>
         <Dialog open={Boolean(localAccountEditForm)} onOpenChange={open => { if (!open) setLocalAccountEditForm(null); }}>
@@ -992,23 +1029,23 @@ export default function AdminPage() {
           </AlertDialogContent>
         </AlertDialog>
         <Card>
-          <CardHeader><CardTitle className="text-base">管理人员角色授权</CardTitle><CardDescription>业务角色可以绑定已启用的所属部门/项目部，或直接绑定一个具体项目。两种方式均由服务端校验；项目级授权绝不扩大为全部项目权限。</CardDescription></CardHeader>
+          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">{assignmentForm.id ? "编辑管理人员授权" : "管理人员角色授权"}</CardTitle><CardDescription className="mt-1">业务角色可以绑定已启用的所属部门/项目部，或直接绑定一个具体项目。项目级授权绝不扩大为全部项目权限；角色停用、账号停用、到期和撤销都会被服务端实时拦截。</CardDescription></div>{assignmentForm.id ? <Button size="sm" variant="outline" onClick={() => setAssignmentForm(EMPTY_ASSIGNMENT_FORM)}>取消编辑</Button> : null}</CardHeader>
           <CardContent className="space-y-4">
             {assignmentRequiresBusinessScope && !assignmentHasScope ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">请为业务角色至少选择一个所属部门/项目部或一个具体项目范围；未选择时不会提交授权。</div> : null}
             {!departmentNodes.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-sm text-sky-900"><span>当前未配置可用部门或项目部。您仍可直接按具体项目授权；如需部门级范围，请先建立项目部并启用对应业务模块。</span><Button size="sm" variant="outline" onClick={() => setLocation("/admin/organization")}>配置组织与项目</Button></div> : null}
             <div className="grid gap-3 lg:grid-cols-3">
               <div className="grid gap-1.5"><Label>管理人员</Label><Select value={assignmentForm.userId} onValueChange={value => setAssignmentForm({ ...assignmentForm, userId: value })}><SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger><SelectContent>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}{user.localUsername ? `（${user.localUsername}）` : ""}</SelectItem>)}</SelectContent></Select></div>
-              <div className="grid gap-1.5"><Label>业务角色</Label><Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label>业务角色</Label><Select value={assignmentForm.roleId} onValueChange={value => setAssignmentForm({ ...assignmentForm, roleId: value })}><SelectTrigger><SelectValue placeholder="选择角色" /></SelectTrigger><SelectContent>{roles.data?.filter(role => role.status === "active" || String(role.id) === assignmentForm.roleId).map(role => <SelectItem key={role.id} value={String(role.id)}>{role.name}{role.status !== "active" ? "（已停用）" : ""}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid gap-1.5"><Label>所属部门 / 项目部</Label><Select value={assignmentForm.organizationId || "UNASSIGNED"} onValueChange={value => setAssignmentForm({ ...assignmentForm, organizationId: value === "UNASSIGNED" ? "" : value, projectId: value === "UNASSIGNED" ? assignmentForm.projectId : "" })}><SelectTrigger><SelectValue placeholder="选择所属部门" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">不设置（可改用具体项目范围）</SelectItem>{departmentNodes.map(node => <SelectItem key={node.id} value={String(node.id)}>{node.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid gap-1.5"><Label>具体项目范围</Label><Select value={assignmentForm.projectId || "ALL"} onValueChange={value => setAssignmentForm({ ...assignmentForm, projectId: value === "ALL" ? "" : value, organizationId: value === "ALL" ? assignmentForm.organizationId : "" })}><SelectTrigger><SelectValue placeholder="项目范围（可选）" /></SelectTrigger><SelectContent><SelectItem value="ALL">不设置项目范围</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid gap-1.5"><Label htmlFor="assignment-valid-from">授权生效时间</Label><Input id="assignment-valid-from" type="datetime-local" value={assignmentForm.validFrom} onChange={event => setAssignmentForm({ ...assignmentForm, validFrom: event.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="assignment-valid-to">授权失效时间</Label><Input id="assignment-valid-to" type="datetime-local" value={assignmentForm.validTo} onChange={event => setAssignmentForm({ ...assignmentForm, validTo: event.target.value })} /></div>
             </div>
             <div className="rounded-lg border border-[#d8e3e0] bg-[#f7faf9] px-3 py-2 text-xs leading-5 text-slate-600">{normalizedAssignmentScope.projectId ? "当前为具体项目授权：保存后仅可访问该项目，角色对应业务模块将立即生效；不再依赖部门业务模块配置。" : normalizedAssignmentScope.organizationId ? "当前为部门范围授权：请先在“部门可办理业务”启用对应模块，才能显示业务入口。" : "请选择部门范围或具体项目范围后再授权。"}</div>
-            <Button className="min-w-40 bg-[#203c48] hover:bg-[#17313b]" disabled={!assignmentReady || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: normalizedAssignmentScope.organizationId, projectId: normalizedAssignmentScope.projectId, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>{saveAssignment.isPending ? "正在授权…" : "授权"}</Button>
+            <Button className="min-w-40 bg-[#203c48] hover:bg-[#17313b]" disabled={!assignmentReady || saveAssignment.isPending} onClick={() => saveAssignment.mutate({ id: assignmentForm.id, userId: Number(assignmentForm.userId), roleId: Number(assignmentForm.roleId), organizationId: normalizedAssignmentScope.organizationId, projectId: normalizedAssignmentScope.projectId, validFrom: assignmentForm.validFrom ? new Date(assignmentForm.validFrom).toISOString() : null, validTo: assignmentForm.validTo ? new Date(assignmentForm.validTo).toISOString() : null })}>{saveAssignment.isPending ? "正在保存…" : assignmentForm.id ? "保存授权修改" : "授予角色"}</Button>
           </CardContent>
           <CardContent className="pt-0">
-            {assignments.data?.length ? <div className="space-y-2">{assignments.data.slice(0, 8).map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"><span>用户 #{item.userId} · 角色 #{item.roleId} · 部门 {item.organizationId ? organizationNameById.get(item.organizationId) ?? `#${item.organizationId}` : "未设置"} · 项目 {item.projectId || "全部"}</span><div className="flex items-center gap-2"><Badge variant="outline">{item.status}</Badge>{item.status !== "revoked" ? <Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "role_assignment", id: item.id, label: `用户 #${item.userId} 的角色授权`, description: "确认撤销该角色授权？系统将立即停止其权限，并保留原授权记录、操作人和审计历史。" })}>撤销</Button> : null}</div></div>)}</div> : <EmptyState text="暂无角色授权记录。" />}
+            {(assignments.data ?? []).length ? <div className="space-y-2"><div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 p-2.5"><p className="text-xs text-slate-600">授权目录 · {filteredAssignments.length}/{(assignments.data ?? []).length} 条</p><Input className="h-8 w-full sm:w-64" value={assignmentSearch} onChange={event => setAssignmentSearch(event.target.value)} placeholder="搜索人员、角色、部门或项目" /></div>{filteredAssignments.map(item => { const lifecycle = getAssignmentLifecycle(item); return <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-3 shadow-sm"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{item.userName || `用户 #${item.userId}`}</p>{item.localUsername ? <span className="font-mono text-xs text-slate-500">{item.localUsername}</span> : null}<Badge variant={lifecycle.tone}>{lifecycle.label}</Badge><Badge variant="outline">{item.roleName} · {item.roleCode}</Badge></div><p className="mt-1 text-xs leading-5 text-slate-500">范围：{item.projectName ? `项目 · ${item.projectName}` : item.organizationName ? `部门 · ${item.organizationName}` : "全局管理员"} · 生效：{displayDate(item.validFrom)} · 到期：{displayDate(item.validTo)}</p></div><div className="flex flex-wrap items-center gap-2">{item.status !== "revoked" ? <><Button size="sm" variant="outline" onClick={() => setAssignmentForm({ id: item.id, userId: String(item.userId), roleId: String(item.roleId), organizationId: item.organizationId ? String(item.organizationId) : "", projectId: item.projectId ? String(item.projectId) : "", validFrom: toLocalDateTimeInput(item.validFrom), validTo: toLocalDateTimeInput(item.validTo) })}>编辑</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => setMasterDataDeleteTarget({ resource: "role_assignment", id: item.id, label: `${item.userName || `用户 #${item.userId}`} 的 ${item.roleName} 授权`, description: "确认撤销该角色授权？系统将立即停止其权限，并保留原授权记录、操作人和审计历史。" })}>撤销</Button></> : null}</div></div>; })}{!filteredAssignments.length ? <EmptyState text="未找到匹配的授权记录。" /> : null}</div> : <EmptyState text="暂无角色授权记录。" />}
           </CardContent>
         </Card>
       </section>
