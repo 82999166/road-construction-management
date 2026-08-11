@@ -87,17 +87,25 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expectedVersion">> = [
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: "", isSensitive: false, remarks: "用于公众号业务通知和员工微信身份绑定；保存后请先发布，再执行服务号连通性校验。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "微信公众号服务号 AppSecret", value: "", isSensitive: true, remarks: "仅在服务端 AES-GCM 加密保存，不会回显或导出。" },
-  { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", value: "", isSensitive: false, remarks: "使用一个已获授权的模板消息 ID，用于业务提交、刷卡和每日汇总提醒。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: "", isSensitive: false, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息。此值填写 AppID，不要填入显示名称。用于员工微信身份绑定和业务通知。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "微信公众号服务号 AppSecret", value: "", isSensitive: true, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息 → 开发密钥。请先确认 AppSecret 为启用状态；仅在服务端 AES-GCM 加密保存。" },
+  { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", value: "", isSensitive: false, remarks: "认证服务号模板消息当前仍可用；按服务号后台可见的模板权限与模板库选用业务通知模板后复制模板 ID。" },
   { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", value: "{\"first\":\"{title}\",\"keyword1\":\"{targetType} #{targetId}\",\"keyword2\":\"{content}\",\"remark\":\"点击查看系统详情\"}", isSensitive: false, remarks: "JSON 对象；可使用 {title}、{content}、{eventCode}、{targetType}、{targetId} 占位符。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: "", isSensitive: false, remarks: "必须是正式 HTTPS 站点根地址；用于模板消息跳转至系统对应业务页。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: "https://roadmanage-xjifzbue.manus.space", isSensitive: false, remarks: "必须是正式 HTTPS 站点根地址；用于模板消息跳转和员工 OAuth 绑定回调。若已绑定自有域名，请替换为自有正式域名。" },
 ];
 /** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */
 function resolveOfficialAccountSensitivity(settingKey: string, fallback: boolean) {
   if (settingKey === "WECHAT_OFFICIAL_APP_SECRET") return true;
   if (settingKey.startsWith("WECHAT_OFFICIAL_")) return false;
   return fallback;
+}
+
+/** 将同一安全测试按新版服务号配置阶段呈现为管理员可理解的操作标签。 */
+function getOfficialAccountTestLabel(settingKey: string) {
+  if (settingKey === "WECHAT_OFFICIAL_APP_ID" || settingKey === "WECHAT_OFFICIAL_APP_SECRET") return "校验开发密钥";
+  if (settingKey === "WECHAT_OFFICIAL_TEMPLATE_ID" || settingKey === "WECHAT_OFFICIAL_TEMPLATE_FIELDS") return "检查通知就绪";
+  if (settingKey === "WECHAT_OFFICIAL_APP_URL") return "校验绑定前置";
+  return "校验服务号";
 }
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
@@ -314,6 +322,10 @@ export default function AdminPage() {
   }, [rolePermissionIds.data]);
   // 默认选中第一条配置，方便管理员直接查看其发布历史和回滚入口。
   const visibleSettings = settings.data ?? [];
+  const publishedOfficialSettingKeys = new Set(visibleSettings.filter(item => item.status === "published").map(item => item.settingKey));
+  const officialCredentialsReady = publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_ID") && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_SECRET");
+  const officialBindingReady = officialCredentialsReady && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_URL");
+  const officialTemplateReady = officialCredentialsReady && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_TEMPLATE_ID");
   useEffect(() => {
     if (!visibleSettings.length) {
       if (selectedSettingId !== undefined) setSelectedSettingId(undefined);
@@ -1011,7 +1023,7 @@ export default function AdminPage() {
                     setSettingForm({ id: item.id, expectedVersion: item.version, category: item.category, settingKey: item.settingKey, displayName: item.displayName, value: item.isSensitive ? "" : item.valueJson ?? "", isSensitive: item.isSensitive, remarks: item.remarks ?? "" });
                   }}>编辑</Button>
                   <Button size="sm" variant="outline" disabled={item.status === "published" || publishSetting.isPending} onClick={() => publishSetting.mutate({ id: item.id, expectedVersion: item.version })}>发布</Button>
-                  <Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey.startsWith("WECHAT_OFFICIAL_") ? "校验服务号" : "校验 / 测试"}</Button>
+                  <Button size="sm" variant="outline" disabled={testSetting.isPending} onClick={() => testSetting.mutate({ id: item.id })}>{item.settingKey.startsWith("WECHAT_OFFICIAL_") ? getOfficialAccountTestLabel(item.settingKey) : "校验 / 测试"}</Button>
                   {item.status !== "disabled" ? <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={disableSetting.isPending} onClick={() => { if (window.confirm(`确认停用“${item.displayName}”？停用后将保留密文和历史版本，但不再参与业务调用。`)) disableSetting.mutate({ id: item.id, expectedVersion: item.version }); }}>停用</Button> : null}
                   <Button size="sm" variant="outline" className="text-rose-700 hover:text-rose-800" disabled={removeSetting.isPending} onClick={() => setSettingDeleteTarget({ id: item.id, displayName: item.displayName, settingKey: item.settingKey, version: item.version, isSensitive: item.isSensitive })}>删除</Button>
                 </div>
@@ -1033,8 +1045,23 @@ export default function AdminPage() {
         </Card>
       </section>
       <aside className="space-y-4">
+        <Card className="border-[#cbded9] bg-[#f4faf8]">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><CardTitle className="text-base">新版微信开发者平台接入状态</CardTitle><CardDescription className="mt-1">服务号开发配置已迁移至“微信开发者平台 → 我的业务 → 服务号”。运营、模板选用和网页授权域名仍按微信各业务后台当前可见能力配置。</CardDescription></div>
+              <a className="inline-flex items-center gap-1 text-xs font-medium text-[#1b5c54] hover:underline" href="https://developers.weixin.qq.com/platform/" target="_blank" rel="noreferrer">打开开发者平台<ExternalLink className="h-3.5 w-3.5" /></a>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium text-slate-800"><KeyRound className="h-4 w-4 text-[#1f6b60]" />开发密钥</div><Badge variant="outline" className={officialCredentialsReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialCredentialsReady ? "AppID / AppSecret 已发布" : "待发布"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。AppSecret 必须为“启用”状态；重置后旧密钥立即失效。</p></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center gap-2 font-medium text-slate-800"><ShieldCheck className="h-4 w-4 text-[#1f6b60]" />API IP 白名单</div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。若微信返回 40164，请将报错中的实际出口 IP 追加到白名单；自动扩缩容环境可能出现多条出口 IP，不能只保留一条。</p></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">网页授权与跳转域名</div><Badge variant="outline" className={officialBindingReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialBindingReady ? "可发起员工绑定" : "待发布 HTTPS 地址"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">系统跳转地址须发布为 HTTPS。网页授权域名在微信公众平台“设置与开发 → 账号设置 → 功能设置”中配置，只填域名，不填协议和路径。</p></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">模板消息通知</div><Badge variant="outline" className={officialTemplateReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-600"}>{officialTemplateReady ? "业务通知已就绪" : "可稍后配置"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">认证服务号模板消息当前仍可用。员工 OAuth 绑定不依赖模板 ID；审核、刷卡和每日汇总通知需要模板 ID 与字段映射后才会投递。</p></div>
+            <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
+          </CardContent>
+        </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
-          <CardHeader><CardTitle className="text-base">微信公众号服务号配置向导</CardTitle><CardDescription>按顺序建立并发布 AppID、AppSecret、模板 ID、字段映射与 HTTPS 跳转地址。密钥只会加密保存；“校验服务号”不会向员工推送测试消息。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>先发布 AppID、AppSecret 与 HTTPS 跳转地址以完成凭据校验和员工绑定；模板 ID 与字段映射用于后续业务通知。密钥只会加密保存；“校验开发密钥”不会向员工推送测试消息。</CardDescription></CardHeader>
           <CardContent className="space-y-2">{OFFICIAL_ACCOUNT_SETTING_PRESETS.map(preset => <Button key={preset.settingKey} variant="outline" className="w-full justify-start border-[#203c48] text-left text-[#203c48]" onClick={() => setSettingForm(preset)}>{preset.displayName}</Button>)}</CardContent>
         </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
@@ -1046,7 +1073,7 @@ export default function AdminPage() {
           <CardContent className="space-y-3">
             <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="微信公众号服务号">微信公众号服务号</SelectItem><SelectItem value="公众号消息模板">公众号消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
             <div><Label>配置键</Label><Input value={settingForm.settingKey} disabled={Boolean(settingForm.id)} placeholder="WECHAT_OFFICIAL_APP_ID" onChange={event => { const settingKey = event.target.value.toUpperCase(); setSettingForm({ ...settingForm, settingKey, isSensitive: resolveOfficialAccountSensitivity(settingKey, settingForm.isSensitive) }); }} /></div>
-            <div><Label>显示名称</Label><Input value={settingForm.displayName} placeholder="微信公众号服务号 AppID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /></div>
+            <div><Label>显示名称（仅系统内标签）</Label><Input value={settingForm.displayName} placeholder="微信公众号服务号 AppID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /><p className="mt-1 text-xs text-slate-500">不要将 AppID、AppSecret、模板 ID 填在这里；请填入下方“配置值”。</p></div>
             <div><Label>配置值</Label><Input value={settingForm.value} type={settingForm.isSensitive ? "password" : "text"} placeholder={settingForm.id && settingForm.isSensitive ? "留空保留现有加密值；输入完整新值以替换" : "输入值或密钥"} onChange={event => setSettingForm({ ...settingForm, value: event.target.value })} />{settingForm.id && settingForm.isSensitive ? <p className="mt-1 text-xs leading-5 text-slate-500">为保护密钥，系统不会回显现有值。留空仅更新名称、分类或备注；填写完整新值才会替换。</p> : null}</div>
             <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} disabled={Boolean(settingForm.id) || settingForm.settingKey.startsWith("WECHAT_OFFICIAL_")} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管{settingForm.settingKey.startsWith("WECHAT_OFFICIAL_") ? <span className="text-xs text-slate-400">（服务号字段按安全规则自动设置）</span> : null}</label>
             <div><Label>备注</Label><Input value={settingForm.remarks} placeholder="用途、回调地址或维护说明" onChange={event => setSettingForm({ ...settingForm, remarks: event.target.value })} /></div>

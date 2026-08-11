@@ -3,7 +3,7 @@ import type { Express, Request, Response } from "express";
 import { and, eq } from "drizzle-orm";
 import { auditLogs, officialAccountBindings, users } from "../drizzle/schema";
 import { getDb } from "./db";
-import { fingerprintOfficialAccountOpenId, loadPublishedOfficialAccountConfig } from "./services/officialAccountNotifier";
+import { fingerprintOfficialAccountOpenId, loadPublishedOfficialAccountCredentials } from "./services/officialAccountNotifier";
 import { encryptSecret } from "./services/secretVault";
 
 const BINDING_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
@@ -65,7 +65,7 @@ function callbackError(res: Response, appUrl: URL | null, result: "failed" | "co
 
 /** 生成仅在微信内打开的服务号 OAuth 绑定地址；状态签名绑定到当前登录员工且十分钟后失效。 */
 export async function createOfficialAccountBindingUrl(userId: number) {
-  const configResult = await loadPublishedOfficialAccountConfig();
+  const configResult = await loadPublishedOfficialAccountCredentials();
   const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
   if (!configResult.config || !appUrl) return { url: null, reason: "not_configured" as const };
   const callbackUrl = new URL("/api/official-account/bind/callback", appUrl).toString();
@@ -115,7 +115,7 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
     const code = typeof req.query.code === "string" ? req.query.code : undefined;
     const rawState = typeof req.query.state === "string" ? req.query.state : undefined;
     const state = rawState ? verifyBindingState(rawState) : null;
-    const configResult = await loadPublishedOfficialAccountConfig();
+    const configResult = await loadPublishedOfficialAccountCredentials();
     const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
     if (!code || !state || !configResult.config || !appUrl) {
       callbackError(res, appUrl, "failed");

@@ -14,6 +14,7 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
 
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null };
+export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null };
 
 export type OfficialAccountNotificationResult = {
   delivered: boolean;
@@ -91,7 +92,28 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
   }
 }
 
-async function getAccessToken(config: OfficialAccountConfig) {
+/**
+ * 新版微信开发者平台将 AppID/AppSecret 管理与消息模板能力分离。
+ * 网页 OAuth 绑定和凭据连通性校验只需要已发布的 AppID、AppSecret 与 HTTPS 站点地址；
+ * 业务模板通知仍由 loadPublishedOfficialAccountConfig 额外要求模板 ID。
+ */
+export async function loadPublishedOfficialAccountCredentials(): Promise<{ config?: OfficialAccountCredentialConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
+  const db = await getDb();
+  if (!db) return { reason: "database_unavailable" };
+  const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL"])));
+  const settings = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) settings.set(row.settingKey, row);
+  const appId = settings.get("WECHAT_OFFICIAL_APP_ID")?.valueJson?.trim();
+  const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
+  if (!appId || !appSecretEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
+  try {
+    return { config: { appId, appSecret: decryptSecret(appSecretEncrypted), appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null } };
+  } catch {
+    return { reason: "invalid_config" };
+  }
+}
+
+async function getAccessToken(config: OfficialAccountConfig | (OfficialAccountCredentialConfig & { templateId?: string; templateFields?: Record<string, string> })) {
   if (tokenCache && tokenCache.appId === config.appId && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token;
   const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
   url.searchParams.set("grant_type", "client_credential");
@@ -224,13 +246,14 @@ export async function notifyOfficialAccountBusinessEvent(event: OfficialAccountB
 
 /** 后台测试只验证已发布服务号凭据可换取令牌，不向员工推送任何测试消息。 */
 export async function testPublishedOfficialAccountConfiguration() {
-  const configResult = await loadPublishedOfficialAccountConfig();
-  if (!configResult.config) return { success: false, message: configResult.reason === "not_configured" ? "尚未配置完整的认证服务号信息" : "服务号配置未发布或格式无效" };
+  const credentialResult = await loadPublishedOfficialAccountCredentials();
+  if (!credentialResult.config) return { success: false, message: credentialResult.reason === "not_configured" ? "尚未发布 AppID 与 AppSecret；请在微信开发者平台启用 AppSecret 后保存并发布" : "AppID 或 AppSecret 未发布、已冻结或格式无效" };
   try {
-    await getAccessToken(configResult.config);
-    return { success: true, message: "服务号凭据校验通过，未向任何人员发送测试消息" };
+    await getAccessToken(credentialResult.config);
+    const messageConfig = await loadPublishedOfficialAccountConfig();
+    return { success: true, message: messageConfig.config ? "服务号凭据校验通过，模板消息已配置；未向任何人员发送测试消息" : "服务号凭据校验通过；模板消息尚未配置，员工绑定可继续，业务通知将在模板配置发布后启用" };
   } catch {
-    return { success: false, message: "无法使用已发布服务号凭据获取访问令牌，请检查 AppID、AppSecret 和发布状态" };
+    return { success: false, message: "无法使用已发布服务号凭据获取 access_token；请在微信开发者平台确认 AppSecret 已启用、密钥正确且未受 API IP 白名单限制" };
   }
 }
 

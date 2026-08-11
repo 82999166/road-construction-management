@@ -16,7 +16,7 @@ import { getDb } from "./db";
 import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
 import { createInAppMessage, messageRouter } from "./routers/messages";
-import { loadPublishedOfficialAccountConfig } from "./services/officialAccountNotifier";
+import { loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
 import { storageGet, storageGetSignedUrl, storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -48,6 +48,7 @@ function createSelectDb(rows: unknown[]) {
 describe("消息、影像与企业微信通知安全边界", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["SITE_MANAGER"]);
     vi.mocked(getCurrentDataScope).mockResolvedValue({ hasAllProjects: false, projectIds: [2], organizationIds: [5], roleCodes: ["SITE_MANAGER"] });
     vi.mocked(getDepartmentModuleDataScope).mockResolvedValue({ hasAllProjects: false, projectIds: [2], organizationIds: [5], roleCodes: ["SITE_MANAGER"] });
@@ -122,5 +123,18 @@ describe("消息、影像与企业微信通知安全边界", () => {
 
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-test-app" }]) as never);
     await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual({ reason: "disabled" });
+  });
+
+  it("新版开发者平台的凭据校验与网页绑定只依赖 AppID 和 AppSecret，模板消息可在后续独立配置", async () => {
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-test-credential" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:credential-secret" },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ access_token: "test-access-token", expires_in: 7200 }) })));
+
+    await expect(loadPublishedOfficialAccountCredentials()).resolves.toEqual({ config: { appId: "wx-test-credential", appSecret: "credential-secret", appUrl: null } });
+    await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual({ reason: "disabled" });
+    await expect(testPublishedOfficialAccountConfiguration()).resolves.toEqual({ success: true, message: "服务号凭据校验通过；模板消息尚未配置，员工绑定可继续，业务通知将在模板配置发布后启用" });
   });
 });
