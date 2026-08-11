@@ -110,7 +110,7 @@ const localManagerAccountUpdateInput = z.object({
   username: z.string().trim().min(3).max(48),
   displayName: z.string().trim().min(2).max(128),
   status: z.enum(["active", "disabled"]),
-  loginMode: z.enum(["pc", "mobile", "both"]),
+  loginMode: z.enum(["pc", "mobile", "both"]).default("both"),
 });
 
 /** 管理员重置密码不校验旧密码，但口令只在本次请求内生成不可逆摘要。 */
