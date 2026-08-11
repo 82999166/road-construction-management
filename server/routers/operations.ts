@@ -10,9 +10,13 @@ import {
   machineLeaseRules,
   machines,
   projects,
+  rfidCardWriteJobs,
+  rfidWriterDevices,
   transportCardEvents,
   transportTrips,
+  transportVehicleRfidCards,
   transportVehicles,
+  users,
 } from "../../drizzle/schema";
 import {
   assertMachineCostStatusTransition,
@@ -26,6 +30,7 @@ import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrent
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -137,6 +142,43 @@ const transportCardEventInput = z.object({
   occurredAt: isoDateTimeSchema,
 });
 
+/** 写卡器型号先以台账方式预留，未接入硬件协议时仅允许生成并人工确认受控写卡任务。 */
+const rfidWriterDeviceInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  deviceCode: z.string().trim().min(2, "请填写写卡器编号").max(64).transform(value => value.toUpperCase()),
+  displayName: z.string().trim().min(2, "请填写写卡器名称").max(128),
+  model: z.string().trim().max(128).nullable().optional(),
+  connectionMode: z.enum(["manual_placeholder", "usb", "serial", "network"]).default("manual_placeholder"),
+  status: z.enum(["active", "disabled", "maintenance"]).default("active"),
+  remarks: z.string().trim().max(500).nullable().optional(),
+});
+
+/** 原始卡 UID 与司机电话仅在本次绑定请求中出现；持久化后分别只保留指纹/密文与掩码。 */
+const rfidCardBindingInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  vehicleId: z.number().int().positive(),
+  writerDeviceId: z.number().int().positive().nullable().optional(),
+  cardUid: z.string().trim().min(4, "请读取有效射频卡 UID").max(128),
+  driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机联系电话"),
+  status: z.enum(["active", "suspended", "revoked"]).default("active"),
+});
+
+const rfidWritePrepareInput = z.object({
+  cardId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  writerDeviceId: z.number().int().positive().nullable().optional(),
+  action: z.enum(["issue", "rewrite", "revoke"]).default("issue"),
+});
+
+const rfidWriteConfirmInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  success: z.boolean(),
+  failureReason: z.string().trim().max(500).nullable().optional(),
+});
+
 /** 统一将前端日期解释为 UTC 业务日零点，避免月结边界受浏览器时区影响。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -236,6 +278,28 @@ function createCardEventPayloadFingerprint(input: { tripId: number; projectId: n
   return createHash("sha256").update(JSON.stringify({ eventType, tripId: input.tripId, projectId: input.projectId, idempotencyKey: input.idempotencyKey, deviceId: input.deviceId ?? null, cardFingerprint: input.cardFingerprint ?? null, occurredAt: new Date(input.occurredAt).toISOString() })).digest("hex");
 }
 
+/** 卡 UID 只用于本次绑定并立即派生不可逆指纹，避免原始设备标识进入数据库或审计记录。 */
+function fingerprintRfidCardUid(cardUid: string) {
+  return createHash("sha256").update(`road-rfid-card:v1:${cardUid.trim().toUpperCase()}`).digest("hex");
+}
+
+function maskRfidCardUid(cardUid: string) {
+  const normalized = cardUid.trim().toUpperCase();
+  return normalized.length <= 4 ? "****" : `${"*".repeat(Math.min(12, normalized.length - 4))}${normalized.slice(-4)}`;
+}
+
+function createRfidWriteJobNo(projectId: number) {
+  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `CARD-${projectId}-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+/** 写卡模型与运费模型均只能由运输负责人、项目负责人、财务或系统管理员维护。 */
+function assertCanManageTransportResources(roleCodes: readonly string[]) {
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => ["TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护射频写卡设备或车辆卡绑定" });
+  }
+}
+
 async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload") {
   const user = requireAuthenticatedUser(ctx);
   const roleCodes = await assertTransportAccess(ctx);
@@ -286,6 +350,11 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     return { success: false, duplicate: false, needsReview: true, eventId: event.id, validationStatus: "needs_review" as const, reason, driverNotificationQueued: false };
   };
 
+  if (input.cardFingerprint) {
+    const [boundCard] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.vehicleId, trip.vehicleId), eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.cardUidFingerprint, input.cardFingerprint), eq(transportVehicleRfidCards.status, "active"))).limit(1);
+    if (!boundCard) return markNeedsReview("读取的射频卡未与当前车辆完成有效绑定，或该卡已被停用/挂失");
+  }
+
   if (trip.status === "void" || trip.status === "settled") return markNeedsReview("趟次已关闭，不能再确认刷卡事件");
   if (eventType === "load" && trip.unloadConfirmedAt) return markNeedsReview("检测到卸土已确认后的装土刷卡，疑似乱序事件");
   if (eventType === "load" && trip.loadConfirmedAt) return markNeedsReview("该趟次已存在装土确认，疑似重复刷卡事件");
@@ -299,9 +368,10 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
 
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功` });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
-  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `一笔运输${eventLabel}刷卡已完成确认。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  const tripFinancialSummary = `车辆 ${vehicle.plateNo}，${eventLabel}刷卡已确认；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
+  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按调度前往卸土点。" : "运输闭环已记录，等待后续核验。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   if (vehicle.driverUserId) {
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: eventType === "load" ? "本次运输装土刷卡已确认，请按流程前往卸土点。" : "本次运输卸土刷卡已确认，运输闭环已记录。", deepLink: "/mobile/transport" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   }
   return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, driverNotificationQueued: Boolean(vehicle.driverUserId) };
 }
@@ -596,6 +666,175 @@ export const transportRouter = router({
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle" : "create_vehicle", targetType: "transport_vehicle", targetId: String(input.id ?? input.plateNo), summary: `${input.id ? "维护" : "新建"}运输车辆：${input.plateNo}` });
     return { success: true, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor) };
+  }),
+
+  /** 写卡器台账仅为受控硬件适配预留；现场人员不可绕过后台直接登记或修改设备。 */
+  listRfidWriterDevices: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const user = requireAuthenticatedUser(ctx);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly) return [];
+    return db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.projectId, input.projectId)).orderBy(desc(rfidWriterDevices.updatedAt));
+  }),
+
+  saveRfidWriterDevice: protectedProcedure.input(rfidWriterDeviceInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const values = { projectId: input.projectId, deviceCode: input.deviceCode, displayName: input.displayName, model: input.model ?? null, connectionMode: input.connectionMode, status: input.status, remarks: input.remarks ?? null };
+    if (input.id) {
+      const [existing] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "写卡器不存在或不属于当前项目" });
+      await db.update(rfidWriterDevices).set(values).where(eq(rfidWriterDevices.id, input.id));
+    } else {
+      await db.insert(rfidWriterDevices).values({ ...values, createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_rfid_writer_device" : "create_rfid_writer_device", targetType: "rfid_writer_device", targetId: String(input.id ?? input.deviceCode), summary: `${input.id ? "维护" : "登记"}射频写卡器：${input.displayName}（${input.deviceCode}）` });
+    return { success: true };
+  }),
+
+  /** 卡列表永不返回原始 UID 或司机电话；仅管理员可查看掩码与写卡状态，司机仅可看到本人车辆是否已绑定。 */
+  listVehicleRfidCards: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const user = requireAuthenticatedUser(ctx);
+    const rows = await db.select({
+      id: transportVehicleRfidCards.id,
+      projectId: transportVehicleRfidCards.projectId,
+      vehicleId: transportVehicleRfidCards.vehicleId,
+      writerDeviceId: transportVehicleRfidCards.writerDeviceId,
+      cardUidMasked: transportVehicleRfidCards.cardUidMasked,
+      driverPhoneMasked: transportVehicleRfidCards.driverPhoneMasked,
+      payloadVersion: transportVehicleRfidCards.payloadVersion,
+      status: transportVehicleRfidCards.status,
+      issuedAt: transportVehicleRfidCards.issuedAt,
+      lastWrittenAt: transportVehicleRfidCards.lastWrittenAt,
+      revokedAt: transportVehicleRfidCards.revokedAt,
+      createdAt: transportVehicleRfidCards.createdAt,
+      updatedAt: transportVehicleRfidCards.updatedAt,
+      plateNo: transportVehicles.plateNo,
+      vehicleType: transportVehicles.vehicleType,
+      driverUserId: transportVehicles.driverUserId,
+      writerName: rfidWriterDevices.displayName,
+      writerModel: rfidWriterDevices.model,
+    }).from(transportVehicleRfidCards)
+      .innerJoin(transportVehicles, eq(transportVehicleRfidCards.vehicleId, transportVehicles.id))
+      .leftJoin(rfidWriterDevices, eq(transportVehicleRfidCards.writerDeviceId, rfidWriterDevices.id))
+      .where(eq(transportVehicleRfidCards.projectId, input.projectId))
+      .orderBy(desc(transportVehicleRfidCards.updatedAt));
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    return isDriverOnly ? rows.filter(row => row.driverUserId === user.id) : rows;
+  }),
+
+  /** 为车辆绑定射频卡时，原始 UID 与电话仅在当前请求中使用，随后以指纹/密文和掩码保存。 */
+  saveVehicleRfidCard: protectedProcedure.input(rfidCardBindingInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
+    if (!vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账绑定司机，再创建射频卡绑定" });
+    if (input.writerDeviceId) {
+      const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.writerDeviceId)).limit(1);
+      if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目可用的写卡器" });
+    }
+    const cardUidFingerprint = fingerprintRfidCardUid(input.cardUid);
+    const [existingByUid] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.cardUidFingerprint, cardUidFingerprint)).limit(1);
+    if (existingByUid && existingByUid.id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "该射频卡已绑定其他车辆，请先挂失或解除原绑定" });
+    const values = {
+      projectId: input.projectId,
+      vehicleId: input.vehicleId,
+      writerDeviceId: input.writerDeviceId ?? null,
+      cardUidFingerprint,
+      cardUidMasked: maskRfidCardUid(input.cardUid),
+      driverPhoneEncrypted: encryptSecret(input.driverPhone),
+      driverPhoneMasked: maskSecret(input.driverPhone),
+      status: input.status,
+      revokedAt: input.status === "revoked" ? new Date() : null,
+    };
+    if (input.id) {
+      const [existing] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
+      await db.update(transportVehicleRfidCards).set(values).where(eq(transportVehicleRfidCards.id, input.id));
+    } else {
+      await db.insert(transportVehicleRfidCards).values({ ...values, createdBy: user.id, issuedAt: new Date() });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
+    return { success: true };
+  }),
+
+  /** 管理员准备一次写卡任务。返回的载荷只在本次受控响应中提供，数据库仅保存其摘要以防止卡片内容被静态导出。 */
+  prepareRfidCardWrite: protectedProcedure.input(rfidWritePrepareInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
+    if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
+    if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
+    const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
+    if (!vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未绑定司机，不能生成写卡载荷" });
+    const [driver] = await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, vehicle.driverUserId)).limit(1);
+    if (!driver) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆绑定司机不存在，不能生成写卡载荷" });
+    const writerDeviceId = input.writerDeviceId ?? card.writerDeviceId;
+    if (writerDeviceId) {
+      const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, writerDeviceId)).limit(1);
+      if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "写卡器不存在、未启用或不属于当前项目" });
+    }
+    const driverPhone = card.driverPhoneEncrypted ? decryptSecret(card.driverPhoneEncrypted) : "";
+    if (!driverPhone) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆射频卡未保存司机电话，不能生成完整写卡载荷" });
+    const payload = {
+      schema: "road-construction-rfid/v1",
+      cardId: card.id,
+      projectId: input.projectId,
+      vehicle: {
+        id: vehicle.id,
+        plateNo: vehicle.plateNo,
+        vehicleType: vehicle.vehicleType,
+        cargoBox: { lengthMeters: Number(vehicle.boxLengthMeters), widthMeters: Number(vehicle.boxWidthMeters), heightMeters: Number(vehicle.boxHeightMeters), loadFactor: Number(vehicle.loadFactor) },
+      },
+      driver: { userId: driver.id, name: driver.name || "未命名司机", phone: driverPhone },
+      payloadVersion: card.payloadVersion,
+      issuedAt: new Date().toISOString(),
+      action: input.action,
+    };
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const jobNo = createRfidWriteJobNo(input.projectId);
+    await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadVersion: card.payloadVersion, preparedBy: user.id });
+    const [job] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.jobNo, jobNo)).limit(1);
+    if (!job) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "写卡任务创建失败" });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "prepare_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: `准备${input.action === "rewrite" ? "补写" : input.action === "revoke" ? "挂失" : "写入"}车辆 ${vehicle.plateNo} 的射频卡任务` });
+    return { success: true, jobId: job.id, jobNo, payload, payloadFingerprint, hardwareMode: "manual_confirmation" as const };
+  }),
+
+  /** 物理写卡器接入前由现场管理员确认结果；失败和确认均保留任务审计，不能通过前端静默修改卡状态。 */
+  confirmRfidCardWrite: protectedProcedure.input(rfidWriteConfirmInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [job] = await db.select().from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.id, input.id)).limit(1);
+    if (!job || job.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "写卡任务不存在或不属于当前项目" });
+    if (job.status !== "prepared") throw new TRPCError({ code: "CONFLICT", message: "该写卡任务已处理，请勿重复确认" });
+    const now = new Date();
+    await db.update(rfidCardWriteJobs).set({ status: input.success ? "confirmed" : "failed", failureReason: input.success ? null : input.failureReason ?? "现场写卡未成功", confirmedBy: user.id, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
+    if (input.success) {
+      await db.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(eq(transportVehicleRfidCards.id, job.cardId));
+      if (job.writerDeviceId) await db.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.success ? "confirm_rfid_card_write" : "fail_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: input.success ? "确认射频写卡任务成功" : "记录射频写卡任务失败" });
+    return { success: true, status: input.success ? "confirmed" as const : "failed" as const };
   }),
 
   listFreightRules: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

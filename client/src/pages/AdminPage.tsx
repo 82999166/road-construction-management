@@ -27,7 +27,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -68,6 +68,8 @@ type PositionForm = { id?: number; code: string; name: string; category: string;
 type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus };
+type RfidWriterDeviceForm = { id?: number; deviceCode: string; displayName: string; model: string; connectionMode: "manual_placeholder" | "usb" | "serial" | "network"; status: "active" | "disabled" | "maintenance"; remarks: string };
+type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked" };
 type LocalAccountStatus = "active" | "disabled";
 type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus };
 type LocalAccountActionTarget = { id: number; name: string; username: string };
@@ -84,6 +86,8 @@ const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
+const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
+const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "active" };
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
@@ -301,6 +305,8 @@ export default function AdminPage() {
   const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
   const transportVehicleLedger = trpc.transport.listVehicles.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
   const transportTrips = trpc.transport.listTrips.useQuery(transportWorkspaceInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
+  const rfidWriterDevices = trpc.transport.listRfidWriterDevices.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
+  const vehicleRfidCards = trpc.transport.listVehicleRfidCards.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -318,6 +324,11 @@ export default function AdminPage() {
   const [projectForm, setProjectForm] = useState<ProjectForm>(EMPTY_PROJECT_FORM);
   const [positionForm, setPositionForm] = useState<PositionForm>(EMPTY_POSITION_FORM);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
+  const [rfidWriterDeviceForm, setRfidWriterDeviceForm] = useState<RfidWriterDeviceForm>(EMPTY_RFID_WRITER_DEVICE_FORM);
+  const [rfidCardForm, setRfidCardForm] = useState<RfidCardForm>(EMPTY_RFID_CARD_FORM);
+  const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
+  const [rfidCardDialogOpen, setRfidCardDialogOpen] = useState(false);
+  const [rfidWritePreview, setRfidWritePreview] = useState<{ jobId: number; jobNo: string; payload: Record<string, unknown>; hardwareMode: "manual_confirmation" } | null>(null);
   const [roleForm, setRoleForm] = useState<RoleForm>(EMPTY_ROLE_FORM);
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(EMPTY_ASSIGNMENT_FORM);
   const [personnelSearch, setPersonnelSearch] = useState("");
@@ -334,6 +345,9 @@ export default function AdminPage() {
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
   const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
   const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
+
+  /** 管理后台对话框统一使用的紧凑字段包装，避免设备与车辆卡表单出现无标签输入。 */
+  const Field = ({ label, children }: { label: string; children: ReactNode }) => <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
 
   // 首次加载后默认选中第一个角色；角色切换后以服务端真实权限回显编辑矩阵。
   useEffect(() => {
@@ -420,6 +434,39 @@ export default function AdminPage() {
       toast.success(`车辆台账已保存，理论方量 ${data.theoreticalVolumeCubicMeters} m³`);
       setVehicleForm(EMPTY_VEHICLE_FORM);
       await Promise.all([vehicles.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveRfidWriterDevice = trpc.transport.saveRfidWriterDevice.useMutation({
+    onSuccess: async () => {
+      toast.success("写卡器台账已保存");
+      setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM);
+      setRfidWriterDialogOpen(false);
+      await Promise.all([rfidWriterDevices.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveVehicleRfidCard = trpc.transport.saveVehicleRfidCard.useMutation({
+    onSuccess: async () => {
+      toast.success("车辆射频卡绑定已保存；请生成写卡任务后再进行物理写入");
+      setRfidCardForm(EMPTY_RFID_CARD_FORM);
+      setRfidCardDialogOpen(false);
+      await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const prepareRfidCardWrite = trpc.transport.prepareRfidCardWrite.useMutation({
+    onSuccess: data => {
+      setRfidWritePreview({ jobId: data.jobId, jobNo: data.jobNo, payload: data.payload as Record<string, unknown>, hardwareMode: data.hardwareMode });
+      toast.success("写卡载荷已生成；请在现场写卡器完成物理写入后确认结果");
+    },
+    onError: error => toast.error(error.message),
+  });
+  const confirmRfidCardWrite = trpc.transport.confirmRfidCardWrite.useMutation({
+    onSuccess: async data => {
+      toast.success(data.status === "confirmed" ? "写卡结果已确认并留痕" : "写卡失败已记录，请核对设备和卡片后重试");
+      setRfidWritePreview(null);
+      await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -1290,6 +1337,29 @@ export default function AdminPage() {
     );
   };
 
+  const renderRfidManagement = () => {
+    if (!hasBusinessWorkspaceProject) return null;
+    const writerDevices = rfidWriterDevices.data ?? [];
+    const cards = vehicleRfidCards.data ?? [];
+    return (
+      <div className="space-y-5">
+        <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
+          <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-sm font-medium text-[#203c48]">射频写卡 · 受控预留</p><CardTitle className="mt-1 text-base">车辆卡绑定与写卡任务</CardTitle><CardDescription className="mt-1 max-w-3xl">系统生成并审计车辆、车型、货厢、司机与联系电话载荷；当前不伪造 USB/串口直连，现场需使用已登记写卡器完成物理写入后再确认结果。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM); setRfidWriterDialogOpen(true); }}>登记写卡器</Button><Button size="sm" onClick={() => { setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: transportVehicleLedger.data?.[0] ? String(transportVehicleLedger.data[0].id) : "", writerDeviceId: writerDevices[0] ? String(writerDevices[0].id) : "" }); setRfidCardDialogOpen(true); }} disabled={!transportVehicleLedger.data?.length}>绑定车辆卡</Button></div></CardHeader>
+          <CardContent className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
+            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">写卡器设备</p>{writerDevices.length ? writerDevices.map(device => <div key={device.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{device.displayName}</p><BusinessStatusBadge status={device.status} /></div><p className="mt-1 text-xs text-slate-500">编号 {device.deviceCode} · 型号 {device.model || "待采购/未登记"} · {device.connectionMode === "manual_placeholder" ? "人工确认模式" : device.connectionMode}</p></div>) : <EmptyState text="尚未登记写卡器。可先登记编号和型号，硬件协议后续再受控接入。" />}</div>
+            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(card => <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{card.plateNo}</p><BusinessStatusBadge status={card.status} /><Badge variant="outline">卡 {card.cardUidMasked}</Badge></div><p className="mt-1 text-xs text-slate-500">司机电话 {card.driverPhoneMasked || "未登记"} · 写卡器 {card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""} · 最近写入 {displayDate(card.lastWrittenAt)}</p></div><Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: card.lastWrittenAt ? "rewrite" : "issue" })} disabled={prepareRfidCardWrite.isPending || card.status !== "active"}>{prepareRfidCardWrite.isPending ? "生成中…" : card.lastWrittenAt ? "生成补写任务" : "生成写卡任务"}</Button></div></div>) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>
+          </CardContent>
+        </Card>
+
+        <Dialog open={rfidWriterDialogOpen} onOpenChange={setRfidWriterDialogOpen}><DialogContent><DialogHeader><DialogTitle>登记射频写卡器</DialogTitle><DialogDescription>目前先记录写卡器型号与使用状态；未接入设备适配器前，系统只允许生成并人工确认写卡任务。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-3 sm:grid-cols-2"><Field label="设备编号"><Input value={rfidWriterDeviceForm.deviceCode} placeholder="例如 RFID-W-001" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, deviceCode: event.target.value }))} /></Field><Field label="显示名称"><Input value={rfidWriterDeviceForm.displayName} placeholder="装土点写卡器" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, displayName: event.target.value }))} /></Field></div><div className="grid gap-3 sm:grid-cols-2"><Field label="型号（预留）"><Input value={rfidWriterDeviceForm.model} placeholder="采购后填写" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, model: event.target.value }))} /></Field><Field label="连接方式"><Select value={rfidWriterDeviceForm.connectionMode} onValueChange={value => setRfidWriterDeviceForm(current => ({ ...current, connectionMode: value as RfidWriterDeviceForm["connectionMode"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="manual_placeholder">人工确认（当前）</SelectItem><SelectItem value="usb">USB（预留）</SelectItem><SelectItem value="serial">串口（预留）</SelectItem><SelectItem value="network">网络（预留）</SelectItem></SelectContent></Select></Field></div><Field label="备注"><Input value={rfidWriterDeviceForm.remarks} onChange={event => setRfidWriterDeviceForm(current => ({ ...current, remarks: event.target.value }))} /></Field></div><DialogFooter><Button variant="outline" onClick={() => setRfidWriterDialogOpen(false)}>取消</Button><Button disabled={!rfidWriterDeviceForm.deviceCode.trim() || !rfidWriterDeviceForm.displayName.trim() || saveRfidWriterDevice.isPending} onClick={() => saveRfidWriterDevice.mutate({ projectId: workspaceProjectId, deviceCode: rfidWriterDeviceForm.deviceCode, displayName: rfidWriterDeviceForm.displayName, model: rfidWriterDeviceForm.model || null, connectionMode: rfidWriterDeviceForm.connectionMode, status: rfidWriterDeviceForm.status, remarks: rfidWriterDeviceForm.remarks || null })}>{saveRfidWriterDevice.isPending ? "保存中…" : "保存设备"}</Button></DialogFooter></DialogContent></Dialog>
+
+        <Dialog open={rfidCardDialogOpen} onOpenChange={setRfidCardDialogOpen}><DialogContent><DialogHeader><DialogTitle>绑定车辆射频卡</DialogTitle><DialogDescription>卡 UID 和司机电话仅用于本次绑定；服务端只保存 UID 指纹、电话密文和掩码。请勿将身份证、银行卡或结算金额写入卡片。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><Field label="车辆"><Select value={rfidCardForm.vehicleId} onValueChange={value => setRfidCardForm(current => ({ ...current, vehicleId: value }))}><SelectTrigger><SelectValue placeholder="选择车辆" /></SelectTrigger><SelectContent>{transportVehicleLedger.data?.map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>)}</SelectContent></Select></Field><Field label="写卡器（可选）"><Select value={rfidCardForm.writerDeviceId || "UNASSIGNED"} onValueChange={value => setRfidCardForm(current => ({ ...current, writerDeviceId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择写卡器" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不指定</SelectItem>{writerDevices.filter(device => device.status === "active").map(device => <SelectItem key={device.id} value={String(device.id)}>{device.displayName} · {device.deviceCode}</SelectItem>)}</SelectContent></Select></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="读取的卡 UID"><Input value={rfidCardForm.cardUid} placeholder="仅本次输入，保存后不回显" onChange={event => setRfidCardForm(current => ({ ...current, cardUid: event.target.value }))} /></Field><Field label="司机联系电话"><Input value={rfidCardForm.driverPhone} placeholder="仅本次输入，保存后加密" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field></div></div><DialogFooter><Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button><Button disabled={!rfidCardForm.vehicleId || !rfidCardForm.cardUid.trim() || !rfidCardForm.driverPhone.trim() || saveVehicleRfidCard.isPending} onClick={() => saveVehicleRfidCard.mutate({ projectId: workspaceProjectId, vehicleId: Number(rfidCardForm.vehicleId), writerDeviceId: rfidCardForm.writerDeviceId ? Number(rfidCardForm.writerDeviceId) : null, cardUid: rfidCardForm.cardUid, driverPhone: rfidCardForm.driverPhone, status: rfidCardForm.status })}>{saveVehicleRfidCard.isPending ? "保存中…" : "保存绑定"}</Button></DialogFooter></DialogContent></Dialog>
+
+        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>受控写卡载荷 · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。</DialogDescription></DialogHeader><pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre><DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending}>记录写卡失败</Button><Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button></DialogFooter></DialogContent></Dialog>
+      </div>
+    );
+  };
+
   const renderBusiness = () => (
     <div className="space-y-6" id="business-governance-report">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1364,7 +1434,7 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? renderTransport() : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>

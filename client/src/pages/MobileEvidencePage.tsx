@@ -5,7 +5,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
-import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LayoutDashboard, LocateFixed, MapPin, ReceiptText, ScanLine, ShieldCheck, UserRound } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
@@ -46,8 +45,17 @@ function formatCapturedTime(value: Date | string | null | undefined) {
  */
 export default function MobileEvidencePage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
-  const { isSuperAdmin } = useManagementPermissions();
+  const [location, navigate] = useLocation();
+  const capturePreset = useMemo(() => {
+    const search = location.includes("?") ? location.slice(location.indexOf("?") + 1) : "";
+    const params = new URLSearchParams(search);
+    const sourceType = params.get("sourceType");
+    return {
+      projectId: Number(params.get("projectId") || 0),
+      sourceType: SOURCE_OPTIONS.some(item => item.value === sourceType) ? sourceType as (typeof SOURCE_OPTIONS)[number]["value"] : null,
+      sourceId: params.get("sourceId")?.slice(0, 128) || "",
+    };
+  }, [location]);
   const [projectId, setProjectId] = useState<number | undefined>();
   const [sourceType, setSourceType] = useState<(typeof SOURCE_OPTIONS)[number]["value"]>("site_photo");
   const [description, setDescription] = useState("");
@@ -63,8 +71,11 @@ export default function MobileEvidencePage() {
 
   /** 首次获得授权项目时选中首项，用户仍能手动切换其权限范围内项目。 */
   useEffect(() => {
-    if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id);
-  }, [projectId, projectOptions.data]);
+    if (capturePreset.projectId && projectOptions.data?.some(project => project.id === capturePreset.projectId)) setProjectId(capturePreset.projectId);
+    else if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id);
+    if (capturePreset.sourceType) setSourceType(capturePreset.sourceType);
+    if (capturePreset.sourceId) setSourceId(capturePreset.sourceId);
+  }, [capturePreset.projectId, capturePreset.sourceId, capturePreset.sourceType, projectId, projectOptions.data]);
 
   /** 释放本地预览 URL，防止多次拍照选择造成浏览器内存持续占用。 */
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
@@ -161,7 +172,7 @@ export default function MobileEvidencePage() {
                   <CardContent className="space-y-2 p-3">
                     <p className="line-clamp-2 text-xs font-medium leading-5">{item.description}</p>
                     <p className="text-[10px] text-[#9d8574]">{formatCapturedTime(item.capturedAt)}</p>
-                    {item.ocrResult ? <div className="rounded-lg bg-[#f9eddf] p-2 text-[10px] leading-4 text-[#704b38]"><p className="flex items-center gap-1 font-semibold text-[#905027]"><ReceiptText className="h-3 w-3" />OCR 结果 · 需人工复核</p><p className="mt-1 line-clamp-2">{item.ocrResult.summary || "未能识别摘要"}</p><p className="mt-1">金额：{item.ocrResult.amount || "未识别"}</p></div> : isSuperAdmin ? <Button size="sm" variant="outline" className="h-7 w-full border-[#d6ae8e] px-2 text-[10px] text-[#8a4b25] hover:bg-[#fff3e5]" disabled={runOcr.isPending} onClick={() => runOcr.mutate({ id: item.id })}><ScanLine className="mr-1 h-3 w-3" />{runOcr.isPending ? "正在识别…" : "票据 OCR"}</Button> : <p className="rounded-lg bg-[#fcf8f2] p-2 text-[10px] leading-4 text-[#8f7566]">票据 OCR 仅限超级管理员发起。</p>}
+                    {item.ocrResult ? <div className="rounded-lg bg-[#f9eddf] p-2 text-[10px] leading-4 text-[#704b38]"><p className="flex items-center gap-1 font-semibold text-[#905027]"><ReceiptText className="h-3 w-3" />OCR 结果 · 需人工复核</p><p className="mt-1 line-clamp-2">{item.ocrResult.summary || "未能识别摘要"}</p><p className="mt-1">金额：{item.ocrResult.amount || "未识别"}</p></div> : <Button size="sm" variant="outline" className="h-7 w-full border-[#d6ae8e] px-2 text-[10px] text-[#8a4b25] hover:bg-[#fff3e5]" disabled={runOcr.isPending} onClick={() => runOcr.mutate({ id: item.id })}><ScanLine className="mr-1 h-3 w-3" />{runOcr.isPending ? "正在识别…" : "票据 OCR"}</Button>}
                   </CardContent>
                 </Card>)}
               </div>}

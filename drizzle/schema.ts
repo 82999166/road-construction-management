@@ -589,6 +589,93 @@ export const transportVehicles = mysqlTable(
   table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo) }),
 );
 
+/**
+ * 射频卡写卡器台账。当前仅维护型号与使用状态，实际 USB/串口/网络硬件协议后续以受控设备适配器接入，
+ * 任何前端都不得直接向本地硬件发出未审计写卡指令。
+ */
+export const rfidWriterDevices = mysqlTable(
+  "rfid_writer_devices",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    deviceCode: varchar("deviceCode", { length: 64 }).notNull(),
+    displayName: varchar("displayName", { length: 128 }).notNull(),
+    /** 用户要求先预留的写卡器型号；可为空以兼容采购前的登记。 */
+    model: varchar("model", { length: 128 }),
+    connectionMode: mysqlEnum("connectionMode", ["manual_placeholder", "usb", "serial", "network"]).default("manual_placeholder").notNull(),
+    status: mysqlEnum("status", ["active", "disabled", "maintenance"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    lastConfirmedAt: datetime("lastConfirmedAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectDeviceCodeUnique: uniqueIndex("rfid_writer_devices_project_code_unique").on(table.projectId, table.deviceCode),
+    projectStatusIndex: index("rfid_writer_devices_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
+/**
+ * 车辆与射频卡的受控绑定。卡 UID 与司机电话均为个人/设备标识，只存不可逆指纹或 AES-GCM 密文；
+ * 卡片实际载荷由写卡任务在管理员确认时临时生成，数据库不保存可直接克隆的明文卡片内容。
+ */
+export const transportVehicleRfidCards = mysqlTable(
+  "transport_vehicle_rfid_cards",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    vehicleId: int("vehicleId").notNull(),
+    writerDeviceId: int("writerDeviceId"),
+    cardUidFingerprint: varchar("cardUidFingerprint", { length: 64 }).notNull(),
+    cardUidMasked: varchar("cardUidMasked", { length: 32 }).notNull(),
+    /** 仅用于管理员在写卡时临时生成载荷和司机本人通知，不向普通列表或事件审计返回。 */
+    driverPhoneEncrypted: text("driverPhoneEncrypted"),
+    driverPhoneMasked: varchar("driverPhoneMasked", { length: 32 }),
+    payloadVersion: int("payloadVersion").default(1).notNull(),
+    status: mysqlEnum("status", ["active", "suspended", "revoked"]).default("active").notNull(),
+    issuedAt: datetime("issuedAt"),
+    lastWrittenAt: datetime("lastWrittenAt"),
+    revokedAt: datetime("revokedAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    cardUidUnique: uniqueIndex("transport_vehicle_rfid_cards_uid_unique").on(table.cardUidFingerprint),
+    vehicleStatusIndex: index("transport_vehicle_rfid_cards_vehicle_status_index").on(table.vehicleId, table.status),
+    projectStatusIndex: index("transport_vehicle_rfid_cards_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
+/** 每次写卡、补写或挂失均生成任务与载荷指纹，硬件确认失败也要留下审计而不得静默覆盖。 */
+export const rfidCardWriteJobs = mysqlTable(
+  "rfid_card_write_jobs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    jobNo: varchar("jobNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    vehicleId: int("vehicleId").notNull(),
+    cardId: bigint("cardId", { mode: "number" }).notNull(),
+    writerDeviceId: int("writerDeviceId"),
+    action: mysqlEnum("action", ["issue", "rewrite", "revoke"]).notNull(),
+    payloadFingerprint: varchar("payloadFingerprint", { length: 64 }).notNull(),
+    payloadVersion: int("payloadVersion").notNull(),
+    status: mysqlEnum("status", ["prepared", "confirmed", "failed", "cancelled"]).default("prepared").notNull(),
+    failureReason: varchar("failureReason", { length: 500 }),
+    preparedBy: int("preparedBy").notNull(),
+    confirmedBy: int("confirmedBy"),
+    confirmedAt: datetime("confirmedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    jobNoUnique: uniqueIndex("rfid_card_write_jobs_no_unique").on(table.jobNo),
+    cardCreatedIndex: index("rfid_card_write_jobs_card_created_index").on(table.cardId, table.createdAt),
+    projectStatusIndex: index("rfid_card_write_jobs_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
 /** 运输价格规则。步长默认 500 米但允许后台按合同修改。 */
 export const freightRateRules = mysqlTable(
   "freight_rate_rules",

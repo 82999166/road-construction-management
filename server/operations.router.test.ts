@@ -23,6 +23,7 @@ vi.mock("./access", async importOriginal => {
 import { assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { machineryRouter, transportRouter } from "./routers/operations";
+import { encryptSecret } from "./services/secretVault";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -77,6 +78,7 @@ function createSelectDbSequence(...responses: unknown[][]) {
 describe("机械与运输 tRPC 路由", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.JWT_SECRET = "operations-router-rfid-test-secret";
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
   });
@@ -286,5 +288,65 @@ describe("机械与运输 tRPC 路由", () => {
     expect(updateWhere).toHaveBeenCalledTimes(2);
     expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "102" }));
+  });
+
+  it("现场传入未绑定的射频卡指纹时只留痕待复核，不能确认装土状态", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 52, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [],
+        [{ id: 103, tripId: 52, eventType: "load", validationStatus: "accepted", validationReason: null }],
+        [],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 52, projectId: 10, idempotencyKey: "reader-load-unbound-card", cardFingerprint: "a".repeat(64), occurredAt: "2026-07-25T08:00:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
+    expect(updateWhere).toHaveBeenCalledTimes(2);
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "103" }));
+  });
+
+  it("车辆射频卡绑定只保存 UID 指纹、司机电话密文与掩码，不将原始信息写入审计", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7, plateNo: "粤A12345" }],
+        [],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ projectId: 10, vehicleId: 11, writerDeviceId: null, cardUid: "ABCD1234", driverPhone: "13800138000", status: "active" })).resolves.toEqual({ success: true });
+    const binding = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(binding).toMatchObject({ vehicleId: 11, cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "active" });
+    expect(binding.cardUidFingerprint).not.toBe("ABCD1234");
+    expect(binding.driverPhoneEncrypted).not.toBe("13800138000");
+    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "bind_vehicle_rfid_card", summary: expect.not.stringContaining("13800138000") });
+  });
+
+  it("写卡任务仅临时返回完整车辆与司机载荷，数据库只保存载荷摘要并保留确认任务", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "active", payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7, plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
+        [{ id: 7, name: "张司机" }],
+        [{ id: 401 }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 21, writerDeviceId: null, action: "issue" });
+    expect(result).toMatchObject({ success: true, jobId: 401, hardwareMode: "manual_confirmation", payload: expect.objectContaining({ vehicle: expect.objectContaining({ plateNo: "粤A12345" }), driver: expect.objectContaining({ name: "张司机", phone: "13800138000" }) }) });
+    expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ cardId: 21, payloadVersion: 1, action: "issue" });
+    expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain("13800138000");
+    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "prepare_rfid_card_write", targetId: "401" });
   });
 });
