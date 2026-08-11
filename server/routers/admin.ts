@@ -96,6 +96,7 @@ const localManagerAccountInput = z.object({
   displayName: z.string().trim().min(2).max(128),
   initialPassword: z.string().min(6, "初始密码至少 6 位").max(128),
   status: z.enum(["active", "disabled"]).default("active"),
+  loginMode: z.enum(["pc", "mobile", "both"]).default("both"),
 });
 
 const localManagerStatusInput = z.object({
@@ -109,6 +110,7 @@ const localManagerAccountUpdateInput = z.object({
   username: z.string().trim().min(3).max(48),
   displayName: z.string().trim().min(2).max(128),
   status: z.enum(["active", "disabled"]),
+  loginMode: z.enum(["pc", "mobile", "both"]),
 });
 
 /** 管理员重置密码不校验旧密码，但口令只在本次请求内生成不可逆摘要。 */
@@ -741,6 +743,7 @@ export const adminRouter = router({
         localUsername,
         localPasswordHash: createLocalManagerPasswordHash(input.initialPassword),
         localAccountStatus: input.status,
+        localLoginMode: input.loginMode,
         localPasswordChangeRequired: false,
         lastSignedIn: new Date(),
       });
@@ -804,6 +807,7 @@ export const adminRouter = router({
         localUsername,
         name: input.displayName,
         localAccountStatus: input.status,
+        localLoginMode: input.loginMode,
       }).where(and(eq(users.id, target.id), eq(users.loginMethod, "local_manager")));
       if (profile) {
         await database.update(userProfiles).set({ status: profileStatus }).where(eq(userProfiles.id, profile.id));

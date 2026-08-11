@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { getSuperAdminAccess } from "../access";
+import { assertLocalManagerTerminalAccess } from "../localAuth";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -64,6 +65,12 @@ const requireLocalManagerPasswordChange = t.middleware(async opts => {
   return next({ ctx });
 });
 
+/** 本地管理账号的 PC/手机策略由服务端在每个受保护请求上重复校验，防止 Cookie 跨端复用。 */
+const requireLocalManagerTerminal = t.middleware(async opts => {
+  assertLocalManagerTerminalAccess(opts.ctx);
+  return opts.next({ ctx: opts.ctx });
+});
+
 const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   const { ctx, next, path, type, input } = opts;
   if (type !== "mutation" || !isScopedBusinessMutation(path)) {
@@ -82,7 +89,7 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   return next({ ctx });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser).use(requireLocalManagerPasswordChange).use(restrictOrdinaryManagerBusinessMutation);
+export const protectedProcedure = t.procedure.use(requireUser).use(requireLocalManagerPasswordChange).use(requireLocalManagerTerminal).use(restrictOrdinaryManagerBusinessMutation);
 
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {

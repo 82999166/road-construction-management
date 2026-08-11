@@ -1,11 +1,16 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   auditLogs,
+  dailyAccountingClosures,
+  financialInvoices,
   financialRecords,
   inventoryTransactions,
   measurementClaims,
+  measurementTakeoffEvidences,
+  measurementTakeoffRecords,
   projects,
   purchaseCategories,
   purchaseOrders,
@@ -257,6 +262,58 @@ const financialRecordReversalInput = z.object({
   reversedAt: isoDateTimeSchema,
   reason: z.string().trim().min(1, "请填写冲销原因").max(500, "冲销原因不得超过 500 个字符"),
 });
+
+/** 发票金额、税额和认证状态只能由财务岗位按项目范围维护，票号在项目内唯一。 */
+const financialInvoiceInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  financialRecordId: z.number().int().positive().nullable().optional(),
+  invoiceNo: z.string().trim().min(1, "请填写发票号码").max(64),
+  invoiceCode: z.string().trim().max(64).nullable().optional(),
+  counterpartyName: z.string().trim().min(2, "请填写购销方名称").max(200),
+  invoiceType: z.enum(["vat_special", "vat_normal", "electronic", "receipt", "other"]),
+  direction: z.enum(["income", "expense"]),
+  amount: moneySchema.refine(value => value > 0, "发票金额必须大于 0"),
+  taxAmount: moneySchema,
+  taxRate: z.number().min(0).max(1),
+  issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "开票日期格式应为 YYYY-MM-DD"),
+  evidenceId: z.number().int().positive().nullable().optional(),
+});
+
+const financialInvoiceTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["verified", "void", "red_flushed"]),
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+/** 每日会计日结只允许财务负责人或会计执行，服务端重新汇总当日流水而不信任客户端金额。 */
+const dailyClosingInput = z.object({
+  projectId: z.number().int().positive(),
+  closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日结日期格式应为 YYYY-MM-DD"),
+});
+
+/** 项目部收方草稿，工程量与单价由服务端重新计算申报金额。 */
+const measurementTakeoffInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  measurementClaimId: z.number().int().positive().nullable().optional(),
+  workItem: z.string().trim().min(2, "请填写计量项目").max(200),
+  workLocation: z.string().trim().min(2, "请填写作业位置").max(200),
+  unit: z.enum(["m3", "m2", "m", "t", "piece", "set", "other"]),
+  quantity: z.number().gt(0, "工程量必须大于 0").max(999999999.999),
+  unitPrice: moneySchema,
+  takeoffDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "收方日期格式应为 YYYY-MM-DD"),
+});
+
+const measurementTakeoffTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["submitted", "reviewing", "approved", "rejected", "locked", "void"]),
+  reviewNote: z.string().trim().max(500).nullable().optional(),
+});
+
+const measurementTakeoffEvidenceInput = z.object({ takeoffId: z.number().int().positive(), projectId: z.number().int().positive(), evidenceId: z.number().int().positive() });
 
 /** 按项目读取采购申请，避免客户端仅凭申请 ID 获取或修改其他项目记录。 */
 async function getScopedPurchaseRequest(ctx: Parameters<typeof requireAuthenticatedUser>[0], requestId: number, projectId: number) {
@@ -542,6 +599,85 @@ export const measurementRouter = router({
     return db.select().from(measurementClaims).where(eq(measurementClaims.projectId, input.projectId)).orderBy(desc(measurementClaims.updatedAt));
   }),
 
+  /** 收方记录独立于计量申报维护，项目部可先保存草稿并补齐影像/签认单后再提交复核。 */
+  listTakeoffs: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertMeasurementAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select().from(measurementTakeoffRecords).where(eq(measurementTakeoffRecords.projectId, input.projectId)).orderBy(desc(measurementTakeoffRecords.updatedAt));
+  }),
+
+  saveTakeoff: protectedProcedure.input(measurementTakeoffInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMeasurementAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const declaredAmount = roundMoney(input.quantity * input.unitPrice);
+    const values = {
+      projectId: input.projectId,
+      measurementClaimId: input.measurementClaimId ?? null,
+      workItem: input.workItem,
+      workLocation: input.workLocation,
+      unit: input.unit,
+      quantity: String(input.quantity),
+      unitPrice: String(roundMoney(input.unitPrice)),
+      declaredAmount: String(declaredAmount),
+      takeoffDate: toBusinessDate(input.takeoffDate),
+    };
+    let takeoffId = input.id;
+    if (input.id) {
+      const [existing] = await db.select().from(measurementTakeoffRecords).where(eq(measurementTakeoffRecords.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目收方记录" });
+      if (!["draft", "rejected"].includes(existing.status)) throw new TRPCError({ code: "CONFLICT", message: "仅草稿或被退回收方记录可修改" });
+      const updateResult = await db.update(measurementTakeoffRecords).set({ ...values, status: "draft", reviewNote: null }).where(and(eq(measurementTakeoffRecords.id, input.id), eq(measurementTakeoffRecords.status, existing.status)));
+      assertConditionalBusinessWrite(updateResult, "收方记录已被其他用户更新，请刷新后重试");
+    } else {
+      const takeoffNo = createBusinessNo("TO");
+      await db.insert(measurementTakeoffRecords).values({ ...values, takeoffNo, status: "draft", submittedBy: user.id });
+      const [created] = await db.select({ id: measurementTakeoffRecords.id }).from(measurementTakeoffRecords).where(eq(measurementTakeoffRecords.takeoffNo, takeoffNo)).limit(1);
+      takeoffId = created?.id;
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: input.id ? "update_takeoff" : "create_takeoff", targetType: "measurement_takeoff", targetId: String(takeoffId ?? input.id ?? "draft"), summary: `${input.id ? "维护" : "新建"}项目计量收方：${input.workItem}` });
+    return { success: true, takeoffId, declaredAmount };
+  }),
+
+  transitionTakeoff: protectedProcedure.input(measurementTakeoffTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMeasurementAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(measurementTakeoffRecords).where(eq(measurementTakeoffRecords.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目收方记录" });
+    const allowedTargets: Record<string, string[]> = { draft: ["submitted", "void"], submitted: ["reviewing", "rejected"], reviewing: ["approved", "rejected"], approved: ["locked"], rejected: ["submitted", "void"] };
+    if (!allowedTargets[record.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前收方状态不允许该操作" });
+    if (["reviewing", "approved", "rejected", "locked", "void"].includes(input.targetStatus) && !canReviewMeasurement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无收方复核、锁定或作废权限" });
+    const patch: Partial<typeof measurementTakeoffRecords.$inferInsert> = { status: input.targetStatus, reviewNote: input.reviewNote ?? null };
+    if (["reviewing", "approved", "rejected"].includes(input.targetStatus)) { patch.reviewedBy = user.id; patch.reviewedAt = new Date(); }
+    if (input.targetStatus === "locked") patch.lockedAt = new Date();
+    const updateResult = await db.update(measurementTakeoffRecords).set(patch).where(and(eq(measurementTakeoffRecords.id, input.id), eq(measurementTakeoffRecords.status, record.status)));
+    assertConditionalBusinessWrite(updateResult, "收方记录已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_takeoff", targetType: "measurement_takeoff", targetId: String(input.id), summary: `项目收方状态变更为：${input.targetStatus}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `takeoff_${input.targetStatus}`, targetType: "measurement_takeoff", targetId: String(input.id), title: `项目收方已${input.targetStatus}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
+    return { success: true };
+  }),
+
+  linkTakeoffEvidence: protectedProcedure.input(measurementTakeoffEvidenceInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMeasurementAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select({ id: measurementTakeoffRecords.id, status: measurementTakeoffRecords.status, projectId: measurementTakeoffRecords.projectId }).from(measurementTakeoffRecords).where(eq(measurementTakeoffRecords.id, input.takeoffId)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目收方记录" });
+    if (["locked", "void"].includes(record.status)) throw new TRPCError({ code: "CONFLICT", message: "已锁定或已作废收方记录不可补充证据" });
+    await db.insert(measurementTakeoffEvidences).values({ takeoffId: input.takeoffId, evidenceId: input.evidenceId, linkedBy: user.id }).onDuplicateKeyUpdate({ set: { linkedBy: user.id } });
+    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "link_takeoff_evidence", targetType: "measurement_takeoff", targetId: String(input.takeoffId), summary: "关联项目收方影像/签认凭证" });
+    return { success: true };
+  }),
+
   /** 保存工程计量草稿，已提交或已审核主张不得通过草稿接口改变申报金额。 */
   saveClaim: protectedProcedure.input(measurementInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
@@ -677,6 +813,111 @@ export const financeRouter = router({
     if (!input.period) return db.select().from(financialRecords).where(eq(financialRecords.projectId, input.projectId)).orderBy(desc(financialRecords.occurredAt));
     const range = getMonthRange(input.period);
     return db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(desc(financialRecords.occurredAt));
+  }),
+
+  /** 发票台账按项目受控读取，统计口径与财务流水分离，避免把发票金额重复记入成本。 */
+  listInvoices: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema.optional() })).query(async ({ ctx, input }) => {
+    await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { invoices: [], summary: { totalAmount: 0, verifiedAmount: 0, pendingAmount: 0, byType: {} as Record<string, number> } };
+    const conditions = [eq(financialInvoices.projectId, input.projectId)];
+    if (input.period) {
+      const range = getMonthRange(input.period);
+      conditions.push(gte(financialInvoices.issuedAt, range.start), lt(financialInvoices.issuedAt, range.endExclusive));
+    }
+    const invoices = await db.select().from(financialInvoices).where(and(...conditions)).orderBy(desc(financialInvoices.issuedAt), desc(financialInvoices.id));
+    const active = invoices.filter(invoice => !["void", "red_flushed"].includes(invoice.status));
+    const byType = active.reduce<Record<string, number>>((summary, invoice) => { summary[invoice.invoiceType] = roundMoney((summary[invoice.invoiceType] ?? 0) + Number(invoice.amount)); return summary; }, {});
+    return {
+      invoices,
+      summary: {
+        totalAmount: roundMoney(active.reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
+        verifiedAmount: roundMoney(active.filter(invoice => invoice.status === "verified").reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
+        pendingAmount: roundMoney(active.filter(invoice => invoice.status === "issued").reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
+        byType,
+      },
+    };
+  }),
+
+  saveInvoice: protectedProcedure.input(financialInvoiceInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票台账维护仅限会计或财务负责人" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    if (input.taxAmount > input.amount) throw new TRPCError({ code: "BAD_REQUEST", message: "税额不得高于价税合计金额" });
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    if (input.financialRecordId) {
+      const [record] = await db.select({ projectId: financialRecords.projectId }).from(financialRecords).where(eq(financialRecords.id, input.financialRecordId)).limit(1);
+      if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目关联的财务流水" });
+    }
+    const values = { projectId: input.projectId, financialRecordId: input.financialRecordId ?? null, invoiceNo: input.invoiceNo, invoiceCode: input.invoiceCode ?? null, counterpartyName: input.counterpartyName, invoiceType: input.invoiceType, direction: input.direction, amount: String(roundMoney(input.amount)), taxAmount: String(roundMoney(input.taxAmount)), taxRate: String(input.taxRate), issuedAt: toBusinessDate(input.issuedAt), evidenceId: input.evidenceId ?? null };
+    if (input.id) {
+      const [existing] = await db.select().from(financialInvoices).where(eq(financialInvoices.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
+      if (existing.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "已认证、作废或红冲发票不可直接修改" });
+      await db.update(financialInvoices).set(values).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
+    } else {
+      await db.insert(financialInvoices).values({ ...values, status: "issued", createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_invoice" : "create_invoice", targetType: "financial_invoice", targetId: input.invoiceNo, summary: `${input.id ? "维护" : "登记"}${input.direction === "expense" ? "成本" : "收入"}发票：${input.invoiceNo}` });
+    return { success: true };
+  }),
+
+  transitionInvoice: protectedProcedure.input(financialInvoiceTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票认证、作废和红冲仅限会计或财务负责人" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [invoice] = await db.select().from(financialInvoices).where(eq(financialInvoices.id, input.id)).limit(1);
+    if (!invoice || invoice.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
+    if (invoice.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "当前发票状态不允许再次操作" });
+    if (["void", "red_flushed"].includes(input.targetStatus) && !input.reason) throw new TRPCError({ code: "BAD_REQUEST", message: "作废或红冲必须填写原因" });
+    await db.update(financialInvoices).set({ status: input.targetStatus, verifiedAt: input.targetStatus === "verified" ? new Date() : null, voidReason: input.reason ?? null }).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票 ${invoice.invoiceNo} 状态变更为：${input.targetStatus}` });
+    return { success: true };
+  }),
+
+  closeDailyAccount: protectedProcedure.input(dailyClosingInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "每日会计日结仅限会计或财务负责人" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const closingDate = toBusinessDate(input.closingDate);
+    const endExclusive = new Date(closingDate.getTime() + 86_400_000);
+    const [existing] = await db.select({ id: dailyAccountingClosures.id }).from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, closingDate))).limit(1);
+    if (existing) throw new TRPCError({ code: "CONFLICT", message: "该项目日期已完成日结，不可重复封存" });
+    const records = await db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive))).orderBy(financialRecords.occurredAt, financialRecords.id);
+    const invoices = await db.select().from(financialInvoices).where(and(eq(financialInvoices.projectId, input.projectId), eq(financialInvoices.issuedAt, closingDate))).orderBy(financialInvoices.id);
+    const activeRecords = records.filter(record => record.settlementStatus !== "void");
+    const snapshot = { projectId: input.projectId, closingDate: input.closingDate, records: activeRecords.map(record => ({ id: record.id, recordNo: record.recordNo, direction: record.direction, category: record.category, amount: record.amount, settlementStatus: record.settlementStatus })), invoices: invoices.map(invoice => ({ id: invoice.id, invoiceNo: invoice.invoiceNo, invoiceType: invoice.invoiceType, amount: invoice.amount, status: invoice.status })) };
+    const snapshotJson = JSON.stringify(snapshot);
+    const snapshotHash = createHash("sha256").update(snapshotJson).digest("hex");
+    const totalIncome = roundMoney(activeRecords.filter(record => record.direction === "income").reduce((sum, record) => sum + Number(record.amount), 0));
+    const totalExpense = roundMoney(activeRecords.filter(record => record.direction === "expense").reduce((sum, record) => sum + Number(record.amount), 0));
+    const activeInvoices = invoices.filter(invoice => !["void", "red_flushed"].includes(invoice.status));
+    const closingNo = createBusinessNo("DAY");
+    await db.insert(dailyAccountingClosures).values({ closingNo, projectId: input.projectId, closingDate, totalIncome: String(totalIncome), totalExpense: String(totalExpense), recordCount: activeRecords.length, invoiceCount: activeInvoices.length, invoiceAmount: String(roundMoney(activeInvoices.reduce((sum, invoice) => sum + Number(invoice.amount), 0))), snapshotHash, snapshotJson, status: "closed", closedBy: user.id, closedAt: new Date() });
+    const [closing] = await db.select({ id: dailyAccountingClosures.id }).from(dailyAccountingClosures).where(eq(dailyAccountingClosures.closingNo, closingNo)).limit(1);
+    if (closing && activeRecords.length) await db.update(financialRecords).set({ dailyClosingId: closing.id }).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive)));
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "close_daily_account", targetType: "daily_accounting_closure", targetId: closingNo, summary: `完成项目日结：${input.closingDate}，支出 ${totalExpense}` });
+    return { success: true, closingNo, totalIncome, totalExpense, recordCount: activeRecords.length };
+  }),
+
+  getDailyPrintableReport: protectedProcedure.input(dailyClosingInput).query(async ({ ctx, input }) => {
+    await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const closingDate = toBusinessDate(input.closingDate);
+    const [closure] = await db.select().from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, closingDate))).limit(1);
+    if (!closure) throw new TRPCError({ code: "NOT_FOUND", message: "请先完成该日期日结，才可打印审计报表" });
+    return { closure, snapshot: JSON.parse(closure.snapshotJson) as unknown };
   }),
 
   /** 登记真实资金流水，项目、金额、发生时间和结算状态均经服务端校验并审计。 */

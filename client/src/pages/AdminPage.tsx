@@ -43,6 +43,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Settings2, label: "机械资源", path: "/admin/machinery" },
   { icon: Truck, label: "运输调度", path: "/admin/transport" },
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
+  { icon: BarChart3, label: "财务管理", path: "/admin/finance" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
@@ -71,7 +72,8 @@ type VehicleForm = { id?: number; projectId: string; organizationId: string; pla
 type RfidWriterDeviceForm = { id?: number; deviceCode: string; displayName: string; model: string; connectionMode: "manual_placeholder" | "usb" | "serial" | "network"; status: "active" | "disabled" | "maintenance"; remarks: string };
 type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked" };
 type LocalAccountStatus = "active" | "disabled";
-type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus };
+type LocalLoginMode = "pc" | "mobile" | "both";
+type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus; loginMode: LocalLoginMode };
 type LocalAccountActionTarget = { id: number; name: string; username: string };
 type AssignmentForm = { id?: number; userId: string; roleId: string; organizationId: string; projectId: string; validFrom: string; validTo: string };
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
@@ -251,13 +253,14 @@ export default function AdminPage() {
   const isLabor = activeSection === "labor";
   const isMachinery = activeSection === "machinery";
   const isTransport = activeSection === "transport";
+  const isFinance = activeSection === "finance";
   const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
   const isSettings = activeSection === "settings";
   const isAudit = activeSection === "audit";
   const needsOrganizations = isOrganization || isVehicle || isPermission;
-  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace || isSettings;
+  const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace || isFinance || isSettings;
   const needsUsers = isOrganization || isVehicle || isPermission;
 
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
@@ -280,6 +283,9 @@ export default function AdminPage() {
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
   const [laborPeriod, setLaborPeriod] = useState("");
+  const [financeProjectId, setFinanceProjectId] = useState("");
+  const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
+  const [financeClosingDate, setFinanceClosingDate] = useState(() => toLocalDateInput());
   const [payrollPaymentTarget, setPayrollPaymentTarget] = useState<PayrollPaymentTarget | null>(null);
   const [paymentReference, setPaymentReference] = useState("");
   const businessStatisticsInput = useMemo(() => ({
@@ -296,6 +302,7 @@ export default function AdminPage() {
   const payrollWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, period: laborPeriod || undefined }), [laborPeriod, workspaceProjectId]);
   const machineCostWorkspaceInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId }), [selectedMachineId, workspaceProjectId]);
   const transportWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, date: transportDate || undefined }), [transportDate, workspaceProjectId]);
+  const financeProjectInput = useMemo(() => ({ projectId: Number(financeProjectId || 0), period: financePeriod || undefined }), [financePeriod, financeProjectId]);
   const constructionDailyReports = trpc.construction.listReports.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
   const constructionDailySummary = trpc.construction.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
   const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
@@ -307,6 +314,16 @@ export default function AdminPage() {
   const transportTrips = trpc.transport.listTrips.useQuery(transportWorkspaceInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
   const rfidWriterDevices = trpc.transport.listRfidWriterDevices.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
   const vehicleRfidCards = trpc.transport.listVehicleRfidCards.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
+  const financeSummary = trpc.finance.summary.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financePeriod) });
+  const financeInvoices = trpc.finance.listInvoices.useQuery(financeProjectInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
+  const dailyAccountingReport = trpc.finance.getDailyPrintableReport.useQuery({ projectId: Number(financeProjectId || 0), closingDate: financeClosingDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financeClosingDate) });
+  const closeDailyAccount = trpc.finance.closeDailyAccount.useMutation({
+    onSuccess: async result => {
+      toast.success(`日结已封存：${result.closingNo}`);
+      await Promise.all([financeSummary.refetch(), financeInvoices.refetch(), dailyAccountingReport.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -333,7 +350,7 @@ export default function AdminPage() {
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(EMPTY_ASSIGNMENT_FORM);
   const [personnelSearch, setPersonnelSearch] = useState("");
   const [assignmentSearch, setAssignmentSearch] = useState("");
-  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", status: "active" as LocalAccountStatus });
+  const [localAccountForm, setLocalAccountForm] = useState({ username: "", displayName: "", initialPassword: "", status: "active" as LocalAccountStatus, loginMode: "both" as LocalLoginMode });
   const [localAccountEditForm, setLocalAccountEditForm] = useState<LocalAccountEditForm | null>(null);
   const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
   const [resetPassword, setResetPassword] = useState("");
@@ -489,7 +506,7 @@ export default function AdminPage() {
   const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
     onSuccess: async () => {
       toast.success("普通管理人员账号已创建，请继续配置角色、部门和项目范围");
-      setLocalAccountForm({ username: "", displayName: "", initialPassword: "", status: "active" });
+      setLocalAccountForm({ username: "", displayName: "", initialPassword: "", status: "active", loginMode: "both" });
       await Promise.all([users.refetch(), audits.refetch(), overview.refetch()]);
     },
     onError: error => toast.error(error.message),
@@ -1037,13 +1054,14 @@ export default function AdminPage() {
               <div className="grid gap-1.5"><Label htmlFor="local-account-name">显示姓名</Label><Input id="local-account-name" value={localAccountForm.displayName} onChange={event => setLocalAccountForm({ ...localAccountForm, displayName: event.target.value })} placeholder="例如：张三" /></div>
               <div className="grid gap-1.5"><Label htmlFor="local-account-password">初始密码</Label><Input id="local-account-password" type="password" autoComplete="new-password" value={localAccountForm.initialPassword} onChange={event => setLocalAccountForm({ ...localAccountForm, initialPassword: event.target.value })} placeholder="至少 6 位，任意数字或字符" /></div>
               <div className="grid gap-1.5"><Label>初始状态</Label><Select value={localAccountForm.status} onValueChange={value => setLocalAccountForm({ ...localAccountForm, status: value as "active" | "disabled" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
+              <div className="grid gap-1.5"><Label>登录方式</Label><Select value={localAccountForm.loginMode} onValueChange={value => setLocalAccountForm({ ...localAccountForm, loginMode: value as LocalLoginMode })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="pc">仅 PC 端</SelectItem><SelectItem value="mobile">仅手机端</SelectItem><SelectItem value="both">PC 端＋手机端</SelectItem></SelectContent></Select><p className="text-xs text-slate-500">服务端按实际请求终端限制，既有会话跨端复用也会被拒绝。</p></div>
               <div className="flex items-end"><Button className="w-full bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountForm.username || !localAccountForm.displayName || !localAccountForm.initialPassword || createLocalUser.isPending} onClick={() => createLocalUser.mutate(localAccountForm)}>{createLocalUser.isPending ? "正在创建…" : "创建普通管理人员"}</Button></div>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50 p-2.5"><p className="text-xs text-slate-600">账号目录 · {localManagerUsers.length} 人</p><Input className="h-8 w-full sm:w-56" value={personnelSearch} onChange={event => setPersonnelSearch(event.target.value)} placeholder="搜索姓名或登录账号" /></div>
             {localManagerUsers.length ? <div className="space-y-2">{filteredLocalManagerUsers.map(user => {
               const accountTarget = { id: user.id, name: user.name || `用户 #${user.id}`, username: user.localUsername || "" };
               const bindingLabel = user.profileStatus === "active" ? "已完成关注绑定" : user.profileStatus === "disabled" ? "绑定已停用" : "待关注绑定";
-              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5 shadow-sm"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{accountTarget.name}</p><span className="font-mono text-xs text-slate-500">{user.localUsername}</span><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Badge variant="outline">公众号：{bindingLabel}</Badge></div><p className="mt-1 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
+              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5 shadow-sm"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{accountTarget.name}</p><span className="font-mono text-xs text-slate-500">{user.localUsername}</span><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Badge variant="outline">登录：{user.localLoginMode === "pc" ? "仅 PC" : user.localLoginMode === "mobile" ? "仅手机" : "双端"}</Badge><Badge variant="outline">公众号：{bindingLabel}</Badge></div><p className="mt-1 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus, loginMode: user.localLoginMode ?? "both" })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
             })}</div> : <EmptyState text={personnelSearch ? "未找到匹配的普通管理账号。" : "尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。"} />}
           </CardContent>
         </Card>
@@ -1055,6 +1073,7 @@ export default function AdminPage() {
                 <div className="grid gap-1.5"><Label htmlFor="edit-local-account-username">登录账号</Label><Input id="edit-local-account-username" autoComplete="off" value={localAccountEditForm.username} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, username: event.target.value })} /><p className="text-xs text-slate-500">以字母开头，可使用小写字母、数字、点、下划线或连字符。</p></div>
                 <div className="grid gap-1.5"><Label htmlFor="edit-local-account-name">显示姓名</Label><Input id="edit-local-account-name" value={localAccountEditForm.displayName} onChange={event => setLocalAccountEditForm({ ...localAccountEditForm, displayName: event.target.value })} /></div>
                 <div className="grid gap-1.5"><Label>账号状态</Label><Select value={localAccountEditForm.status} onValueChange={value => setLocalAccountEditForm({ ...localAccountEditForm, status: value as LocalAccountStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></div>
+                <div className="grid gap-1.5"><Label>登录方式</Label><Select value={localAccountEditForm.loginMode} onValueChange={value => setLocalAccountEditForm({ ...localAccountEditForm, loginMode: value as LocalLoginMode })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="pc">仅 PC 端</SelectItem><SelectItem value="mobile">仅手机端</SelectItem><SelectItem value="both">PC 端＋手机端</SelectItem></SelectContent></Select></div>
               </div>
               <DialogFooter><Button type="button" variant="outline" onClick={() => setLocalAccountEditForm(null)}>取消</Button><Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={!localAccountEditForm.username || !localAccountEditForm.displayName || updateLocalUser.isPending}>{updateLocalUser.isPending ? "正在保存…" : "保存修改"}</Button></DialogFooter>
             </form> : null}
@@ -1434,7 +1453,30 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const renderFinance = () => (
+    <div className="space-y-5">
+      <Card className="border-[#d8e3e0] shadow-sm">
+        <CardHeader><CardTitle className="text-base">审计级财务管理</CardTitle><CardDescription>按项目和会计期间读取真实费用、成本、应收应付及发票状态。发票台账不重复计入成本；每日日结生成不可变快照，供会计审核与凭证装订打印。</CardDescription></CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
+          <Select value={financeProjectId} onValueChange={setFinanceProjectId}><SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select>
+          <Input type="month" value={financePeriod} onChange={event => setFinancePeriod(event.target.value)} aria-label="会计期间" />
+          <Button variant="outline" onClick={() => { void financeSummary.refetch(); void financeInvoices.refetch(); }}>刷新统计</Button>
+        </CardContent>
+      </Card>
+      {!financeProjectId ? <EmptyState text="请选择项目后读取真实费用、成本和发票审计台账。" /> : <>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="确认收入" value={financeSummary.data?.incomeAmount} description="不含重复回款口径" icon={BarChart3} />
+          <MetricCard title="项目成本/开支" value={financeSummary.data?.expenseAmount} description="已登记支出流水" icon={ScrollText} />
+          <MetricCard title="已开票金额" value={financeInvoices.data?.summary.totalAmount} description="不含作废与红冲" icon={ScrollText} />
+          <MetricCard title="待认证发票" value={financeInvoices.data?.summary.pendingAmount} description="须会计复核" icon={ScrollText} />
+        </div>
+        <Card><CardHeader><CardTitle className="text-base">发票与成本审计台账</CardTitle><CardDescription>费用明细与发票按项目范围管理；认证、作废和红冲需由会计或财务负责人通过服务端状态机执行。</CardDescription></CardHeader><CardContent>{financeInvoices.isLoading ? <EmptyState text="正在读取发票台账…" /> : financeInvoices.data?.invoices.length ? <div className="space-y-2">{financeInvoices.data.invoices.map(invoice => <div key={invoice.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"><div><p className="text-sm font-medium text-slate-800">{invoice.invoiceNo} · {invoice.counterpartyName}</p><p className="mt-1 text-xs text-slate-500">{displayDate(invoice.issuedAt)} · {invoice.invoiceType} · 税额 ¥ {displayMoney(invoice.taxAmount)}</p></div><div className="flex items-center gap-2"><BusinessStatusBadge status={invoice.status} /><span className="font-medium text-slate-800">¥ {displayMoney(invoice.amount)}</span></div></div>)}</div> : <EmptyState text="当前期间暂无发票，财务岗位可通过发票台账接口登记真实凭证。" />}</CardContent></Card>
+        <Card className="print:border-0 print:shadow-none"><CardHeader><CardTitle className="text-base">后勤每日开支会计日结与打印</CardTitle><CardDescription>日结时由服务端重新汇总当日流水与发票，生成 SHA-256 快照；封存后不可重复日结，可作为每日凭证装订页打印。</CardDescription></CardHeader><CardContent className="space-y-3"><div className="flex flex-wrap items-end gap-3"><div className="grid gap-1.5"><Label>日结日期</Label><Input type="date" value={financeClosingDate} onChange={event => setFinanceClosingDate(event.target.value)} /></div><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={closeDailyAccount.isPending} onClick={() => closeDailyAccount.mutate({ projectId: Number(financeProjectId), closingDate: financeClosingDate })}>{closeDailyAccount.isPending ? "正在日结…" : "执行日结并封存"}</Button><Button variant="outline" disabled={!dailyAccountingReport.data} onClick={() => window.print()}>打印日结装订页</Button></div>{dailyAccountingReport.data ? <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="flex flex-wrap justify-between gap-3"><div><p className="font-medium text-slate-900">日结单：{dailyAccountingReport.data.closure.closingNo}</p><p className="mt-1 text-xs text-slate-500">封存日期：{financeClosingDate} · 快照指纹：{dailyAccountingReport.data.closure.snapshotHash.slice(0, 16)}…</p></div><div className="text-right text-sm"><p>收入：¥ {displayMoney(dailyAccountingReport.data.closure.totalIncome)}</p><p>开支：¥ {displayMoney(dailyAccountingReport.data.closure.totalExpense)}</p><p>发票：{dailyAccountingReport.data.closure.invoiceCount} 张 · ¥ {displayMoney(dailyAccountingReport.data.closure.invoiceAmount)}</p></div></div></div> : <p className="text-sm text-slate-500">尚未封存该日期，执行日结后将显示可打印的审计快照。</p>}</CardContent></Card>
+      </>}
+    </div>
+  );
+
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "finance" ? renderFinance() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>

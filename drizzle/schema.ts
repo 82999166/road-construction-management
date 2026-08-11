@@ -31,6 +31,8 @@ export const users = mysqlTable("users", {
   localPasswordHash: varchar("localPasswordHash", { length: 256 }),
   /** 停用后服务端会拒绝该本地账号的所有后续会话请求。 */
   localAccountStatus: mysqlEnum("localAccountStatus", ["active", "disabled"]).default("active").notNull(),
+  /** 后台创建的本地管理人员可被限制为仅 PC、仅手机或双端登录；OAuth 身份保持双端兼容。 */
+  localLoginMode: mysqlEnum("localLoginMode", ["pc", "mobile", "both"]).default("both").notNull(),
   /** 兼容旧账号资料的历史字段；当前本地账号不再强制首次登录改密。 */
   localPasswordChangeRequired: boolean("localPasswordChangeRequired").default(false).notNull(),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
@@ -876,6 +878,53 @@ export const measurementClaims = mysqlTable(
   table => ({ claimUnique: uniqueIndex("measurement_claims_no_unique").on(table.claimNo) }),
 );
 
+/** 项目部现场计量收方记录；金额仅在审核后按受控规则汇入计量申报，防止前端直接改写申报金额。 */
+export const measurementTakeoffRecords = mysqlTable(
+  "measurement_takeoff_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    takeoffNo: varchar("takeoffNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    measurementClaimId: bigint("measurementClaimId", { mode: "number" }),
+    workItem: varchar("workItem", { length: 200 }).notNull(),
+    workLocation: varchar("workLocation", { length: 200 }).notNull(),
+    unit: mysqlEnum("unit", ["m3", "m2", "m", "t", "piece", "set", "other"]).notNull(),
+    quantity: decimal("quantity", { precision: 16, scale: 3 }).notNull(),
+    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
+    declaredAmount: decimal("declaredAmount", { precision: 16, scale: 2 }).notNull(),
+    takeoffDate: date("takeoffDate").notNull(),
+    status: mysqlEnum("status", ["draft", "submitted", "reviewing", "approved", "rejected", "locked", "void"]).default("draft").notNull(),
+    submittedBy: int("submittedBy").notNull(),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    lockedAt: datetime("lockedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    takeoffNoUnique: uniqueIndex("measurement_takeoff_records_no_unique").on(table.takeoffNo),
+    projectStatusDateIndex: index("measurement_takeoff_records_project_status_date_index").on(table.projectId, table.status, table.takeoffDate),
+    claimIndex: index("measurement_takeoff_records_claim_index").on(table.measurementClaimId),
+  }),
+);
+
+/** 收方记录可关联多张水印影像、签认单或监理证据；文件实体始终存于对象存储。 */
+export const measurementTakeoffEvidences = mysqlTable(
+  "measurement_takeoff_evidences",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    takeoffId: bigint("takeoffId", { mode: "number" }).notNull(),
+    evidenceId: bigint("evidenceId", { mode: "number" }).notNull(),
+    linkedBy: int("linkedBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    takeoffEvidenceUnique: uniqueIndex("measurement_takeoff_evidences_unique").on(table.takeoffId, table.evidenceId),
+    takeoffIndex: index("measurement_takeoff_evidences_takeoff_index").on(table.takeoffId),
+  }),
+);
+
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
 export const financialRecords = mysqlTable(
   "financial_records",
@@ -891,11 +940,72 @@ export const financialRecords = mysqlTable(
     sourceType: varchar("sourceType", { length: 64 }),
     sourceId: varchar("sourceId", { length: 128 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
+    dailyClosingId: bigint("dailyClosingId", { mode: "number" }),
     remarks: text("remarks"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({ recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo) }),
+);
+
+/** 成本、收入和付款凭证的发票台账；金额、税额和状态均由服务端校验并保留原始审计链。 */
+export const financialInvoices = mysqlTable(
+  "financial_invoices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    financialRecordId: bigint("financialRecordId", { mode: "number" }),
+    invoiceNo: varchar("invoiceNo", { length: 64 }).notNull(),
+    invoiceCode: varchar("invoiceCode", { length: 64 }),
+    counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
+    invoiceType: mysqlEnum("invoiceType", ["vat_special", "vat_normal", "electronic", "receipt", "other"]).notNull(),
+    direction: mysqlEnum("direction", ["income", "expense"]).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    taxRate: decimal("taxRate", { precision: 7, scale: 4 }).default("0").notNull(),
+    issuedAt: date("issuedAt").notNull(),
+    verifiedAt: datetime("verifiedAt"),
+    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"]).default("issued").notNull(),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    voidReason: varchar("voidReason", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectInvoiceNoUnique: uniqueIndex("financial_invoices_project_no_unique").on(table.projectId, table.invoiceNo),
+    projectStatusDateIndex: index("financial_invoices_project_status_date_index").on(table.projectId, table.status, table.issuedAt),
+    financialRecordIndex: index("financial_invoices_financial_record_index").on(table.financialRecordId),
+  }),
+);
+
+/** 后勤每日开支日结封存快照；已关闭或归档日期不得再写入底层财务流水。 */
+export const dailyAccountingClosures = mysqlTable(
+  "daily_accounting_closures",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    closingNo: varchar("closingNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    closingDate: date("closingDate").notNull(),
+    totalIncome: decimal("totalIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    totalExpense: decimal("totalExpense", { precision: 16, scale: 2 }).default("0").notNull(),
+    recordCount: int("recordCount").default(0).notNull(),
+    invoiceCount: int("invoiceCount").default(0).notNull(),
+    invoiceAmount: decimal("invoiceAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    snapshotHash: varchar("snapshotHash", { length: 64 }).notNull(),
+    snapshotJson: text("snapshotJson").notNull(),
+    status: mysqlEnum("status", ["closed", "archived", "void"]).default("closed").notNull(),
+    closedBy: int("closedBy").notNull(),
+    closedAt: datetime("closedAt").notNull(),
+    archivedBy: int("archivedBy"),
+    archivedAt: datetime("archivedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    closingNoUnique: uniqueIndex("daily_accounting_closures_no_unique").on(table.closingNo),
+    projectDateUnique: uniqueIndex("daily_accounting_closures_project_date_unique").on(table.projectId, table.closingDate),
+  }),
 );
 
 /** 水印相机、票据 OCR、GPS 等影像证据的元数据；文件本体保存至对象存储。 */

@@ -370,6 +370,7 @@ export async function listLoginUsers() {
     loginMethod: users.loginMethod,
     localUsername: users.localUsername,
     localAccountStatus: users.localAccountStatus,
+    localLoginMode: users.localLoginMode,
     localPasswordChangeRequired: users.localPasswordChangeRequired,
     lastSignedIn: users.lastSignedIn,
     profileStatus: userProfiles.status,

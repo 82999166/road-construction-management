@@ -147,6 +147,20 @@ function signInUser(ctx: TrpcContext, openId: string, name: string, expiresInMs:
   });
 }
 
+/** 终端策略基于请求 User-Agent 服务端判定；客户端不能通过隐藏按钮绕过策略。 */
+function requestTerminal(ctx: TrpcContext) {
+  const userAgent = String(ctx.req.headers?.["user-agent"] ?? "");
+  return /android|iphone|ipad|ipod|mobile/i.test(userAgent) ? "mobile" as const : "pc" as const;
+}
+
+/** 普通本地账号的登录方式限制同时作用于登录和后续受保护接口，避免已有 Cookie 跨端复用。 */
+export function assertLocalManagerTerminalAccess(ctx: TrpcContext, user = ctx.user) {
+  if (!user || user.loginMethod !== "local_manager") return;
+  const terminal = requestTerminal(ctx);
+  if (user.localLoginMode === "pc" && terminal !== "pc") throw new TRPCError({ code: "FORBIDDEN", message: "该账号仅允许在 PC 端登录和办理业务" });
+  if (user.localLoginMode === "mobile" && terminal !== "mobile") throw new TRPCError({ code: "FORBIDDEN", message: "该账号仅允许在手机端登录和办理业务" });
+}
+
 /** 临时本地登录仅限初始化期间的超级管理员，成功后仍复用既有签名会话与权限守卫。 */
 export async function loginTemporaryAdmin(ctx: TrpcContext, input: { username: string; password: string }) {
   const { username: configuredUsername, password: configuredPassword } = ensureTemporaryAdminConfiguration();
@@ -190,6 +204,8 @@ export async function loginLocalManager(ctx: TrpcContext, input: { username: str
     await recordLoginAudit(locked ? "local_manager_login_locked" : "local_manager_login_failed", null);
     throw new TRPCError({ code: locked ? "TOO_MANY_REQUESTS" : "UNAUTHORIZED", message: locked ? "登录尝试次数过多，请 15 分钟后再试" : "账号或密码错误" });
   }
+
+  assertLocalManagerTerminalAccess(ctx, user);
 
   resetAttemptState(attempts);
   await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
