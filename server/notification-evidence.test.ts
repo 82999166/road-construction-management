@@ -16,7 +16,7 @@ import { getDb } from "./db";
 import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
 import { createInAppMessage, messageRouter } from "./routers/messages";
-import { inspectPublishedOfficialAccountTemplateCapability, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
+import { inspectPublishedOfficialAccountTemplateCapability, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
 import { storageGet, storageGetSignedUrl, storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -163,5 +163,23 @@ describe("消息、影像与企业微信通知安全边界", () => {
       : ({ ok: true, json: async () => ({ errcode: 48001, errmsg: "api unauthorized" }) })));
 
     await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。" });
+  });
+
+  it("私有模板发现会返回模板 ID 与从 DATA 占位符生成的字段映射，且不返回密钥", async () => {
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-template-list" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:template-list-secret" },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL) => {
+      if (String(request).includes("cgi-bin/token")) return { ok: true, json: async () => ({ access_token: "template-list-token", expires_in: 7200 }) };
+      return { ok: true, json: async () => ({ template_list: [{ template_id: "tmpl-1", title: "运输提醒", content: "{{first.DATA}}\n车辆：{{keyword1.DATA}}\n{{remark.DATA}}" }] }) };
+    }));
+
+    await expect(listPublishedOfficialAccountPrivateTemplates()).resolves.toEqual({
+      success: true,
+      message: "已读取 1 个私有模板；请选择符合施工业务通知场景的模板生成系统草稿。",
+      templates: [{ templateId: "tmpl-1", title: "运输提醒", content: "{{first.DATA}}\n车辆：{{keyword1.DATA}}\n{{remark.DATA}}", fieldMapping: { first: "{title}", keyword1: "{content}", remark: "点击查看系统详情" } }],
+    });
   });
 });

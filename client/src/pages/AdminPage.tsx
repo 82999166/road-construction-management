@@ -493,6 +493,22 @@ export default function AdminPage() {
     },
     onError: error => toast.error(error.message),
   });
+  const [officialTemplateOptions, setOfficialTemplateOptions] = useState<Array<{ templateId: string; title: string; content: string; fieldMapping: Record<string, string> }>>([]);
+  const listOfficialTemplates = trpc.admin.settings.listOfficialAccountTemplates.useMutation({
+    onSuccess: result => {
+      setOfficialTemplateOptions(result.templates);
+      result.success ? toast.success(result.message) : toast.error(result.message);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const createOfficialTemplateDraft = trpc.admin.settings.createOfficialAccountTemplateDraft.useMutation({
+    onSuccess: async result => {
+      toast.success(result.message);
+      setOfficialTemplateOptions([]);
+      await Promise.all([settings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
   const saveDailyDigest = trpc.dailyDigest.saveSettings.useMutation({
     onSuccess: async data => {
       toast.success(data.taskUid ? "每日项目汇总已保存，定时任务已同步" : "每日项目汇总设置已保存");
@@ -1063,7 +1079,7 @@ export default function AdminPage() {
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium text-slate-800"><KeyRound className="h-4 w-4 text-[#1f6b60]" />开发密钥</div><Badge variant="outline" className={officialCredentialsReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialCredentialsReady ? "AppID / AppSecret 已发布" : "待发布"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。AppSecret 必须为“启用”状态；重置后旧密钥立即失效。</p></div>
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center gap-2 font-medium text-slate-800"><ShieldCheck className="h-4 w-4 text-[#1f6b60]" />API IP 白名单</div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。若微信返回 40164，请将报错中的实际出口 IP 追加到白名单；自动扩缩容环境可能出现多条出口 IP，不能只保留一条。</p></div>
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">网页授权与跳转域名</div><Badge variant="outline" className={officialBindingReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialBindingReady ? "可发起员工绑定" : "待发布 HTTPS 地址"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">系统跳转地址须发布为 HTTPS。网页授权域名在微信公众平台“设置与开发 → 账号设置 → 功能设置”中配置，只填域名，不填协议和路径。</p></div>
-            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">模板消息通知</div><Badge variant="outline" className={officialTemplateReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-600"}>{officialTemplateReady ? "业务通知已就绪" : "待开通或选用模板"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">“通知中心”只展示平台公告，不提供业务模板。请在服务号后台“功能 → 添加功能插件”开通模板消息，设置服务类目并从公共模板库选用合规模板；员工 OAuth 绑定不依赖模板 ID。</p><Button className="mt-3 w-full" size="sm" variant="outline" disabled={checkOfficialTemplateCapability.isPending} onClick={() => checkOfficialTemplateCapability.mutate()}>{checkOfficialTemplateCapability.isPending ? "正在检测模板功能…" : "检测模板消息功能插件"}</Button></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">模板消息通知</div><Badge variant="outline" className={officialTemplateReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-600"}>{officialTemplateReady ? "业务通知已就绪" : "待开通或选用模板"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">“通知中心”只展示平台公告，不提供业务模板。请在服务号后台“功能 → 添加功能插件”开通模板消息，设置服务类目并从公共模板库选用合规模板；员工 OAuth 绑定不依赖模板 ID。</p><div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2"><Button size="sm" variant="outline" disabled={checkOfficialTemplateCapability.isPending} onClick={() => checkOfficialTemplateCapability.mutate()}>{checkOfficialTemplateCapability.isPending ? "正在检测模板功能…" : "检测模板消息功能插件"}</Button><Button size="sm" className="bg-[#1f6b60] hover:bg-[#18564e]" disabled={listOfficialTemplates.isPending} onClick={() => listOfficialTemplates.mutate()}>{listOfficialTemplates.isPending ? "正在读取私有模板…" : "读取并选择私有模板"}</Button></div>{officialTemplateOptions.length ? <div className="mt-3 space-y-2 rounded-md border border-[#d7e8e3] bg-[#f8fbfa] p-2">{officialTemplateOptions.map(template => <div key={template.templateId} className="rounded border border-slate-200 bg-white p-2"><div className="font-medium text-slate-800">{template.title}</div><p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-600">{template.content}</p><p className="mt-1 text-[11px] text-slate-500">字段：{Object.keys(template.fieldMapping).join("、") || "未识别"}</p><Button className="mt-2 w-full" size="sm" variant="outline" disabled={createOfficialTemplateDraft.isPending} onClick={() => createOfficialTemplateDraft.mutate({ templateId: template.templateId })}>{createOfficialTemplateDraft.isPending ? "正在生成草稿…" : "选择此模板并生成配置草稿"}</Button></div>)}</div> : null}</div>
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>

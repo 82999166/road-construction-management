@@ -1,4 +1,4 @@
-import { and, count, desc, eq, or } from "drizzle-orm";
+import { and, count, desc, eq, inArray, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -37,7 +37,7 @@ import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
-import { inspectPublishedOfficialAccountTemplateCapability, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { inspectPublishedOfficialAccountTemplateCapability, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -1138,6 +1138,36 @@ export const adminRouter = router({
       const db = await getDb();
       if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_capability_check", targetType: "official_account", targetId: "template_capability", summary: `检测服务号模板消息能力：${result.success ? "通过" : "未通过"}` });
       return result;
+    }),
+    /** 仅读取服务号私有模板库，供超级管理员在本系统中选择合规模板；不返回 AppSecret 或任何用户标识。 */
+    listOfficialAccountTemplates: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const result = await listPublishedOfficialAccountPrivateTemplates();
+      const db = await getDb();
+      if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_list", targetType: "official_account", targetId: "private_templates", summary: `读取服务号私有模板库：${result.success ? `${result.templates.length} 个` : "失败"}` });
+      return result;
+    }),
+    /** 将已由微信接口核验的私有模板安全写入两项草稿配置，不覆盖已有模板配置。 */
+    createOfficialAccountTemplateDraft: protectedProcedure.input(z.object({ templateId: z.string().min(1).max(128) })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const discovered = await listPublishedOfficialAccountPrivateTemplates();
+      if (!discovered.success) throw new TRPCError({ code: "BAD_REQUEST", message: discovered.message });
+      const selected = discovered.templates.find(template => template.templateId === input.templateId);
+      if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const keys = ["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"];
+      const existing = await db.select({ settingKey: systemSettings.settingKey }).from(systemSettings).where(inArray(systemSettings.settingKey, keys));
+      if (existing.length) throw new TRPCError({ code: "CONFLICT", message: "系统中已有模板 ID 或字段映射配置。为避免覆盖，请在配置清单中编辑或停用旧配置后再生成草稿。" });
+      const fieldMappingJson = JSON.stringify(selected.fieldMapping);
+      await db.transaction(async tx => {
+        await tx.insert(systemSettings).values([
+          { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", valueJson: selected.templateId, valuePreview: selected.templateId.slice(0, 256), isSensitive: false, status: "draft", remarks: `由服务号私有模板库自动选择：${selected.title}`.slice(0, 2000), updatedBy: admin.id },
+          { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", valueJson: fieldMappingJson, valuePreview: fieldMappingJson.slice(0, 256), isSensitive: false, status: "draft", remarks: "由服务号模板正文中的 .DATA 字段自动生成；发布前请核对字段含义与合规性。", updatedBy: admin.id },
+        ]);
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_draft", targetType: "official_account_template", targetId: selected.templateId, summary: `从服务号私有模板库生成模板配置草稿：${selected.title}` });
+      });
+      return { success: true, message: "模板 ID 与字段映射草稿已生成。请在配置清单核对后分别发布，业务通知才会启用。" };
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);

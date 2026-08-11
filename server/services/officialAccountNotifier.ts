@@ -15,6 +15,12 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null };
 export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null };
+export type OfficialAccountPrivateTemplate = {
+  templateId: string;
+  title: string;
+  content: string;
+  fieldMapping: Record<string, string>;
+};
 
 export type OfficialAccountNotificationResult = {
   delivered: boolean;
@@ -267,30 +273,50 @@ export async function testPublishedOfficialAccountConfiguration() {
   }
 }
 
-/**
- * 认证服务号新版后台中的“通知中心”只展示平台公告，模板消息能力须通过功能插件开通。
- * 本检测仅读取当前账号的私有模板列表，不发送消息、不返回任何密钥或 OpenID。
- */
-export async function inspectPublishedOfficialAccountTemplateCapability() {
+function deriveTemplateFieldMapping(content: string) {
+  const fields = Array.from(new Set(Array.from(content.matchAll(/\{\{([A-Za-z0-9_]+)\.DATA\}\}/g)).map(match => match[1]).filter((field): field is string => Boolean(field))));
+  const fallbackFields = fields.length ? fields : ["first", "keyword1", "keyword2", "remark"];
+  return Object.fromEntries(fallbackFields.map((field, index) => {
+    if (field === "first") return [field, "{title}"];
+    if (field === "remark") return [field, "点击查看系统详情"];
+    if (index === 1) return [field, "{content}"];
+    return [field, "{targetType} #{targetId}"];
+  }));
+}
+
+/** 从已发布服务号的私有模板库读取可选模板；模板内容可由超级管理员查看，密钥和 OpenID 永不返回。 */
+export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ success: boolean; message: string; templates: OfficialAccountPrivateTemplate[] }> {
   const credentialResult = await loadPublishedOfficialAccountCredentials();
-  if (!credentialResult.config) return { success: false, message: "请先发布 AppID 与 AppSecret，再检测模板消息功能插件。" };
+  if (!credentialResult.config) return { success: false, message: "请先发布 AppID 与 AppSecret，再读取服务号私有模板库。", templates: [] };
   try {
     const token = await getAccessToken(credentialResult.config);
     const response = await fetch(`https://api.weixin.qq.com/cgi-bin/template/get_all_private_template?access_token=${encodeURIComponent(token)}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000),
     });
-    const payload = await response.json().catch(() => null) as { errcode?: number; errmsg?: string; template_list?: unknown[] } | null;
+    const payload = await response.json().catch(() => null) as { errcode?: number; errmsg?: string; template_list?: Array<{ template_id?: string; title?: string; content?: string }> } | null;
     if (!response.ok || payload?.errcode) {
       const code = String(payload?.errcode ?? response.status).slice(0, 24);
       const detail = typeof payload?.errmsg === "string" ? payload.errmsg.replace(/[\r\n]+/g, " ").slice(0, 180) : "";
-      if (code === "48001") return { success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。" };
-      return { success: false, message: `无法读取服务号模板消息能力（错误码 ${code}${detail ? `，${detail}` : ""}）。请检查模板消息功能插件、服务类目和接口权限。` };
+      if (code === "48001") return { success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。", templates: [] };
+      return { success: false, message: `无法读取服务号模板消息能力（错误码 ${code}${detail ? `，${detail}` : ""}）。请检查模板消息功能插件、服务类目和接口权限。`, templates: [] };
     }
-    const count = Array.isArray(payload?.template_list) ? payload.template_list.length : 0;
-    return { success: true, message: count ? `模板消息功能已开通，当前私有模板库共有 ${count} 个模板。请选择合规业务通知模板并将其模板 ID 填入系统。` : "模板消息功能已开通，但私有模板库暂无可用模板。请在服务号后台设置服务类目后，从公共模板库选用合规业务通知模板。" };
+    const templates = (payload?.template_list ?? [])
+      .filter((template): template is Required<Pick<typeof template, "template_id" | "title" | "content">> => Boolean(template.template_id && template.title && template.content))
+      .slice(0, 25)
+      .map(template => ({ templateId: template.template_id.slice(0, 128), title: template.title.slice(0, 160), content: template.content.slice(0, 1600), fieldMapping: deriveTemplateFieldMapping(template.content) }));
+    return { success: true, message: templates.length ? `已读取 ${templates.length} 个私有模板；请选择符合施工业务通知场景的模板生成系统草稿。` : "模板消息功能已开通，但私有模板库暂无可用模板。请在服务号后台设置服务类目后，从公共模板库选用合规业务通知模板。", templates };
   } catch {
-    return { success: false, message: "模板消息能力检测无法连接微信接口。请先执行“校验开发密钥”，确认 AppSecret 与 API IP 白名单已通过。" };
+    return { success: false, message: "模板消息能力检测无法连接微信接口。请先执行“校验开发密钥”，确认 AppSecret 与 API IP 白名单已通过。", templates: [] };
   }
+}
+
+/**
+ * 认证服务号新版后台中的“通知中心”只展示平台公告，模板消息能力须通过功能插件开通。
+ * 本检测仅读取当前账号的私有模板列表，不发送消息、不返回任何密钥或 OpenID。
+ */
+export async function inspectPublishedOfficialAccountTemplateCapability() {
+  const result = await listPublishedOfficialAccountPrivateTemplates();
+  return { success: result.success, message: result.success && result.templates.length ? `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板。请选择合规业务通知模板并将其模板 ID 填入系统。` : result.message };
 }
 
 /** OpenID 仅以该指纹进行去重查询，永不返回或展示原始值。 */
