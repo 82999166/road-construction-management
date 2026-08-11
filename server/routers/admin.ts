@@ -37,7 +37,7 @@ import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
-import { testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { inspectPublishedOfficialAccountTemplateCapability, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -1129,6 +1129,14 @@ export const adminRouter = router({
           deepLink: "/admin/settings",
         });
       }
+      return result;
+    }),
+    /** 供新版服务号向导独立检测模板消息插件和私有模板库，不依赖管理员预先填入模板 ID。 */
+    checkOfficialAccountTemplateCapability: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const result = await inspectPublishedOfficialAccountTemplateCapability();
+      const db = await getDb();
+      if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_capability_check", targetType: "official_account", targetId: "template_capability", summary: `检测服务号模板消息能力：${result.success ? "通过" : "未通过"}` });
       return result;
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {

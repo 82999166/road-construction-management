@@ -486,6 +486,13 @@ export default function AdminPage() {
       await audits.refetch();
     },
   });
+  const checkOfficialTemplateCapability = trpc.admin.settings.checkOfficialAccountTemplateCapability.useMutation({
+    onSuccess: async result => {
+      result.success ? toast.success(result.message) : toast.error(result.message);
+      await audits.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
   const saveDailyDigest = trpc.dailyDigest.saveSettings.useMutation({
     onSuccess: async data => {
       toast.success(data.taskUid ? "每日项目汇总已保存，定时任务已同步" : "每日项目汇总设置已保存");
@@ -1056,7 +1063,7 @@ export default function AdminPage() {
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium text-slate-800"><KeyRound className="h-4 w-4 text-[#1f6b60]" />开发密钥</div><Badge variant="outline" className={officialCredentialsReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialCredentialsReady ? "AppID / AppSecret 已发布" : "待发布"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。AppSecret 必须为“启用”状态；重置后旧密钥立即失效。</p></div>
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center gap-2 font-medium text-slate-800"><ShieldCheck className="h-4 w-4 text-[#1f6b60]" />API IP 白名单</div><p className="mt-1.5 text-xs leading-5 text-slate-600">路径：基础信息 → 开发密钥。若微信返回 40164，请将报错中的实际出口 IP 追加到白名单；自动扩缩容环境可能出现多条出口 IP，不能只保留一条。</p></div>
             <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">网页授权与跳转域名</div><Badge variant="outline" className={officialBindingReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialBindingReady ? "可发起员工绑定" : "待发布 HTTPS 地址"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">系统跳转地址须发布为 HTTPS。网页授权域名在微信公众平台“设置与开发 → 账号设置 → 功能设置”中配置，只填域名，不填协议和路径。</p></div>
-            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">模板消息通知</div><Badge variant="outline" className={officialTemplateReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-600"}>{officialTemplateReady ? "业务通知已就绪" : "可稍后配置"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">认证服务号模板消息当前仍可用。员工 OAuth 绑定不依赖模板 ID；审核、刷卡和每日汇总通知需要模板 ID 与字段映射后才会投递。</p></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div className="font-medium text-slate-800">模板消息通知</div><Badge variant="outline" className={officialTemplateReady ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-slate-50 text-slate-600"}>{officialTemplateReady ? "业务通知已就绪" : "待开通或选用模板"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-600">“通知中心”只展示平台公告，不提供业务模板。请在服务号后台“功能 → 添加功能插件”开通模板消息，设置服务类目并从公共模板库选用合规模板；员工 OAuth 绑定不依赖模板 ID。</p><Button className="mt-3 w-full" size="sm" variant="outline" disabled={checkOfficialTemplateCapability.isPending} onClick={() => checkOfficialTemplateCapability.mutate()}>{checkOfficialTemplateCapability.isPending ? "正在检测模板功能…" : "检测模板消息功能插件"}</Button></div>
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>

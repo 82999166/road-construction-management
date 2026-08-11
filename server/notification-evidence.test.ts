@@ -16,7 +16,7 @@ import { getDb } from "./db";
 import { invokeLLM } from "./_core/llm";
 import { evidenceRouter } from "./routers/evidence";
 import { createInAppMessage, messageRouter } from "./routers/messages";
-import { loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
+import { inspectPublishedOfficialAccountTemplateCapability, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
 import { storageGet, storageGetSignedUrl, storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -150,5 +150,18 @@ describe("消息、影像与企业微信通知安全边界", () => {
     const result = await testPublishedOfficialAccountConfiguration();
     expect(result).toMatchObject({ success: false, message: expect.stringContaining("203.0.113.10") });
     expect(result.message).not.toContain(secret);
+  });
+
+  it("模板能力检测会识别未开通的模板消息插件，而不要求管理员先填写旧模板 ID", async () => {
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-template-capability-check" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:template-capability-secret" },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL) => String(request).includes("cgi-bin/token")
+      ? ({ ok: true, json: async () => ({ access_token: "template-capability-token", expires_in: 7200 }) })
+      : ({ ok: true, json: async () => ({ errcode: 48001, errmsg: "api unauthorized" }) })));
+
+    await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。" });
   });
 });
