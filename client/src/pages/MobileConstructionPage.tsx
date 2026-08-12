@@ -9,7 +9,7 @@ import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Bell, ClipboardCheck, FileText, HardHat, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
+import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -63,6 +63,7 @@ export default function MobileConstructionPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ ...emptyDraft, reportDate: getTodayText() });
+  const [captureAfterSave, setCaptureAfterSave] = useState(false);
 
   const projectOptions = trpc.construction.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -75,12 +76,17 @@ export default function MobileConstructionPage() {
   const summary = trpc.construction.summary.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
 
   const saveReport = trpc.construction.saveReport.useMutation({
-    onSuccess: async () => {
+    onSuccess: async result => {
+      const shouldCapture = captureAfterSave;
+      const captureWeather = getWeatherLabel(draft.weather);
+      const captureDescription = `${draft.workArea} · ${draft.workContent.slice(0, 100)}`;
       toast.success(editingId ? "施工日报已更新" : "施工日报已保存为草稿");
       setDialogOpen(false);
       setEditingId(null);
       setDraft({ ...emptyDraft, reportDate: getTodayText() });
+      setCaptureAfterSave(false);
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+      if (shouldCapture) navigate(`/mobile/evidence?projectId=${selectedProjectId}&sourceType=site_photo&sourceId=construction-report-${result.id}&weather=${encodeURIComponent(captureWeather)}&description=${encodeURIComponent(captureDescription)}`);
     },
     onError: error => toast.error(error.message),
   });
@@ -112,13 +118,14 @@ export default function MobileConstructionPage() {
     setDialogOpen(true);
   }
 
-  function submitDraft() {
+  function submitDraft(withEvidence = false) {
     if (!selectedProjectId) return;
     const progressPercent = Number(draft.progressPercent);
     if (!Number.isFinite(progressPercent)) {
       toast.error("请填写有效的累计完成比例");
       return;
     }
+    setCaptureAfterSave(withEvidence);
     saveReport.mutate({
       ...(editingId ? { id: editingId } : {}),
       projectId: selectedProjectId,
@@ -159,7 +166,7 @@ export default function MobileConstructionPage() {
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><HardHat className="h-5 w-5" /><span className="text-[10px] font-medium">施工</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}><DialogContent className="max-h-[92vh] overflow-y-auto"><DialogHeader><DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle><DialogDescription>项目范围和日报状态由服务端校验；请仅填写真实施工现场业务信息。</DialogDescription></DialogHeader><div className="space-y-4"><div className="grid grid-cols-2 gap-3"><div><Label htmlFor="report-date">日期</Label><Input id="report-date" type="date" value={draft.reportDate} onChange={event => setDraft(current => ({ ...current, reportDate: event.target.value }))} /></div><div><Label htmlFor="report-weather">天气</Label><Select value={draft.weather} onValueChange={value => setDraft(current => ({ ...current, weather: value as Weather }))}><SelectTrigger id="report-weather"><SelectValue /></SelectTrigger><SelectContent>{(["sunny", "cloudy", "rainy", "snowy", "windy", "other"] as Weather[]).map(weather => <SelectItem key={weather} value={weather}>{getWeatherLabel(weather)}</SelectItem>)}</SelectContent></Select></div></div><div><Label htmlFor="report-area">施工部位 / 作业面</Label><Input id="report-area" value={draft.workArea} maxLength={200} placeholder="例如：K12+500 路基填筑作业面" onChange={event => setDraft(current => ({ ...current, workArea: event.target.value }))} /></div><div><Label htmlFor="report-progress">累计完成比例（%）</Label><Input id="report-progress" type="number" min="0" max="100" step="0.01" value={draft.progressPercent} onChange={event => setDraft(current => ({ ...current, progressPercent: event.target.value }))} /></div><div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div><div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div><div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={submitDraft}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}><DialogContent className="max-h-[92vh] overflow-y-auto"><DialogHeader><DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle><DialogDescription>项目范围和日报状态由服务端校验；可保存后直接拍摄带管理员、定位、时间和天气水印的现场照片。</DialogDescription></DialogHeader><div className="space-y-4"><div className="grid grid-cols-2 gap-3"><div><Label htmlFor="report-date">日期</Label><Input id="report-date" type="date" value={draft.reportDate} onChange={event => setDraft(current => ({ ...current, reportDate: event.target.value }))} /></div><div><Label htmlFor="report-weather">天气</Label><Select value={draft.weather} onValueChange={value => setDraft(current => ({ ...current, weather: value as Weather }))}><SelectTrigger id="report-weather"><SelectValue /></SelectTrigger><SelectContent>{(["sunny", "cloudy", "rainy", "snowy", "windy", "other"] as Weather[]).map(weather => <SelectItem key={weather} value={weather}>{getWeatherLabel(weather)}</SelectItem>)}</SelectContent></Select></div></div><div><Label htmlFor="report-area">施工部位 / 作业面</Label><Input id="report-area" value={draft.workArea} maxLength={200} placeholder="例如：K12+500 路基填筑作业面" onChange={event => setDraft(current => ({ ...current, workArea: event.target.value }))} /></div><div><Label htmlFor="report-progress">累计完成比例（%）</Label><Input id="report-progress" type="number" min="0" max="100" step="0.01" value={draft.progressPercent} onChange={event => setDraft(current => ({ ...current, progressPercent: event.target.value }))} /></div><div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div><div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div><div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button disabled={saveReport.isPending} variant="outline" onClick={() => submitDraft(true)}><Camera className="mr-1.5 h-4 w-4" />保存并现场拍照</Button><Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={() => submitDraft(false)}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button></DialogFooter></DialogContent></Dialog>
     </div>
   );
 }

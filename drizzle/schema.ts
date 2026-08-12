@@ -555,6 +555,50 @@ export const attendanceRecords = mysqlTable(
   table => ({ workerDateUnique: uniqueIndex("attendance_worker_date_unique").on(table.workerId, table.attendanceDate) }),
 );
 
+/** 移动端一键打卡台账：设备标识仅保存不可逆指纹，定位仅用于现场考勤复核。 */
+export const attendanceCheckIns = mysqlTable(
+  "attendance_check_ins",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    projectId: int("projectId").notNull(),
+    businessDate: date("businessDate").notNull(),
+    checkedInAt: datetime("checkedInAt").notNull(),
+    deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
+    deviceLabel: varchar("deviceLabel", { length: 160 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    locationAccuracyMeters: decimal("locationAccuracyMeters", { precision: 10, scale: 2 }),
+    status: mysqlEnum("status", ["normal", "location_missing"]).default("normal").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    userProjectDateUnique: uniqueIndex("attendance_check_ins_user_project_date_unique").on(table.userId, table.projectId, table.businessDate),
+    projectDateIndex: index("attendance_check_ins_project_date_index").on(table.projectId, table.businessDate),
+    deviceIndex: index("attendance_check_ins_device_index").on(table.deviceFingerprintHash, table.businessDate),
+  }),
+);
+
+/** 考勤设备绑定台账，仅保存服务端生成的设备匿名指纹和可读设备标签。 */
+export const attendanceDeviceBindings = mysqlTable(
+  "attendance_device_bindings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
+    deviceLabel: varchar("deviceLabel", { length: 160 }),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    firstBoundAt: datetime("firstBoundAt").notNull(),
+    lastUsedAt: datetime("lastUsedAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    userDeviceUnique: uniqueIndex("attendance_device_bindings_user_device_unique").on(table.userId, table.deviceFingerprintHash),
+    userStatusIndex: index("attendance_device_bindings_user_status_index").on(table.userId, table.status),
+  }),
+);
+
 /** 工资条记录，金额与状态须经会计审核后才能推送。 */
 export const payrollStatements = mysqlTable(
   "payroll_statements",
@@ -884,8 +928,14 @@ export const purchaseOrders = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     orderNo: varchar("orderNo", { length: 64 }).notNull(),
-    requestId: bigint("requestId", { mode: "number" }).notNull(),
+    /** 常规订单必须关联已批准申请；小额免申请订单允许为空但必须保存分类、说明和影像证据。 */
+    requestId: bigint("requestId", { mode: "number" }),
     projectId: int("projectId").notNull(),
+    procurementMode: mysqlEnum("procurementMode", ["request", "small_direct"]).default("request").notNull(),
+    categoryId: int("categoryId"),
+    itemDescription: varchar("itemDescription", { length: 500 }),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    ocrSummary: varchar("ocrSummary", { length: 500 }),
     supplierId: int("supplierId"),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     orderedAt: datetime("orderedAt").notNull(),
@@ -899,6 +949,7 @@ export const purchaseOrders = mysqlTable(
   table => ({
     orderNoUnique: uniqueIndex("purchase_orders_no_unique").on(table.orderNo),
     requestIndex: index("purchase_orders_request_index").on(table.requestId),
+    procurementModeIndex: index("purchase_orders_mode_index").on(table.projectId, table.procurementMode, table.status),
     projectIndex: index("purchase_orders_project_index").on(table.projectId, table.status),
   }),
 );

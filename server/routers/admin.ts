@@ -37,7 +37,7 @@ import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
-import { inspectPublishedOfficialAccountTemplateCapability, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { getOfficialAccountNotificationTemplateCoverage, inspectPublishedOfficialAccountTemplateCapability, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -1170,6 +1170,11 @@ export const adminRouter = router({
       const db = await getDb();
       if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_capability_check", targetType: "official_account", targetId: "template_capability", summary: `检测服务号模板消息能力：${result.success ? "通过" : "未通过"}` });
       return result;
+    }),
+    /** 显示所有已接入业务通知场景的模板字段覆盖，不回传服务号密钥、OpenID 或模板原始敏感配置。 */
+    officialAccountTemplateCoverage: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      return getOfficialAccountNotificationTemplateCoverage();
     }),
     /** 仅读取服务号私有模板库，供超级管理员在本系统中选择合规模板；不返回 AppSecret 或任何用户标识。 */
     listOfficialAccountTemplates: protectedProcedure.mutation(async ({ ctx }) => {

@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
+import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -44,6 +44,16 @@ const attendanceInput = z
     status: z.enum(["draft", "confirmed"]).default("confirmed"),
   })
   .refine(value => value.workHours + value.overtimeHours <= 24, { message: "正常工时与加班工时合计不得超过 24 小时", path: ["overtimeHours"] });
+
+/** 设备原始标识仅在浏览器本地生成并哈希；服务端只接收不可逆的 SHA-256 指纹。 */
+const mobileCheckInInput = z.object({
+  projectId: z.number().int().positive(),
+  deviceFingerprintHash: z.string().regex(/^[a-f0-9]{64}$/i, "设备指纹格式无效"),
+  deviceLabel: z.string().trim().min(1).max(160),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  locationAccuracyMeters: z.number().min(0).max(100_000).nullable().optional(),
+});
 
 /** 工资草稿输入。实发金额由服务端按应发减扣款计算，前端不得直接篡改。 */
 const payrollSaveInput = z
@@ -107,6 +117,13 @@ function assertConditionalPayrollWrite(result: unknown) {
 /** 将 YYYY-MM-DD 业务日期固定转换为 UTC 零点，避免客户端时区影响项目日考勤口径。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+/** 考勤日期统一按中国标准时间裁切，实际打卡时间始终由服务端生成并保存为 UTC。 */
+function getChinaBusinessDate(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(part => ["year", "month", "day"].includes(part.type)).map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 /** 从加密敏感字段生成只读掩码；密文异常时宁可返回全掩码也不泄露原值。 */
@@ -387,6 +404,69 @@ export const laborRouter = router({
   }),
 
   attendance: router({
+    /** 当前账号在已授权项目上的打卡状态；只返回本人设备的匿名标签和受控定位状态。 */
+    myCheckInStatus: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx);
+      await assertLaborBusinessAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb();
+      if (!db) return { checkedIn: false, businessDate: getChinaBusinessDate(new Date()), checkIn: null };
+      const businessDate = getChinaBusinessDate(new Date());
+      const [checkIn] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, deviceLabel: attendanceCheckIns.deviceLabel, status: attendanceCheckIns.status, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, toBusinessDate(businessDate)))).limit(1);
+      return { checkedIn: Boolean(checkIn), businessDate, checkIn: checkIn ?? null };
+    }),
+
+    /** 一键打卡绑定首台设备；每个账号至多绑定三台活动设备，日期重复请求不生成重复打卡。 */
+    checkIn: protectedProcedure.input(mobileCheckInInput).mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx);
+      await assertLaborBusinessAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const now = new Date();
+      const businessDateText = getChinaBusinessDate(now);
+      const businessDate = toBusinessDate(businessDateText);
+      const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
+      if (existing) return { success: true, duplicate: true, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
+      const [binding] = await db.select().from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.deviceFingerprintHash, input.deviceFingerprintHash.toLowerCase()))).limit(1);
+      if (binding?.status === "disabled") throw new TRPCError({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
+      let newlyBound = false;
+      if (!binding) {
+        const activeDevices = await db.select({ id: attendanceDeviceBindings.id }).from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.status, "active")));
+        if (activeDevices.length >= 3) throw new TRPCError({ code: "CONFLICT", message: "当前账号已绑定 3 台考勤设备，请联系管理员停用旧设备后再绑定" });
+        try {
+          await db.insert(attendanceDeviceBindings).values({ userId: user.id, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, status: "active", firstBoundAt: now, lastUsedAt: now });
+          newlyBound = true;
+        } catch {
+          // 并发首次打卡可能已插入相同绑定，后续打卡唯一键仍可作为最终保护。
+        }
+      } else {
+        await db.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
+      }
+      const hasLocation = input.longitude !== null && input.longitude !== undefined && input.latitude !== null && input.latitude !== undefined;
+      try {
+        const [created] = await db.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
+        const id = Number(created?.id);
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(id), summary: `移动一键打卡：${businessDateText} · ${hasLocation ? "已记录定位" : "缺少定位"} · 设备 ${input.deviceLabel.slice(0, 60)}` });
+        return { success: true, duplicate: false, id, checkedInAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
+      } catch {
+        const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
+        if (concurrent) return { success: true, duplicate: true, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡保存失败，请稍后重试" });
+      }
+    }),
+
+    /** 项目负责人或劳资负责人可按日期查看打卡留痕；设备标识仅显示匿名标签，不返回原始指纹。 */
+    listCheckIns: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), businessDate: z.string().date().optional() })).query(async ({ ctx, input }) => {
+      const roleCodes = await assertLaborBusinessAccess(ctx);
+      if (!roleCodes.includes("ALL") && !roleCodes.some(role => ["LABOR_MANAGER", "PROJECT_MANAGER"].includes(role))) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无考勤打卡核验权限" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb();
+      if (!db) return [];
+      const businessDate = input.businessDate ? toBusinessDate(input.businessDate) : toBusinessDate(getChinaBusinessDate(new Date()));
+      return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, projectId: attendanceCheckIns.projectId, checkedInAt: attendanceCheckIns.checkedInAt, deviceLabel: attendanceCheckIns.deviceLabel, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).orderBy(desc(attendanceCheckIns.checkedInAt));
+    }),
+
     /** 按项目和日期范围查询考勤台账，并携带实名人员姓名以便移动端展示。 */
     list: protectedProcedure
       .input(z.object({ projectId: z.number().int().positive(), startDate: z.string().date().optional(), endDate: z.string().date().optional() }))

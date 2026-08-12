@@ -46,6 +46,27 @@ export type OfficialAccountBusinessEvent = {
   deepLink?: string;
 };
 
+export type OfficialAccountNotificationTemplateCoverage = {
+  module: OfficialAccountBusinessEvent["module"];
+  name: string;
+  events: string[];
+  deepLink: string;
+  purpose: string;
+  requiredVariables: Array<"title" | "content" | "eventCode" | "targetType" | "targetId">;
+};
+
+/** 当前认证服务号使用已发布的业务模板承载多类受控提醒；矩阵定义每类事件的消息语义与字段需求。 */
+export const OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX: OfficialAccountNotificationTemplateCoverage[] = [
+  { module: "construction", name: "施工日报与现场审核", events: ["construction_daily_report_created", "construction_daily_report_updated", "construction_daily_report_submitted", "construction_daily_report_approved", "construction_daily_report_rejected", "construction_daily_report_locked"], deepLink: "/mobile/construction", purpose: "施工日报录入、修改、审核和归档提醒", requiredVariables: ["title", "content", "eventCode"] },
+  { module: "purchasing", name: "采购申请与订单审核", events: ["purchase_request_submitted", "purchase_request_approved", "purchase_request_rejected", "purchase_order_small_direct_submitted", "purchase_order_confirmed", "purchase_order_received", "purchase_order_settlement"], deepLink: "/mobile/purchasing", purpose: "常规采购申请、小额免申请订单、收货和结算提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "transport", name: "运输刷卡与趟次闭环", events: ["transport_card_event_exception", "transport_load_card_confirmed", "transport_unload_card_confirmed", "transport_load_driver_notice", "transport_unload_driver_notice", "transport_trip_confirmed", "transport_trip_completed"], deepLink: "/mobile/transport", purpose: "装土、卸土刷卡、司机通知、异常复核和趟次状态提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "finance", name: "财务流水与审计处理", events: ["financial_income", "financial_expense", "financial_voided", "financial_reversed"], deepLink: "/mobile/finance", purpose: "项目收支登记、作废和冲销提醒", requiredVariables: ["title", "content", "eventCode"] },
+  { module: "measurement", name: "收方、计量与回款", events: ["takeoff_submitted", "takeoff_reviewed", "takeoff_approved", "takeoff_locked", "measurement_submitted", "measurement_approved", "measurement_payment"], deepLink: "/mobile/measurement", purpose: "项目收方、工程计量、审核锁定及回款提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "labor", name: "劳务实名、证照与工资", events: ["labor_identity_verified", "labor_certificate_archived", "payroll_submitted", "payroll_paid", "payroll_voided"], deepLink: "/mobile/labor", purpose: "实名核验、证照归档、工资审核与发放提醒", requiredVariables: ["title", "content", "eventCode"] },
+  { module: "machinery", name: "机械成本审核", events: ["machine_cost_submitted", "machine_cost_approved", "machine_cost_rejected", "machine_cost_locked"], deepLink: "/mobile/machinery", purpose: "机械成本登记和审核提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "security", name: "系统安全与连接告警", events: ["system_connector_test_failed", "role_permissions_updated"], deepLink: "/admin/settings", purpose: "权限变更和外部连接失败提醒", requiredVariables: ["title", "content", "eventCode"] },
+];
+
 let tokenCache: { appId: string; token: string; expiresAt: number } | null = null;
 
 function buildDeepLink(appUrl: string | null, deepLink: string | undefined) {
@@ -99,6 +120,22 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
   } catch {
     return { reason: "invalid_config" };
   }
+}
+
+/** 后台仅显示字段覆盖结论和业务语义，不返回 AppSecret、OpenID 或模板敏感配置。 */
+export async function getOfficialAccountNotificationTemplateCoverage() {
+  const result = await loadPublishedOfficialAccountConfig();
+  const fieldValues = result.config ? Object.values(result.config.templateFields) : [];
+  const variables = new Set(fieldValues.flatMap(value => Array.from(value.matchAll(/\{(title|content|eventCode|targetType|targetId)\}/g)).map(match => match[1])));
+  return {
+    configured: Boolean(result.config),
+    reason: result.reason ?? null,
+    matrix: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => ({
+      ...item,
+      missingVariables: item.requiredVariables.filter(variable => !variables.has(variable)),
+      ready: Boolean(result.config) && item.requiredVariables.every(variable => variables.has(variable)),
+    })),
+  };
 }
 
 /**

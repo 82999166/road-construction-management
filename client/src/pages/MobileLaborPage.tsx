@@ -27,6 +27,7 @@ import {
   Printer,
   ReceiptText,
   ShieldCheck,
+  Smartphone,
   UserRound,
   UsersRound,
   WalletCards,
@@ -85,6 +86,25 @@ function getBusinessDateText(value: Date | string | null | undefined) {
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+/** 设备原始信息只在浏览器本地组合，提交前转换为不可逆 SHA-256 指纹。 */
+async function getAttendanceDeviceFingerprint() {
+  const storageKey = "road-construction-attendance-device-key";
+  let localKey = window.localStorage.getItem(storageKey);
+  if (!localKey) {
+    localKey = crypto.randomUUID();
+    window.localStorage.setItem(storageKey, localKey);
+  }
+  const source = `${localKey}|${navigator.userAgent}|${navigator.language}|${screen.width}x${screen.height}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, "0")).join("");
+}
+
+function getAttendanceDeviceLabel() {
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || "移动设备";
+  const browser = /MicroMessenger/i.test(navigator.userAgent) ? "微信内置浏览器" : /Chrome/i.test(navigator.userAgent) ? "Chrome" : /Safari/i.test(navigator.userAgent) ? "Safari" : "浏览器";
+  return `${String(platform).slice(0, 80)} · ${browser}`;
 }
 
 /** 根据工资单状态生成简洁、可读的巧克力主题状态样式。 */
@@ -203,6 +223,7 @@ export default function MobileLaborPage() {
   const attendanceInput = useMemo(() => ({ projectId: selectedProjectId, startDate: `${period}-01`, endDate: getPeriodEndDate(period) }), [period, selectedProjectId]);
   const payrollInput = useMemo(() => ({ projectId: selectedProjectId, period }), [period, selectedProjectId]);
   const summaryInput = useMemo(() => ({ projectId: selectedProjectId, period }), [period, selectedProjectId]);
+  const checkInInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const certificateInput = useMemo(() => ({ projectId: selectedProjectId, workerId: certificateWorker?.id ?? 0 }), [certificateWorker?.id, selectedProjectId]);
   const workers = trpc.labor.listWorkers.useQuery(workersInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const attendance = trpc.labor.attendance.list.useQuery(attendanceInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
@@ -210,6 +231,7 @@ export default function MobileLaborPage() {
   const summary = trpc.labor.summary.useQuery(summaryInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const certificates = trpc.labor.certificates.list.useQuery(certificateInput, { enabled: isAuthenticated && certificateDialogOpen && Boolean(selectedProjectId) && Boolean(certificateWorker?.id), retry: false });
   const workbench = trpc.mobile.workbench.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const checkInStatus = trpc.labor.attendance.myCheckInStatus.useQuery(checkInInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
 
   /** 保存实名制档案后刷新相关台账和统计，避免本地手工拼接敏感字段缓存。 */
   const saveWorker = trpc.labor.saveWorker.useMutation({
@@ -226,6 +248,13 @@ export default function MobileLaborPage() {
       toast.success("考勤已保存");
       setAttendanceDialogOpen(false);
       await Promise.all([utils.labor.attendance.list.invalidate(), utils.labor.summary.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const mobileCheckIn = trpc.labor.attendance.checkIn.useMutation({
+    onSuccess: async result => {
+      toast.success(result.duplicate ? "今日已完成打卡，已返回服务端记录" : result.newlyBound ? "设备已绑定并完成打卡" : "打卡成功，已记录服务端时间与定位");
+      await checkInStatus.refetch();
     },
     onError: error => toast.error(error.message),
   });
@@ -361,6 +390,27 @@ export default function MobileLaborPage() {
     });
   }
 
+  /** 打卡时间由服务端生成；定位授权拒绝不绕过记录，而是明确标记为待核验。 */
+  async function submitMobileCheckIn() {
+    if (!selectedProjectId) return toast.error("请先选择项目");
+    try {
+      const deviceFingerprintHash = await getAttendanceDeviceFingerprint();
+      const deviceLabel = getAttendanceDeviceLabel();
+      const sendCheckIn = (position?: GeolocationPosition) => mobileCheckIn.mutate({
+        projectId: selectedProjectId,
+        deviceFingerprintHash,
+        deviceLabel,
+        longitude: position?.coords.longitude ?? null,
+        latitude: position?.coords.latitude ?? null,
+        locationAccuracyMeters: position?.coords.accuracy ?? null,
+      });
+      if (!navigator.geolocation) return sendCheckIn();
+      navigator.geolocation.getCurrentPosition(sendCheckIn, () => { toast.info("未取得定位，本次打卡将标记为“缺少定位”供项目负责人核验"); sendCheckIn(); }, { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 });
+    } catch {
+      toast.error("无法生成设备匿名指纹，请检查浏览器隐私设置后重试");
+    }
+  }
+
   /** 工资草稿提交后由服务端以同一人员、项目、工资期间进行唯一约束与状态控制。 */
   function submitPayrollForm() {
     if (!selectedProjectId || !payrollDraft.workerId) return toast.error("请选择项目与劳务人员");
@@ -422,6 +472,8 @@ export default function MobileLaborPage() {
             </Select>
             <Input aria-label="工资统计期间" className="h-11 w-[112px] border-[#e9d8c6] bg-white text-[#4d2e22]" type="month" value={period} onChange={event => setPeriod(event.target.value)} />
           </section>
+
+          {selectedProjectId ? <Card className="border-0 bg-gradient-to-br from-[#6d3421] to-[#3a2117] text-[#fff7ea] shadow-[0_10px_24px_rgba(75,39,24,.18)] print:hidden"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Smartphone className="h-4 w-4 text-[#f0bd7d]" /><p className="font-semibold">现场考勤一键打卡</p></div><p className="mt-1 text-xs leading-5 text-[#e8cfb2]">绑定当前设备匿名指纹，服务端记录打卡时间；点击后请求现场定位。</p>{checkInStatus.data?.checkedIn ? <p className="mt-2 text-xs text-[#d8f0d4]">今日已打卡：{new Date(checkInStatus.data.checkIn!.checkedInAt).toLocaleString("zh-CN")} · {checkInStatus.data.checkIn?.status === "normal" ? "已记录定位" : "缺少定位，待核验"}</p> : <p className="mt-2 text-xs text-[#f4d9b4]">尚未打卡；未取得定位时将记录异常状态。</p>}</div><Button size="sm" className="shrink-0 bg-[#f2bb79] text-[#4b2517] hover:bg-[#f6cb93]" disabled={mobileCheckIn.isPending || checkInStatus.data?.checkedIn} onClick={() => void submitMobileCheckIn()}>{mobileCheckIn.isPending ? "打卡中…" : checkInStatus.data?.checkedIn ? "已打卡" : "一键打卡"}</Button></div></CardContent></Card> : null}
 
           {!projectOptions.data?.length ? <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-5 text-center"><span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#fff1dd] text-[#b96e34]"><HardHat className="h-6 w-6" /></span><p className="mt-4 text-[11px] font-medium tracking-[0.16em] text-[#b36c39]">项目范围保护中</p><h2 className="mt-1 text-sm font-semibold">尚未配置项目数据范围</h2><p className="mt-2 text-xs leading-5 text-[#8f7566]">请联系超级管理员在 PC 管理后台为您的岗位配置有效的项目数据范围。</p></CardContent></Card> : null}
 

@@ -6,6 +6,7 @@ const runtime = vi.hoisted(() => ({
   projectOptions: vi.fn(),
   workers: vi.fn(),
   attendance: vi.fn(),
+  checkInStatus: vi.fn(),
   payroll: vi.fn(),
   summary: vi.fn(),
   certificates: vi.fn(),
@@ -38,6 +39,8 @@ vi.mock("@/lib/trpc", () => ({
       attendance: {
         list: { useQuery: runtime.attendance },
         save: { useMutation: runtime.mutation },
+        myCheckInStatus: { useQuery: runtime.checkInStatus },
+        checkIn: { useMutation: runtime.mutation },
       },
       payroll: {
         list: { useQuery: runtime.payroll },
@@ -92,6 +95,7 @@ function prepareAuthorizedLaborQueries() {
     status: "confirmed",
     note: "测试考勤",
   }] });
+  runtime.checkInStatus.mockReturnValue({ ...emptyQuery, data: { checkedIn: false, businessDate: "2026-08-12", checkIn: null } });
   runtime.payroll.mockReturnValue({ ...emptyQuery, data: [{
     id: 21,
     workerId: 1,

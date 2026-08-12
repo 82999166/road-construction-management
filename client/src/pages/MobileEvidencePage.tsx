@@ -39,12 +39,53 @@ function formatCapturedTime(value: Date | string | null | undefined) {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+/** 将现场关键水印写入图片像素；原图只保留在当前浏览器，服务端仍保存独立审计元数据。 */
+function createWatermarkedImage(file: File, watermarkLines: string[]) {
+  return new Promise<File>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("水印影像生成失败")); };
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("当前浏览器不支持水印绘制");
+        context.drawImage(image, 0, 0);
+        const fontSize = Math.max(16, Math.round(Math.min(canvas.width, canvas.height) / 30));
+        const lineHeight = Math.round(fontSize * 1.42);
+        const padding = Math.round(fontSize * 0.7);
+        const visibleLines = watermarkLines.filter(Boolean).slice(0, 5);
+        context.font = `600 ${fontSize}px sans-serif`;
+        const textWidth = Math.min(canvas.width - padding * 2, Math.max(...visibleLines.map(line => context.measureText(line).width), 120));
+        const boxHeight = visibleLines.length * lineHeight + padding * 2;
+        context.fillStyle = "rgba(20, 16, 13, .62)";
+        context.fillRect(padding, canvas.height - boxHeight - padding, textWidth + padding * 2, boxHeight);
+        context.fillStyle = "#fff7ea";
+        context.textBaseline = "top";
+        visibleLines.forEach((line, index) => context.fillText(line, padding * 2, canvas.height - boxHeight + padding + index * lineHeight));
+        canvas.toBlob(blob => {
+          URL.revokeObjectURL(objectUrl);
+          if (!blob) return reject(new Error("水印影像生成失败"));
+          const name = file.name.replace(/\.(jpe?g|png)$/i, "") || "site-photo";
+          resolve(new File([blob], `${name}-watermark.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
+        }, "image/jpeg", 0.9);
+      } catch (error) {
+        URL.revokeObjectURL(objectUrl);
+        reject(error instanceof Error ? error : new Error("水印影像生成失败"));
+      }
+    };
+    image.src = objectUrl;
+  });
+}
+
 /**
  * 水印影像取证移动页面。
  * 浏览器只有在用户主动点击定位按钮后才请求位置；图片和元数据均由服务端进行项目范围校验与审计。
  */
 export default function MobileEvidencePage() {
-  const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
+  const { user, isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
   const [location, navigate] = useLocation();
   const capturePreset = useMemo(() => {
     const search = location.includes("?") ? location.slice(location.indexOf("?") + 1) : "";
@@ -54,6 +95,8 @@ export default function MobileEvidencePage() {
       projectId: Number(params.get("projectId") || 0),
       sourceType: SOURCE_OPTIONS.some(item => item.value === sourceType) ? sourceType as (typeof SOURCE_OPTIONS)[number]["value"] : null,
       sourceId: params.get("sourceId")?.slice(0, 128) || "",
+      weather: params.get("weather")?.slice(0, 32) || "",
+      description: params.get("description")?.slice(0, 240) || "",
     };
   }, [location]);
   const [projectId, setProjectId] = useState<number | undefined>();
@@ -63,6 +106,7 @@ export default function MobileEvidencePage() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [coordinates, setCoordinates] = useState<{ longitude: number; latitude: number } | null>(null);
+  const [captureWeather, setCaptureWeather] = useState("");
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const cameraEnabled = captureConfig.data?.camera.enabled ?? true;
@@ -75,7 +119,9 @@ export default function MobileEvidencePage() {
     else if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id);
     if (capturePreset.sourceType) setSourceType(capturePreset.sourceType);
     if (capturePreset.sourceId) setSourceId(capturePreset.sourceId);
-  }, [capturePreset.projectId, capturePreset.sourceId, capturePreset.sourceType, projectId, projectOptions.data]);
+    if (capturePreset.weather) setCaptureWeather(capturePreset.weather);
+    if (capturePreset.description) setDescription(capturePreset.description);
+  }, [capturePreset.projectId, capturePreset.sourceId, capturePreset.sourceType, capturePreset.weather, capturePreset.description, projectId, projectOptions.data]);
 
   /** 释放本地预览 URL，防止多次拍照选择造成浏览器内存持续占用。 */
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
@@ -84,18 +130,19 @@ export default function MobileEvidencePage() {
   const evidenceListInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const evidence = trpc.evidence.list.useQuery(evidenceListInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const upload = trpc.evidence.upload.useMutation({
-    onSuccess: async () => {
-      toast.success("现场影像已安全归档");
+    onSuccess: async result => {
+      toast.success(sourceType === "purchase" ? "采购影像已归档，正在自动识别票据内容" : "现场影像已安全归档");
       setDescription("");
       setSourceId("");
       setFile(null);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(null);
       await evidence.refetch();
+      if (sourceType === "purchase" && result.id) runOcr.mutate({ id: result.id });
     },
     onError: error => toast.error(error.message),
   });
-  /** OCR 由用户主动发起；识别文本只作为辅助信息，页面始终显示人工复核提示。 */
+  /** OCR 仅作辅助，采购影像上传后自动执行一次，其他影像仍保留用户主动触发入口。 */
   const runOcr = trpc.evidence.ocr.useMutation({
     onSuccess: async () => {
       toast.success("票据识别已完成，请人工复核结果");
@@ -128,7 +175,7 @@ export default function MobileEvidencePage() {
     );
   }
 
-  /** 提交影像时仅传递当前表单和本地文件；后端独立生成对象存储键与审计记录。 */
+  /** 提交影像前固化水印；后端继续独立执行验签、项目范围校验、存储与审计。 */
   async function submitEvidence() {
     if (!selectedProjectId) return toast.error("请先选择已授权项目");
     if (captureConfig.isError) return toast.error("采集连接器配置加载失败，请稍后重试");
@@ -137,10 +184,21 @@ export default function MobileEvidencePage() {
     if (!file) return toast.error("请拍摄或选择现场影像");
     if (!description.trim()) return toast.error("请填写现场说明");
     try {
-      const base64Data = await readImageAsBase64(file);
-      upload.mutate({ projectId: selectedProjectId, sourceType, sourceId: sourceId.trim() || null, description: description.trim(), capturedAt: new Date().toISOString(), longitude: coordinates?.longitude ?? null, latitude: coordinates?.latitude ?? null, fileName: file.name, mimeType: file.type as "image/jpeg" | "image/png", base64Data });
+      const capturedAt = new Date();
+      const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? `项目 #${selectedProjectId}`;
+      const watermarkLines = [
+        `管理员：${user?.name || "当前管理员"}`,
+        `项目：${projectName}`,
+        `时间：${capturedAt.toLocaleString("zh-CN")}`,
+        coordinates ? `定位：${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : "定位：未取得",
+        captureWeather ? `天气：${captureWeather}` : "",
+      ];
+      const watermarkedFile = await createWatermarkedImage(file, watermarkLines);
+      const base64Data = await readImageAsBase64(watermarkedFile);
+      const auditedDescription = `${description.trim()}｜${watermarkLines.filter(Boolean).join("；")}`.slice(0, 500);
+      upload.mutate({ projectId: selectedProjectId, sourceType, sourceId: sourceId.trim() || null, description: auditedDescription, capturedAt: capturedAt.toISOString(), longitude: coordinates?.longitude ?? null, latitude: coordinates?.latitude ?? null, fileName: watermarkedFile.name, mimeType: "image/jpeg", base64Data });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "影像读取失败");
+      toast.error(error instanceof Error ? error.message : "影像水印或读取失败");
     }
   }
 
