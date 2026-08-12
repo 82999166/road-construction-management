@@ -14,6 +14,7 @@ import { mobileRouter } from "./routers/mobile";
 import { machineryRouter, transportRouter } from "./routers/operations";
 import { officialAccountRouter } from "./routers/officialAccount";
 import { dailyDigestRouter } from "./routers/dailyDigest";
+import { broadcastRouter } from "./routers/broadcast";
 import { z } from "zod";
 
 /**
@@ -71,6 +72,7 @@ export const appRouter = router({
   mobile: mobileRouter,
   officialAccount: officialAccountRouter,
   dailyDigest: dailyDigestRouter,
+  broadcast: broadcastRouter,
   labor: laborRouter,
   messages: messageRouter,
   evidence: evidenceRouter,

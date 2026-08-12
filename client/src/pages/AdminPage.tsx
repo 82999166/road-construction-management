@@ -19,6 +19,7 @@ import {
   FolderKanban,
   KeyRound,
   LayoutDashboard,
+  Megaphone,
   Printer,
   ScrollText,
   Settings2,
@@ -44,6 +45,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Truck, label: "运输调度", path: "/admin/transport" },
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
   { icon: BarChart3, label: "财务管理", path: "/admin/finance" },
+  { icon: Megaphone, label: "公众号群发", path: "/admin/broadcast" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
@@ -80,6 +82,8 @@ type RoleForm = { id?: number; code: string; name: string; category: "system" | 
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
+type BroadcastAudienceType = "project" | "organization" | "role";
+type BroadcastForm = { id?: number; title: string; content: string; deepLink: string; audienceType: BroadcastAudienceType; scopeValue: string };
 type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
 type MasterDataDeleteTarget = { resource: MasterDataResource; id: number; label: string; description: string };
 type PayrollPaymentTarget = { id: number; workerName: string; period: string };
@@ -94,6 +98,7 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
+const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
 const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expectedVersion">> = [
   { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: "", isSensitive: false, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息。此值填写 AppID，不要填入显示名称。用于员工微信身份绑定和业务通知。" },
   { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "微信公众号服务号 AppSecret", value: "", isSensitive: true, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息 → 开发密钥。请先确认 AppSecret 为启用状态；仅在服务端 AES-GCM 加密保存。" },
@@ -176,11 +181,18 @@ function displayMoney(value: string | number | null | undefined) {
   return Number.isFinite(amount) ? amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
 }
 
+/** 将后台表单转换为群发接口的三选一范围契约，避免浏览器同时提交项目、组织和岗位而扩大收件人。 */
+function getBroadcastAudienceInput(form: BroadcastForm) {
+  if (form.audienceType === "project") return { audienceType: "project" as const, projectId: Number(form.scopeValue) };
+  if (form.audienceType === "organization") return { audienceType: "organization" as const, organizationId: Number(form.scopeValue) };
+  return { audienceType: "role" as const, roleCode: form.scopeValue.trim() };
+}
+
 /** 只用于展示服务端返回的真实状态，按钮是否可操作仍由后端状态机二次判定。 */
 function BusinessStatusBadge({ status }: { status: string }) {
   const labels: Record<string, string> = {
     pending: "待进场", active: "可用", left: "已退场", idle: "闲置", working: "作业中", repairing: "维修中", offsite: "场外", retired: "已退役",
-    draft: "草稿", submitted: "待审核", reviewing: "审核中", approved: "已审核", verified: "已核验", paid: "已发放", settled: "已结算", rejected: "已退回", locked: "已归档", void: "已作废", suspended: "已暂停", disabled: "已停用",
+    draft: "草稿", submitted: "待审核", reviewing: "审核中", approved: "已审核", verified: "已核验", paid: "已发放", settled: "已结算", rejected: "已退回", locked: "已归档", void: "已作废", suspended: "已暂停", disabled: "已停用", publishing: "发布中", published: "已发布", partial: "部分失败", failed: "发布失败", cancelled: "已取消", sent: "已投递", skipped: "已跳过",
   };
   const tone = ["approved", "verified", "paid", "settled", "active", "working"].includes(status)
     ? "bg-emerald-50 text-emerald-700"
@@ -254,6 +266,7 @@ export default function AdminPage() {
   const isMachinery = activeSection === "machinery";
   const isTransport = activeSection === "transport";
   const isFinance = activeSection === "finance";
+  const isBroadcast = activeSection === "broadcast";
   const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
@@ -276,6 +289,8 @@ export default function AdminPage() {
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
+  const broadcastOptions = trpc.broadcast.formOptions.useQuery(undefined, { enabled: canQuery && isBroadcast });
+  const broadcasts = trpc.broadcast.list.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, { enabled: canQuery && isOverview });
   const vehicles = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isVehicle });
   const [businessFilter, setBusinessFilter] = useState({ projectId: "all", period: "" });
@@ -286,6 +301,8 @@ export default function AdminPage() {
   const [financeProjectId, setFinanceProjectId] = useState("");
   const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [financeClosingDate, setFinanceClosingDate] = useState(() => toLocalDateInput());
+  const [broadcastForm, setBroadcastForm] = useState<BroadcastForm>(EMPTY_BROADCAST_FORM);
+  const [selectedBroadcastId, setSelectedBroadcastId] = useState<number>();
   const [payrollPaymentTarget, setPayrollPaymentTarget] = useState<PayrollPaymentTarget | null>(null);
   const [paymentReference, setPaymentReference] = useState("");
   const businessStatisticsInput = useMemo(() => ({
@@ -303,6 +320,10 @@ export default function AdminPage() {
   const machineCostWorkspaceInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId }), [selectedMachineId, workspaceProjectId]);
   const transportWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, date: transportDate || undefined }), [transportDate, workspaceProjectId]);
   const financeProjectInput = useMemo(() => ({ projectId: Number(financeProjectId || 0), period: financePeriod || undefined }), [financePeriod, financeProjectId]);
+  const broadcastAudienceInput = useMemo(() => getBroadcastAudienceInput(broadcastForm), [broadcastForm]);
+  const validBroadcastScope = broadcastForm.audienceType === "role" ? Boolean(broadcastForm.scopeValue.trim()) : Number.isInteger(Number(broadcastForm.scopeValue)) && Number(broadcastForm.scopeValue) > 0;
+  const broadcastAudiencePreview = trpc.broadcast.previewAudience.useQuery(broadcastAudienceInput, { enabled: canQuery && isBroadcast && validBroadcastScope, retry: false });
+  const broadcastDeliveries = trpc.broadcast.getDeliveries.useQuery({ broadcastId: selectedBroadcastId ?? 0 }, { enabled: canQuery && isBroadcast && selectedBroadcastId !== undefined, retry: false });
   const constructionDailyReports = trpc.construction.listReports.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
   const constructionDailySummary = trpc.construction.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
   const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
@@ -322,6 +343,24 @@ export default function AdminPage() {
       toast.success(`日结已封存：${result.closingNo}`);
       await Promise.all([financeSummary.refetch(), financeInvoices.refetch(), dailyAccountingReport.refetch(), audits.refetch()]);
     },
+    onError: error => toast.error(error.message),
+  });
+  const refreshBroadcasts = async () => { await Promise.all([broadcasts.refetch(), selectedBroadcastId ? broadcastDeliveries.refetch() : Promise.resolve()]); };
+  const saveBroadcastDraft = trpc.broadcast.saveDraft.useMutation({
+    onSuccess: async result => {
+      toast.success("服务号群发草稿已保存");
+      setSelectedBroadcastId(result.broadcastId);
+      setBroadcastForm(EMPTY_BROADCAST_FORM);
+      await refreshBroadcasts();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const reviewBroadcast = trpc.broadcast.review.useMutation({
+    onSuccess: async result => { toast.success(`群发单状态已更新为 ${result.status}`); await refreshBroadcasts(); },
+    onError: error => toast.error(error.message),
+  });
+  const publishBroadcast = trpc.broadcast.publish.useMutation({
+    onSuccess: async result => { toast.success(`群发处理完成：成功 ${result.deliveredCount}，失败 ${result.failedCount}`); await refreshBroadcasts(); },
     onError: error => toast.error(error.message),
   });
 
@@ -1476,13 +1515,25 @@ export default function AdminPage() {
     </div>
   );
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "finance" ? renderFinance() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const renderBroadcast = () => {
+    const scopeOptions = broadcastForm.audienceType === "project" ? (broadcastOptions.data?.projects ?? []).map(item => ({ value: String(item.id), label: `${item.code} · ${item.name}` })) : broadcastForm.audienceType === "organization" ? (broadcastOptions.data?.organizations ?? []).map(item => ({ value: String(item.id), label: `${item.code} · ${item.name}` })) : (broadcastOptions.data?.roles ?? []).map(item => ({ value: item.code, label: `${item.code} · ${item.name}` }));
+    const scopeTitle = broadcastForm.audienceType === "project" ? "收件项目" : broadcastForm.audienceType === "organization" ? "收件组织" : "收件岗位";
+    const editBroadcast = (item: NonNullable<typeof broadcasts.data>[number]) => setBroadcastForm({ id: Number(item.id), title: item.title, content: item.content, deepLink: item.deepLink ?? "", audienceType: item.audienceType, scopeValue: item.audienceType === "project" ? String(item.projectId ?? "") : item.audienceType === "organization" ? String(item.organizationId ?? "") : item.roleCode ?? "" });
+    return <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">认证服务号通知中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">受控群发设置与发布</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">群发必须限定到单一项目、组织或岗位范围，先预览已绑定收件人数，再经审批发布。系统只保存内部用户 ID 与逐人投递结果，不复制或展示 OpenID。</p></div><Button variant="outline" size="sm" onClick={() => { setBroadcastForm(EMPTY_BROADCAST_FORM); setSelectedBroadcastId(undefined); }}>新建草稿</Button></div>
+      <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">群发草稿与范围预览</CardTitle><CardDescription>所有范围和收件人均在服务端重新核验；未关注或未绑定服务号的人员会被统计但不会被强行投递。</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-4 lg:grid-cols-2"><div><Label>通知标题</Label><Input className="mt-1" value={broadcastForm.title} maxLength={80} placeholder="例如：本周施工计划调整通知" onChange={event => setBroadcastForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>系统跳转地址（可选）</Label><Input className="mt-1" value={broadcastForm.deepLink} placeholder="/mobile/messages" onChange={event => setBroadcastForm(current => ({ ...current, deepLink: event.target.value }))} /></div></div><div><Label>通知内容</Label><textarea className="mt-1 min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={broadcastForm.content} maxLength={1000} placeholder="请填写不含身份证、银行卡、完整电话号码或其他敏感个人信息的业务通知。" onChange={event => setBroadcastForm(current => ({ ...current, content: event.target.value }))} /></div><div className="grid gap-4 lg:grid-cols-2"><div><Label>收件范围类型</Label><Select value={broadcastForm.audienceType} onValueChange={value => setBroadcastForm(current => ({ ...current, audienceType: value as BroadcastAudienceType, scopeValue: "" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project">按项目</SelectItem><SelectItem value="organization">按组织及下级组织</SelectItem><SelectItem value="role">按岗位</SelectItem></SelectContent></Select></div><div><Label>{scopeTitle}</Label><Select value={broadcastForm.scopeValue || undefined} onValueChange={value => setBroadcastForm(current => ({ ...current, scopeValue: value }))} disabled={broadcastOptions.isLoading || !scopeOptions.length}><SelectTrigger className="mt-1"><SelectValue placeholder={broadcastOptions.isLoading ? "正在读取范围选项…" : `选择${scopeTitle}`} /></SelectTrigger><SelectContent>{scopeOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">范围内有效人员</p><p className="mt-1 text-xl font-semibold text-slate-800">{validBroadcastScope ? broadcastAudiencePreview.data?.qualifiedCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">已绑定可投递</p><p className="mt-1 text-xl font-semibold text-emerald-700">{validBroadcastScope ? broadcastAudiencePreview.data?.boundRecipientCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">未绑定/不会投递</p><p className="mt-1 text-xl font-semibold text-amber-700">{validBroadcastScope ? broadcastAudiencePreview.data?.unboundCount ?? "—" : "—"}</p></div></div>{broadcastAudiencePreview.isError ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">范围预览失败：{broadcastAudiencePreview.error.message}</p> : null}<div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setBroadcastForm(EMPTY_BROADCAST_FORM)}>清空</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!broadcastForm.title.trim() || !broadcastForm.content.trim() || !validBroadcastScope || saveBroadcastDraft.isPending} onClick={() => saveBroadcastDraft.mutate({ id: broadcastForm.id, title: broadcastForm.title.trim(), content: broadcastForm.content.trim(), deepLink: broadcastForm.deepLink.trim() || null, ...getBroadcastAudienceInput(broadcastForm) })}>{saveBroadcastDraft.isPending ? "保存中…" : broadcastForm.id ? "更新草稿" : "保存草稿"}</Button></div></CardContent></Card>
+      <Card><CardHeader><CardTitle className="text-base">发布审批与投递审计</CardTitle><CardDescription>审批通过后才能发布。发布时按当前有效范围重新解析实际绑定收件人，并对每个收件人使用独立幂等键，防止重复投递。</CardDescription></CardHeader><CardContent>{broadcasts.isLoading ? <EmptyState text="正在读取群发台账…" /> : broadcasts.isError ? <EmptyState text="无法读取群发台账，请确认当前账号具有超级管理员权限。" /> : broadcasts.data?.length ? <div className="space-y-3">{broadcasts.data.map(item => <div key={item.id} className={`rounded-xl border p-4 ${selectedBroadcastId === Number(item.id) ? "border-[#203c48] bg-[#f5f9f8]" : "border-slate-200 bg-white"}`}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.title}</p><BusinessStatusBadge status={item.status} /></div><p className="mt-1 text-xs text-slate-500">{item.broadcastNo} · 创建于 {displayDate(item.createdAt)} · 范围：{item.audienceType === "project" ? `项目 #${item.projectId}` : item.audienceType === "organization" ? `组织 #${item.organizationId}` : `岗位 ${item.roleCode}`}</p><p className="mt-2 max-w-3xl text-sm text-slate-700">{item.content}</p>{item.reviewNote ? <p className="mt-2 text-xs text-amber-800">审批说明：{item.reviewNote}</p> : null}</div><div className="text-right text-xs text-slate-500"><p>计划收件：{item.recipientCount}</p><p className="mt-1 text-emerald-700">成功：{item.deliveredCount}</p><p className="mt-1 text-rose-700">失败：{item.failedCount}</p><p className="mt-1 text-amber-700">跳过：{item.skippedCount}</p></div></div><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setSelectedBroadcastId(Number(item.id))}>查看投递审计</Button>{["draft", "rejected"].includes(item.status) ? <><Button size="sm" variant="outline" onClick={() => editBroadcast(item)}>编辑</Button><Button size="sm" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "submit", reviewNote: null })} disabled={reviewBroadcast.isPending}>提交审批</Button></> : null}{item.status === "submitted" ? <><Button size="sm" className="bg-[#47754d] hover:bg-[#355c3c]" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "approve", reviewNote: "已核对内容与收件范围" })} disabled={reviewBroadcast.isPending}>审批通过</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "reject", reviewNote: "请补充或修正通知内容与收件范围" })} disabled={reviewBroadcast.isPending}>退回修改</Button></> : null}{item.status === "approved" ? <Button size="sm" className="bg-[#8b3f20] hover:bg-[#6d3421]" onClick={() => publishBroadcast.mutate({ id: Number(item.id) })} disabled={publishBroadcast.isPending}>发布服务号通知</Button> : null}{["draft", "submitted", "approved", "rejected"].includes(item.status) ? <Button size="sm" variant="ghost" className="text-slate-500" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "cancel", reviewNote: null })} disabled={reviewBroadcast.isPending}>取消</Button> : null}</div></div>)}</div> : <EmptyState text="尚无群发记录。请先建立范围明确的群发草稿，再预览、审批和发布。" />}</CardContent></Card>
+      {selectedBroadcastId ? <Card><CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0"><div><CardTitle className="text-base">逐收件人投递审计</CardTitle><CardDescription>仅显示内部用户编号和投递状态，不展示 OpenID、手机号或其他通知身份信息。</CardDescription></div><Button size="sm" variant="outline" onClick={() => broadcastDeliveries.refetch()} disabled={broadcastDeliveries.isFetching}>刷新</Button></CardHeader><CardContent>{broadcastDeliveries.isLoading ? <EmptyState text="正在读取投递审计…" /> : broadcastDeliveries.data?.length ? <div className="space-y-2">{broadcastDeliveries.data.map(delivery => <div key={delivery.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"><div><p className="text-sm font-medium text-slate-800">收件人 #{delivery.recipientUserId}</p><p className="mt-1 text-xs text-slate-500">最近尝试：{displayDate(delivery.attemptedAt)}{delivery.deliveryReason ? ` · 原因：${delivery.deliveryReason}` : ""}</p></div><BusinessStatusBadge status={delivery.deliveryStatus} /></div>)}</div> : <EmptyState text="该群发单尚未生成逐收件人投递记录。" />}</CardContent></Card> : null}
+    </div>;
+  };
+
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "finance" ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
-          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="construction">施工</TabsTrigger><TabsTrigger value="labor">劳务</TabsTrigger><TabsTrigger value="machinery">机械</TabsTrigger><TabsTrigger value="transport">运输</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
+          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="construction">施工</TabsTrigger><TabsTrigger value="labor">劳务</TabsTrigger><TabsTrigger value="machinery">机械</TabsTrigger><TabsTrigger value="transport">运输</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="finance">财务</TabsTrigger><TabsTrigger value="broadcast">群发</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>

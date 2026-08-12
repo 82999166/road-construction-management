@@ -109,7 +109,7 @@ async function assertPurchaseAccess(ctx: Parameters<typeof requireAuthenticatedU
 async function assertMeasurementAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   await assertDepartmentBusinessAccess(ctx, "MEASUREMENT");
   const roleCodes = await getEffectiveRoleCodes(ctx);
-  const allowed = ["MEASUREMENT_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER", "ACCOUNTANT"];
+  const allowed = ["MEASUREMENT_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "ACCOUNTANT"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获工程计量数据访问授权" });
   }
@@ -145,6 +145,15 @@ function canManageInventory(roleCodes: readonly string[]) {
 /** 工程计量复核由计量、项目、财务负责人或系统管理员执行。 */
 function canReviewMeasurement(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.some(role => ["MEASUREMENT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER"].includes(role));
+}
+
+/** 收方由项目部或施工现场提交，计量负责人负责复核；前端只据此收敛按钮，服务端仍逐次强制校验。 */
+function canSubmitTakeoff(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.some(role => ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER"].includes(role));
+}
+
+function canReviewTakeoff(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.some(role => ["MEASUREMENT_MANAGER", "PROJECT_MANAGER"].includes(role));
 }
 
 /** 已审核计量只能由会计、财务负责人或系统管理员结算确认。 */
@@ -591,6 +600,12 @@ export const measurementRouter = router({
     return listScopedProjects(ctx);
   }),
 
+  /** 仅投影当前用户可办理的收方动作，不向浏览器泄露角色原始授权明细。 */
+  takeoffCapabilities: protectedProcedure.query(async ({ ctx }) => {
+    const roleCodes = await assertMeasurementAccess(ctx);
+    return { canSubmit: canSubmitTakeoff(roleCodes), canReview: canReviewTakeoff(roleCodes) };
+  }),
+
   listClaims: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertMeasurementAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -610,7 +625,8 @@ export const measurementRouter = router({
 
   saveTakeoff: protectedProcedure.input(measurementTakeoffInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertMeasurementAccess(ctx);
+    const roleCodes = await assertMeasurementAccess(ctx);
+    if (!canSubmitTakeoff(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "项目经理或施工管理员方可维护收方草稿" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -653,7 +669,8 @@ export const measurementRouter = router({
     if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目收方记录" });
     const allowedTargets: Record<string, string[]> = { draft: ["submitted", "void"], submitted: ["reviewing", "rejected"], reviewing: ["approved", "rejected"], approved: ["locked"], rejected: ["submitted", "void"] };
     if (!allowedTargets[record.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前收方状态不允许该操作" });
-    if (["reviewing", "approved", "rejected", "locked", "void"].includes(input.targetStatus) && !canReviewMeasurement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无收方复核、锁定或作废权限" });
+    if (["submitted", "void"].includes(input.targetStatus) && !canSubmitTakeoff(roleCodes) && !canReviewTakeoff(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无收方提交或撤回权限" });
+    if (["reviewing", "approved", "rejected", "locked"].includes(input.targetStatus) && !canReviewTakeoff(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无收方复核、审核或锁定权限" });
     const patch: Partial<typeof measurementTakeoffRecords.$inferInsert> = { status: input.targetStatus, reviewNote: input.reviewNote ?? null };
     if (["reviewing", "approved", "rejected"].includes(input.targetStatus)) { patch.reviewedBy = user.id; patch.reviewedAt = new Date(); }
     if (input.targetStatus === "locked") patch.lockedAt = new Date();
@@ -666,7 +683,8 @@ export const measurementRouter = router({
 
   linkTakeoffEvidence: protectedProcedure.input(measurementTakeoffEvidenceInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertMeasurementAccess(ctx);
+    const roleCodes = await assertMeasurementAccess(ctx);
+    if (!canSubmitTakeoff(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "项目经理或施工管理员方可关联收方证据" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -803,6 +821,12 @@ export const financeRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertFinanceAccess(ctx);
     return listScopedProjects(ctx);
+  }),
+
+  /** 浏览器仅获得是否可维护发票的最小投影；认证、作废和红冲仍由各状态接口强制校验。 */
+  invoiceCapabilities: protectedProcedure.query(async ({ ctx }) => {
+    const roleCodes = await assertFinanceAccess(ctx);
+    return { canMaintain: canAdjustFinancialRecord(roleCodes) };
   }),
 
   listRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema.optional() })).query(async ({ ctx, input }) => {

@@ -418,6 +418,67 @@ export const officialAccountBindings = mysqlTable(
   }),
 );
 
+/**
+ * 服务号受控群发主单。群发内容在提交审批后不可直接覆盖，收件人范围在发布时重新解析并保存最小快照，
+ * 从而避免将 OpenID、手机号等敏感通知身份复制到业务审批表中。
+ */
+export const officialAccountBroadcasts = mysqlTable(
+  "official_account_broadcasts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    broadcastNo: varchar("broadcastNo", { length: 64 }).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    content: text("content").notNull(),
+    deepLink: varchar("deepLink", { length: 512 }),
+    audienceType: mysqlEnum("audienceType", ["project", "organization", "role"]).notNull(),
+    projectId: int("projectId"),
+    organizationId: int("organizationId"),
+    roleCode: varchar("roleCode", { length: 64 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "rejected", "publishing", "published", "partial", "failed", "cancelled"]).default("draft").notNull(),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    publishedBy: int("publishedBy"),
+    publishedAt: datetime("publishedAt"),
+    recipientCount: int("recipientCount").default(0).notNull(),
+    deliveredCount: int("deliveredCount").default(0).notNull(),
+    failedCount: int("failedCount").default(0).notNull(),
+    skippedCount: int("skippedCount").default(0).notNull(),
+    /** 仅记录收件人数、用户 ID 与选择范围；绝不包含 OpenID 或解密后的绑定信息。 */
+    audienceSnapshotJson: text("audienceSnapshotJson"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    broadcastNoUnique: uniqueIndex("official_account_broadcasts_no_unique").on(table.broadcastNo),
+    statusIndex: index("official_account_broadcasts_status_index").on(table.status, table.updatedAt),
+    scopeIndex: index("official_account_broadcasts_scope_index").on(table.audienceType, table.projectId, table.organizationId, table.roleCode),
+  }),
+);
+
+/** 每次群发按收件人保留独立投递结果，发布重试不会生成重复的服务号通知。 */
+export const officialAccountBroadcastDeliveries = mysqlTable(
+  "official_account_broadcast_deliveries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    broadcastId: bigint("broadcastId", { mode: "number" }).notNull(),
+    recipientUserId: int("recipientUserId").notNull(),
+    notificationRecordId: bigint("notificationRecordId", { mode: "number" }),
+    deliveryStatus: mysqlEnum("deliveryStatus", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
+    deliveryReason: varchar("deliveryReason", { length: 64 }),
+    providerMessageId: varchar("providerMessageId", { length: 128 }),
+    attemptedAt: datetime("attemptedAt"),
+    deliveredAt: datetime("deliveredAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    broadcastRecipientUnique: uniqueIndex("official_account_broadcast_deliveries_recipient_unique").on(table.broadcastId, table.recipientUserId),
+    broadcastStatusIndex: index("official_account_broadcast_deliveries_status_index").on(table.broadcastId, table.deliveryStatus),
+  }),
+);
+
 /** 服务号扫码绑定的短时请求；仅保存令牌指纹，扫码事件到达后一次性消费。 */
 export const officialAccountBindingRequests = mysqlTable("official_account_binding_requests", {
   id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),

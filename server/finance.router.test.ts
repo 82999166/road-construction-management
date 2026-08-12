@@ -226,6 +226,38 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).transitionClaim({ id: 43, projectId: 10, targetStatus: "settled", approvedAmount: null, reviewNote: null })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("项目收方将施工管理员限定为提交岗，计量负责人限定为复核岗", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CONSTRUCTION_MANAGER"]);
+    await expect(measurementRouter.createCaller(createAuthContext()).takeoffCapabilities()).resolves.toEqual({ canSubmit: true, canReview: false });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 501, projectId: 10, status: "submitted" }]) as never);
+    await expect(measurementRouter.createCaller(createAuthContext()).transitionTakeoff({ id: 501, projectId: 10, targetStatus: "reviewing", reviewNote: null })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
+    await expect(measurementRouter.createCaller(createAuthContext()).takeoffCapabilities()).resolves.toEqual({ canSubmit: false, canReview: true });
+    await expect(measurementRouter.createCaller(createAuthContext()).saveTakeoff({ projectId: 10, measurementClaimId: null, workItem: "路基土方", workLocation: "K12+300", unit: "m3", quantity: 100, unitPrice: 23.5, takeoffDate: "2026-08-12" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("收方复核、审核与锁定均写入审计和服务号深链，锁定后不得关联证据", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
+    const updateWhere = vi.fn(async () => undefined);
+    const values = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 502, projectId: 10, status: "reviewing", workItem: "路基土方" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values })),
+    } as never);
+
+    await expect(measurementRouter.createCaller(createAuthContext()).transitionTakeoff({ id: 502, projectId: 10, targetStatus: "approved", reviewNote: "现场复测工程量一致" })).resolves.toEqual({ success: true });
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", action: "transition_takeoff", targetId: "502" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "measurement", eventCode: "takeoff_approved", targetId: "502", deepLink: "/mobile/measurement" }));
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CONSTRUCTION_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 503, projectId: 10, status: "locked" }]) as never);
+    await expect(measurementRouter.createCaller(createAuthContext()).linkTakeoffEvidence({ takeoffId: 503, projectId: 10, evidenceId: 77 })).rejects.toMatchObject({ code: "CONFLICT", message: "已锁定或已作废收方记录不可补充证据" });
+  });
+
   it("工程计量状态条件更新冲突时不确认收入、不写审计或投递通知", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
@@ -292,6 +324,14 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 53, projectId: 10, status: "approved", declaredAmount: "1000.00", approvedAmount: "1000.00" }]) as never);
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 53, projectId: 10, amount: 10, receivedAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "CONFLICT", message: "仅已确认收入的工程计量可以登记回款" });
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 53, projectId: 10, amount: 0, receivedAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("移动发票入口仅向会计或财务负责人投影维护权限", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
+    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toEqual({ canMaintain: false });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toEqual({ canMaintain: true });
   });
 
   it("财务流水由服务端审计并投递固定的财务深链", async () => {
