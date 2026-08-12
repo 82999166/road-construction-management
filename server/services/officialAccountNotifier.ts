@@ -17,6 +17,7 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null };
 export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null };
+export type OfficialAccountEventConfig = OfficialAccountCredentialConfig & { eventToken: string; eventAesKey: string };
 export type OfficialAccountPrivateTemplate = {
   templateId: string;
   title: string;
@@ -116,6 +117,29 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
   if (!appId || !appSecretEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
     return { config: { appId, appSecret: decryptSecret(appSecretEncrypted), appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null } };
+  } catch {
+    return { reason: "invalid_config" };
+  }
+}
+
+/** 消息与事件推送回调只读取后台已发布的敏感配置，避免 Token 和 AESKey 进入前端或环境变量。 */
+export async function loadPublishedOfficialAccountEventConfig(): Promise<{ config?: OfficialAccountEventConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
+  const db = await getDb();
+  if (!db) return { reason: "database_unavailable" };
+  const keys = ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"];
+  const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, keys)));
+  const settings = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) settings.set(row.settingKey, row);
+  const appId = settings.get("WECHAT_OFFICIAL_APP_ID")?.valueJson?.trim();
+  const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
+  const tokenEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_TOKEN")?.secretEncrypted;
+  const aesEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_AES_KEY")?.secretEncrypted;
+  if (!appId || !appSecretEncrypted || !tokenEncrypted || !aesEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
+  try {
+    const eventToken = decryptSecret(tokenEncrypted);
+    const eventAesKey = decryptSecret(aesEncrypted);
+    if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || !/^[A-Za-z0-9]{43}$/.test(eventAesKey)) return { reason: "invalid_config" };
+    return { config: { appId, appSecret: decryptSecret(appSecretEncrypted), appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null, eventToken, eventAesKey } };
   } catch {
     return { reason: "invalid_config" };
   }

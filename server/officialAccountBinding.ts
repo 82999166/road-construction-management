@@ -53,6 +53,34 @@ function getSafeAppUrl(appUrl: string | null) {
   }
 }
 
+function fingerprintBindingToken(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+/** 创建十分钟有效的服务号带参数二维码；数据库只保存令牌指纹，扫码原码不会持久化。 */
+export async function createOfficialAccountScanBindingRequest(userId: number) {
+  const db = await getDb();
+  const credentials = await loadPublishedOfficialAccountCredentials();
+  if (!db || !credentials.config) return { reason: credentials.reason ?? "database_unavailable" as const };
+  const token = randomBytes(18).toString("base64url");
+  const expiresAt = new Date(Date.now() + BINDING_STATE_MAX_AGE_MS);
+  await db.insert(officialAccountBindingRequests).values({ userId, tokenFingerprint: fingerprintBindingToken(token), expiresAt });
+  try {
+    const accessToken = await getOfficialAccountAccessToken(credentials.config);
+    const response = await fetch(`https://api.weixin.qq.com/cgi-bin/qrcode/create?access_token=${encodeURIComponent(accessToken)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expire_seconds: Math.floor(BINDING_STATE_MAX_AGE_MS / 1000), action_name: "QR_STR_SCENE", action_info: { scene: { scene_str: `bind_${token}` } } }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    const payload = await response.json().catch(() => null) as { ticket?: string; errcode?: number } | null;
+    if (!response.ok || !payload?.ticket) throw new Error("qrcode_unavailable");
+    return { reason: null, expiresAt, qrCodeUrl: `https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=${encodeURIComponent(payload.ticket)}` };
+  } catch {
+    return { reason: "delivery_failed" as const };
+  }
+}
+
 function callbackError(res: Response, appUrl: URL | null, result: "failed" | "conflict") {
   if (appUrl) {
     const returnUrl = new URL("/mobile/profile", appUrl);
