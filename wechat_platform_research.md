@@ -68,3 +68,11 @@ https://developers.weixin.qq.com/doc/service/guide/product/template_message/Temp
 
 1. https://developers.weixin.qq.com/doc/service/guide/dev/push/
 2. https://developers.weixin.qq.com/doc/service/api/qrcode/qrcodes/api_createqrcode.html
+
+## 网页授权域名文件验收
+
+2026-08-12 已在正式域名根目录公开验证微信提供的授权校验文件：
+
+`https://roadmanage-xjifzbue.manus.space/MP_verify_amDyVeLccZJcmzJL.txt`
+
+浏览器实测返回正文 `amDyVeLccZJcmzJL`。管理员可在微信公众平台“账号设置 → 功能设置 → 网页授权域名”填写 `roadmanage-xjifzbue.manus.space`，启用 HTTPS 校验后保存，再恢复员工 OAuth 绑定测试。

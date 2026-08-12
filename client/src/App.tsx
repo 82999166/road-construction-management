@@ -9,6 +9,7 @@ import { ShieldAlert } from "lucide-react";
 import { useEffect } from "react";
 import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { MobileBottomNavigation } from "./components/MobileBottomNavigation";
 import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import AdminPage from "./pages/AdminPage";
@@ -96,6 +97,7 @@ function Router() {
       <Route component={NotFound} />
     </Switch>
     <MobileEvidenceShortcut />
+    <MobileBottomNavigation />
     </>
   );
 }

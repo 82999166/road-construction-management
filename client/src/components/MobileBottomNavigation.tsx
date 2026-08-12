@@ -1,0 +1,29 @@
+import { Bell, LayoutDashboard, UserRound } from "lucide-react";
+import { useLocation } from "wouter";
+
+const MOBILE_NAV_ROUTES = new Set([
+  "/mobile",
+  "/mobile/purchasing",
+  "/mobile/measurement",
+  "/mobile/finance",
+  "/mobile/profile",
+]);
+
+/**
+ * 为没有页面级业务 Tab 的移动页提供统一固定导航。业务页已自带 Tab 时不重复挂载。
+ */
+export function MobileBottomNavigation() {
+  const [location, navigate] = useLocation();
+  if (!MOBILE_NAV_ROUTES.has(location)) return null;
+
+  const active = location === "/mobile" ? "workbench" : location === "/mobile/messages" ? "messages" : location === "/mobile/profile" ? "profile" : "business";
+  const itemClass = (name: typeof active) => `flex min-w-14 flex-col items-center gap-1 px-3 py-1 ${active === name ? "text-[#9f582b]" : "text-[#8f7566]"}`;
+
+  return (
+    <nav aria-label="移动端底部导航" className="fixed bottom-0 left-1/2 z-40 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] shadow-[0_-8px_24px_rgba(71,42,30,.08)] backdrop-blur print:hidden">
+      <button className={itemClass("workbench")} onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button>
+      <button className={itemClass("business")} onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button>
+      <button className={itemClass("profile")} onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button>
+    </nav>
+  );
+}
