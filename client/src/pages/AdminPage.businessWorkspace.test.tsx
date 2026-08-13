@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE, getBusinessWorkspaceProjectState } from "./AdminPage";
 
 describe("统一后台业务工作区范围保护", () => {
@@ -17,5 +18,14 @@ describe("统一后台业务工作区范围保护", () => {
       MACHINERY: "/admin/machinery",
       TRANSPORT: "/admin/transport",
     });
+  });
+
+  it("禁止 PC 台账的查看、编辑和维护操作直接跳转到移动端", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toMatch(/setLocation\(["'`]\/mobile/);
+    expect(source).toContain("施工日报查看与编辑");
+    expect(source).toContain("劳务人员档案");
+    expect(source).toContain("运输趟次明细");
   });
 });
