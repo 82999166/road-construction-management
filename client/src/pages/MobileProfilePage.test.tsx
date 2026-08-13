@@ -2,8 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { capturedButtonProps, mockLogout, mockNavigate } = vi.hoisted(() => ({
+const { capturedButtonProps, mockBindingStatus, mockLogout, mockNavigate } = vi.hoisted(() => ({
   capturedButtonProps: [] as Array<{ children?: unknown; onClick?: () => void }>,
+  mockBindingStatus: { status: "unbound" },
   mockLogout: vi.fn(),
   mockNavigate: vi.fn(),
 }));
@@ -38,7 +39,7 @@ vi.mock("@/lib/trpc", () => ({
       },
     },
     officialAccount: {
-      bindingStatus: { useQuery: () => ({ data: { status: "unbound" }, isLoading: false, refetch: vi.fn() }) },
+      bindingStatus: { useQuery: () => ({ data: mockBindingStatus, isLoading: false, refetch: vi.fn() }) },
       beginBinding: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
     },
   },
@@ -54,6 +55,7 @@ function hasCapturedButtonLabel(label: string) {
 describe("MobileProfilePage", () => {
   beforeEach(() => {
     capturedButtonProps.length = 0;
+    mockBindingStatus.status = "unbound";
     mockLogout.mockReset();
     mockNavigate.mockReset();
   });
@@ -84,5 +86,14 @@ describe("MobileProfilePage", () => {
     await Promise.resolve();
     expect(mockLogout).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenLastCalledWith("/login?returnTo=%2Fmobile%2Fprofile");
+  });
+
+  it("模板投递提示未关注时，引导用户关注服务号后重新绑定", () => {
+    mockBindingStatus.status = "unsubscribed";
+    const markup = renderToStaticMarkup(<MobileProfilePage />);
+
+    expect(markup).toContain("当前尚未关注服务号");
+    expect(markup).toContain("关注后系统才可向该微信发送业务通知");
+    expect(hasCapturedButtonLabel("关注后重新绑定")).toBe(true);
   });
 });

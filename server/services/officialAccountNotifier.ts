@@ -109,6 +109,19 @@ export function buildSingleFieldSummary(variables: Record<string, string>) {
   return `${variables.title}｜${variables.content}｜${variables.eventCode}`.slice(0, 200);
 }
 
+/** 仅保留网络故障类别，禁止把 URL、令牌、OpenID 或响应正文写入业务投递审计。 */
+function classifyDeliveryRequestFailure(error: unknown) {
+  if (error instanceof DOMException && error.name === "TimeoutError") return "timeout";
+  const cause = error && typeof error === "object" && "cause" in error ? (error as { cause?: unknown }).cause : undefined;
+  const causeCode = cause && typeof cause === "object" && "code" in cause && typeof (cause as { code?: unknown }).code === "string"
+    ? (cause as { code: string }).code.toUpperCase()
+    : null;
+  if (causeCode && ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"].includes(causeCode)) {
+    return `network_${causeCode.toLowerCase()}`.slice(0, 64);
+  }
+  return "request_failed";
+}
+
 export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: OfficialAccountConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
@@ -312,13 +325,17 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     const payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
     if (!response.ok || payload?.errcode !== 0) {
       const failureCode = String(payload?.errcode ?? response.status).slice(0, 64);
-      await db.update(officialAccountBindings).set({ lastFailureAt: new Date(), failureCount: binding.failureCount + 1 }).where(eq(officialAccountBindings.id, binding.id));
+      await db.update(officialAccountBindings).set({
+        lastFailureAt: new Date(),
+        failureCount: binding.failureCount + 1,
+        ...(failureCode === "43004" ? { status: "unsubscribed" as const } : {}),
+      }).where(eq(officialAccountBindings.id, binding.id));
       return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode });
     }
     await db.update(officialAccountBindings).set({ lastVerifiedAt: new Date(), failureCount: 0 }).where(eq(officialAccountBindings.id, binding.id));
     return update({ delivered: true, reason: "sent", providerMessageId: payload.msgid ? String(payload.msgid) : undefined }, { status: "sent", sentAt: new Date(), providerMessageId: payload.msgid ? String(payload.msgid) : null, failureCode: null });
-  } catch {
-    return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode: "request_failed" });
+  } catch (error) {
+    return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode: classifyDeliveryRequestFailure(error) });
   }
 }
 
