@@ -122,6 +122,23 @@ function normalizeDeepLink(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
+/** 将供应商错误码转为后台可执行说明；不回显 OpenID、令牌或请求详情。 */
+export function getBroadcastFailureGuidance(deliveryReason: string | null, failureCode: string | null) {
+  const source = `${failureCode ?? ""} ${deliveryReason ?? ""}`.toLowerCase();
+  if (source.includes("40037")) return "微信模板不可下发：请在服务号后台配置并发布可下发的业务模板后重新发送。";
+  if (source.includes("43004")) return "收件人尚未关注服务号：请先关注后重新绑定，再重试投递。";
+  if (source.includes("40164")) return "微信 API IP 白名单未命中：请核对固定出口 IP 35.237.214.196 是否仍在白名单。";
+  if (source.includes("template") || source.includes("not_configured")) return "服务号业务模板尚未配置：请先读取可下发模板并发布模板 ID 与字段映射。";
+  if (source.includes("not_bound")) return "收件人尚未完成服务号绑定，系统未向其投递。";
+  if (source.includes("network") || source.includes("timeout")) return "微信接口网络请求失败：系统已保留失败审计，可在网络恢复后重新发送。";
+  return deliveryReason ? `投递未成功：${deliveryReason}` : "投递未成功，请查看服务号配置、绑定状态和微信错误码。";
+}
+
+/** 新群发不再需要人工审批；草稿及历史审批中记录均可由获授权管理员直接发送。 */
+export function canDirectSendBroadcastStatus(status: string) {
+  return ["draft", "rejected", "submitted", "approved"].includes(status);
+}
+
 /** 管理后台专用：服务号群发必须经过草稿、范围预览、提交审批、发布和逐人审计。 */
 export const broadcastRouter = router({
   formOptions: protectedProcedure.query(async ({ ctx }) => {
@@ -147,7 +164,7 @@ export const broadcastRouter = router({
     await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) return [];
-    return db.select({
+    const rows = await db.select({
       id: officialAccountBroadcastDeliveries.id,
       recipientName: sql<string>`COALESCE(NULLIF(${officialAccountBroadcastDeliveries.recipientNameSnapshot}, ''), NULLIF(${users.name}, ''), '未命名成员')`,
       recipientRole: officialAccountBroadcastDeliveries.recipientRoleSnapshot,
@@ -164,6 +181,14 @@ export const broadcastRouter = router({
       .leftJoin(notificationRecords, eq(notificationRecords.id, officialAccountBroadcastDeliveries.notificationRecordId))
       .where(eq(officialAccountBroadcastDeliveries.broadcastId, input.broadcastId))
       .orderBy(desc(officialAccountBroadcastDeliveries.updatedAt));
+    return rows.map(row => {
+      const failureGuidance = row.deliveryStatus === "failed" ? getBroadcastFailureGuidance(row.deliveryReason, row.failureCode) : null;
+      return {
+        ...row,
+        deliveryReason: failureGuidance && row.deliveryReason ? `${row.deliveryReason} · ${failureGuidance}` : failureGuidance ?? row.deliveryReason,
+        failureGuidance,
+      };
+    });
   }),
 
   previewAudience: protectedProcedure.input(broadcastAudienceInput).query(async ({ ctx, input }) => {
@@ -266,8 +291,8 @@ export const broadcastRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [broadcast] = await db.select().from(officialAccountBroadcasts).where(eq(officialAccountBroadcasts.id, input.id)).limit(1);
     if (!broadcast) throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定群发单" });
-    if (broadcast.status !== "approved") throw new TRPCError({ code: "CONFLICT", message: "仅已审批通过的群发单可发布" });
-    const lockingResult = await db.update(officialAccountBroadcasts).set({ status: "publishing", publishedBy: user.id }).where(and(eq(officialAccountBroadcasts.id, broadcast.id), eq(officialAccountBroadcasts.status, "approved")));
+    if (!canDirectSendBroadcastStatus(broadcast.status)) throw new TRPCError({ code: "CONFLICT", message: "该群发单已发送、已取消或正在处理，不能重复直接发送" });
+    const lockingResult = await db.update(officialAccountBroadcasts).set({ status: "publishing", publishedBy: user.id, reviewNote: null }).where(and(eq(officialAccountBroadcasts.id, broadcast.id), eq(officialAccountBroadcasts.status, broadcast.status)));
     const affectedRows = Array.isArray(lockingResult) ? Number((lockingResult[0] as { affectedRows?: number } | undefined)?.affectedRows ?? 1) : 1;
     if (affectedRows === 0) throw new TRPCError({ code: "CONFLICT", message: "群发单已进入发布流程，请勿重复提交" });
 
@@ -299,7 +324,7 @@ export const broadcastRouter = router({
       const skippedCount = results.filter(result => result === "skipped").length + resolved.unboundCount;
       const status = failedCount > 0 ? "partial" : "published";
       await db.update(officialAccountBroadcasts).set({ status, publishedAt: new Date(), recipientCount: resolved.recipientUserIds.length, deliveredCount, failedCount, skippedCount, audienceSnapshotJson: snapshot }).where(eq(officialAccountBroadcasts.id, broadcast.id));
-      await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: "publish_broadcast", targetType: "official_account_broadcast", targetId: String(broadcast.id), summary: `服务号群发已发布：收件人 ${resolved.recipientUserIds.length}，成功 ${deliveredCount}，失败 ${failedCount}，未绑定 ${resolved.unboundCount}` });
+      await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: "direct_send_broadcast", targetType: "official_account_broadcast", targetId: String(broadcast.id), summary: `服务号群发直接发送：收件人 ${resolved.recipientUserIds.length}，成功 ${deliveredCount}，失败 ${failedCount}，未绑定 ${resolved.unboundCount}` });
       return { success: true, status, recipientCount: resolved.recipientUserIds.length, deliveredCount, failedCount, skippedCount };
     } catch (error) {
       await db.update(officialAccountBroadcasts).set({ status: "failed", publishedAt: new Date() }).where(eq(officialAccountBroadcasts.id, broadcast.id));

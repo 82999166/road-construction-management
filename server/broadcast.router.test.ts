@@ -7,7 +7,7 @@ vi.mock("./services/officialAccountNotifier", () => ({ sendOfficialAccountNotifi
 
 import { assertSuperAdmin, requireAuthenticatedUser } from "./access";
 import { getDb } from "./db";
-import { broadcastRouter } from "./routers/broadcast";
+import { canDirectSendBroadcastStatus, getBroadcastFailureGuidance, broadcastRouter } from "./routers/broadcast";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -86,5 +86,19 @@ describe("服务号群发审批状态机", () => {
     await expect(broadcastRouter.createCaller(createAuthContext()).acknowledgeReceipt({ deliveryId: 25 })).resolves.toEqual({ success: true, alreadyAcknowledged: false });
     expect(db.updateWhere).toHaveBeenCalledTimes(2);
     expect(db.auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "notification", action: "broadcast_receipt_acknowledged", targetId: "25" }));
+  });
+
+  it("将常见微信投递失败转为可执行说明且不暴露敏感收件人信息", () => {
+    expect(getBroadcastFailureGuidance("40037", "40037")).toContain("模板不可下发");
+    expect(getBroadcastFailureGuidance("not_bound", null)).toContain("尚未完成服务号绑定");
+    expect(getBroadcastFailureGuidance("network_timeout", null)).toContain("网络请求失败");
+  });
+
+  it("获授权管理员可直接发送草稿和历史审批中群发，但终态记录不能重复发送", () => {
+    expect(canDirectSendBroadcastStatus("draft")).toBe(true);
+    expect(canDirectSendBroadcastStatus("submitted")).toBe(true);
+    expect(canDirectSendBroadcastStatus("approved")).toBe(true);
+    expect(canDirectSendBroadcastStatus("published")).toBe(false);
+    expect(canDirectSendBroadcastStatus("publishing")).toBe(false);
   });
 });
