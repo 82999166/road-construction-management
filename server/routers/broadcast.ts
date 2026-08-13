@@ -16,7 +16,6 @@ import {
 import { assertSuperAdmin, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
-import { sendOfficialAccountNotification } from "../services/officialAccountNotifier";
 
 /** 群发范围三选一；范围值由服务端再次核验是否为现有项目、组织或启用岗位。 */
 const broadcastAudienceInput = z.discriminatedUnion("audienceType", [
@@ -47,8 +46,8 @@ function isActiveInPeriod(validFrom: Date | null, validTo: Date | null, now: Dat
 }
 
 /**
- * 解析群发的合格人员与已绑定服务号的实际收件人。OpenID 始终留在绑定表密文中，
- * 本函数只返回内部用户 ID，用于后续调用已有的单人模板消息投递服务。
+ * 解析范围通知的合格人员与已绑定服务号人数。范围通知本身通过站内消息发送给全体
+ * 获授权人员；OpenID 始终留在绑定表密文中，仅用于合规的单人业务即时通知统计。
  */
 async function resolveBroadcastAudience(audience: BroadcastAudience): Promise<AudienceResolution> {
   const db = await getDb();
@@ -94,11 +93,11 @@ async function resolveBroadcastAudience(audience: BroadcastAudience): Promise<Au
   if (!qualifiedUserIds.length) return { qualifiedUserIds, recipientUserIds: [], unboundCount: 0, recipients: [] };
   const bindings = await db.select({ userId: officialAccountBindings.userId }).from(officialAccountBindings).where(and(inArray(officialAccountBindings.userId, qualifiedUserIds), eq(officialAccountBindings.status, "active")));
   const recipientUserIds = Array.from(new Set(bindings.map(item => item.userId))).sort((left, right) => left - right);
-  const userRows = recipientUserIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, recipientUserIds)) : [];
+  const userRows = qualifiedUserIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, qualifiedUserIds)) : [];
   const userNameById = new Map(userRows.map(item => [item.id, item.name?.trim() || "未命名成员"]));
   const projectNameById = new Map(projectRows.map(item => [item.id, item.name ?? item.code]));
   const organizationNameById = new Map(organizationRows.map(item => [item.id, item.name ?? item.code]));
-  const recipients = recipientUserIds.map(userId => {
+  const recipients = qualifiedUserIds.map(userId => {
     const assignments = activeAssignments.filter(item => item.userId === userId);
     const roleSummary = Array.from(new Set(assignments.map(item => item.roleName).filter(Boolean))).join("、") || "未配置岗位";
     const scopeSummary = Array.from(new Set(assignments.map(item => item.projectId ? `项目：${projectNameById.get(item.projectId) ?? "已授权项目"}` : item.organizationId ? `部门：${organizationNameById.get(item.organizationId) ?? "已授权部门"}` : "全局授权"))).join("；") || "授权范围待同步";
@@ -139,7 +138,7 @@ export function canDirectSendBroadcastStatus(status: string) {
   return ["draft", "rejected", "submitted", "approved"].includes(status);
 }
 
-/** 管理后台专用：服务号群发必须经过草稿、范围预览、提交审批、发布和逐人审计。 */
+/** 管理后台专用：范围通知直接写入站内消息；服务号仅承担用户触发的具体业务即时通知。 */
 export const broadcastRouter = router({
   formOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertSuperAdmin(ctx);
@@ -304,16 +303,12 @@ export const broadcastRouter = router({
         const recipientUserId = recipient.userId;
         try {
           const acknowledgementLink = `/mobile/messages?broadcast=${broadcast.id}`;
-          const delivery = await sendOfficialAccountNotification({ eventCode: "official_account_broadcast", idempotencyKey: `oa:broadcast:${broadcast.id}:${recipientUserId}`, recipientUserId, title: broadcast.title, content: `${broadcast.content} 请进入系统确认收到。`.slice(0, 1000), deepLink: acknowledgementLink });
-          const [notification] = await db.select({ id: notificationRecords.id, failureCode: notificationRecords.failureCode }).from(notificationRecords).where(eq(notificationRecords.idempotencyKey, `oa:broadcast:${broadcast.id}:${recipientUserId}`)).limit(1);
-          const status = delivery.delivered ? "sent" : delivery.reason === "not_bound" || delivery.reason === "duplicate" ? "skipped" : "failed";
-          const deliveryReason = delivery.delivered ? null : notification?.failureCode ?? delivery.reason;
-          const acknowledgementStatus = delivery.delivered && broadcast.requiresAcknowledgement ? "pending" : "not_required" as const;
-          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null, acknowledgementStatus }).onDuplicateKeyUpdate({ set: { recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null, acknowledgementStatus } });
-          if (delivery.delivered && broadcast.requiresAcknowledgement) {
-            await db.insert(notificationRecords).values({ eventCode: "official_account_broadcast_acknowledgement", idempotencyKey: `inapp:broadcast:${broadcast.id}:${recipientUserId}`, recipientUserId, title: broadcast.title, content: `${broadcast.content} 请点击“确认收到”完成通知回执。`.slice(0, 1000), deepLink: acknowledgementLink, status: "sent", sentAt: new Date(), channel: "in_app" }).onDuplicateKeyUpdate({ set: { title: broadcast.title, content: `${broadcast.content} 请点击“确认收到”完成通知回执。`.slice(0, 1000), deepLink: acknowledgementLink } });
-          }
-          return status;
+          const idempotencyKey = `inapp:broadcast:${broadcast.id}:${recipientUserId}`;
+          await db.insert(notificationRecords).values({ eventCode: "scope_broadcast", idempotencyKey, recipientUserId, title: broadcast.title, content: `${broadcast.content} ${broadcast.requiresAcknowledgement ? "请点击“确认收到”完成通知回执。" : ""}`.trim().slice(0, 1000), deepLink: acknowledgementLink, status: "sent", sentAt: new Date(), channel: "in_app" }).onDuplicateKeyUpdate({ set: { title: broadcast.title, content: `${broadcast.content} ${broadcast.requiresAcknowledgement ? "请点击“确认收到”完成通知回执。" : ""}`.trim().slice(0, 1000), deepLink: acknowledgementLink, status: "sent", sentAt: new Date() } });
+          const [notification] = await db.select({ id: notificationRecords.id }).from(notificationRecords).where(eq(notificationRecords.idempotencyKey, idempotencyKey)).limit(1);
+          const acknowledgementStatus = broadcast.requiresAcknowledgement ? "pending" : "not_required" as const;
+          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: "sent", deliveryReason: "in_app_scope_notification", attemptedAt: new Date(), deliveredAt: new Date(), acknowledgementStatus }).onDuplicateKeyUpdate({ set: { recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: "sent", deliveryReason: "in_app_scope_notification", attemptedAt: new Date(), deliveredAt: new Date(), acknowledgementStatus } });
+          return "sent" as const;
         } catch {
           await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date(), acknowledgementStatus: "not_required" }).onDuplicateKeyUpdate({ set: { recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date(), acknowledgementStatus: "not_required" } });
           return "failed" as const;
@@ -321,11 +316,11 @@ export const broadcastRouter = router({
       }));
       const deliveredCount = results.filter(result => result === "sent").length;
       const failedCount = results.filter(result => result === "failed").length;
-      const skippedCount = results.filter(result => result === "skipped").length + resolved.unboundCount;
+      const skippedCount = 0;
       const status = failedCount > 0 ? "partial" : "published";
       await db.update(officialAccountBroadcasts).set({ status, publishedAt: new Date(), recipientCount: resolved.recipientUserIds.length, deliveredCount, failedCount, skippedCount, audienceSnapshotJson: snapshot }).where(eq(officialAccountBroadcasts.id, broadcast.id));
-      await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: "direct_send_broadcast", targetType: "official_account_broadcast", targetId: String(broadcast.id), summary: `服务号群发直接发送：收件人 ${resolved.recipientUserIds.length}，成功 ${deliveredCount}，失败 ${failedCount}，未绑定 ${resolved.unboundCount}` });
-      return { success: true, status, recipientCount: resolved.recipientUserIds.length, deliveredCount, failedCount, skippedCount };
+      await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: "direct_send_scope_notification", targetType: "official_account_broadcast", targetId: String(broadcast.id), summary: `范围站内通知直接发送：收件人 ${resolved.qualifiedUserIds.length}，成功 ${deliveredCount}，失败 ${failedCount}，服务号已绑定 ${resolved.recipientUserIds.length}` });
+      return { success: true, status, recipientCount: resolved.qualifiedUserIds.length, deliveredCount, failedCount, skippedCount };
     } catch (error) {
       await db.update(officialAccountBroadcasts).set({ status: "failed", publishedAt: new Date() }).where(eq(officialAccountBroadcasts.id, broadcast.id));
       await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: "broadcast_publish_failed", targetType: "official_account_broadcast", targetId: String(broadcast.id), summary: "服务号群发发布流程失败，未影响其他业务单据" });

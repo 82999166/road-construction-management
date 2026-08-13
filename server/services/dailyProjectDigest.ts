@@ -5,6 +5,7 @@ import {
   dailyProjectDigestSchedules,
   financialRecords,
   measurementClaims,
+  notificationRecords,
   organizations,
   projects,
   systemRoles,
@@ -12,7 +13,6 @@ import {
   userRoleAssignments,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { notifyOfficialAccountBusinessEvent } from "./officialAccountNotifier";
 
 const DIGEST_SCOPE_KEY = "all_active_projects";
 const DIGEST_RECIPIENT_ROLES = ["PROJECT_MANAGER", "FINANCE_MANAGER", "TRANSPORT_MANAGER", "CONSTRUCTION_MANAGER", "SUPER_ADMIN"];
@@ -193,22 +193,27 @@ export async function runDailyProjectDigest(scheduleId: number, businessDate = f
     }
     const recipientUserIds = await resolveDigestRecipientIds(project);
     if (!recipientUserIds.length) {
-      failedCount += 1;
-      await db.update(dailyProjectDigestRuns).set({ status: "failed", summaryJson: JSON.stringify(summary), recipientCount: 0, deliveredCount: 0, failedCount: 1, completedAt: new Date() }).where(eq(dailyProjectDigestRuns.id, run.id));
+      await db.update(dailyProjectDigestRuns).set({ status: "skipped", summaryJson: JSON.stringify(summary), recipientCount: 0, deliveredCount: 0, failedCount: 0, completedAt: new Date() }).where(eq(dailyProjectDigestRuns.id, run.id));
       continue;
     }
-    const results = await notifyOfficialAccountBusinessEvent({
-      userId: recipientUserIds[0],
-      recipientUserIds,
-      module: "construction",
-      eventCode: "daily_project_digest",
-      targetType: "project_daily_digest",
-      targetId: `${project.id}:${businessDate}`,
-      title: `每日项目汇总｜${project.name}`,
-      content: compactContent(summary),
-      deepLink: "/mobile/home",
-    });
-    const delivered = results.filter(result => result.reason === "sent" || result.reason === "duplicate").length;
+    const results = await Promise.all(recipientUserIds.map(async recipientUserId => {
+      const idempotencyKey = `inapp:daily-project-digest:${project.id}:${businessDate}:${recipientUserId}`;
+      await db.insert(notificationRecords).values({
+        eventCode: "daily_project_digest",
+        idempotencyKey,
+        recipientUserId,
+        title: `每日项目汇总｜${project.name}`,
+        content: compactContent(summary),
+        deepLink: "/mobile/messages",
+        status: "sent",
+        sentAt: new Date(),
+        channel: "in_app",
+      }).onDuplicateKeyUpdate({
+        set: { title: `每日项目汇总｜${project.name}`, content: compactContent(summary), deepLink: "/mobile/messages", status: "sent", sentAt: new Date() },
+      });
+      return "sent" as const;
+    }));
+    const delivered = results.filter(result => result === "sent").length;
     const failed = results.length - delivered;
     deliveredCount += delivered;
     failedCount += failed;
