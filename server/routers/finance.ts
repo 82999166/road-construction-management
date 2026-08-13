@@ -141,20 +141,40 @@ async function assertMeasurementAccess(ctx: Parameters<typeof requireAuthenticat
   return roleCodes;
 }
 
-/** 财务成本岗位访问控制，出纳可登记资金流水但不能确认工程计量。 */
+/** 财务成本岗位访问控制；审计只读仅可读取已授权范围，不会从该入口获得写入权限。 */
 async function assertFinanceAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   await assertDepartmentBusinessAccess(ctx, "FINANCE");
   const roleCodes = await getEffectiveRoleCodes(ctx);
-  const allowed = ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER", "PROJECT_MANAGER"];
+  const allowed = ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER", "PROJECT_MANAGER", "AUDIT_VIEWER"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获财务成本数据访问授权" });
   }
   return roleCodes;
 }
 
-/** 人工资金流水的作废和冲销会改变财务口径，仅允许会计、财务负责人或系统应急角色办理。 */
-function canAdjustFinancialRecord(roleCodes: readonly string[]) {
+/** 会计资料维护及日结封存属于会计审查职责；不等于执行资金支付或冲销。 */
+function canMaintainFinancialLedger(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER") || roleCodes.includes("ACCOUNTANT");
+}
+
+/** 未支付流水的作废由会计审查或财务负责人办理，保留原因与审计链。 */
+function canVoidFinancialRecord(roleCodes: readonly string[]) {
+  return canMaintainFinancialLedger(roleCodes);
+}
+
+/** 已支付凭证的冲销仅限财务负责人，和会计审查、出纳执行明确分离。 */
+function canReverseFinancialRecord(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/** 财务原始资料可由会计、出纳或财务负责人登记；审计只读与项目经理不可登记。 */
+function canCreateFinancialRecord(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.some(role => ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER"].includes(role));
+}
+
+/** 资金收付属于执行动作，仅出纳或系统应急管理身份可确认。 */
+function canExecutePayment(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("CASHIER");
 }
 
 /** 采购申请审批权仅限项目负责人、财务负责人和系统管理员。 */
@@ -186,14 +206,14 @@ function canSettleMeasurement(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER") || roleCodes.includes("ACCOUNTANT");
 }
 
-/** 工程回款属于资金确认动作，仅财务、会计、出纳或系统管理员可登记。 */
+/** 工程回款属于资金执行动作，仅出纳或系统管理员可登记。 */
 function canRecordMeasurementPayment(roleCodes: readonly string[]) {
-  return roleCodes.includes("ALL") || roleCodes.some(role => ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER"].includes(role));
+  return canExecutePayment(roleCodes);
 }
 
-/** 采购结算属于真实资金确认，允许财务、会计、出纳或系统管理员分次登记。 */
+/** 采购结算属于真实资金执行，必须与会计审查职责分离。 */
 function canRecordPurchaseSettlement(roleCodes: readonly string[]) {
-  return roleCodes.includes("ALL") || roleCodes.some(role => ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER"].includes(role));
+  return canExecutePayment(roleCodes);
 }
 
 /** 采购申请输入不允许携带状态或审批人，状态由专用审批接口在服务端控制。 */
@@ -905,7 +925,12 @@ export const financeRouter = router({
   /** 浏览器仅获得是否可维护发票的最小投影；认证、作废和红冲仍由各状态接口强制校验。 */
   invoiceCapabilities: protectedProcedure.query(async ({ ctx }) => {
     const roleCodes = await assertFinanceAccess(ctx);
-    return { canMaintain: canAdjustFinancialRecord(roleCodes) };
+    return {
+      canMaintain: canMaintainFinancialLedger(roleCodes),
+      canExecutePayment: canExecutePayment(roleCodes),
+      canReverse: canReverseFinancialRecord(roleCodes),
+      readOnly: !canCreateFinancialRecord(roleCodes),
+    };
   }),
 
   listRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema.optional() })).query(async ({ ctx, input }) => {
@@ -946,7 +971,7 @@ export const financeRouter = router({
   saveInvoice: protectedProcedure.input(financialInvoiceInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertFinanceAccess(ctx);
-    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票台账维护仅限会计或财务负责人" });
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票台账维护仅限会计或财务负责人" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     if (input.taxAmount > input.amount) throw new TRPCError({ code: "BAD_REQUEST", message: "税额不得高于价税合计金额" });
     const db = await getDb();
@@ -971,7 +996,7 @@ export const financeRouter = router({
   transitionInvoice: protectedProcedure.input(financialInvoiceTransitionInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertFinanceAccess(ctx);
-    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票认证、作废和红冲仅限会计或财务负责人" });
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票认证、作废和红冲仅限会计或财务负责人" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -987,7 +1012,7 @@ export const financeRouter = router({
   closeDailyAccount: protectedProcedure.input(dailyClosingInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertFinanceAccess(ctx);
-    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "每日会计日结仅限会计或财务负责人" });
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "每日会计日结仅限会计或财务负责人" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -1026,10 +1051,11 @@ export const financeRouter = router({
   /** 登记真实资金流水，项目、金额、发生时间和结算状态均经服务端校验并审计。 */
   saveRecord: protectedProcedure.input(financialRecordInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertFinanceAccess(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canCreateFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "审计只读岗位仅可查看财务资料，不可登记资金流水" });
     await assertProjectInCurrentScope(ctx, input.projectId);
-    /** 普通管理人员只能创建待结清原始流水，结算或作废属于高影响财务操作。 */
-    if (input.settlementStatus !== "unpaid") await assertSuperAdmin(ctx);
+    /** 非支付执行岗位只能创建待结清原始流水，结清状态只能由出纳或系统应急管理身份确认。 */
+    if (input.settlementStatus !== "unpaid" && !canExecutePayment(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "资金结清状态仅可由出纳执行确认" });
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     await db.insert(financialRecords).values({ recordNo: createBusinessNo("FIN"), projectId: input.projectId, direction: input.direction, category: input.category, amount: String(roundMoney(input.amount)), occurredAt: new Date(input.occurredAt), settlementStatus: input.settlementStatus, sourceType: input.sourceType ?? null, sourceId: input.sourceId ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null });
@@ -1042,7 +1068,7 @@ export const financeRouter = router({
   voidRecord: protectedProcedure.input(financialRecordVoidInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertFinanceAccess(ctx);
-    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水作废仅限会计或财务负责人办理" });
+    if (!canVoidFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水作废仅限会计审查或财务负责人办理" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -1064,7 +1090,7 @@ export const financeRouter = router({
   reverseRecord: protectedProcedure.input(financialRecordReversalInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertFinanceAccess(ctx);
-    if (!canAdjustFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水冲销仅限会计或财务负责人办理" });
+    if (!canReverseFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "已支付财务流水冲销仅限财务负责人办理" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });

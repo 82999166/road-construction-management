@@ -326,12 +326,15 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).recordPayment({ claimId: 53, projectId: 10, amount: 0, receivedAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("移动发票入口仅向会计或财务负责人投影维护权限", async () => {
+  it("移动财务能力将会计审查、出纳执行与审计只读明确投影", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
-    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toEqual({ canMaintain: false });
+    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toMatchObject({ canMaintain: false, canExecutePayment: true, canReverse: false, readOnly: false });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
-    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toEqual({ canMaintain: true });
+    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toMatchObject({ canMaintain: true, canExecutePayment: false, canReverse: false, readOnly: false });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["AUDIT_VIEWER"]);
+    await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toMatchObject({ canMaintain: false, canExecutePayment: false, canReverse: false, readOnly: true });
   });
 
   it("财务流水由服务端审计并投递固定的财务深链", async () => {
@@ -356,11 +359,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ module: "finance", eventCode: "financial_expense", targetId: "项目材料费用", deepLink: "/mobile/finance" }));
   });
 
-  it("普通管理人员只能新增未结清财务流水，结算和作废状态必须由超级管理员办理", async () => {
+  it("会计和财务负责人可登记待结清资料，但只有出纳可执行资金结清", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
-    vi.mocked(assertSuperAdmin).mockRejectedValueOnce(new TRPCError({ code: "FORBIDDEN", message: "仅超级管理员可维护结算或作废状态" }));
 
     await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
       projectId: 10,
@@ -389,9 +391,24 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       remarks: null,
     })).resolves.toEqual({ success: true });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ settlementStatus: "unpaid" }));
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "expense",
+      category: "出纳已执行材料费",
+      amount: 200,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "paid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: null,
+    })).resolves.toEqual({ success: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ settlementStatus: "paid" }));
   });
 
-  it("超级管理员可创建需要立即确认或作废的财务流水", async () => {
+  it("系统应急管理身份可创建需要立即确认的财务流水", async () => {
     const values = vi.fn(async () => undefined);
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
     vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
@@ -408,11 +425,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       evidenceId: null,
       remarks: "管理员核验后登记",
     })).resolves.toEqual({ success: true });
-    expect(assertSuperAdmin).toHaveBeenCalledWith(expect.anything());
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ settlementStatus: "paid" }));
   });
 
-  it("人工财务流水仅可在支付前作废，并由会计或财务负责人对已支付流水创建反方向冲销记录", async () => {
+  it("人工财务流水仅可在支付前由会计审查作废，已支付冲销仅限财务负责人", async () => {
     const manualPaidRecord = { id: 71, recordNo: "FIN-20260725-AAAA", projectId: 10, direction: "expense", category: "临时材料款", amount: "800.00", settlementStatus: "paid", sourceType: null };
     const insertValues = vi.fn(async () => undefined);
     const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
@@ -425,6 +441,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
 
     await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "供应商退款已核实" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+    await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "会计不得直接冲销" })).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     await expect(financeRouter.createCaller(createAuthContext()).reverseRecord({ id: 71, projectId: 10, reversedAt: "2026-07-25T08:00:00.000Z", reason: "供应商退款已核实" })).resolves.toEqual({ success: true, reversalDirection: "income" });

@@ -172,7 +172,7 @@ export const MOBILE_MENU_CATALOG = [
   { code: "TRANSPORT", title: "运输管理", icon: "Truck", roles: ["TRANSPORT_MANAGER", "DRIVER", "PROJECT_MANAGER", "FINANCE_MANAGER"] },
   { code: "PURCHASING", title: "采购仓储", icon: "PackageSearch", roles: ["PURCHASER", "WAREHOUSE_MANAGER", "LOGISTICS_MANAGER", "FINANCE_MANAGER"] },
   { code: "MEASUREMENT", title: "计量结算", icon: "Ruler", roles: ["MEASUREMENT_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER"] },
-  { code: "FINANCE", title: "财务成本", icon: "WalletCards", roles: ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER", "PROJECT_MANAGER"] },
+  { code: "FINANCE", title: "财务成本", icon: "WalletCards", roles: ["FINANCE_MANAGER", "ACCOUNTANT", "CASHIER", "PROJECT_MANAGER", "AUDIT_VIEWER"] },
   { code: "EVIDENCE", title: "水印取证", icon: "Camera", roles: ["ALL"] },
   { code: "MESSAGES", title: "消息中心", icon: "Bell", roles: ["ALL"] },
 ] as const;

@@ -8,8 +8,12 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 
 /** 客户端仅隐藏明显无权操作，项目范围、角色与终态限制始终在服务端再次校验。 */
-export function canAdjustFinancialRecord(roleCodes: readonly string[]) {
+export function canVoidFinancialRecord(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER") || roleCodes.includes("ACCOUNTANT");
+}
+
+export function canReverseFinancialRecord(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
 }
 
 /** 自动来源流水必须返回原业务模块调整；人工未支付流水作废，已支付流水生成相反方向冲销。 */
@@ -17,6 +21,14 @@ export function getFinancialRecordAdjustmentAction(record: { sourceType?: string
   if (record.sourceType || record.settlementStatus === "void") return null;
   if (record.settlementStatus === "paid") return "reverse" as const;
   if (["unpaid", "partial"].includes(record.settlementStatus)) return "void" as const;
+  return null;
+}
+
+/** 会计可处理未支付作废；已支付冲销仅财务负责人可见，出纳不复核自己执行的支付。 */
+export function getPermittedFinancialRecordAdjustmentAction(record: { sourceType?: string | null; settlementStatus: string }, roleCodes: readonly string[]) {
+  const action = getFinancialRecordAdjustmentAction(record);
+  if (action === "void" && canVoidFinancialRecord(roleCodes)) return action;
+  if (action === "reverse" && canReverseFinancialRecord(roleCodes)) return action;
   return null;
 }
 
@@ -39,7 +51,7 @@ export function MobileFinanceAdjustmentActions({ projectId, roleCodes, record }:
   const utils = trpc.useUtils();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
-  const action = canAdjustFinancialRecord(roleCodes) ? getFinancialRecordAdjustmentAction(record) : null;
+  const action = getPermittedFinancialRecordAdjustmentAction(record, roleCodes);
   const refreshFinancialData = async () => {
     await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]);
   };

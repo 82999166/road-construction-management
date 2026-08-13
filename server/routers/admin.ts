@@ -31,6 +31,7 @@ import {
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
 import { calculateTheoreticalVolume } from "../../shared/domain";
+import { INDUSTRY_ROLE_TEMPLATES } from "../../shared/industryRoleTemplates";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -545,6 +546,19 @@ export const adminRouter = router({
       if (!db) return [];
       await ensureFoundationData(db);
       return db.select().from(systemRoles).orderBy(systemRoles.category, systemRoles.code);
+    }),
+    /** 简洁授权页只消费此受控岗位目录；实际角色状态与主键仍以系统角色表为准。 */
+    templates: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      await ensureFoundationData(db);
+      const roles = await db.select({ id: systemRoles.id, code: systemRoles.code, status: systemRoles.status }).from(systemRoles);
+      const roleByCode = new Map(roles.map(role => [role.code, role]));
+      return INDUSTRY_ROLE_TEMPLATES.map(template => {
+        const role = roleByCode.get(template.code);
+        return { ...template, roleId: role?.id ?? null, roleStatus: role?.status ?? "disabled", available: Boolean(role && role.status === "active") };
+      });
     }),
     save: protectedProcedure.input(roleInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);

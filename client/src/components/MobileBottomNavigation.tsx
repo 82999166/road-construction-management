@@ -1,4 +1,5 @@
 import { Bell, LayoutDashboard, UserRound } from "lucide-react";
+import React from "react";
 import { useLocation } from "wouter";
 
 const MOBILE_NAV_ROUTES = new Set([
@@ -14,9 +15,12 @@ const MOBILE_NAV_ROUTES = new Set([
  */
 export function MobileBottomNavigation() {
   const [location, navigate] = useLocation();
-  if (!MOBILE_NAV_ROUTES.has(location)) return null;
+  // 微信内首次登录、OAuth 回跳和预览环境都会保留查询参数。
+  // 路径判定必须忽略查询串，否则 `/mobile/profile?from_webdev=1` 会被误判为非移动页，导致固定 Tab 消失。
+  const pathname = location.split(/[?#]/, 1)[0] || "/";
+  if (!MOBILE_NAV_ROUTES.has(pathname)) return null;
 
-  const active = location === "/mobile" ? "workbench" : location === "/mobile/messages" ? "messages" : location === "/mobile/profile" ? "profile" : "business";
+  const active = pathname === "/mobile" ? "workbench" : pathname === "/mobile/messages" ? "messages" : pathname === "/mobile/profile" ? "profile" : "business";
   const itemClass = (name: typeof active) => `flex min-w-14 flex-col items-center gap-1 px-3 py-1 ${active === name ? "text-[#9f582b]" : "text-[#8f7566]"}`;
 
   return (

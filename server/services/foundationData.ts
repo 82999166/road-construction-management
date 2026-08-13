@@ -22,8 +22,9 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
     { code: "LOGISTICS_MANAGER", name: "后勤管理员", category: "business" as const, description: "负责后勤和营地保障", isSystem: true },
     { code: "MEASUREMENT_MANAGER", name: "计量管理员", category: "business" as const, description: "负责工程计量申报", isSystem: true },
     { code: "FINANCE_MANAGER", name: "财务负责人", category: "business" as const, description: "负责财务审核与成本分析", isSystem: true },
-    { code: "ACCOUNTANT", name: "会计", category: "business" as const, description: "负责会计审核与凭证归档", isSystem: true },
-    { code: "CASHIER", name: "出纳", category: "business" as const, description: "负责支付和现金流登记", isSystem: true },
+    { code: "ACCOUNTANT", name: "会计", category: "business" as const, description: "负责会计审查、发票认证、日结封存与凭证归档，不执行付款或冲销", isSystem: true },
+    { code: "CASHIER", name: "出纳", category: "business" as const, description: "负责已批准业务的支付、回款和现金流执行，不审核自身支付", isSystem: true },
+    { code: "AUDIT_VIEWER", name: "审计只读", category: "business" as const, description: "只读查看授权项目的财务、利润、发票、日结和审计资料，不录入、不审核、不支付", isSystem: true },
   ];
 
   const permissionSeed = [

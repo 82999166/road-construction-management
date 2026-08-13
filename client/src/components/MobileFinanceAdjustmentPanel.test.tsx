@@ -16,10 +16,10 @@ import { MobileFinanceAdjustmentPanel } from "./MobileFinanceAdjustmentPanel";
 import { MOBILE_FINANCE_BACK_PATH } from "../pages/MobileFinancePage";
 
 describe("移动端财务调整面板", () => {
-  it("仅为财务岗位的可调整人工流水渲染作废或冲销操作，并隐藏自动来源和已作废记录", () => {
+  it("财务负责人可调整人工流水，并隐藏自动来源和已作废记录", () => {
     const html = renderToStaticMarkup(<MobileFinanceAdjustmentPanel
       projectId={8}
-      roleCodes={["ACCOUNTANT"]}
+      roleCodes={["FINANCE_MANAGER"]}
       records={[
         { id: 1, recordNo: "FIN-VOID-001", category: "材料预付款", settlementStatus: "unpaid", sourceType: null },
         { id: 2, recordNo: "FIN-REVERSE-002", category: "已付租金", settlementStatus: "paid", sourceType: null },
@@ -35,6 +35,22 @@ describe("移动端财务调整面板", () => {
     expect(html).toContain("冲销");
     expect(html).not.toContain("FIN-SOURCE-003");
     expect(html).not.toContain("FIN-VOIDED-004");
+  });
+
+  it("会计仅可看到未支付流水的作废入口，不可冲销已支付凭证", () => {
+    const html = renderToStaticMarkup(<MobileFinanceAdjustmentPanel
+      projectId={8}
+      roleCodes={["ACCOUNTANT"]}
+      records={[
+        { id: 1, recordNo: "FIN-VOID-001", category: "材料预付款", settlementStatus: "unpaid", sourceType: null },
+        { id: 2, recordNo: "FIN-REVERSE-002", category: "已付租金", settlementStatus: "paid", sourceType: null },
+      ]}
+    />);
+
+    expect(html).toContain("FIN-VOID-001");
+    expect(html).toContain("作废");
+    expect(html).not.toContain("FIN-REVERSE-002");
+    expect(html).not.toContain(">冲销</button>");
   });
 
   it("无财务岗位或无可调整记录时不渲染调整区域，财务页返回路径固定为移动工作台", () => {
