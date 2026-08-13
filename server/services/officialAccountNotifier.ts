@@ -445,7 +445,12 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
  */
 export async function inspectPublishedOfficialAccountTemplateCapability() {
   const result = await listPublishedOfficialAccountPrivateTemplates();
-  return { success: result.success, message: result.success && result.templates.length ? `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板。请选择合规业务通知模板并将其模板 ID 填入系统。` : result.message };
+  if (!result.success) return { success: false, message: result.message };
+  const eligibleCount = result.templates.filter(template => isPersistentBusinessTemplateEligible(template)).length;
+  if (result.templates.length > 0 && eligibleCount === 0) {
+    return { success: true, message: `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板，但均不可用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板，重新读取后再生成系统草稿。` };
+  }
+  return { success: true, message: result.templates.length ? `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板，其中 ${eligibleCount} 个可用于持续业务通知。请选择合规模板并将其模板 ID 填入系统。` : result.message };
 }
 
 /** OpenID 仅以该指纹进行去重查询，永不返回或展示原始值。 */

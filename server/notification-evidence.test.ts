@@ -165,6 +165,19 @@ describe("消息、影像与企业微信通知安全边界", () => {
     await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。" });
   });
 
+  it("模板插件已开通但仅返回订阅占位模板时，会明确提示尚无可下发业务模板", async () => {
+    const db = createSelectDb([
+      { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-subscription-placeholder" },
+      { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:subscription-placeholder-secret" },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL) => String(request).includes("cgi-bin/token")
+      ? ({ ok: true, json: async () => ({ access_token: "subscription-placeholder-token", expires_in: 7200 }) })
+      : ({ ok: true, json: async () => ({ template_list: [{ template_id: "subscription-placeholder", title: "订阅模板消息", content: "{{content.DATA}}" }] }) })));
+
+    await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: true, message: "模板消息功能已开通，当前私有模板库共有 1 个模板，但均不可用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板，重新读取后再生成系统草稿。" });
+  });
+
   it("私有模板发现会返回模板 ID 与从 DATA 占位符生成的字段映射，且不返回密钥", async () => {
     const db = createSelectDb([
       { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-template-list" },
