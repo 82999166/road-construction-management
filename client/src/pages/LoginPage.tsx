@@ -9,7 +9,7 @@ import {
   rememberPostLoginReturnPath,
 } from "@/lib/authNavigation";
 import { trpc } from "@/lib/trpc";
-import { ArrowRight, HardHat, KeyRound, ShieldCheck } from "lucide-react";
+import { ArrowRight, HardHat, KeyRound, MessageCircle, ShieldCheck } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -31,6 +31,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   const [newPassword, setNewPassword] = useState("");
   const [shouldChangeLocalPassword, setShouldChangeLocalPassword] = useState(false);
   const returnTo = getLoginReturnPath(location.includes("?") ? `?${location.split("?")[1]}` : "");
+  const wechatLoginReason = new URLSearchParams(location.includes("?") ? location.split("?")[1] : "").get("wechatLogin");
   // 用户已确认本地账号无需在首次登录时强制改密；保留改密接口仅供后续受控密码维护使用。
   const requiresLocalPasswordChange = false;
   const redirectTarget = requiresLocalPasswordChange ? null : getAuthenticatedLoginRedirectTarget(isAuthenticated, loading, returnTo);
@@ -45,6 +46,12 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   function handleLogin() {
     rememberPostLoginReturnPath(returnTo);
     startLogin();
+  }
+
+  /** 微信仅用于已绑定身份的授权登录；服务端仍校验账号启停、终端模式和既有岗位范围。 */
+  function handleWechatLogin() {
+    rememberPostLoginReturnPath(returnTo);
+    window.location.assign(`/api/official-account/login/start?returnTo=${encodeURIComponent(returnTo)}`);
   }
 
   async function handleTemporaryAdminLogin(event: React.FormEvent<HTMLFormElement>) {
@@ -113,6 +120,12 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button> : null}
+            {!localAdminOnly ? <div className="mt-3 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><MessageCircle className="h-4 w-4" />微信授权登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-600">请在已关注服务号且已完成系统绑定的微信内打开。微信只验证您已有的系统账号，不会自动创建账号或扩大权限。</p>
+              {wechatLoginReason ? <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-800">{wechatLoginReason === "not_bound" ? "该微信尚未绑定系统账号，请先使用账号密码登录后在“我的”完成服务号绑定。" : wechatLoginReason === "terminal" ? "当前账号的终端登录方式不允许使用此设备，请联系管理员调整登录方式。" : wechatLoginReason === "disabled" ? "该系统账号已被停用，请联系管理员。" : "微信授权未完成，请确认在微信内打开后重试。"}</p> : null}
+              <Button type="button" variant="outline" className="mt-3 h-10 w-full border-[#78a99a] text-[#245344] hover:bg-[#e2f4ee]" onClick={handleWechatLogin} disabled={loading}>使用已绑定微信授权登录</Button>
+            </div> : null}
             {requiresLocalPasswordChange ? (
               <form className="mt-5 rounded-2xl border border-[#b8d1ca] bg-[#f2faf7] p-4" onSubmit={handleLocalPasswordChange}>
                 <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><KeyRound className="h-4 w-4" />首次登录，请先更新密码</div>

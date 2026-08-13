@@ -2,12 +2,16 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import type { Express, Request, Response } from "express";
 import { and, eq } from "drizzle-orm";
 import { auditLogs, officialAccountBindingRequests, officialAccountBindings, users } from "../drizzle/schema";
+import { COOKIE_NAME } from "../shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
 import { getDb } from "./db";
-import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials } from "./services/officialAccountNotifier";
+import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials, requestOfficialAccountApi } from "./services/officialAccountNotifier";
 import { encryptSecret } from "./services/secretVault";
 
 const BINDING_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
 type BindingState = { userId: number; issuedAt: number; nonce: string };
+type LoginState = { returnTo: string; issuedAt: number; nonce: string };
 
 function getStateSigningKey() {
   const key = process.env.JWT_SECRET;
@@ -37,6 +41,35 @@ function verifyBindingState(rawState: string): BindingState | null {
     if (!Number.isInteger(parsed.userId) || (parsed.userId ?? 0) <= 0 || typeof parsed.issuedAt !== "number" || !Number.isFinite(parsed.issuedAt) || typeof parsed.nonce !== "string" || parsed.nonce.length < 12) return null;
     if (Math.abs(Date.now() - parsed.issuedAt) > BINDING_STATE_MAX_AGE_MS) return null;
     return { userId: parsed.userId!, issuedAt: parsed.issuedAt, nonce: parsed.nonce };
+  } catch {
+    return null;
+  }
+}
+
+/** 微信登录只接受站内相对路径，避免 OAuth 回调成为开放跳转入口。 */
+export function normalizeWechatLoginReturnTo(value: unknown) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return "/mobile";
+  return value.startsWith("/admin") || value.startsWith("/mobile") ? value.slice(0, 240) : "/mobile";
+}
+
+function createLoginState(returnTo: string) {
+  const state: LoginState = { returnTo: normalizeWechatLoginReturnTo(returnTo), issuedAt: Date.now(), nonce: randomBytes(16).toString("base64url") };
+  const payload = Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
+  return `${payload}.${signBindingStatePayload(payload)}`;
+}
+
+function verifyLoginState(rawState: string): LoginState | null {
+  const [payload, receivedSignature] = rawState.split(".");
+  if (!payload || !receivedSignature) return null;
+  const expectedSignature = signBindingStatePayload(payload);
+  const received = Buffer.from(receivedSignature, "utf8");
+  const expected = Buffer.from(expectedSignature, "utf8");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<LoginState>;
+    if (typeof parsed.returnTo !== "string" || typeof parsed.issuedAt !== "number" || !Number.isFinite(parsed.issuedAt) || typeof parsed.nonce !== "string" || parsed.nonce.length < 12) return null;
+    if (Math.abs(Date.now() - parsed.issuedAt) > BINDING_STATE_MAX_AGE_MS) return null;
+    return { returnTo: normalizeWechatLoginReturnTo(parsed.returnTo), issuedAt: parsed.issuedAt, nonce: parsed.nonce };
   } catch {
     return null;
   }
@@ -89,6 +122,62 @@ function callbackError(res: Response, appUrl: URL | null, result: "failed" | "co
     return;
   }
   res.status(400).send("公众号绑定未完成，请返回系统后重试。");
+}
+
+function loginCallbackError(res: Response, appUrl: URL | null, reason: "failed" | "not_bound" | "disabled" | "terminal") {
+  if (!appUrl) {
+    res.status(400).send("微信授权登录未完成，请返回系统后重试。");
+    return;
+  }
+  const returnUrl = new URL("/login", appUrl);
+  returnUrl.searchParams.set("wechatLogin", reason);
+  res.redirect(302, returnUrl.toString());
+}
+
+function requestTerminal(req: Request) {
+  const userAgent = String(req.headers["user-agent"] ?? "");
+  return /android|iphone|ipad|ipod|mobile/i.test(userAgent) ? "mobile" as const : "pc" as const;
+}
+
+async function exchangeWechatOAuthOpenId(config: NonNullable<Awaited<ReturnType<typeof loadPublishedOfficialAccountCredentials>>["config"]>, code: string) {
+  const tokenUrl = new URL("https://api.weixin.qq.com/sns/oauth2/access_token");
+  tokenUrl.searchParams.set("appid", config.appId);
+  tokenUrl.searchParams.set("secret", config.appSecret);
+  tokenUrl.searchParams.set("code", code);
+  tokenUrl.searchParams.set("grant_type", "authorization_code");
+  const tokenResponse = await requestOfficialAccountApi(config, tokenUrl, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
+  const payload = await tokenResponse.json().catch(() => null) as { openid?: string } | null;
+  const openId = payload?.openid?.trim();
+  return tokenResponse.ok && openId && openId.length <= 128 ? openId : null;
+}
+
+/** 微信仅验证既有绑定；绝不根据 OpenID 自动注册、启用或提升系统账号。 */
+async function completeWechatLogin(req: Request, res: Response, appUrl: URL, openId: string, returnTo: string) {
+  const database = await getDb();
+  if (!database) return loginCallbackError(res, appUrl, "failed");
+  const fingerprint = fingerprintOfficialAccountOpenId(openId);
+  const [account] = await database.select({
+    id: users.id,
+    openId: users.openId,
+    name: users.name,
+    loginMethod: users.loginMethod,
+    localAccountStatus: users.localAccountStatus,
+    localLoginMode: users.localLoginMode,
+  }).from(officialAccountBindings).innerJoin(users, eq(officialAccountBindings.userId, users.id)).where(and(eq(officialAccountBindings.openIdFingerprint, fingerprint), eq(officialAccountBindings.status, "active"))).limit(1);
+  if (!account) return loginCallbackError(res, appUrl, "not_bound");
+  if (account.localAccountStatus === "disabled") return loginCallbackError(res, appUrl, "disabled");
+  const terminal = requestTerminal(req);
+  if (account.loginMethod === "local_manager" && ((account.localLoginMode === "pc" && terminal !== "pc") || (account.localLoginMode === "mobile" && terminal !== "mobile"))) return loginCallbackError(res, appUrl, "terminal");
+  await database.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, account.id));
+  try {
+    await database.insert(auditLogs).values({ userId: account.id, module: "security", action: "wechat_oauth_login_success", targetType: "account", targetId: String(account.id), summary: "已绑定微信身份完成授权登录" });
+  } catch {
+    // 审计异常不得扩大为登录失败，也不记录 OpenID、授权码或令牌。
+  }
+  const expiresInMs = 8 * 60 * 60 * 1_000;
+  const sessionToken = await sdk.createSessionToken(account.openId, { name: account.name || "微信授权用户", expiresInMs });
+  res.cookie(COOKIE_NAME, sessionToken, { ...getSessionCookieOptions(req), maxAge: expiresInMs });
+  res.redirect(302, new URL(returnTo, appUrl).toString());
 }
 
 /** 生成仅在微信内打开的服务号 OAuth 绑定地址；状态签名绑定到当前登录员工且十分钟后失效。 */
@@ -150,15 +239,8 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
       return;
     }
     try {
-      const tokenUrl = new URL("https://api.weixin.qq.com/sns/oauth2/access_token");
-      tokenUrl.searchParams.set("appid", configResult.config.appId);
-      tokenUrl.searchParams.set("secret", configResult.config.appSecret);
-      tokenUrl.searchParams.set("code", code);
-      tokenUrl.searchParams.set("grant_type", "authorization_code");
-      const tokenResponse = await fetch(tokenUrl, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
-      const payload = await tokenResponse.json().catch(() => null) as { openid?: string } | null;
-      const openId = payload?.openid?.trim();
-      if (!tokenResponse.ok || !openId || openId.length > 128) {
+      const openId = await exchangeWechatOAuthOpenId(configResult.config, code);
+      if (!openId) {
         callbackError(res, appUrl, "failed");
         return;
       }
@@ -172,6 +254,43 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
       res.redirect(302, returnUrl.toString());
     } catch {
       callbackError(res, appUrl, "failed");
+    }
+  });
+
+  /** 用户从登录页主动发起微信授权；必须是既有账号已绑定的微信身份才可进入系统。 */
+  app.get("/api/official-account/login/start", async (req: Request, res: Response) => {
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    if (!configResult.config || !appUrl) {
+      loginCallbackError(res, appUrl, "failed");
+      return;
+    }
+    const callbackUrl = new URL("/api/official-account/login/callback", appUrl).toString();
+    const authorizeUrl = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
+    authorizeUrl.searchParams.set("appid", configResult.config.appId);
+    authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("scope", "snsapi_base");
+    authorizeUrl.searchParams.set("state", createLoginState(normalizeWechatLoginReturnTo(req.query.returnTo)));
+    res.redirect(302, `${authorizeUrl.toString()}#wechat_redirect`);
+  });
+
+  app.get("/api/official-account/login/callback", async (req: Request, res: Response) => {
+    const code = typeof req.query.code === "string" ? req.query.code : undefined;
+    const rawState = typeof req.query.state === "string" ? req.query.state : undefined;
+    const state = rawState ? verifyLoginState(rawState) : null;
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    if (!code || !state || !configResult.config || !appUrl) {
+      loginCallbackError(res, appUrl, "failed");
+      return;
+    }
+    try {
+      const openId = await exchangeWechatOAuthOpenId(configResult.config, code);
+      if (!openId) return loginCallbackError(res, appUrl, "failed");
+      await completeWechatLogin(req, res, appUrl, openId, state.returnTo);
+    } catch {
+      loginCallbackError(res, appUrl, "failed");
     }
   });
 }

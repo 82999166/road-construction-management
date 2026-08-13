@@ -30,6 +30,9 @@ describe("独立登录页", () => {
   it("保留统一身份认证入口，并展示普通管理人员与全局治理管理员的受控本地登录表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
+    expect(markup).toContain("微信授权登录");
+    expect(markup).toContain("使用已绑定微信授权登录");
+    expect(markup).toContain("不会自动创建账号或扩大权限");
     expect(markup).toContain("账号恢复与密码重置");
     expect(markup).toContain('href="/api/identity-recovery"');
     expect(markup).toContain("超级管理员账号登录");
