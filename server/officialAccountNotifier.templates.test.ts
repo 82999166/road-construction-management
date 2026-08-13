@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildSingleFieldSummary, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, usesSingleFieldSummaryCompatibility } from "./services/officialAccountNotifier";
+import { vi } from "vitest";
+import { buildSingleFieldSummary, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./services/officialAccountNotifier";
 
 describe("服务号业务通知模板矩阵", () => {
   it("覆盖采购、施工、运输、财务、计量、劳务、机械与安全消息", () => {
@@ -32,5 +33,25 @@ describe("服务号业务通知模板矩阵", () => {
     expect(summary).toContain("施工日报待审核");
     expect(summary).toContain("项目部已提交日报");
     expect(summary).toContain("construction_daily_report_submitted");
+  });
+
+  it("固定出口仅将微信 API 相对请求经签名网关转发，未配置时保留直接请求降级", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await requestOfficialAccountApi(
+      { appId: "wx-test", appSecret: "secret", appUrl: "https://road.example.com", egressUrl: "https://wechat-egress.example.com", egressSharedSecret: "shared-secret" },
+      "https://api.weixin.qq.com/cgi-bin/token?appid=wx-test",
+      { method: "GET" },
+    );
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://wechat-egress.example.com/v1/wechat");
+    const options = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect((options.headers as Record<string, string>)["x-egress-signature"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(String(options.body)).toContain("/cgi-bin/token?appid=wx-test");
+    await expect(requestOfficialAccountApi(
+      { appId: "wx-test", appSecret: "secret", appUrl: null, egressUrl: null, egressSharedSecret: null },
+      "https://example.com/not-wechat",
+      { method: "GET" },
+    )).rejects.toThrow("invalid_wechat_upstream");
+    vi.unstubAllGlobals();
   });
 });

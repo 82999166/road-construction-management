@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { auditLogs, notificationRecords, officialAccountBindings, organizations, systemRoles, systemSettings, userProfiles, userRoleAssignments } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -10,13 +11,16 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
   "WECHAT_OFFICIAL_APP_URL",
+  "WECHAT_OFFICIAL_EGRESS_URL",
+  "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET",
   "WECHAT_OFFICIAL_EVENT_TOKEN",
   "WECHAT_OFFICIAL_EVENT_AES_KEY",
 ] as const;
 
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
-export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null };
-export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null };
+type OfficialAccountEgressConfig = { egressUrl?: string; egressSharedSecret?: string };
+export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null } & OfficialAccountEgressConfig;
+export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null } & OfficialAccountEgressConfig;
 export type OfficialAccountEventConfig = OfficialAccountCredentialConfig & { eventToken: string; eventAesKey: string };
 export type OfficialAccountPrivateTemplate = {
   templateId: string;
@@ -138,6 +142,29 @@ function classifyDeliveryRequestFailure(error: unknown) {
   return "request_failed";
 }
 
+/**
+ * 固定出口网关只接收 api.weixin.qq.com 的相对请求路径。签名覆盖时间戳、方法、路径与正文，
+ * 防止其退化为任意 HTTP 代理；网关未配置时保留现有直连，避免配置发布前中断业务通知。
+ */
+export async function requestOfficialAccountApi(config: OfficialAccountCredentialConfig, url: URL | string, init: RequestInit) {
+  const upstream = new URL(url.toString());
+  if (upstream.protocol !== "https:" || upstream.hostname !== "api.weixin.qq.com") throw new Error("invalid_wechat_upstream");
+  if (!config.egressUrl || !config.egressSharedSecret) return fetch(upstream, init);
+  const gateway = new URL(config.egressUrl);
+  if (gateway.protocol !== "https:" || gateway.hostname === "api.weixin.qq.com") throw new Error("invalid_egress_gateway");
+  const body = typeof init.body === "string" ? init.body : init.body ? String(init.body) : null;
+  const relayPayload = JSON.stringify({ method: (init.method ?? "GET").toUpperCase(), path: `${upstream.pathname}${upstream.search}`, body });
+  const timestamp = String(Date.now());
+  const signature = createHmac("sha256", config.egressSharedSecret).update(`${timestamp}.${relayPayload}`).digest("hex");
+  return fetch(new URL("/v1/wechat", gateway), {
+    method: "POST",
+    redirect: "error",
+    signal: init.signal,
+    headers: { "content-type": "application/json", "x-egress-timestamp": timestamp, "x-egress-signature": signature },
+    body: relayPayload,
+  });
+}
+
 export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: OfficialAccountConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
@@ -156,6 +183,11 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
         templateId,
         templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null),
         appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
+        ...(() => {
+          const egressUrl = settings.get("WECHAT_OFFICIAL_EGRESS_URL")?.valueJson?.trim();
+          const encryptedSecret = settings.get("WECHAT_OFFICIAL_EGRESS_SHARED_SECRET")?.secretEncrypted;
+          return egressUrl && encryptedSecret ? { egressUrl, egressSharedSecret: decryptSecret(encryptedSecret) } : {};
+        })(),
       },
     };
   } catch {
@@ -196,7 +228,18 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
   const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
   if (!appId || !appSecretEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
-    return { config: { appId, appSecret: decryptSecret(appSecretEncrypted), appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null } };
+    return {
+      config: {
+        appId,
+        appSecret: decryptSecret(appSecretEncrypted),
+        appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
+        ...(() => {
+          const egressUrl = settings.get("WECHAT_OFFICIAL_EGRESS_URL")?.valueJson?.trim();
+          const encryptedSecret = settings.get("WECHAT_OFFICIAL_EGRESS_SHARED_SECRET")?.secretEncrypted;
+          return egressUrl && encryptedSecret ? { egressUrl, egressSharedSecret: decryptSecret(encryptedSecret) } : {};
+        })(),
+      },
+    };
   } catch {
     return { reason: "invalid_config" };
   }
@@ -219,7 +262,20 @@ export async function loadPublishedOfficialAccountEventConfig(): Promise<{ confi
     const eventToken = decryptSecret(tokenEncrypted);
     const eventAesKey = decryptSecret(aesEncrypted);
     if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || !/^[A-Za-z0-9]{43}$/.test(eventAesKey)) return { reason: "invalid_config" };
-    return { config: { appId, appSecret: decryptSecret(appSecretEncrypted), appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null, eventToken, eventAesKey } };
+    return {
+      config: {
+        appId,
+        appSecret: decryptSecret(appSecretEncrypted),
+        appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
+        ...(() => {
+          const egressUrl = settings.get("WECHAT_OFFICIAL_EGRESS_URL")?.valueJson?.trim();
+          const encryptedSecret = settings.get("WECHAT_OFFICIAL_EGRESS_SHARED_SECRET")?.secretEncrypted;
+          return egressUrl && encryptedSecret ? { egressUrl, egressSharedSecret: decryptSecret(encryptedSecret) } : {};
+        })(),
+        eventToken,
+        eventAesKey,
+      },
+    };
   } catch {
     return { reason: "invalid_config" };
   }
@@ -231,7 +287,7 @@ export async function getOfficialAccountAccessToken(config: OfficialAccountConfi
   url.searchParams.set("grant_type", "client_credential");
   url.searchParams.set("appid", config.appId);
   url.searchParams.set("secret", config.appSecret);
-  const response = await fetch(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
+  const response = await requestOfficialAccountApi(config, url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
   const payload = await response.json().catch(() => null) as { access_token?: string; expires_in?: number; errcode?: number; errmsg?: string } | null;
   if (!response.ok || !payload?.access_token) {
     const code = String(payload?.errcode ?? response.status).slice(0, 24);
@@ -333,7 +389,7 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, {
       value: (singleFieldSummaryCompatibility ? buildSingleFieldSummary(variables) : renderTemplate(value, variables)).slice(0, 200),
     }]));
-    let response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
+    let response = await requestOfficialAccountApi(configResult.config, `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
       method: "POST", redirect: "error", headers: { "content-type": "application/json" },
       body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
       signal: AbortSignal.timeout(8_000),
@@ -344,7 +400,7 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
      * 该错误确认请求尚未送达，因此可安全尝试一次官方订阅通知接口，避免把接口类型错配误记为收件人失败。
      */
     if (payload?.errcode === 40037) {
-      response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/subscribe/bizsend?access_token=${encodeURIComponent(token)}`, {
+      response = await requestOfficialAccountApi(configResult.config, `https://api.weixin.qq.com/cgi-bin/message/subscribe/bizsend?access_token=${encodeURIComponent(token)}`, {
         method: "POST", redirect: "error", headers: { "content-type": "application/json" },
         body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, data, miniprogram_state: "formal", lang: "zh_CN" }),
         signal: AbortSignal.timeout(8_000),
@@ -415,7 +471,7 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
   if (!credentialResult.config) return { success: false, message: "请先发布 AppID 与 AppSecret，再读取服务号私有模板库。", templates: [] };
   try {
     const token = await getOfficialAccountAccessToken(credentialResult.config);
-    const response = await fetch(`https://api.weixin.qq.com/cgi-bin/template/get_all_private_template?access_token=${encodeURIComponent(token)}`, {
+    const response = await requestOfficialAccountApi(credentialResult.config, `https://api.weixin.qq.com/cgi-bin/template/get_all_private_template?access_token=${encodeURIComponent(token)}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000),
     });
     const payload = await response.json().catch(() => null) as { errcode?: number; errmsg?: string; template_list?: Array<{ template_id?: string; title?: string; content?: string }> } | null;

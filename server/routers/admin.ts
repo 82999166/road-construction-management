@@ -150,11 +150,13 @@ const OFFICIAL_ACCOUNT_EVENT_SECRET_KEYS = new Set([
   "WECHAT_OFFICIAL_EVENT_TOKEN",
   "WECHAT_OFFICIAL_EVENT_AES_KEY",
 ]);
+const OFFICIAL_ACCOUNT_EGRESS_SECRET_KEY = "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET";
 const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
   "WECHAT_OFFICIAL_APP_URL",
+  "WECHAT_OFFICIAL_EGRESS_URL",
 ]);
 const RETIRED_NOTIFICATION_SETTING_KEYS = new Set(["WECHAT_WORK_WEBHOOK"]);
 
@@ -170,17 +172,17 @@ function assertSupportedSettingKey(settingKey: string) {
  * AppSecret 只允许密文托管，其余四项为发布后的受控公开参数，避免因误标敏感导致运行时无法读取。
  */
 function assertOfficialAccountSettingContract(input: { settingKey: string; value: string; isSensitive: boolean }) {
-  if ((input.settingKey === OFFICIAL_ACCOUNT_APP_SECRET_KEY || OFFICIAL_ACCOUNT_EVENT_SECRET_KEYS.has(input.settingKey)) && !input.isSensitive) {
+  if ((input.settingKey === OFFICIAL_ACCOUNT_APP_SECRET_KEY || input.settingKey === OFFICIAL_ACCOUNT_EGRESS_SECRET_KEY || OFFICIAL_ACCOUNT_EVENT_SECRET_KEYS.has(input.settingKey)) && !input.isSensitive) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "认证服务号 AppSecret 必须使用加密托管" });
   }
   if (OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS.has(input.settingKey) && input.isSensitive) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "认证服务号 AppID、模板和跳转地址必须作为受控公开参数保存，不得标记为密钥" });
   }
-  if (input.settingKey === "WECHAT_OFFICIAL_APP_URL" && input.value.trim()) {
+  if ((input.settingKey === "WECHAT_OFFICIAL_APP_URL" || input.settingKey === "WECHAT_OFFICIAL_EGRESS_URL") && input.value.trim()) {
     try {
       assertSafeIntegrationUrl(input.value.trim());
     } catch {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "公众号业务跳转地址必须是公开 HTTPS 地址，且不得指向内网或本机" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: input.settingKey === "WECHAT_OFFICIAL_EGRESS_URL" ? "固定出口网关地址必须是公开 HTTPS 地址，且不得指向内网或本机" : "公众号业务跳转地址必须是公开 HTTPS 地址，且不得指向内网或本机" });
     }
   }
   if (input.settingKey === "WECHAT_OFFICIAL_TEMPLATE_FIELDS" && input.value.trim()) {
