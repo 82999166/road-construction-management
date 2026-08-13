@@ -107,7 +107,7 @@ const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expected
   { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", value: "", isSensitive: false, remarks: "认证服务号模板消息当前仍可用；按服务号后台可见的模板权限与模板库选用业务通知模板后复制模板 ID。" },
   { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", value: "{\"first\":\"{title}\",\"keyword1\":\"{targetType} #{targetId}\",\"keyword2\":\"{content}\",\"remark\":\"点击查看系统详情\"}", isSensitive: false, remarks: "JSON 对象；可使用 {title}、{content}、{eventCode}、{targetType}、{targetId} 占位符。" },
   { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: "https://roadmanage-xjifzbue.manus.space", isSensitive: false, remarks: "必须是正式 HTTPS 站点根地址；用于模板消息跳转和员工 OAuth 绑定回调。若已绑定自有域名，请替换为自有正式域名。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EGRESS_URL", displayName: "微信 API 固定出口网关地址", value: "https://wechat-egress.yx.maomaoyx.com", isSensitive: false, remarks: "仅用于服务端访问 api.weixin.qq.com 的固定出口。微信 API IP 白名单应只加入该网关公网 IP；地址与签名密钥须同时发布后才启用。" },
+  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EGRESS_URL", displayName: "微信 API 固定出口网关地址", value: "https://wechat-egress.maomaoyx.com", isSensitive: false, remarks: "仅用于服务端访问 api.weixin.qq.com 的固定出口。微信 API IP 白名单应只加入该网关公网 IP；地址与签名密钥须同时发布后才启用。" },
   { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET", displayName: "固定出口网关签名密钥", value: "", isSensitive: true, remarks: "由网关部署时生成；仅服务端加密托管，不在页面、日志或审计中回显。" },
 ];
 /** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */

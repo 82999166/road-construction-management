@@ -221,7 +221,7 @@ export async function getOfficialAccountNotificationTemplateCoverage() {
 export async function loadPublishedOfficialAccountCredentials(): Promise<{ config?: OfficialAccountCredentialConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
-  const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL"])));
+  const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EGRESS_URL", "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET"])));
   const settings = new Map<string, (typeof rows)[number]>();
   for (const row of rows) settings.set(row.settingKey, row);
   const appId = settings.get("WECHAT_OFFICIAL_APP_ID")?.valueJson?.trim();
@@ -249,7 +249,7 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
 export async function loadPublishedOfficialAccountEventConfig(): Promise<{ config?: OfficialAccountEventConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
-  const keys = ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"];
+  const keys = ["WECHAT_OFFICIAL_APP_ID", "WECHAT_OFFICIAL_APP_SECRET", "WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EGRESS_URL", "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET", "WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"];
   const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, keys)));
   const settings = new Map<string, (typeof rows)[number]>();
   for (const row of rows) settings.set(row.settingKey, row);
