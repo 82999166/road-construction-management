@@ -97,6 +97,18 @@ function renderTemplate(value: string, variables: Record<string, string>) {
   return value.replace(/\{(title|content|eventCode|targetType|targetId)\}/g, (_match, key: string) => variables[key] ?? "");
 }
 
+/**
+ * 有些服务号私有模板只有一个可填字段。对此类模板将业务标题、摘要和事件编码压缩到同一字段，
+ * 既避免向微信提交空字段，也避免后台把可安全投递的模板错误标注为“字段缺失”。
+ */
+export function usesSingleFieldSummaryCompatibility(templateFields: Record<string, string>) {
+  return Object.keys(templateFields).length === 1;
+}
+
+export function buildSingleFieldSummary(variables: Record<string, string>) {
+  return `${variables.title}｜${variables.content}｜${variables.eventCode}`.slice(0, 200);
+}
+
 export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: OfficialAccountConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
@@ -127,13 +139,15 @@ export async function getOfficialAccountNotificationTemplateCoverage() {
   const result = await loadPublishedOfficialAccountConfig();
   const fieldValues = result.config ? Object.values(result.config.templateFields) : [];
   const variables = new Set(fieldValues.flatMap(value => Array.from(value.matchAll(/\{(title|content|eventCode|targetType|targetId)\}/g)).map(match => match[1])));
+  const singleFieldSummaryCompatibility = Boolean(result.config && usesSingleFieldSummaryCompatibility(result.config.templateFields));
   return {
     configured: Boolean(result.config),
     reason: result.reason ?? null,
     matrix: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => ({
       ...item,
-      missingVariables: item.requiredVariables.filter(variable => !variables.has(variable)),
-      ready: Boolean(result.config) && item.requiredVariables.every(variable => variables.has(variable)),
+      missingVariables: singleFieldSummaryCompatibility ? [] : item.requiredVariables.filter(variable => !variables.has(variable)),
+      ready: Boolean(result.config) && (singleFieldSummaryCompatibility || item.requiredVariables.every(variable => variables.has(variable))),
+      compatibilityMode: singleFieldSummaryCompatibility ? "single_field_summary" as const : null,
     })),
   };
 }
@@ -286,7 +300,10 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     const openId = decryptSecret(binding.openIdEncrypted);
     const token = await getOfficialAccountAccessToken(configResult.config);
     const variables = { title: input.title.slice(0, 120), content: input.content.slice(0, 160), eventCode: input.eventCode.slice(0, 64), targetType: "业务事项", targetId: input.eventCode.slice(0, 64) };
-    const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, { value: renderTemplate(value, variables).slice(0, 200) }]));
+    const singleFieldSummaryCompatibility = usesSingleFieldSummaryCompatibility(configResult.config.templateFields);
+    const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, {
+      value: (singleFieldSummaryCompatibility ? buildSingleFieldSummary(variables) : renderTemplate(value, variables)).slice(0, 200),
+    }]));
     const response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
       method: "POST", redirect: "error", headers: { "content-type": "application/json" },
       body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
