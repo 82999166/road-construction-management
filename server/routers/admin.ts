@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
+  attendanceDeviceBindings,
   attendanceRecords,
   configPublishLogs,
   constructionDailyReports,
@@ -13,6 +14,7 @@ import {
   machines,
   measurementClaims,
   notificationRecords,
+  officialAccountBindings,
   organizations,
   positions,
   payrollStatements,
@@ -121,6 +123,7 @@ const localManagerPasswordResetInput = z.object({
 });
 
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
+const wechatBindingUserInput = z.object({ userId: z.number().int().positive() });
 
 /** 删除配置必须携带当前版本，防止管理员基于旧页面误删已被他人修订的配置。 */
 const settingDeleteInput = z.object({ id: z.number().int().positive(), expectedVersion: z.number().int().positive() });
@@ -980,6 +983,98 @@ export const adminRouter = router({
         });
         return { success: true };
       }),
+  }),
+
+  /**
+   * 微信授权登录管理只向超级管理员开放。查询结果禁止包含 OpenID、授权码、令牌、密钥和设备原始指纹；
+   * 账号主键仅供受控解除绑定操作使用，前端不展示。
+   */
+  wechatLogin: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const [bindings, assignments, devices] = await Promise.all([
+        db.select({
+          userId: officialAccountBindings.userId,
+          displayName: users.name,
+          localUsername: users.localUsername,
+          localAccountStatus: users.localAccountStatus,
+          loginMode: users.localLoginMode,
+          profileStatus: userProfiles.status,
+          positionName: positions.name,
+          bindingStatus: officialAccountBindings.status,
+          bindingSource: officialAccountBindings.bindingSource,
+          boundAt: officialAccountBindings.boundAt,
+          lastVerifiedAt: officialAccountBindings.lastVerifiedAt,
+          lastFailureAt: officialAccountBindings.lastFailureAt,
+          failureCount: officialAccountBindings.failureCount,
+          lastSignedIn: users.lastSignedIn,
+        }).from(officialAccountBindings)
+          .innerJoin(users, eq(officialAccountBindings.userId, users.id))
+          .leftJoin(userProfiles, eq(userProfiles.userId, users.id))
+          .leftJoin(positions, eq(userProfiles.positionId, positions.id))
+          .orderBy(desc(officialAccountBindings.updatedAt)),
+        db.select({
+          userId: userRoleAssignments.userId,
+          roleName: systemRoles.name,
+          organizationName: organizations.name,
+          projectName: projects.name,
+        }).from(userRoleAssignments)
+          .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+          .leftJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
+          .leftJoin(projects, eq(userRoleAssignments.projectId, projects.id))
+          .where(eq(userRoleAssignments.status, "active")),
+        db.select({
+          userId: attendanceDeviceBindings.userId,
+          deviceLabel: attendanceDeviceBindings.deviceLabel,
+          status: attendanceDeviceBindings.status,
+          lastUsedAt: attendanceDeviceBindings.lastUsedAt,
+        }).from(attendanceDeviceBindings).where(eq(attendanceDeviceBindings.status, "active")),
+      ]);
+      const roleMap = new Map<number, string[]>();
+      const scopeMap = new Map<number, string[]>();
+      for (const assignment of assignments) {
+        if (assignment.roleName) roleMap.set(assignment.userId, [...(roleMap.get(assignment.userId) ?? []), assignment.roleName]);
+        const scope = assignment.projectName ?? assignment.organizationName;
+        if (scope) scopeMap.set(assignment.userId, [...(scopeMap.get(assignment.userId) ?? []), scope]);
+      }
+      const deviceMap = new Map<number, { label: string | null; lastUsedAt: Date | null }>();
+      for (const device of devices) {
+        const current = deviceMap.get(device.userId);
+        if (!current || (device.lastUsedAt?.getTime() ?? 0) > (current.lastUsedAt?.getTime() ?? 0)) {
+          deviceMap.set(device.userId, { label: device.deviceLabel, lastUsedAt: device.lastUsedAt });
+        }
+      }
+      return bindings.map(binding => ({
+        ...binding,
+        roleNames: Array.from(new Set(roleMap.get(binding.userId) ?? [])),
+        scopeNames: Array.from(new Set(scopeMap.get(binding.userId) ?? [])),
+        deviceLabel: deviceMap.get(binding.userId)?.label ?? null,
+        deviceLastUsedAt: deviceMap.get(binding.userId)?.lastUsedAt ?? null,
+      }));
+    }),
+    revoke: protectedProcedure.input(wechatBindingUserInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const [binding] = await db.select({ id: officialAccountBindings.id, status: officialAccountBindings.status, userId: officialAccountBindings.userId, displayName: users.name })
+        .from(officialAccountBindings).innerJoin(users, eq(officialAccountBindings.userId, users.id))
+        .where(eq(officialAccountBindings.userId, input.userId)).limit(1);
+      if (!binding) throw new TRPCError({ code: "NOT_FOUND", message: "该人员尚未完成微信授权绑定" });
+      if (binding.status !== "revoked") {
+        await db.update(officialAccountBindings).set({ status: "revoked", lastFailureAt: new Date() }).where(eq(officialAccountBindings.id, binding.id));
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "security",
+          action: "wechat_oauth_binding_revoked",
+          targetType: "official_account_binding",
+          targetId: String(binding.userId),
+          summary: `解除微信授权登录绑定：${binding.displayName || "未命名人员"}；该人员须重新微信授权后方可恢复服务号身份关联`,
+        });
+      }
+      return { success: true };
+    }),
   }),
 
   settings: router({

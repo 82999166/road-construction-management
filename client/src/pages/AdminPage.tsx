@@ -46,6 +46,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
   { icon: BarChart3, label: "财务管理", path: "/admin/finance" },
   { icon: Megaphone, label: "公众号群发", path: "/admin/broadcast" },
+  { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
@@ -87,6 +88,7 @@ type BroadcastForm = { id?: number; title: string; content: string; deepLink: st
 type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
 type MasterDataDeleteTarget = { resource: MasterDataResource; id: number; label: string; description: string };
 type PayrollPaymentTarget = { id: number; workerName: string; period: string };
+type WechatBindingActionTarget = { userId: number; displayName: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
@@ -267,6 +269,7 @@ export default function AdminPage() {
   const isTransport = activeSection === "transport";
   const isFinance = activeSection === "finance";
   const isBroadcast = activeSection === "broadcast";
+  const isWechatLogin = activeSection === "wechat-login";
   const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
@@ -293,6 +296,7 @@ export default function AdminPage() {
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
   const broadcastOptions = trpc.broadcast.formOptions.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const broadcasts = trpc.broadcast.list.useQuery(undefined, { enabled: canQuery && isBroadcast });
+  const wechatLogins = trpc.admin.wechatLogin.list.useQuery(undefined, { enabled: canQuery && isWechatLogin });
   const realDataReadiness = trpc.admin.acceptance.realDataReadiness.useQuery(undefined, { enabled: canQuery && isOverview });
   const vehicles = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isVehicle });
   const [businessFilter, setBusinessFilter] = useState({ projectId: "all", period: "" });
@@ -365,6 +369,14 @@ export default function AdminPage() {
     onSuccess: async result => { toast.success(`群发处理完成：成功 ${result.deliveredCount}，失败 ${result.failedCount}`); await refreshBroadcasts(); },
     onError: error => toast.error(error.message),
   });
+  const revokeWechatBinding = trpc.admin.wechatLogin.revoke.useMutation({
+    onSuccess: async () => {
+      toast.success("微信授权绑定已解除；该人员须重新在微信内完成授权绑定");
+      setWechatBindingActionTarget(null);
+      await wechatLogins.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
   const [selectedSettingId, setSelectedSettingId] = useState<number>();
@@ -396,6 +408,7 @@ export default function AdminPage() {
   const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<LocalAccountActionTarget | null>(null);
+  const [wechatBindingActionTarget, setWechatBindingActionTarget] = useState<WechatBindingActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
@@ -1310,6 +1323,64 @@ export default function AdminPage() {
     </div>
   );
 
+  /** 微信登录台账只展示可读状态和业务范围；OpenID、令牌及设备原始指纹始终不进入浏览器。 */
+  const renderWechatLogin = () => {
+    const rows = wechatLogins.data ?? [];
+    const activeCount = rows.filter(item => item.bindingStatus === "active").length;
+    const needsActionCount = rows.filter(item => ["unsubscribed", "revoked", "disabled"].includes(item.bindingStatus)).length;
+    const statusLabel: Record<string, string> = { active: "已绑定", pending: "待完成", unsubscribed: "未关注服务号", revoked: "已解除", disabled: "已停用" };
+    const loginModeLabel: Record<string, string> = { pc: "仅 PC", mobile: "仅手机", both: "PC + 手机" };
+    return (
+      <div className="space-y-6">
+        <div>
+          <p className="text-sm font-medium text-[#203c48]">微信公众号服务号 · 身份治理</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">微信登录管理</h1>
+          <p className="mt-2 text-sm text-slate-500">集中核验微信 OAuth 授权、服务号关注状态、岗位范围和匿名设备摘要。仅超级管理员可解除绑定；解除后人员须在微信内重新授权。</p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          <MetricCard title="已绑定账号" value={activeCount} description="可接收服务号业务通知" icon={KeyRound} />
+          <MetricCard title="需处理状态" value={needsActionCount} description="未关注、已解除或已停用" icon={ShieldCheck} />
+          <MetricCard title="绑定台账" value={rows.length} description="不展示 OpenID、令牌或设备指纹" icon={UsersRound} />
+        </div>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+            <div><CardTitle className="text-base">微信授权与登录台账</CardTitle><CardDescription>姓名、职务、角色、部门/项目范围和最近状态均为服务端投影；设备仅显示可读摘要。</CardDescription></div>
+            <Button size="sm" variant="outline" onClick={() => wechatLogins.refetch()} disabled={wechatLogins.isFetching}>刷新台账</Button>
+          </CardHeader>
+          <CardContent>
+            {wechatLogins.isLoading ? <EmptyState text="正在读取微信授权登录台账…" /> : wechatLogins.isError ? <EmptyState text="暂无法读取微信登录台账，请确认当前账号具有超级管理员权限后重试。" /> : rows.length ? <div className="space-y-3">{rows.map(item => (
+              <div key={item.userId} className="rounded-xl border border-slate-200 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.displayName || item.localUsername || "未命名人员"}</p><Badge className={item.bindingStatus === "active" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}>{statusLabel[item.bindingStatus] ?? item.bindingStatus}</Badge></div>
+                    <p className="mt-1 text-xs text-slate-500">职务：{item.positionName || "未配置"} · 登录终端：{loginModeLabel[item.loginMode] ?? "按账号策略"} · 身份来源：{item.bindingSource === "wechat_oauth" ? "微信 OAuth" : "管理员核验"}</p>
+                  </div>
+                  <Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50" disabled={item.bindingStatus === "revoked" || revokeWechatBinding.isPending} onClick={() => setWechatBindingActionTarget({ userId: item.userId, displayName: item.displayName || item.localUsername || "该人员" })}>解除绑定</Button>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-2 xl:grid-cols-4">
+                  <p><span className="text-slate-400">岗位：</span>{item.roleNames.length ? item.roleNames.join("、") : "未授权"}</p>
+                  <p><span className="text-slate-400">范围：</span>{item.scopeNames.length ? item.scopeNames.join("、") : "未配置"}</p>
+                  <p><span className="text-slate-400">最近登录：</span>{displayDate(item.lastSignedIn)}</p>
+                  <p><span className="text-slate-400">最近核验：</span>{displayDate(item.lastVerifiedAt)}</p>
+                  <p><span className="text-slate-400">绑定时间：</span>{displayDate(item.boundAt)}</p>
+                  <p><span className="text-slate-400">设备摘要：</span>{item.deviceLabel || "未绑定考勤设备"}</p>
+                  <p><span className="text-slate-400">设备最近使用：</span>{displayDate(item.deviceLastUsedAt)}</p>
+                  <p><span className="text-slate-400">投递异常：</span>{item.failureCount ? `${item.failureCount} 次，最近 ${displayDate(item.lastFailureAt)}` : "无"}</p>
+                </div>
+              </div>
+            ))}</div> : <EmptyState text="尚无微信授权绑定记录。人员可在移动端“我的”中完成服务号 OAuth 绑定后在此出现。" />}
+          </CardContent>
+        </Card>
+        <AlertDialog open={Boolean(wechatBindingActionTarget)} onOpenChange={open => { if (!open) setWechatBindingActionTarget(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader><AlertDialogTitle>确认解除微信授权绑定？</AlertDialogTitle><AlertDialogDescription>将解除“{wechatBindingActionTarget?.displayName}”的微信服务号身份关联。该人员将无法继续接收服务号业务通知，直到其在移动端重新完成微信授权绑定。岗位、项目范围和业务数据不会被修改。</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel disabled={revokeWechatBinding.isPending}>取消</AlertDialogCancel><AlertDialogAction className="bg-rose-700 hover:bg-rose-800" disabled={!wechatBindingActionTarget || revokeWechatBinding.isPending} onClick={() => { if (wechatBindingActionTarget) revokeWechatBinding.mutate({ userId: wechatBindingActionTarget.userId }); }}>确认解除</AlertDialogAction></AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    );
+  };
+
   /** 业务台账不把空项目解释为全量范围；数据读取仍由各业务路由在服务端复核权限。 */
   const renderWorkspaceProjectFilter = (title: string, description: string) => (
     <Card className="border-[#d8e3e0]">
@@ -1565,13 +1636,13 @@ export default function AdminPage() {
     </div>;
   };
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "finance" ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "finance" ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
-          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="construction">施工</TabsTrigger><TabsTrigger value="labor">劳务</TabsTrigger><TabsTrigger value="machinery">机械</TabsTrigger><TabsTrigger value="transport">运输</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="finance">财务</TabsTrigger><TabsTrigger value="broadcast">群发</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
+          <TabsList className="w-full overflow-x-auto"><TabsTrigger value="overview">概览</TabsTrigger><TabsTrigger value="organization">组织</TabsTrigger><TabsTrigger value="vehicles">车辆</TabsTrigger><TabsTrigger value="construction">施工</TabsTrigger><TabsTrigger value="labor">劳务</TabsTrigger><TabsTrigger value="machinery">机械</TabsTrigger><TabsTrigger value="transport">运输</TabsTrigger><TabsTrigger value="permission">权限</TabsTrigger><TabsTrigger value="finance">财务</TabsTrigger><TabsTrigger value="broadcast">群发</TabsTrigger><TabsTrigger value="wechat-login">微信登录</TabsTrigger><TabsTrigger value="business">业务治理</TabsTrigger><TabsTrigger value="settings">设置</TabsTrigger><TabsTrigger value="audit">审计</TabsTrigger></TabsList>
         </Tabs>
         {content}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>

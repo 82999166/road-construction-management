@@ -60,6 +60,8 @@ function createSettingsDb(selectResponses: unknown[][] = []) {
     query.where = vi.fn(() => query);
     query.orderBy = vi.fn(() => query);
     query.limit = vi.fn(() => query);
+    query.innerJoin = vi.fn(() => query);
+    query.leftJoin = vi.fn(() => query);
     query.then = (onFulfilled?: (value: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) => Promise.resolve(readRows()).then(onFulfilled, onRejected);
     return query;
   };
@@ -80,6 +82,22 @@ describe("系统设置安全工作流", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAdminContext().user!);
+  });
+
+  it("微信登录管理解除绑定仅撤销绑定状态并写入最小化审计", async () => {
+    const db = createSettingsDb([[{ id: 9, status: "active", userId: 7, displayName: "测试人员" }]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await adminRouter.createCaller(createAdminContext()).wechatLogin.revoke({ userId: 7 });
+
+    expect(db.updatedValues).toContainEqual(expect.objectContaining({ status: "revoked" }));
+    expect(db.insertedValues).toContainEqual(expect.objectContaining({
+      module: "security",
+      action: "wechat_oauth_binding_revoked",
+      targetType: "official_account_binding",
+      targetId: "7",
+    }));
+    expect(JSON.stringify(db.insertedValues)).not.toContain("openid");
   });
 
   it("通用外部 API 密钥必须加密托管，草稿和审计写入均不保留明文", async () => {
