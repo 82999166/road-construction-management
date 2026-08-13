@@ -73,6 +73,11 @@ type PositionForm = { id?: number; code: string; name: string; category: string;
 type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus };
+type MachineOwnership = "owned" | "leased";
+type MachineStatus = "idle" | "working" | "repairing" | "offsite" | "retired";
+type MachineCostType = "fuel" | "repair" | "overtime" | "mobilization" | "other";
+type MachineForm = { id?: number; projectId: string; operatorUserId: string; code: string; name: string; model: string; ownership: MachineOwnership; supplierName: string; plateOrAssetNo: string; status: MachineStatus };
+type MachineCostForm = { machineId: string; projectId: string; costType: MachineCostType; quantity: string; unitPrice: string; occurredAt: string };
 type RfidWriterDeviceForm = { id?: number; deviceCode: string; displayName: string; model: string; connectionMode: "manual_placeholder" | "usb" | "serial" | "network"; status: "active" | "disabled" | "maintenance"; remarks: string };
 type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked" };
 type LocalAccountStatus = "active" | "disabled";
@@ -98,6 +103,8 @@ const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", status: "active" };
+const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", code: "", name: "", model: "", ownership: "owned", supplierName: "", plateOrAssetNo: "", status: "idle" };
+const EMPTY_MACHINE_COST_FORM: MachineCostForm = { machineId: "", projectId: "", costType: "fuel", quantity: "", unitPrice: "", occurredAt: "" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
 const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "active" };
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
@@ -300,7 +307,7 @@ export default function AdminPage() {
   const isAudit = activeSection === "audit";
   const needsOrganizations = isOrganization || isVehicle || isPermission;
   const needsProjects = isOrganization || isVehicle || isPermission || isBusiness || isBusinessWorkspace || isFinance || isSettings;
-  const needsUsers = isOrganization || isVehicle || isPermission;
+  const needsUsers = isOrganization || isVehicle || isPermission || isMachinery;
 
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
   const organizations = trpc.admin.organization.list.useQuery(undefined, { enabled: canQuery && needsOrganizations });
@@ -420,6 +427,10 @@ export default function AdminPage() {
   const [projectForm, setProjectForm] = useState<ProjectForm>(EMPTY_PROJECT_FORM);
   const [positionForm, setPositionForm] = useState<PositionForm>(EMPTY_POSITION_FORM);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm>(EMPTY_VEHICLE_FORM);
+  const [machineForm, setMachineForm] = useState<MachineForm>(EMPTY_MACHINE_FORM);
+  const [machineDialogOpen, setMachineDialogOpen] = useState(false);
+  const [machineCostForm, setMachineCostForm] = useState<MachineCostForm>(EMPTY_MACHINE_COST_FORM);
+  const [machineCostDialogOpen, setMachineCostDialogOpen] = useState(false);
   const [rfidWriterDeviceForm, setRfidWriterDeviceForm] = useState<RfidWriterDeviceForm>(EMPTY_RFID_WRITER_DEVICE_FORM);
   const [rfidCardForm, setRfidCardForm] = useState<RfidCardForm>(EMPTY_RFID_CARD_FORM);
   const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
@@ -495,6 +506,7 @@ export default function AdminPage() {
   const selectedSetting = visibleSettings.find(item => item.id === selectedSettingId);
   const selectedBusinessProject = projects.data?.find(project => String(project.id) === businessFilter.projectId);
   const selectedWorkspaceProject = projects.data?.find(project => String(project.id) === businessWorkspaceProjectId);
+  const selectedMachineForDialog = (machineryLedger.data ?? []).find(machine => String(machine.id) === selectedMachineId);
   const businessFilterLabel = `${selectedBusinessProject?.name ?? "全部项目"}${businessFilter.period ? ` · ${businessFilter.period}` : " · 全部期间"}`;
   const dailyDigestPreviewInput = useMemo(() => ({ projectId: Number(dailyDigestPreviewProjectId || 0), businessDate: dailyDigestPreviewDate }), [dailyDigestPreviewDate, dailyDigestPreviewProjectId]);
   const dailyDigestPreview = trpc.dailyDigest.preview.useQuery(dailyDigestPreviewInput, { enabled: canQuery && isSettings && Number(dailyDigestPreviewProjectId) > 0 && Boolean(dailyDigestPreviewDate) });
@@ -534,6 +546,24 @@ export default function AdminPage() {
       toast.success(`车辆台账已保存，理论方量 ${data.theoreticalVolumeCubicMeters} m³`);
       setVehicleForm(EMPTY_VEHICLE_FORM);
       await Promise.all([vehicles.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveMachine = trpc.machinery.saveMachine.useMutation({
+    onSuccess: async () => {
+      toast.success(machineForm.id ? "机械档案已在 PC 后台更新" : "机械档案已在 PC 后台建立");
+      setMachineForm(EMPTY_MACHINE_FORM);
+      setMachineDialogOpen(false);
+      await Promise.all([machineryLedger.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveMachineCost = trpc.machinery.saveCost.useMutation({
+    onSuccess: async data => {
+      toast.success(`机械成本已录入，系统核算金额 ¥${displayMoney(data.amount)}`);
+      setMachineCostForm(EMPTY_MACHINE_COST_FORM);
+      setMachineCostDialogOpen(false);
+      await Promise.all([machineCosts.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -1072,7 +1102,7 @@ export default function AdminPage() {
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0"><div><CardTitle className="text-base">{vehicleForm.id ? "维护车辆档案" : "新增车辆档案"}</CardTitle><CardDescription>车牌全局唯一，理论方量由服务端计算。</CardDescription></div>{vehicleForm.id ? <Button size="sm" variant="ghost" onClick={() => setVehicleForm(EMPTY_VEHICLE_FORM)}>新建</Button> : null}</CardHeader>
+            <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">{vehicleForm.id ? "维护车辆档案" : "新增车辆档案"}</CardTitle><CardDescription>车牌全局唯一，理论方量由服务端计算；车辆、司机、项目、调度状态与 RFID 卡均在 PC 后台关联维护。</CardDescription></div>{vehicleForm.id ? <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `车辆档案 · ${vehicleForm.plateNo}`, description: "车辆档案由超级管理后台统一维护。已有运输趟次的车辆不可删除，应改为暂停或停用以保留运输责任链。", fields: [{ label: "所属项目", value: projects.data?.find(project => String(project.id) === vehicleForm.projectId)?.name ?? `#${vehicleForm.projectId}` }, { label: "车辆类型", value: vehicleTypeLabel[vehicleForm.vehicleType] }, { label: "产权/所属人", value: vehicleForm.ownerName || "未登记" }, { label: "绑定司机", value: vehicleForm.driverUserId ? userNameById.get(Number(vehicleForm.driverUserId)) ?? `用户 #${vehicleForm.driverUserId}` : "未分配" }, { label: "货厢尺寸", value: `${vehicleForm.boxLengthMeters} × ${vehicleForm.boxWidthMeters} × ${vehicleForm.boxHeightMeters} m` }, { label: "装载系数", value: vehicleForm.loadFactor }, { label: "核定载重", value: vehicleForm.payloadTons ? `${vehicleForm.payloadTons} t` : "未登记" }, { label: "调度状态", value: <Badge className={vehicleStatusClass[vehicleForm.status]}>{vehicleStatusLabel[vehicleForm.status]}</Badge> }] })}>查看详情</Button><Button size="sm" variant="outline" onClick={() => { setBusinessWorkspaceProjectId(vehicleForm.projectId); setLocation("/admin/transport"); }}>运输调度</Button><Button size="sm" variant="outline" onClick={() => { setBusinessWorkspaceProjectId(vehicleForm.projectId); setLocation("/admin/transport"); }}>RFID 写卡</Button><Button size="sm" variant="ghost" onClick={() => setVehicleForm(EMPTY_VEHICLE_FORM)}>新建</Button></div> : null}</CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-3"><div><Label>车牌号</Label><Input value={vehicleForm.plateNo} placeholder="例如 粤A12345" onChange={event => setVehicleForm({ ...vehicleForm, plateNo: event.target.value.toUpperCase() })} /></div><div><Label>车辆类型</Label><Select value={vehicleForm.vehicleType} onValueChange={(value: VehicleType) => setVehicleForm({ ...vehicleForm, vehicleType: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="dump_truck">渣土车</SelectItem><SelectItem value="tractor">牵引车</SelectItem><SelectItem value="mixer">搅拌车</SelectItem><SelectItem value="flatbed">平板车</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div></div>
               <div><Label>归属项目</Label><Select value={vehicleForm.projectId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, projectId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择有效项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
@@ -1506,13 +1536,37 @@ export default function AdminPage() {
     const machines = machineryLedger.data ?? [];
     const costs = machineCosts.data ?? [];
     const selectedMachine = machines.find(machine => String(machine.id) === selectedMachineId);
+    const openMachineEditor = (machine?: typeof machines[number]) => {
+      setMachineForm(machine ? {
+        id: machine.id,
+        projectId: String(machine.projectId),
+        operatorUserId: machine.operatorUserId ? String(machine.operatorUserId) : "",
+        code: machine.code,
+        name: machine.name,
+        model: machine.model ?? "",
+        ownership: machine.ownership,
+        supplierName: machine.supplierName ?? "",
+        plateOrAssetNo: machine.plateOrAssetNo ?? "",
+        status: machine.status,
+      } : { ...EMPTY_MACHINE_FORM, projectId: String(workspaceProjectId) });
+      setMachineDialogOpen(true);
+    };
+    const openMachineCostEditor = () => {
+      if (!selectedMachine) return toast.error("请先选择机械台账");
+      setMachineCostForm({ ...EMPTY_MACHINE_COST_FORM, machineId: String(selectedMachine.id), projectId: String(workspaceProjectId), occurredAt: toLocalDateTimeInput(new Date()) });
+      setMachineCostDialogOpen(true);
+    };
     return (
       <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">机械资源 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">机械台账与成本结算</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">机械归属、租赁规则、油料、维修、加班和进退场成本均使用现有服务端业务接口。机械选择、成本查看和状态处理均在当前 PC 台账完成。</p></div></div>
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">机械资源 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">机械台账与成本结算</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">机械档案、操作员、产权/租赁、状态、成本录入与结算均在当前 PC 台账完成；已退役设备保留历史责任链。</p></div><Button onClick={() => openMachineEditor()} disabled={!hasBusinessWorkspaceProject}>新建机械档案</Button></div>
         {renderWorkspaceProjectFilter("机械项目范围", "选择项目后读取机械资源台账。选择具体机械后再读取其真实成本记录，避免无筛选的成本明细暴露。")}
         {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实机械资源台账。" /> : machineryLedger.isLoading ? <EmptyState text="正在读取机械资源台账…" /> : machineryLedger.isError ? <EmptyState text="暂无法读取机械资源，请确认当前账号的服务端授权后重试。" /> : (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="机械总数" value={machines.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Settings2} /><MetricCard title="作业中" value={machines.filter(item => item.status === "working").length} description="当前可见机械资源" icon={BarChart3} /><MetricCard title="维修中" value={machines.filter(item => item.status === "repairing").length} description="需关注维修安排" icon={ScrollText} /><MetricCard title="已选成本记录" value={costs.length} description={selectedMachine ? selectedMachine.name : "请先选择机械"} icon={ShieldCheck} /></section>
+            <Card className="border-[#d8e3e0]">
+              <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">机械档案维护</CardTitle><CardDescription>先从下方台账选择机械，再在此处查看资产信息、维护资料、登记成本或进入同项目调度。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={!selectedMachine} onClick={() => selectedMachine && setDesktopRecordDetail({ title: `机械档案 · ${selectedMachine.name}`, description: "机械档案、操作员及状态由超级管理后台受控维护；退役设备不物理删除，以保留成本和责任链。", fields: [{ label: "机械编号", value: selectedMachine.code }, { label: "项目", value: selectedWorkspaceProject?.name ?? `#${selectedMachine.projectId}` }, { label: "型号", value: selectedMachine.model || "未登记" }, { label: "产权", value: selectedMachine.ownership === "owned" ? "自有" : "外租" }, { label: "供应商", value: selectedMachine.supplierName || "未登记" }, { label: "资产/车牌", value: selectedMachine.plateOrAssetNo || "未登记" }, { label: "操作员", value: selectedMachine.operatorUserId ? userNameById.get(selectedMachine.operatorUserId) ?? `用户 #${selectedMachine.operatorUserId}` : "未分配" }, { label: "当前状态", value: <BusinessStatusBadge status={selectedMachine.status} /> }] })}>查看档案</Button><Button size="sm" variant="outline" disabled={!selectedMachine} onClick={() => selectedMachine && openMachineEditor(selectedMachine)}>编辑档案</Button><Button size="sm" disabled={!selectedMachine} onClick={openMachineCostEditor}>录入成本</Button><Button size="sm" variant="outline" onClick={() => setLocation("/admin/transport")}>关联运输调度</Button></div></CardHeader>
+              <CardContent>{selectedMachine ? <div className="grid gap-3 rounded-xl bg-slate-50 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-slate-500">编号</p><p className="mt-1 font-medium text-slate-800">{selectedMachine.code}</p></div><div><p className="text-xs text-slate-500">操作员</p><p className="mt-1 font-medium text-slate-800">{selectedMachine.operatorUserId ? userNameById.get(selectedMachine.operatorUserId) ?? `用户 #${selectedMachine.operatorUserId}` : "未分配"}</p></div><div><p className="text-xs text-slate-500">资产/车牌</p><p className="mt-1 font-medium text-slate-800">{selectedMachine.plateOrAssetNo || "未登记"}</p></div><div><p className="text-xs text-slate-500">状态</p><div className="mt-1"><BusinessStatusBadge status={selectedMachine.status} /></div></div></div> : <EmptyState text="请选择下方机械台账后进行查看、编辑或成本录入。" />}</CardContent>
+            </Card>
             <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
               <Card><CardHeader><CardTitle className="text-base">机械资源列表</CardTitle><CardDescription>点击机械后读取该机械的真实成本记录。机械档案编辑和计价规则维护仍走完整业务入口。</CardDescription></CardHeader><CardContent className="space-y-2">{machines.length ? machines.map(machine => <button key={machine.id} className={`w-full rounded-xl border p-3 text-left transition-colors ${String(machine.id) === selectedMachineId ? "border-[#203c48] bg-[#edf4f1]" : "border-slate-100 hover:bg-slate-50"}`} onClick={() => setSelectedMachineId(String(machine.id))}><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{machine.name}</p><Badge variant="outline">{machine.code}</Badge><BusinessStatusBadge status={machine.status} /></div><Badge variant="outline">{machine.ownership === "owned" ? "自有" : "外租"}</Badge></div><p className="mt-1 text-xs text-slate-500">型号：{machine.model || "未登记"} · 资产/车牌：{machine.plateOrAssetNo || "未登记"} · 供应商：{machine.supplierName || "—"}</p></button>) : <EmptyState text="当前项目尚无真实机械台账。" />}</CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">{selectedMachine ? `${selectedMachine.name} · 成本记录` : "机械成本记录"}</CardTitle><CardDescription>审核、结算和作废操作会由服务端按机械成本状态机、项目范围与财务岗位重新校验；PC 台账不再跳转到移动端。</CardDescription></CardHeader><CardContent className="space-y-2">{!selectedMachineId ? <EmptyState text="请选择左侧机械，查看其真实成本记录。" /> : machineCosts.isLoading ? <EmptyState text="正在读取机械成本记录…" /> : machineCosts.isError ? <EmptyState text="暂无法读取机械成本记录。" /> : costs.length ? costs.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{item.costType === "fuel" ? "油料" : item.costType === "repair" ? "维修" : item.costType === "overtime" ? "加班" : item.costType === "mobilization" ? "进退场" : "其他"}</p><BusinessStatusBadge status={item.status} /></div><p className="mt-1 text-xs text-slate-500">{displayDate(item.occurredAt)} · 数量 {item.quantity} · 单价 ¥{displayMoney(item.unitPrice)} · 金额 ¥{displayMoney(item.amount)}</p></div><div className="flex flex-wrap gap-2">{item.status === "draft" ? <Button size="sm" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "approved" })} disabled={transitionMachineCost.isPending}>审核</Button> : null}{item.status === "approved" ? <Button size="sm" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "settled" })} disabled={transitionMachineCost.isPending}>确认结算</Button> : null}{["draft", "approved"].includes(item.status) ? <Button size="sm" variant="outline" onClick={() => transitionMachineCost.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionMachineCost.isPending}>作废</Button> : null}</div></div>) : <EmptyState text="当前机械尚无真实成本记录。" />}</CardContent></Card>
@@ -1750,6 +1804,28 @@ export default function AdminPage() {
           </AlertDialogContent>
         </AlertDialog>
         <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{desktopRecordDetail?.title}</DialogTitle><DialogDescription>{desktopRecordDetail?.description}</DialogDescription></DialogHeader><dl className="grid gap-3 py-2 sm:grid-cols-2">{desktopRecordDetail?.fields.map(field => <div key={field.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><dt className="text-xs text-slate-500">{field.label}</dt><dd className="mt-1 text-sm font-medium text-slate-800">{field.value}</dd></div>)}</dl>{desktopRecordDetail?.note ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}<DialogFooter><Button onClick={() => setDesktopRecordDetail(null)}>关闭</Button></DialogFooter></DialogContent></Dialog>
+        <Dialog open={machineDialogOpen} onOpenChange={open => { if (!open) { setMachineDialogOpen(false); setMachineForm(EMPTY_MACHINE_FORM); } }}>
+          <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
+            <DialogHeader><DialogTitle>{machineForm.id ? "维护机械档案" : "新建机械档案"}</DialogTitle><DialogDescription>项目、操作员、产权/租赁、资产标识与状态均由超级管理后台受控维护；已退役机械仅改变状态，不物理删除历史成本与责任记录。</DialogDescription></DialogHeader>
+            <form className="space-y-4" onSubmit={event => { event.preventDefault(); saveMachine.mutate({ id: machineForm.id, projectId: Number(machineForm.projectId), operatorUserId: machineForm.operatorUserId ? Number(machineForm.operatorUserId) : null, code: machineForm.code.trim(), name: machineForm.name.trim(), model: machineForm.model.trim() || null, ownership: machineForm.ownership, supplierName: machineForm.supplierName.trim() || null, plateOrAssetNo: machineForm.plateOrAssetNo.trim() || null, status: machineForm.status }); }}>
+              <div className="grid gap-4 sm:grid-cols-2"><Field label="所属项目"><Select value={machineForm.projectId || "UNASSIGNED"} onValueChange={value => setMachineForm(current => ({ ...current, projectId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></Field><Field label="机械状态"><Select value={machineForm.status} onValueChange={value => setMachineForm(current => ({ ...current, status: value as MachineStatus }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="idle">闲置</SelectItem><SelectItem value="working">作业中</SelectItem><SelectItem value="repairing">维修中</SelectItem><SelectItem value="offsite">场外</SelectItem><SelectItem value="retired">已退役</SelectItem></SelectContent></Select></Field></div>
+              <div className="grid gap-4 sm:grid-cols-2"><Field label="机械编号"><Input value={machineForm.code} placeholder="例如 EXC-001" onChange={event => setMachineForm(current => ({ ...current, code: event.target.value.toUpperCase() }))} /></Field><Field label="机械名称"><Input value={machineForm.name} placeholder="例如 挖掘机" onChange={event => setMachineForm(current => ({ ...current, name: event.target.value }))} /></Field></div>
+              <div className="grid gap-4 sm:grid-cols-2"><Field label="型号"><Input value={machineForm.model} placeholder="可选" onChange={event => setMachineForm(current => ({ ...current, model: event.target.value }))} /></Field><Field label="资产编号 / 车牌"><Input value={machineForm.plateOrAssetNo} placeholder="可选" onChange={event => setMachineForm(current => ({ ...current, plateOrAssetNo: event.target.value }))} /></Field></div>
+              <div className="grid gap-4 sm:grid-cols-3"><Field label="产权类型"><Select value={machineForm.ownership} onValueChange={value => setMachineForm(current => ({ ...current, ownership: value as MachineOwnership }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="owned">自有</SelectItem><SelectItem value="leased">外租</SelectItem></SelectContent></Select></Field><Field label="供应商 / 出租方"><Input value={machineForm.supplierName} placeholder="自有可不填" onChange={event => setMachineForm(current => ({ ...current, supplierName: event.target.value }))} /></Field><Field label="操作员"><Select value={machineForm.operatorUserId || "UNASSIGNED"} onValueChange={value => setMachineForm(current => ({ ...current, operatorUserId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不分配</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></Field></div>
+              <DialogFooter><Button type="button" variant="outline" onClick={() => { setMachineDialogOpen(false); setMachineForm(EMPTY_MACHINE_FORM); }}>取消</Button><Button type="submit" disabled={!machineForm.projectId || machineForm.code.trim().length < 2 || machineForm.name.trim().length < 2 || saveMachine.isPending}>{saveMachine.isPending ? "正在保存…" : machineForm.id ? "保存机械档案" : "建立机械档案"}</Button></DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={machineCostDialogOpen} onOpenChange={open => { if (!open) { setMachineCostDialogOpen(false); setMachineCostForm(EMPTY_MACHINE_COST_FORM); } }}>
+          <DialogContent className="max-w-xl">
+            <DialogHeader><DialogTitle>录入机械成本</DialogTitle><DialogDescription>成本金额仅由服务端按数量乘单价计算，保存后先进入草稿状态，再由受权岗位审核、结算或作废。</DialogDescription></DialogHeader>
+            <form className="space-y-4" onSubmit={event => { event.preventDefault(); saveMachineCost.mutate({ machineId: Number(machineCostForm.machineId), projectId: Number(machineCostForm.projectId), costType: machineCostForm.costType, quantity: Number(machineCostForm.quantity), unitPrice: Number(machineCostForm.unitPrice), occurredAt: new Date(machineCostForm.occurredAt).toISOString(), evidenceId: null }); }}>
+              <div className="grid gap-4 sm:grid-cols-2"><Field label="机械"><Input value={selectedMachineForDialog ? `${selectedMachineForDialog.name}（${selectedMachineForDialog.code}）` : ""} disabled /></Field><Field label="发生时间"><Input type="datetime-local" value={machineCostForm.occurredAt} onChange={event => setMachineCostForm(current => ({ ...current, occurredAt: event.target.value }))} /></Field></div>
+              <div className="grid gap-4 sm:grid-cols-3"><Field label="成本类别"><Select value={machineCostForm.costType} onValueChange={value => setMachineCostForm(current => ({ ...current, costType: value as MachineCostType }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="fuel">油料</SelectItem><SelectItem value="repair">维修</SelectItem><SelectItem value="overtime">加班</SelectItem><SelectItem value="mobilization">进退场</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></Field><Field label="数量"><Input type="number" min="0" step="0.001" value={machineCostForm.quantity} onChange={event => setMachineCostForm(current => ({ ...current, quantity: event.target.value }))} /></Field><Field label="单价（元）"><Input type="number" min="0" step="0.01" value={machineCostForm.unitPrice} onChange={event => setMachineCostForm(current => ({ ...current, unitPrice: event.target.value }))} /></Field></div>
+              <DialogFooter><Button type="button" variant="outline" onClick={() => { setMachineCostDialogOpen(false); setMachineCostForm(EMPTY_MACHINE_COST_FORM); }}>取消</Button><Button type="submit" disabled={!machineCostForm.machineId || !machineCostForm.projectId || !machineCostForm.occurredAt || !Number.isFinite(Number(machineCostForm.quantity)) || Number(machineCostForm.quantity) < 0 || !Number.isFinite(Number(machineCostForm.unitPrice)) || Number(machineCostForm.unitPrice) < 0 || saveMachineCost.isPending}>{saveMachineCost.isPending ? "正在保存…" : "保存成本草稿"}</Button></DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   );

@@ -28,4 +28,18 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("劳务人员档案");
     expect(source).toContain("运输趟次明细");
   });
+
+  it("在 PC 超级管理后台承载员工、车辆与机械的关键维护闭环", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("普通管理人员账号");
+    expect(source).toContain("管理人员角色授权");
+    expect(source).toContain("车辆统一台账");
+    expect(source).toContain("RFID 写卡");
+    expect(source).toContain("机械档案维护");
+    expect(source).toContain("新建机械档案");
+    expect(source).toContain("录入机械成本");
+    expect(source).toContain("saveMachine.mutate");
+    expect(source).toContain("saveMachineCost.mutate");
+  });
 });
