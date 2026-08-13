@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { MobileBottomNavigation } from "@/components/MobileBottomNavigation";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getAuthorizedManagementModules, getManagementModulePath } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
@@ -81,7 +82,7 @@ export default function ManagementPortal() {
       ? `已授权 ${workbench.data.dataScope.projectIds.length} 个项目`
       : "暂未授予项目范围";
 
-  return <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,rgba(204,143,83,.2),transparent_28%),#f7f1e8] text-[#3b2118]">
+  return <main className="min-h-screen pb-24 bg-[radial-gradient(circle_at_top_right,rgba(204,143,83,.2),transparent_28%),#f7f1e8] text-[#3b2118] lg:pb-0">
     <header className="border-b border-[#e7d6c4] bg-[#342018] text-[#fff7ed]">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-5 py-5 lg:px-8">
         <div className="flex min-w-0 items-center gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.22)]"><ShieldCheck className="h-5 w-5" /></div><div className="min-w-0"><p className="truncate text-base font-semibold">工程云管 · 统一管理入口</p><p className="mt-0.5 truncate text-xs text-[#e9cfaf]">登录后仅呈现已授权的业务管理版块</p></div></div>
@@ -117,5 +118,6 @@ export default function ManagementPortal() {
         <Card className="border-[#e5d2bd] bg-[#fffaf4] shadow-[0_10px_28px_rgba(71,42,30,.06)]"><CardContent className="p-5"><div className="flex items-center gap-2 text-sm font-semibold text-[#4b2d21]"><Bell className="h-4 w-4 text-[#a66031]" />消息与待办</div><p className="mt-3 text-sm leading-6 text-[#806353]">您有 <strong className="text-[#4b2d21]">{workbench.data.statistics.unreadMessages}</strong> 条未读消息。业务审批、待办和状态提醒均仅显示在授权范围内。</p><Button variant="outline" className="mt-4 w-full border-[#d7bda4] bg-white text-[#6a3f2b] hover:bg-[#f9eee1]" onClick={() => navigate("/mobile/messages")}>查看消息中心</Button></CardContent></Card>
       </aside>
     </div>
+    <MobileBottomNavigation forceVisible />
   </main>;
 }

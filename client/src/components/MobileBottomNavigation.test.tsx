@@ -33,4 +33,14 @@ describe("移动端固定底部导航", () => {
 
     expect(renderToStaticMarkup(<MobileBottomNavigation />)).toBe("");
   });
+
+  it("普通管理员首次落在统一管理入口时强制挂载固定导航", () => {
+    runtime.location = "/admin";
+    const markup = renderToStaticMarkup(<MobileBottomNavigation forceVisible />);
+
+    expect(markup).toContain('aria-label="移动端底部导航"');
+    expect(markup).toContain("工作台");
+    expect(markup).toContain("消息");
+    expect(markup).toContain("我的");
+  });
 });

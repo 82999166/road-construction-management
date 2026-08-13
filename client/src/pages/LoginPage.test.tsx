@@ -27,9 +27,8 @@ vi.mock("wouter", () => ({
 import LoginPage from "./LoginPage";
 
 describe("独立登录页", () => {
-  it("普通管理员入口保留企业、微信和本地管理登录，不展示超级管理员口令表单", () => {
+  it("普通管理员入口保留微信和本地管理登录，不展示企业身份或超级管理员口令表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
-    expect(markup).toContain("企业身份登录");
     expect(markup).toContain("微信授权登录");
     expect(markup).toContain("使用已绑定微信授权登录");
     expect(markup).toContain("不会自动创建账号或扩大权限");
@@ -37,6 +36,7 @@ describe("独立登录页", () => {
     expect(markup).toContain('href="/api/identity-recovery"');
     expect(markup).toContain("进入超级管理员登录");
     expect(markup).not.toContain("超级管理员账号登录");
+    expect(markup).not.toContain("企业身份登录");
     expect(markup).toContain("管理人员账号登录");
     expect(markup).toContain("账号由超级管理员在后台创建");
     expect(markup).toContain('type="password"');

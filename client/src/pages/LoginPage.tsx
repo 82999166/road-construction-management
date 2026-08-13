@@ -2,7 +2,6 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { startLogin } from "@/const";
 import {
   getAuthenticatedLoginRedirectTarget,
   getLoginReturnPath,
@@ -14,7 +13,7 @@ import React, { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
 /**
- * 企业人员默认走统一身份认证；普通管理人员由超级管理员在后台创建本地账号。
+ * 普通管理人员由超级管理员在后台创建本地账号，也可使用已绑定微信授权登录。
  * 本页面从不保存口令，输入值仅随本次 HTTPS 请求发送给服务端进行不可逆摘要校验。
  */
 export type LoginPageProps = { localAdminOnly?: boolean };
@@ -42,11 +41,6 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   useEffect(() => {
     if (redirectTarget) navigate(redirectTarget);
   }, [navigate, redirectTarget]);
-
-  function handleLogin() {
-    rememberPostLoginReturnPath(returnTo);
-    startLogin();
-  }
 
   /** 微信仅用于已绑定身份的授权登录；服务端仍校验账号启停、终端模式和既有岗位范围。 */
   function handleWechatLogin() {
@@ -115,12 +109,8 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
           <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
             <p className="text-sm font-medium text-[#9a6036]">欢迎使用</p>
             <h2 className="mt-3 text-3xl font-semibold tracking-tight">{localAdminOnly ? "超级管理员登录" : "普通管理员登录"}</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "完成身份核验后，系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
-            {!localAdminOnly ? <Button className="mt-8 h-12 w-full bg-[#203c48] text-base hover:bg-[#17313b]" onClick={handleLogin} disabled={loading}>
-              {loading ? "正在核验当前会话…" : "企业身份登录"}
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Button> : null}
-            {!localAdminOnly ? <div className="mt-3 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
+            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "使用管理人员账号或已绑定微信完成登录。系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
+            {!localAdminOnly ? <div className="mt-7 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><MessageCircle className="h-4 w-4" />微信授权登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-600">请在已关注服务号且已完成系统绑定的微信内打开。微信只验证您已有的系统账号，不会自动创建账号或扩大权限。</p>
               {wechatLoginReason ? <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-800">{wechatLoginReason === "not_bound" ? "该微信尚未绑定系统账号，请先使用账号密码登录后在“我的”完成服务号绑定。" : wechatLoginReason === "terminal" ? "当前账号的终端登录方式不允许使用此设备，请联系管理员调整登录方式。" : wechatLoginReason === "disabled" ? "该系统账号已被停用，请联系管理员。" : "微信授权未完成，请确认在微信内打开后重试。"}</p> : null}
@@ -167,7 +157,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               </Button>
             </form> : <a href="/admin/login" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#bd8a66] bg-[#fff8f2] px-4 py-3 text-sm font-semibold text-[#653b26] transition-colors hover:bg-[#f2e0cf]"><ShieldCheck className="h-4 w-4" />进入超级管理员登录</a>}
             </>}
-            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />返回普通管理员登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请使用管理人员账号或已绑定微信登录；全局治理请使用独立的超级管理员入口。</p></>}
+            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />返回普通管理员登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">如需帮助，请联系超级管理员重置管理人员账号或在移动端完成微信绑定；全局治理请使用独立的超级管理员入口。</p></>}
           </div>
         </section>
       </div>
