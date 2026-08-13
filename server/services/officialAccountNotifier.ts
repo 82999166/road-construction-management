@@ -481,7 +481,7 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
       if (code === "48001") return { success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。", templates: [] };
       return { success: false, message: `无法读取服务号模板消息能力（错误码 ${code}${detail ? `，${detail}` : ""}）。请检查模板消息功能插件、服务类目和接口权限。`, templates: [] };
     }
-    const templates = (payload?.template_list ?? [])
+    const discoveredTemplates = (payload?.template_list ?? [])
       .filter((template): template is Required<Pick<typeof template, "template_id" | "title" | "content">> => Boolean(template.template_id && template.title && template.content))
       .slice(0, 25)
       .map(template => {
@@ -489,7 +489,16 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
         const eligibilityMessage = getPersistentBusinessTemplateEligibilityMessage(normalized);
         return eligibilityMessage ? { ...normalized, persistentBusinessEligible: false, eligibilityMessage } : normalized;
       });
-    return { success: true, message: templates.length ? `已读取 ${templates.length} 个私有模板；请选择符合施工业务通知场景的模板生成系统草稿。` : "模板消息功能已开通，但私有模板库暂无可用模板。请在服务号后台设置服务类目后，从公共模板库选用合规业务通知模板。", templates };
+    const templates = discoveredTemplates.filter(template => isPersistentBusinessTemplateEligible(template));
+    const hiddenUnsupportedCount = discoveredTemplates.length - templates.length;
+    if (!templates.length && hiddenUnsupportedCount > 0) {
+      return {
+        success: true,
+        message: "模板消息功能已开通，但系统已隐藏不可下发的订阅占位模板；当前尚无可下发业务模板。请在服务号后台添加合规业务模板后重新读取。",
+        templates,
+      };
+    }
+    return { success: true, message: templates.length ? `已读取 ${templates.length} 个可下发私有模板；请选择符合施工业务通知场景的模板生成系统草稿。` : "模板消息功能已开通，但私有模板库暂无可用模板。请在服务号后台设置服务类目后，从公共模板库选用合规业务通知模板。", templates };
   } catch {
     return { success: false, message: "模板消息能力检测无法连接微信接口。请先执行“校验开发密钥”，确认 AppSecret 与 API IP 白名单已通过。", templates: [] };
   }
@@ -502,11 +511,7 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
 export async function inspectPublishedOfficialAccountTemplateCapability() {
   const result = await listPublishedOfficialAccountPrivateTemplates();
   if (!result.success) return { success: false, message: result.message };
-  const eligibleCount = result.templates.filter(template => isPersistentBusinessTemplateEligible(template)).length;
-  if (result.templates.length > 0 && eligibleCount === 0) {
-    return { success: true, message: `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板，但均不可用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板，重新读取后再生成系统草稿。` };
-  }
-  return { success: true, message: result.templates.length ? `模板消息功能已开通，当前私有模板库共有 ${result.templates.length} 个模板，其中 ${eligibleCount} 个可用于持续业务通知。请选择合规模板并将其模板 ID 填入系统。` : result.message };
+  return { success: true, message: result.templates.length ? `模板消息功能已开通，当前可选业务模板共有 ${result.templates.length} 个。请选择合规模板并将其模板 ID 填入系统。` : result.message };
 }
 
 /** OpenID 仅以该指纹进行去重查询，永不返回或展示原始值。 */

@@ -165,7 +165,7 @@ describe("消息、影像与企业微信通知安全边界", () => {
     await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: false, message: "微信返回 48001：当前服务号尚未获得模板消息接口权限。请在服务号后台“功能 → 添加功能插件”申请并开通“模板消息”，完成服务类目设置后再检测。" });
   });
 
-  it("模板插件已开通但仅返回订阅占位模板时，会明确提示尚无可下发业务模板", async () => {
+  it("模板插件已开通但仅返回订阅占位模板时，会从系统可选列表隐藏该模板并提示尚无可下发业务模板", async () => {
     const db = createSelectDb([
       { settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-subscription-placeholder" },
       { settingKey: "WECHAT_OFFICIAL_APP_SECRET", status: "published", isSensitive: true, secretEncrypted: "cipher:subscription-placeholder-secret" },
@@ -175,7 +175,12 @@ describe("消息、影像与企业微信通知安全边界", () => {
       ? ({ ok: true, json: async () => ({ access_token: "subscription-placeholder-token", expires_in: 7200 }) })
       : ({ ok: true, json: async () => ({ template_list: [{ template_id: "subscription-placeholder", title: "订阅模板消息", content: "{{content.DATA}}" }] }) })));
 
-    await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: true, message: "模板消息功能已开通，当前私有模板库共有 1 个模板，但均不可用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板，重新读取后再生成系统草稿。" });
+    await expect(listPublishedOfficialAccountPrivateTemplates()).resolves.toEqual({
+      success: true,
+      message: "模板消息功能已开通，但系统已隐藏不可下发的订阅占位模板；当前尚无可下发业务模板。请在服务号后台添加合规业务模板后重新读取。",
+      templates: [],
+    });
+    await expect(inspectPublishedOfficialAccountTemplateCapability()).resolves.toEqual({ success: true, message: "模板消息功能已开通，但系统已隐藏不可下发的订阅占位模板；当前尚无可下发业务模板。请在服务号后台添加合规业务模板后重新读取。" });
   });
 
   it("私有模板发现会返回模板 ID 与从 DATA 占位符生成的字段映射，且不返回密钥", async () => {
@@ -191,7 +196,7 @@ describe("消息、影像与企业微信通知安全边界", () => {
 
     await expect(listPublishedOfficialAccountPrivateTemplates()).resolves.toEqual({
       success: true,
-      message: "已读取 1 个私有模板；请选择符合施工业务通知场景的模板生成系统草稿。",
+      message: "已读取 1 个可下发私有模板；请选择符合施工业务通知场景的模板生成系统草稿。",
       templates: [{ templateId: "tmpl-1", title: "运输提醒", content: "{{first.DATA}}\n车辆：{{keyword1.DATA}}\n{{remark.DATA}}", fieldMapping: { first: "{title}", keyword1: "{content}", remark: "点击查看系统详情" } }],
     });
   });
