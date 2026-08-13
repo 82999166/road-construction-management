@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
-vi.mock("./access", () => ({ assertSuperAdmin: vi.fn() }));
+vi.mock("./access", () => ({ assertSuperAdmin: vi.fn(), requireAuthenticatedUser: vi.fn((ctx: TrpcContext) => ctx.user) }));
 vi.mock("./services/officialAccountNotifier", () => ({ sendOfficialAccountNotification: vi.fn() }));
 
-import { assertSuperAdmin } from "./access";
+import { assertSuperAdmin, requireAuthenticatedUser } from "./access";
 import { getDb } from "./db";
 import { broadcastRouter } from "./routers/broadcast";
 
@@ -29,10 +29,28 @@ function createReviewDb(existing: { id: number; status: string }) {
   };
 }
 
+function createAcknowledgementDb() {
+  const auditValues = vi.fn(async () => undefined);
+  const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+  const delivery = { broadcastId: 88, deliveryStatus: "sent", acknowledgementStatus: "pending", requiresAcknowledgement: true, title: "本周施工通知" };
+  const tx = {
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => [{ count: 1 }]) })) })),
+    insert: vi.fn(() => ({ values: auditValues })),
+  };
+  return {
+    select: vi.fn(() => ({ from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [delivery]) })) })) })) })),
+    transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<void>) => callback(tx)),
+    auditValues,
+    updateWhere,
+  };
+}
+
 describe("服务号群发审批状态机", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAuthContext().user);
+    vi.mocked(requireAuthenticatedUser).mockImplementation(ctx => ctx.user!);
   });
 
   it("草稿仅可提交审批，并写入状态审计", async () => {
@@ -59,5 +77,14 @@ describe("服务号群发审批状态机", () => {
 
     await expect(broadcastRouter.createCaller(createAuthContext()).review({ id: 13, action: "submit", reviewNote: null })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(db.updateWhere).not.toHaveBeenCalled();
+  });
+
+  it("仅实际收件人可确认收到，并以条件更新和审计记录防止重复确认", async () => {
+    const db = createAcknowledgementDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(broadcastRouter.createCaller(createAuthContext()).acknowledgeReceipt({ deliveryId: 25 })).resolves.toEqual({ success: true, alreadyAcknowledged: false });
+    expect(db.updateWhere).toHaveBeenCalledTimes(2);
+    expect(db.auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "notification", action: "broadcast_receipt_acknowledged", targetId: "25" }));
   });
 });

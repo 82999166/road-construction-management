@@ -162,6 +162,13 @@
       "when": 1786505890651,
       "tag": "0022_pink_supreme_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1786599460318,
+      "tag": "0023_burly_umar",
+      "breakpoints": true
     }
   ]
 }

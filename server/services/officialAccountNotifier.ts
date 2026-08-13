@@ -116,7 +116,7 @@ function classifyDeliveryRequestFailure(error: unknown) {
   const causeCode = cause && typeof cause === "object" && "code" in cause && typeof (cause as { code?: unknown }).code === "string"
     ? (cause as { code: string }).code.toUpperCase()
     : null;
-  if (causeCode && ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"].includes(causeCode)) {
+  if (causeCode && /^[A-Z0-9_]{3,64}$/.test(causeCode)) {
     return `network_${causeCode.toLowerCase()}`.slice(0, 64);
   }
   return "request_failed";
@@ -317,12 +317,24 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, {
       value: (singleFieldSummaryCompatibility ? buildSingleFieldSummary(variables) : renderTemplate(value, variables)).slice(0, 200),
     }]));
-    const response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
+    let response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
       method: "POST", redirect: "error", headers: { "content-type": "application/json" },
       body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
       signal: AbortSignal.timeout(8_000),
     });
-    const payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
+    let payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
+    /**
+     * 新版服务号后台的“订阅模板消息”会在传统模板接口返回 40037。
+     * 该错误确认请求尚未送达，因此可安全尝试一次官方订阅通知接口，避免把接口类型错配误记为收件人失败。
+     */
+    if (payload?.errcode === 40037) {
+      response = await fetch(`https://api.weixin.qq.com/cgi-bin/message/subscribe/bizsend?access_token=${encodeURIComponent(token)}`, {
+        method: "POST", redirect: "error", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, data, miniprogram_state: "formal", lang: "zh_CN" }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
+    }
     if (!response.ok || payload?.errcode !== 0) {
       const failureCode = String(payload?.errcode ?? response.status).slice(0, 64);
       await db.update(officialAccountBindings).set({

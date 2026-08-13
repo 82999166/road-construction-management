@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
@@ -10,9 +10,10 @@ import {
   organizations,
   projects,
   systemRoles,
+  users,
   userRoleAssignments,
 } from "../../drizzle/schema";
-import { assertSuperAdmin } from "../access";
+import { assertSuperAdmin, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { sendOfficialAccountNotification } from "../services/officialAccountNotifier";
@@ -33,7 +34,8 @@ const broadcastContentInput = z.object({
 const saveBroadcastInput = z.intersection(z.object({ id: z.number().int().positive().optional() }).merge(broadcastContentInput), broadcastAudienceInput);
 
 type BroadcastAudience = z.infer<typeof broadcastAudienceInput>;
-type AudienceResolution = { qualifiedUserIds: number[]; recipientUserIds: number[]; unboundCount: number };
+type BroadcastRecipient = { userId: number; name: string; roleSummary: string; scopeSummary: string };
+type AudienceResolution = { qualifiedUserIds: number[]; recipientUserIds: number[]; unboundCount: number; recipients: BroadcastRecipient[] };
 
 function createBroadcastNo() {
   const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -54,11 +56,11 @@ async function resolveBroadcastAudience(audience: BroadcastAudience): Promise<Au
   const now = new Date();
   const [roleRows, assignmentRows, projectRows, organizationRows] = await Promise.all([
     db.select({ code: systemRoles.code, status: systemRoles.status }).from(systemRoles),
-    db.select({ userId: userRoleAssignments.userId, projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId, validFrom: userRoleAssignments.validFrom, validTo: userRoleAssignments.validTo, assignmentStatus: userRoleAssignments.status, roleCode: systemRoles.code, roleStatus: systemRoles.status })
+    db.select({ userId: userRoleAssignments.userId, projectId: userRoleAssignments.projectId, organizationId: userRoleAssignments.organizationId, validFrom: userRoleAssignments.validFrom, validTo: userRoleAssignments.validTo, assignmentStatus: userRoleAssignments.status, roleCode: systemRoles.code, roleName: systemRoles.name, roleStatus: systemRoles.status })
       .from(userRoleAssignments)
       .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id)),
-    db.select({ id: projects.id, organizationId: projects.organizationId, status: projects.status }).from(projects),
-    db.select({ id: organizations.id, parentId: organizations.parentId, status: organizations.status }).from(organizations),
+    db.select({ id: projects.id, code: projects.code, name: projects.name, organizationId: projects.organizationId, status: projects.status }).from(projects),
+    db.select({ id: organizations.id, code: organizations.code, name: organizations.name, parentId: organizations.parentId, status: organizations.status }).from(organizations),
   ]);
 
   const activeAssignments = assignmentRows.filter(item => item.assignmentStatus === "active" && item.roleStatus === "active" && isActiveInPeriod(item.validFrom, item.validTo, now));
@@ -89,10 +91,20 @@ async function resolveBroadcastAudience(audience: BroadcastAudience): Promise<Au
   }
 
   const qualifiedUserIds = Array.from(qualified).sort((left, right) => left - right);
-  if (!qualifiedUserIds.length) return { qualifiedUserIds, recipientUserIds: [], unboundCount: 0 };
+  if (!qualifiedUserIds.length) return { qualifiedUserIds, recipientUserIds: [], unboundCount: 0, recipients: [] };
   const bindings = await db.select({ userId: officialAccountBindings.userId }).from(officialAccountBindings).where(and(inArray(officialAccountBindings.userId, qualifiedUserIds), eq(officialAccountBindings.status, "active")));
   const recipientUserIds = Array.from(new Set(bindings.map(item => item.userId))).sort((left, right) => left - right);
-  return { qualifiedUserIds, recipientUserIds, unboundCount: qualifiedUserIds.length - recipientUserIds.length };
+  const userRows = recipientUserIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, recipientUserIds)) : [];
+  const userNameById = new Map(userRows.map(item => [item.id, item.name?.trim() || "未命名成员"]));
+  const projectNameById = new Map(projectRows.map(item => [item.id, item.name ?? item.code]));
+  const organizationNameById = new Map(organizationRows.map(item => [item.id, item.name ?? item.code]));
+  const recipients = recipientUserIds.map(userId => {
+    const assignments = activeAssignments.filter(item => item.userId === userId);
+    const roleSummary = Array.from(new Set(assignments.map(item => item.roleName).filter(Boolean))).join("、") || "未配置岗位";
+    const scopeSummary = Array.from(new Set(assignments.map(item => item.projectId ? `项目：${projectNameById.get(item.projectId) ?? "已授权项目"}` : item.organizationId ? `部门：${organizationNameById.get(item.organizationId) ?? "已授权部门"}` : "全局授权"))).join("；") || "授权范围待同步";
+    return { userId, name: userNameById.get(userId) ?? "未命名成员", roleSummary: roleSummary.slice(0, 300), scopeSummary: scopeSummary.slice(0, 500) };
+  });
+  return { qualifiedUserIds, recipientUserIds, unboundCount: qualifiedUserIds.length - recipientUserIds.length, recipients };
 }
 
 function toAudience(row: { audienceType: "project" | "organization" | "role"; projectId: number | null; organizationId: number | null; roleCode: string | null }): BroadcastAudience {
@@ -135,13 +147,73 @@ export const broadcastRouter = router({
     await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) return [];
-    return db.select({ id: officialAccountBroadcastDeliveries.id, recipientUserId: officialAccountBroadcastDeliveries.recipientUserId, deliveryStatus: officialAccountBroadcastDeliveries.deliveryStatus, deliveryReason: officialAccountBroadcastDeliveries.deliveryReason, attemptedAt: officialAccountBroadcastDeliveries.attemptedAt, deliveredAt: officialAccountBroadcastDeliveries.deliveredAt }).from(officialAccountBroadcastDeliveries).where(eq(officialAccountBroadcastDeliveries.broadcastId, input.broadcastId)).orderBy(desc(officialAccountBroadcastDeliveries.updatedAt));
+    return db.select({
+      id: officialAccountBroadcastDeliveries.id,
+      recipientName: sql<string>`COALESCE(NULLIF(${officialAccountBroadcastDeliveries.recipientNameSnapshot}, ''), NULLIF(${users.name}, ''), '未命名成员')`,
+      recipientRole: officialAccountBroadcastDeliveries.recipientRoleSnapshot,
+      recipientScope: officialAccountBroadcastDeliveries.recipientScopeSnapshot,
+      deliveryStatus: officialAccountBroadcastDeliveries.deliveryStatus,
+      deliveryReason: officialAccountBroadcastDeliveries.deliveryReason,
+      failureCode: notificationRecords.failureCode,
+      attemptedAt: officialAccountBroadcastDeliveries.attemptedAt,
+      deliveredAt: officialAccountBroadcastDeliveries.deliveredAt,
+      acknowledgementStatus: officialAccountBroadcastDeliveries.acknowledgementStatus,
+      acknowledgedAt: officialAccountBroadcastDeliveries.acknowledgedAt,
+    }).from(officialAccountBroadcastDeliveries)
+      .leftJoin(users, eq(users.id, officialAccountBroadcastDeliveries.recipientUserId))
+      .leftJoin(notificationRecords, eq(notificationRecords.id, officialAccountBroadcastDeliveries.notificationRecordId))
+      .where(eq(officialAccountBroadcastDeliveries.broadcastId, input.broadcastId))
+      .orderBy(desc(officialAccountBroadcastDeliveries.updatedAt));
   }),
 
   previewAudience: protectedProcedure.input(broadcastAudienceInput).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
     const resolved = await resolveBroadcastAudience(input);
     return { qualifiedCount: resolved.qualifiedUserIds.length, boundRecipientCount: resolved.recipientUserIds.length, unboundCount: resolved.unboundCount };
+  }),
+
+  /** 当前收件人只能读取属于自己的、已成功投递且仍待确认的群发通知。 */
+  myPendingAcknowledgements: protectedProcedure.query(async ({ ctx }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select({
+      deliveryId: officialAccountBroadcastDeliveries.id,
+      broadcastId: officialAccountBroadcasts.id,
+      title: officialAccountBroadcasts.title,
+      content: officialAccountBroadcasts.content,
+      deliveredAt: officialAccountBroadcastDeliveries.deliveredAt,
+      acknowledgementStatus: officialAccountBroadcastDeliveries.acknowledgementStatus,
+    }).from(officialAccountBroadcastDeliveries)
+      .innerJoin(officialAccountBroadcasts, eq(officialAccountBroadcasts.id, officialAccountBroadcastDeliveries.broadcastId))
+      .where(and(eq(officialAccountBroadcastDeliveries.recipientUserId, user.id), eq(officialAccountBroadcastDeliveries.deliveryStatus, "sent"), eq(officialAccountBroadcastDeliveries.acknowledgementStatus, "pending")))
+      .orderBy(desc(officialAccountBroadcastDeliveries.deliveredAt))
+      .limit(50);
+  }),
+
+  /** “收到/确定”只能由实际收件人主动确认；状态条件更新防止重复确认与跨账号冒认。 */
+  acknowledgeReceipt: protectedProcedure.input(z.object({ deliveryId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [delivery] = await db.select({ broadcastId: officialAccountBroadcastDeliveries.broadcastId, deliveryStatus: officialAccountBroadcastDeliveries.deliveryStatus, acknowledgementStatus: officialAccountBroadcastDeliveries.acknowledgementStatus, requiresAcknowledgement: officialAccountBroadcasts.requiresAcknowledgement, title: officialAccountBroadcasts.title })
+      .from(officialAccountBroadcastDeliveries)
+      .innerJoin(officialAccountBroadcasts, eq(officialAccountBroadcasts.id, officialAccountBroadcastDeliveries.broadcastId))
+      .where(and(eq(officialAccountBroadcastDeliveries.id, input.deliveryId), eq(officialAccountBroadcastDeliveries.recipientUserId, user.id)))
+      .limit(1);
+    if (!delivery) throw new TRPCError({ code: "NOT_FOUND", message: "未找到属于您的群发通知" });
+    if (!delivery.requiresAcknowledgement || delivery.deliveryStatus !== "sent") throw new TRPCError({ code: "CONFLICT", message: "该通知当前无需确认或尚未成功送达" });
+    if (delivery.acknowledgementStatus === "acknowledged") return { success: true, alreadyAcknowledged: true };
+    const now = new Date();
+    await db.transaction(async tx => {
+      const updated = await tx.update(officialAccountBroadcastDeliveries).set({ acknowledgementStatus: "acknowledged", acknowledgedAt: now }).where(and(eq(officialAccountBroadcastDeliveries.id, input.deliveryId), eq(officialAccountBroadcastDeliveries.recipientUserId, user.id), eq(officialAccountBroadcastDeliveries.acknowledgementStatus, "pending")));
+      const affectedRows = Array.isArray(updated) ? Number((updated[0] as { affectedRows?: number } | undefined)?.affectedRows ?? 1) : 1;
+      if (affectedRows === 0) throw new TRPCError({ code: "CONFLICT", message: "该通知已被确认，请刷新后查看" });
+      const [countRow] = await tx.select({ count: sql<number>`count(*)` }).from(officialAccountBroadcastDeliveries).where(and(eq(officialAccountBroadcastDeliveries.broadcastId, delivery.broadcastId), eq(officialAccountBroadcastDeliveries.acknowledgementStatus, "acknowledged")));
+      await tx.update(officialAccountBroadcasts).set({ acknowledgedCount: Number(countRow?.count ?? 0) }).where(eq(officialAccountBroadcasts.id, delivery.broadcastId));
+      await tx.insert(auditLogs).values({ userId: user.id, module: "notification", action: "broadcast_receipt_acknowledged", targetType: "official_account_broadcast_delivery", targetId: String(input.deliveryId), summary: `确认收到群发通知：${delivery.title}`.slice(0, 500) });
+    });
+    return { success: true, alreadyAcknowledged: false };
   }),
 
   saveDraft: protectedProcedure.input(saveBroadcastInput).mutation(async ({ ctx, input }) => {
@@ -202,16 +274,23 @@ export const broadcastRouter = router({
     try {
       const audience = toAudience(broadcast);
       const resolved = await resolveBroadcastAudience(audience);
-      const snapshot = JSON.stringify({ audience, qualifiedCount: resolved.qualifiedUserIds.length, boundRecipientCount: resolved.recipientUserIds.length, unboundCount: resolved.unboundCount, recipientUserIds: resolved.recipientUserIds, resolvedAt: new Date().toISOString() });
-      const results = await Promise.all(resolved.recipientUserIds.map(async recipientUserId => {
+      const snapshot = JSON.stringify({ audience, qualifiedCount: resolved.qualifiedUserIds.length, boundRecipientCount: resolved.recipientUserIds.length, unboundCount: resolved.unboundCount, recipients: resolved.recipients.map(({ name, roleSummary, scopeSummary }) => ({ name, roleSummary, scopeSummary })), resolvedAt: new Date().toISOString() });
+      const results = await Promise.all(resolved.recipients.map(async recipient => {
+        const recipientUserId = recipient.userId;
         try {
-          const delivery = await sendOfficialAccountNotification({ eventCode: "official_account_broadcast", idempotencyKey: `oa:broadcast:${broadcast.id}:${recipientUserId}`, recipientUserId, title: broadcast.title, content: broadcast.content, deepLink: broadcast.deepLink ?? undefined });
-          const [notification] = await db.select({ id: notificationRecords.id }).from(notificationRecords).where(eq(notificationRecords.idempotencyKey, `oa:broadcast:${broadcast.id}:${recipientUserId}`)).limit(1);
+          const acknowledgementLink = `/mobile/messages?broadcast=${broadcast.id}`;
+          const delivery = await sendOfficialAccountNotification({ eventCode: "official_account_broadcast", idempotencyKey: `oa:broadcast:${broadcast.id}:${recipientUserId}`, recipientUserId, title: broadcast.title, content: `${broadcast.content} 请进入系统确认收到。`.slice(0, 1000), deepLink: acknowledgementLink });
+          const [notification] = await db.select({ id: notificationRecords.id, failureCode: notificationRecords.failureCode }).from(notificationRecords).where(eq(notificationRecords.idempotencyKey, `oa:broadcast:${broadcast.id}:${recipientUserId}`)).limit(1);
           const status = delivery.delivered ? "sent" : delivery.reason === "not_bound" || delivery.reason === "duplicate" ? "skipped" : "failed";
-          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason: delivery.reason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null }).onDuplicateKeyUpdate({ set: { notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason: delivery.reason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null } });
+          const deliveryReason = delivery.delivered ? null : notification?.failureCode ?? delivery.reason;
+          const acknowledgementStatus = delivery.delivered && broadcast.requiresAcknowledgement ? "pending" : "not_required" as const;
+          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null, acknowledgementStatus }).onDuplicateKeyUpdate({ set: { recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, notificationRecordId: notification?.id ?? null, deliveryStatus: status, deliveryReason, providerMessageId: delivery.providerMessageId ?? null, attemptedAt: new Date(), deliveredAt: delivery.delivered ? new Date() : null, acknowledgementStatus } });
+          if (delivery.delivered && broadcast.requiresAcknowledgement) {
+            await db.insert(notificationRecords).values({ eventCode: "official_account_broadcast_acknowledgement", idempotencyKey: `inapp:broadcast:${broadcast.id}:${recipientUserId}`, recipientUserId, title: broadcast.title, content: `${broadcast.content} 请点击“确认收到”完成通知回执。`.slice(0, 1000), deepLink: acknowledgementLink, status: "sent", sentAt: new Date(), channel: "in_app" }).onDuplicateKeyUpdate({ set: { title: broadcast.title, content: `${broadcast.content} 请点击“确认收到”完成通知回执。`.slice(0, 1000), deepLink: acknowledgementLink } });
+          }
           return status;
         } catch {
-          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date() }).onDuplicateKeyUpdate({ set: { deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date() } });
+          await db.insert(officialAccountBroadcastDeliveries).values({ broadcastId: broadcast.id, recipientUserId, recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date(), acknowledgementStatus: "not_required" }).onDuplicateKeyUpdate({ set: { recipientNameSnapshot: recipient.name, recipientRoleSnapshot: recipient.roleSummary, recipientScopeSnapshot: recipient.scopeSummary, deliveryStatus: "failed", deliveryReason: "unexpected_error", attemptedAt: new Date(), acknowledgementStatus: "not_required" } });
           return "failed" as const;
         }
       }));

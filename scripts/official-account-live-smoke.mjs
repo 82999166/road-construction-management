@@ -1,6 +1,7 @@
 import { notifyOfficialAccountBusinessEvent } from "../server/services/officialAccountNotifier.ts";
 
-const recipientUserId = 390177;
+const recipientUserId = Number(process.argv[2] ?? 390177);
+if (!Number.isSafeInteger(recipientUserId) || recipientUserId <= 0) throw new Error("请传入有效的收件人账号编号");
 const runId = `live-smoke-${Date.now()}`;
 
 const result = await notifyOfficialAccountBusinessEvent({

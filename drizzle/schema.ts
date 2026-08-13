@@ -445,6 +445,9 @@ export const officialAccountBroadcasts = mysqlTable(
     deliveredCount: int("deliveredCount").default(0).notNull(),
     failedCount: int("failedCount").default(0).notNull(),
     skippedCount: int("skippedCount").default(0).notNull(),
+    /** 群发默认要求收件人在系统内确认“收到”，确认数仅统计已成功投递的收件人。 */
+    requiresAcknowledgement: boolean("requiresAcknowledgement").default(true).notNull(),
+    acknowledgedCount: int("acknowledgedCount").default(0).notNull(),
     /** 仅记录收件人数、用户 ID 与选择范围；绝不包含 OpenID 或解密后的绑定信息。 */
     audienceSnapshotJson: text("audienceSnapshotJson"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -464,18 +467,25 @@ export const officialAccountBroadcastDeliveries = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     broadcastId: bigint("broadcastId", { mode: "number" }).notNull(),
     recipientUserId: int("recipientUserId").notNull(),
+    /** 发布时冻结的可读人员资料，仅用于受控审计展示，不返回用户内部编号或微信身份。 */
+    recipientNameSnapshot: varchar("recipientNameSnapshot", { length: 128 }),
+    recipientRoleSnapshot: varchar("recipientRoleSnapshot", { length: 300 }),
+    recipientScopeSnapshot: varchar("recipientScopeSnapshot", { length: 500 }),
     notificationRecordId: bigint("notificationRecordId", { mode: "number" }),
     deliveryStatus: mysqlEnum("deliveryStatus", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
     deliveryReason: varchar("deliveryReason", { length: 64 }),
     providerMessageId: varchar("providerMessageId", { length: 128 }),
     attemptedAt: datetime("attemptedAt"),
     deliveredAt: datetime("deliveredAt"),
+    acknowledgementStatus: mysqlEnum("acknowledgementStatus", ["not_required", "pending", "acknowledged"]).default("pending").notNull(),
+    acknowledgedAt: datetime("acknowledgedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
     broadcastRecipientUnique: uniqueIndex("official_account_broadcast_deliveries_recipient_unique").on(table.broadcastId, table.recipientUserId),
     broadcastStatusIndex: index("official_account_broadcast_deliveries_status_index").on(table.broadcastId, table.deliveryStatus),
+    broadcastAcknowledgementIndex: index("official_account_broadcast_deliveries_acknowledgement_index").on(table.broadcastId, table.acknowledgementStatus),
   }),
 );
 
