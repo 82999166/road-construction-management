@@ -107,15 +107,15 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               <div><p className="font-semibold tracking-tight">工程云管</p><p className="text-xs text-[#e6cdb0]">施工承包一体化管理平台</p></div>
             </div>
             <div className="mt-16 max-w-md">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />统一身份认证</span>
-            <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">一个入口，进入相应管理版块。</h1>
-            <p className="mt-5 text-sm leading-7 text-[#ead4bc]">所有管理人员均从本页登录。认证成功后，超级管理员进入全局治理后台；普通管理人员仅进入其角色、部门、组织和项目范围已授权的业务管理版块。</p>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />{localAdminOnly ? "全局治理专属入口" : "业务管理身份认证"}</span>
+            <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">{localAdminOnly ? "全局治理，独立授权。" : "按授权范围，进入业务管理。"}</h1>
+            <p className="mt-5 text-sm leading-7 text-[#ead4bc]">{localAdminOnly ? "此入口仅供超级管理员进行组织、权限、接口与审计治理。普通管理人员请返回业务登录入口。" : "此入口供普通管理员和业务人员登录。系统仅展示您已获授权的角色、部门、组织和项目业务版块。"}</p>
             </div>
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
             <p className="text-sm font-medium text-[#9a6036]">欢迎使用</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight">{localAdminOnly ? "超级管理后台登录" : "统一管理登录"}</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "这是测试环境的本地超级管理员入口。认证成功后将直接进入全局管理后台；请勿将测试凭据用于生产环境。" : "完成身份核验后，系统会安全返回您刚才访问的页面；未指定目标时默认进入统一管理入口，并按账号权限呈现相应功能版块。"}</p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">{localAdminOnly ? "超级管理员登录" : "普通管理员登录"}</h2>
+            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "完成身份核验后，系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
             {!localAdminOnly ? <Button className="mt-8 h-12 w-full bg-[#203c48] text-base hover:bg-[#17313b]" onClick={handleLogin} disabled={loading}>
               {loading ? "正在核验当前会话…" : "企业身份登录"}
               <ArrowRight className="ml-2 h-4 w-4" />
@@ -148,7 +148,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的管理版块"}</Button>
             </form> : null}
-            <form className={`${localAdminOnly ? "mt-6" : "mt-4"} rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4`} onSubmit={handleTemporaryAdminLogin}>
+            {localAdminOnly ? <form className="mt-6 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
               <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />超级管理员账号登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-500">{localAdminOnly ? "仅供测试环境全局治理与应急管理使用；登录成功后进入全局管理后台，口令仅在服务器端校验。" : "用于全局治理与应急管理；登录成功后进入全局管理后台，口令仅在服务器端校验。"}</p>
               <div className="mt-3 grid gap-3">
@@ -165,9 +165,9 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={temporaryLogin.isPending}>
                 {temporaryLogin.isPending ? "正在安全登录…" : "登录全局管理后台"}
               </Button>
-            </form>
+            </form> : <a href="/admin/login" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#bd8a66] bg-[#fff8f2] px-4 py-3 text-sm font-semibold text-[#653b26] transition-colors hover:bg-[#f2e0cf]"><ShieldCheck className="h-4 w-4" />进入超级管理员登录</a>}
             </>}
-            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />切换至统一登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请联系系统管理员核查账号状态与项目授权。</p></>}
+            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />返回普通管理员登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">若企业身份平台不可用，请使用管理人员账号或已绑定微信登录；全局治理请使用独立的超级管理员入口。</p></>}
           </div>
         </section>
       </div>

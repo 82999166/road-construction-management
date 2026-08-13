@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import NotFound from "@/pages/NotFound";
-import { createLoginPath } from "@/lib/authNavigation";
+import { createAdminLoginPath } from "@/lib/authNavigation";
 import { resolveManagementAccessMode } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
 import { ShieldAlert } from "lucide-react";
@@ -47,14 +47,14 @@ function AdminRouteGuard() {
   });
 
   useEffect(() => {
-    if (!loading && !isAuthenticated) navigate(createLoginPath("/admin"));
+    if (!loading && !isAuthenticated) navigate(createAdminLoginPath("/admin"));
   }, [isAuthenticated, loading, navigate]);
 
   if (mode === "checking") {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在核验后台访问权限…</div>;
   }
   if (mode === "login") {
-    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">统一管理后台需要先完成登录。</p><Button onClick={() => navigate(createLoginPath("/admin"))}>前往统一登录页</Button></div>;
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-slate-400" /><p className="text-sm text-slate-600">全局治理后台需要使用超级管理员入口登录。</p><Button onClick={() => navigate(createAdminLoginPath("/admin"))}>前往超级管理员登录</Button></div>;
   }
   if (mode === "unavailable") {
     return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-amber-600" /><p className="text-sm text-slate-600">后台权限状态暂时无法核验，请稍后重新进入。</p><Button variant="outline" onClick={() => window.location.reload()}>重新加载</Button></div>;

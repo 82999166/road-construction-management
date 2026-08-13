@@ -27,7 +27,7 @@ vi.mock("wouter", () => ({
 import LoginPage from "./LoginPage";
 
 describe("独立登录页", () => {
-  it("保留统一身份认证入口，并展示普通管理人员与全局治理管理员的受控本地登录表单", () => {
+  it("普通管理员入口保留企业、微信和本地管理登录，不展示超级管理员口令表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
     expect(markup).toContain("企业身份登录");
     expect(markup).toContain("微信授权登录");
@@ -35,8 +35,8 @@ describe("独立登录页", () => {
     expect(markup).toContain("不会自动创建账号或扩大权限");
     expect(markup).toContain("账号恢复与密码重置");
     expect(markup).toContain('href="/api/identity-recovery"');
-    expect(markup).toContain("超级管理员账号登录");
-    expect(markup).toContain("用于全局治理与应急管理");
+    expect(markup).toContain("进入超级管理员登录");
+    expect(markup).not.toContain("超级管理员账号登录");
     expect(markup).toContain("管理人员账号登录");
     expect(markup).toContain("账号由超级管理员在后台创建");
     expect(markup).toContain('type="password"');
@@ -51,9 +51,9 @@ describe("独立登录页", () => {
   it("专用超级管理入口只显示本地超级管理员表单，不泄露测试密码", () => {
     const markup = renderToStaticMarkup(<LoginPage localAdminOnly />);
 
-    expect(markup).toContain("超级管理后台登录");
+    expect(markup).toContain("超级管理员登录");
     expect(markup).toContain("登录全局管理后台");
-    expect(markup).toContain("切换至统一登录");
+    expect(markup).toContain("返回普通管理员登录");
     expect(markup).not.toContain("企业身份登录");
     expect(markup).not.toContain("管理人员账号登录");
     expect(markup).not.toContain("admin123");

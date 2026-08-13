@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   consumePostLoginReturnPath,
   createLoginPath,
+  createAdminLoginPath,
   getAuthenticatedLoginRedirectTarget,
   getLoginReturnPath,
   getUnauthorizedLoginRedirectPath,
@@ -16,10 +17,12 @@ describe("独立登录页认证导航", () => {
     expect(sanitizeReturnPath("//unsafe.example.com")).toBe("/mobile");
   });
 
-  it("将受保护页面路径编码到独立登录页并拒绝登录页自循环", () => {
+  it("将受保护页面路径编码到对应身份登录页并拒绝登录页自循环", () => {
     expect(createLoginPath("/admin/settings?tab=security")).toBe("/login?returnTo=%2Fadmin%2Fsettings%3Ftab%3Dsecurity");
     expect(createLoginPath("/mobile/profile")).toBe("/login?returnTo=%2Fmobile%2Fprofile");
     expect(createLoginPath("/login")).toBe("/login");
+    expect(createAdminLoginPath("/admin/settings?tab=security")).toBe("/admin/login?returnTo=%2Fadmin%2Fsettings%3Ftab%3Dsecurity");
+    expect(createAdminLoginPath("/admin/login")).toBe("/admin/login");
     expect(getLoginReturnPath("?returnTo=https%3A%2F%2Funsafe.example.com")).toBe("/admin");
   });
 
@@ -41,6 +44,7 @@ describe("独立登录页认证导航", () => {
     expect(getAuthenticatedLoginRedirectTarget(true, true, "/admin")).toBeNull();
     expect(getAuthenticatedLoginRedirectTarget(false, false, "/admin")).toBeNull();
     expect(getUnauthorizedLoginRedirectPath("/mobile/finance?project=project-1")).toBe("/login?returnTo=%2Fmobile%2Ffinance%3Fproject%3Dproject-1");
+    expect(getUnauthorizedLoginRedirectPath("/admin/settings")).toBe("/admin/login?returnTo=%2Fadmin%2Fsettings");
     expect(getUnauthorizedLoginRedirectPath("/login?returnTo=%2Fmobile")).toBeNull();
   });
 });

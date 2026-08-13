@@ -5,6 +5,7 @@
  * 不接受绝对 URL、协议相对 URL 或非站内路径，避免认证成功后发生开放重定向。
  */
 export const LOGIN_ROUTE = "/login";
+export const ADMIN_LOGIN_ROUTE = "/admin/login";
 export const POST_LOGIN_RETURN_KEY = "road-construction-management:post-login-return";
 
 export function getCurrentAppPath() {
@@ -26,6 +27,13 @@ export function createLoginPath(returnTo?: string | null) {
   return `${LOGIN_ROUTE}?returnTo=${encodeURIComponent(safeReturnTo)}`;
 }
 
+/** 超级管理员入口独立于普通业务登录，且同样只允许站内回跳。 */
+export function createAdminLoginPath(returnTo?: string | null) {
+  const safeReturnTo = sanitizeReturnPath(returnTo, "");
+  if (!safeReturnTo || safeReturnTo === ADMIN_LOGIN_ROUTE) return ADMIN_LOGIN_ROUTE;
+  return `${ADMIN_LOGIN_ROUTE}?returnTo=${encodeURIComponent(safeReturnTo)}`;
+}
+
 /** 已认证用户访问登录页时，只能回到经过站内路径校验的目标页。 */
 export function getAuthenticatedLoginRedirectTarget(isAuthenticated: boolean, loading: boolean, returnTo: string) {
   if (!isAuthenticated || loading) return null;
@@ -37,7 +45,8 @@ export function getAuthenticatedLoginRedirectTarget(isAuthenticated: boolean, lo
  */
 export function getUnauthorizedLoginRedirectPath(currentPath: string) {
   const pathname = currentPath.split(/[?#]/, 1)[0];
-  if (pathname === LOGIN_ROUTE || pathname.startsWith(`${LOGIN_ROUTE}/`)) return null;
+  if (pathname === LOGIN_ROUTE || pathname.startsWith(`${LOGIN_ROUTE}/`) || pathname === ADMIN_LOGIN_ROUTE) return null;
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) return createAdminLoginPath(currentPath);
   return createLoginPath(currentPath);
 }
 

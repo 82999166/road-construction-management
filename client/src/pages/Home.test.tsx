@@ -49,7 +49,7 @@ describe("首页 OAuth 回跳", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/mobile/finance?project=project-1");
   });
 
-  it("未登录访问根路径时进入独立登录页并保留统一管理入口回跳", () => {
+  it("未登录访问根路径时进入普通管理员登录页并保留管理入口回跳", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false, isAuthenticated: false });
 
     Home();
