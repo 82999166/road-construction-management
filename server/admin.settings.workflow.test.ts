@@ -11,11 +11,16 @@ vi.mock("./services/secretVault", () => ({
   encryptSecret: vi.fn(() => "cipher:opaque-value"),
   maskSecret: vi.fn(() => "********MASK"),
 }));
+vi.mock("./services/officialAccountNotifier", async importOriginal => {
+  const actual = await importOriginal<typeof import("./services/officialAccountNotifier")>();
+  return { ...actual, listPublishedOfficialAccountPrivateTemplates: vi.fn() };
+});
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
 import { adminRouter } from "./routers/admin";
 import { encryptSecret, maskSecret } from "./services/secretVault";
+import { listPublishedOfficialAccountPrivateTemplates } from "./services/officialAccountNotifier";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -358,5 +363,26 @@ describe("系统设置安全工作流", () => {
     expect(JSON.stringify(listed)).not.toContain("secret-");
     expect(JSON.stringify(history)).not.toContain("cipher:opaque-value");
     expect(JSON.stringify(history)).not.toContain("secretEncrypted");
+  });
+
+  it("已有服务号模板配置可安全替换为新草稿，并保留旧值的可回退历史", async () => {
+    const existingTemplateId = { id: 71, version: 4, category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", valueJson: "old-template", secretEncrypted: null, valuePreview: "old-template", isSensitive: false, status: "published", remarks: "旧模板" };
+    const existingTemplateFields = { id: 72, version: 6, category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", valueJson: "{\"content\":\"{content}\"}", secretEncrypted: null, valuePreview: "旧映射", isSensitive: false, status: "published", remarks: "旧字段映射" };
+    const db = createSettingsDb([[existingTemplateId, existingTemplateFields]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(listPublishedOfficialAccountPrivateTemplates).mockResolvedValue({ success: true, message: "ok", templates: [{ templateId: "new-template", title: "工程待办通知", content: "{{first.DATA}}", fieldMapping: { first: "{title}" } }] });
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.createOfficialAccountTemplateDraft({ templateId: "new-template" })).resolves.toMatchObject({ success: true, replacedExisting: true });
+
+    expect(db.updatedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ valueJson: "new-template", status: "draft", version: 5, publishedAt: null }),
+      expect.objectContaining({ valueJson: "{\"first\":\"{title}\"}", status: "draft", version: 7, publishedAt: null }),
+    ]));
+    expect(db.insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "update", settingId: 71, version: 5 }),
+      expect.objectContaining({ operation: "update", settingId: 72, version: 7 }),
+      expect.objectContaining({ action: "official_account_template_draft", targetId: "new-template" }),
+    ]));
+    expect(JSON.stringify(db.updatedValues)).not.toContain("WECHAT_OFFICIAL_APP_SECRET");
   });
 });

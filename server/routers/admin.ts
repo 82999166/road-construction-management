@@ -1198,7 +1198,10 @@ export const adminRouter = router({
       if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_list", targetType: "official_account", targetId: "private_templates", summary: `读取服务号私有模板库：${result.success ? `${result.templates.length} 个` : "失败"}` });
       return result;
     }),
-    /** 将已由微信接口核验的私有模板安全写入两项草稿配置，不覆盖已有模板配置。 */
+    /**
+     * 将微信已核验的私有模板写入模板草稿。模板配置采用唯一键，因此在已有配置时会先把旧值
+     * 写入可回退历史，再以草稿状态替换当前值；AppID/AppSecret 等服务号凭据不参与本操作。
+     */
     createOfficialAccountTemplateDraft: protectedProcedure.input(z.object({ templateId: z.string().min(1).max(128) })).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const discovered = await listPublishedOfficialAccountPrivateTemplates();
@@ -1208,17 +1211,29 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const keys = ["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"];
-      const existing = await db.select({ settingKey: systemSettings.settingKey }).from(systemSettings).where(inArray(systemSettings.settingKey, keys));
-      if (existing.length) throw new TRPCError({ code: "CONFLICT", message: "系统中已有模板 ID 或字段映射配置。为避免覆盖，请在配置清单中编辑或停用旧配置后再生成草稿。" });
+      const existing = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, keys));
+      const existingByKey = new Map(existing.map(setting => [setting.settingKey, setting]));
       const fieldMappingJson = JSON.stringify(selected.fieldMapping);
+      const nextDrafts = [
+        { settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", valueJson: selected.templateId, valuePreview: selected.templateId.slice(0, 256), remarks: `由服务号私有模板库自动选择：${selected.title}`.slice(0, 2000) },
+        { settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", valueJson: fieldMappingJson, valuePreview: fieldMappingJson.slice(0, 256), remarks: "由服务号模板正文中的 .DATA 字段自动生成；发布前请核对字段含义与合规性。" },
+      ] as const;
       await db.transaction(async tx => {
-        await tx.insert(systemSettings).values([
-          { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_ID", displayName: "公众号业务通知模板 ID", valueJson: selected.templateId, valuePreview: selected.templateId.slice(0, 256), isSensitive: false, status: "draft", remarks: `由服务号私有模板库自动选择：${selected.title}`.slice(0, 2000), updatedBy: admin.id },
-          { category: "公众号消息模板", settingKey: "WECHAT_OFFICIAL_TEMPLATE_FIELDS", displayName: "公众号模板字段映射", valueJson: fieldMappingJson, valuePreview: fieldMappingJson.slice(0, 256), isSensitive: false, status: "draft", remarks: "由服务号模板正文中的 .DATA 字段自动生成；发布前请核对字段含义与合规性。", updatedBy: admin.id },
-        ]);
-        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_draft", targetType: "official_account_template", targetId: selected.templateId, summary: `从服务号私有模板库生成模板配置草稿：${selected.title}` });
+        for (const draft of nextDrafts) {
+          const current = existingByKey.get(draft.settingKey);
+          if (!current) {
+            await tx.insert(systemSettings).values({ category: "公众号消息模板", ...draft, isSensitive: false, status: "draft", updatedBy: admin.id });
+            continue;
+          }
+          const nextVersion = current.version + 1;
+          const writeResult = await tx.update(systemSettings).set({ category: "公众号消息模板", ...draft, isSensitive: false, status: "draft", publishedAt: null, version: nextVersion, updatedBy: admin.id }).where(and(eq(systemSettings.id, current.id), eq(systemSettings.version, current.version)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: current.category, settingKey: current.settingKey, displayName: current.displayName, valueJson: current.valueJson, secretEncrypted: current.secretEncrypted, valuePreview: current.valuePreview, isSensitive: current.isSensitive, remarks: current.remarks };
+          await tx.insert(configPublishLogs).values({ settingId: current.id, operation: "update", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_draft", targetType: "official_account_template", targetId: selected.templateId, summary: `从服务号私有模板库生成模板配置草稿：${selected.title}；安全替换 ${existing.length} 项旧模板配置` });
       });
-      return { success: true, message: "模板 ID 与字段映射草稿已生成。请在配置清单核对后分别发布，业务通知才会启用。" };
+      return { success: true, replacedExisting: existing.length > 0, message: existing.length ? "新模板草稿已生成；旧模板值已写入可回退历史。请在配置清单核对后发布模板 ID 与字段映射。草稿期间业务模板通知会暂停，避免新旧模板混用。" : "模板 ID 与字段映射草稿已生成。请在配置清单核对后分别发布，业务通知才会启用。" };
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);
