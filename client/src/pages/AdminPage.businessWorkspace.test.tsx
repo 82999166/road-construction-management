@@ -46,4 +46,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveMachine.mutate");
     expect(source).toContain("saveMachineCost.mutate");
   });
+
+  it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("员工档案、薪资与保险");
+    expect(source).toContain("30 天内到期");
+    expect(source).toContain("employeeInsurance");
+    expect(source).toContain("downloadCsvFile");
+    expect(source).toContain("车辆维修保养费");
+    expect(source).toContain("车辆/机械费用汇总");
+    expect(source).toContain("登记维修保养");
+    expect(source).toContain("saveAssetMaintenance.mutate");
+  });
 });

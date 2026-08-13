@@ -202,6 +202,23 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, ownership: "leased", ownerName: null, leaseTerms: null })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("外租车辆") });
   });
 
+  it("拒绝员工档案同时缺失或重复关联公司账号和施工队工人", async () => {
+    vi.mocked(getDb).mockResolvedValue({} as never);
+    const caller = adminRouter.createCaller(createAdminContext());
+    const base = { employeeType: "management" as const, projectId: null, teamName: null, employmentStatus: "active" as const, joinedAt: "2026-08-01", leftAt: null, salaryBasis: "monthly" as const, baseSalary: 6000, remarks: null };
+
+    await expect(caller.employee.saveProfile({ ...base, userId: null, laborWorkerId: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.employee.saveProfile({ ...base, userId: 2, laborWorkerId: 3 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("拒绝保险到期日期早于购买日期和无效维修保养金额", async () => {
+    vi.mocked(getDb).mockResolvedValue({} as never);
+    const caller = adminRouter.createCaller(createAdminContext());
+
+    await expect(caller.employee.saveInsurance({ employeeProfileId: 1, insuranceType: "work_injury", providerName: null, policyReference: null, purchasedAt: "2026-08-10", expiresAt: "2026-08-09", status: "active", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.assetMaintenance.save({ assetType: "vehicle", assetId: 1, projectId: 1, costCategory: "maintenance", amount: 0, occurredAt: "2026-08-10T08:00:00.000Z", serviceProvider: null, meterReading: null, nextDueAt: null, remarks: null, status: "draft" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("拒绝直接停用存在未结算趟次的车辆", async () => {
     const db = createSequentialLimitDb(
       [{ id: 20, status: "active" }],

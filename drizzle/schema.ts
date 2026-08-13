@@ -636,6 +636,49 @@ export const payrollStatements = mysqlTable(
   table => ({ workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period) }),
 );
 
+/** 统一员工档案：公司管理人员、机械操作员与施工队工人统一投影，避免将账号与劳务实名档案混为一体。 */
+export const employeeProfiles = mysqlTable(
+  "employee_profiles",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** 公司管理人员或机械操作员对应的系统账号；施工队工人可仅关联 laborWorkerId。 */
+    userId: int("userId"),
+    /** 施工队工人对应的劳务实名档案；公司人员可为空。 */
+    laborWorkerId: int("laborWorkerId"),
+    projectId: int("projectId"),
+    employeeType: mysqlEnum("employeeType", ["management", "operator", "construction_worker"]).notNull(),
+    teamName: varchar("teamName", { length: 128 }),
+    employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).default("active").notNull(),
+    joinedAt: date("joinedAt"),
+    leftAt: date("leftAt"),
+    salaryBasis: mysqlEnum("salaryBasis", ["monthly", "daily", "hourly", "piecework"]).default("monthly").notNull(),
+    baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }),
+    remarks: varchar("remarks", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ userIndex: index("employee_profiles_user_index").on(table.userId), workerIndex: index("employee_profiles_worker_index").on(table.laborWorkerId), projectTypeIndex: index("employee_profiles_project_type_index").on(table.projectId, table.employeeType, table.employmentStatus) }),
+);
+
+/** 员工保险台账：按保单留存购买日期与到期日期，供后台到期预警和人事审查使用。 */
+export const employeeInsurancePolicies = mysqlTable(
+  "employee_insurance_policies",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    employeeProfileId: int("employeeProfileId").notNull(),
+    insuranceType: mysqlEnum("insuranceType", ["work_injury", "accident", "medical", "employer_liability", "other"]).notNull(),
+    providerName: varchar("providerName", { length: 128 }),
+    policyReference: varchar("policyReference", { length: 128 }),
+    purchasedAt: date("purchasedAt").notNull(),
+    expiresAt: date("expiresAt").notNull(),
+    status: mysqlEnum("status", ["active", "expired", "cancelled"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ profileExpiryIndex: index("employee_insurance_policies_profile_expiry_index").on(table.employeeProfileId, table.expiresAt, table.status) }),
+);
+
 /** 公司自有与外租机械统一台账。 */
 export const machines = mysqlTable(
   "machines",
@@ -692,6 +735,28 @@ export const machineCostRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({ machineDateIndex: index("machine_cost_records_machine_date_index").on(table.machineId, table.occurredAt) }),
+);
+
+/** 车辆与机械共用的维修、保养费用台账；不替代既有机械油料/租赁成本明细。 */
+export const assetMaintenanceRecords = mysqlTable(
+  "asset_maintenance_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(),
+    assetId: int("assetId").notNull(),
+    projectId: int("projectId").notNull(),
+    costCategory: mysqlEnum("costCategory", ["maintenance", "repair"]).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    occurredAt: datetime("occurredAt").notNull(),
+    serviceProvider: varchar("serviceProvider", { length: 160 }),
+    meterReading: decimal("meterReading", { precision: 14, scale: 2 }),
+    nextDueAt: date("nextDueAt"),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ assetDateIndex: index("asset_maintenance_records_asset_date_index").on(table.assetType, table.assetId, table.occurredAt), projectStatusIndex: index("asset_maintenance_records_project_status_index").on(table.projectId, table.status) }),
 );
 
 /** 渣土车运输车辆档案与货厢参数。 */

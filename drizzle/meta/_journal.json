@@ -183,6 +183,13 @@
       "when": 1786632019466,
       "tag": "0025_aberrant_piledriver",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1786632959530,
+      "tag": "0026_light_rictor",
+      "breakpoints": true
     }
   ]
 }

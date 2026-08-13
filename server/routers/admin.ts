@@ -1,16 +1,20 @@
-import { and, count, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  assetMaintenanceRecords,
   auditLogs,
   attendanceDeviceBindings,
   attendanceRecords,
   configPublishLogs,
   constructionDailyReports,
   departmentBusinessScopes,
+  employeeInsurancePolicies,
+  employeeProfiles,
   evidenceRecords,
   inventoryTransactions,
   laborWorkers,
+  machineCostRecords,
   machines,
   measurementClaims,
   notificationRecords,
@@ -87,6 +91,51 @@ const vehicleManagementInput = z.object({
   if (value.ownership !== "leased") return;
   if (!value.ownerName?.trim()) ctx.addIssue({ code: "custom", path: ["ownerName"], message: "外租车辆必须填写出租方" });
   if (!value.leaseTerms) ctx.addIssue({ code: "custom", path: ["leaseTerms"], message: "外租车辆必须填写租金、计费方式和租赁起止时间" });
+});
+
+const employeeProfileInput = z.object({
+  id: z.number().int().positive().optional(),
+  userId: z.number().int().positive().nullable().optional(),
+  laborWorkerId: z.number().int().positive().nullable().optional(),
+  projectId: z.number().int().positive().nullable().optional(),
+  employeeType: z.enum(["management", "operator", "construction_worker"]),
+  teamName: z.string().trim().max(128).nullable().optional(),
+  employmentStatus: z.enum(["active", "suspended", "left"]),
+  joinedAt: z.string().date().nullable().optional(),
+  leftAt: z.string().date().nullable().optional(),
+  salaryBasis: z.enum(["monthly", "daily", "hourly", "piecework"]),
+  baseSalary: z.number().min(0).max(999999999999.99).nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if ((value.userId ? 1 : 0) + (value.laborWorkerId ? 1 : 0) !== 1) ctx.addIssue({ code: "custom", path: ["userId"], message: "员工档案必须且只能关联一名管理人员/操作员或一条劳务工人档案" });
+  if (value.leftAt && value.joinedAt && value.leftAt < value.joinedAt) ctx.addIssue({ code: "custom", path: ["leftAt"], message: "离职日期不得早于入职日期" });
+});
+
+const employeeInsuranceInput = z.object({
+  id: z.number().int().positive().optional(),
+  employeeProfileId: z.number().int().positive(),
+  insuranceType: z.enum(["work_injury", "accident", "medical", "employer_liability", "other"]),
+  providerName: z.string().trim().max(128).nullable().optional(),
+  policyReference: z.string().trim().max(128).nullable().optional(),
+  purchasedAt: z.string().date(),
+  expiresAt: z.string().date(),
+  status: z.enum(["active", "expired", "cancelled"]),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).refine(value => value.expiresAt >= value.purchasedAt, { message: "保险到期日期不得早于购买日期", path: ["expiresAt"] });
+
+const assetMaintenanceInput = z.object({
+  id: z.number().int().positive().optional(),
+  assetType: z.enum(["vehicle", "machine"]),
+  assetId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  costCategory: z.enum(["maintenance", "repair"]),
+  amount: z.number().gt(0).max(999999999999.99),
+  occurredAt: z.string().datetime({ offset: true }),
+  serviceProvider: z.string().trim().max(160).nullable().optional(),
+  meterReading: z.number().min(0).max(999999999999.99).nullable().optional(),
+  nextDueAt: z.string().date().nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+  status: z.enum(["draft", "approved", "settled", "void"]),
 });
 
 const roleInput = z.object({
@@ -475,6 +524,113 @@ export const adminRouter = router({
         await db.insert(auditLogs).values({ userId: admin.id, module: "project", action: input.id ? "update" : "create", targetType: "project", targetId: String(input.id ?? input.code), summary: `维护项目节点：${input.name}` });
         return { success: true };
       }),
+  }),
+
+  employee: router({
+    options: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { users: [], laborWorkers: [] };
+      const [accountRows, workerRows] = await Promise.all([
+        db.select({ id: users.id, name: users.name }).from(users).orderBy(asc(users.name)),
+        db.select({ id: laborWorkers.id, realName: laborWorkers.realName, teamName: laborWorkers.teamName, projectId: laborWorkers.projectId }).from(laborWorkers).orderBy(asc(laborWorkers.realName)),
+      ]);
+      return { users: accountRows, laborWorkers: workerRows };
+    }),
+    listProfiles: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(employeeProfiles).orderBy(desc(employeeProfiles.updatedAt));
+      return Promise.all(rows.map(async profile => {
+        const [user] = profile.userId ? await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, profile.userId)).limit(1) : [];
+        const [worker] = profile.laborWorkerId ? await db.select({ id: laborWorkers.id, realName: laborWorkers.realName, teamName: laborWorkers.teamName, projectId: laborWorkers.projectId }).from(laborWorkers).where(eq(laborWorkers.id, profile.laborWorkerId)).limit(1) : [];
+        const policies = await db.select().from(employeeInsurancePolicies).where(eq(employeeInsurancePolicies.employeeProfileId, profile.id)).orderBy(desc(employeeInsurancePolicies.expiresAt));
+        const today = new Date().toISOString().slice(0, 10);
+        const expiringCutoff = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const activePolicies = policies.filter(policy => policy.status === "active");
+        const insuranceStatus = activePolicies.some(policy => policy.expiresAt < new Date(`${today}T00:00:00Z`)) ? "expired" : activePolicies.some(policy => policy.expiresAt <= new Date(`${expiringCutoff}T00:00:00Z`)) ? "expiring" : activePolicies.length ? "active" : "missing";
+        return { ...profile, displayName: user?.name ?? worker?.realName ?? "未命名员工", localUsername: null, laborTeamName: worker?.teamName ?? null, policies, insuranceStatus };
+      }));
+    }),
+    saveProfile: protectedProcedure.input(employeeProfileInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      if (input.userId) {
+        const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.userId)).limit(1);
+        if (!user) throw new TRPCError({ code: "BAD_REQUEST", message: "关联的管理人员或机械操作员账号不存在" });
+      }
+      if (input.laborWorkerId) {
+        const [worker] = await db.select({ id: laborWorkers.id, projectId: laborWorkers.projectId }).from(laborWorkers).where(eq(laborWorkers.id, input.laborWorkerId)).limit(1);
+        if (!worker) throw new TRPCError({ code: "BAD_REQUEST", message: "关联的施工队工人档案不存在" });
+        if (input.projectId && worker.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "施工队工人的归属项目必须与劳务实名档案一致" });
+      }
+      if (input.projectId) {
+        const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+        if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "员工归属项目必须是未归档的有效项目" });
+      }
+      const values = { userId: input.userId ?? null, laborWorkerId: input.laborWorkerId ?? null, projectId: input.projectId ?? null, employeeType: input.employeeType, teamName: input.teamName ?? null, employmentStatus: input.employmentStatus, joinedAt: input.joinedAt ? new Date(`${input.joinedAt}T00:00:00Z`) : null, leftAt: input.leftAt ? new Date(`${input.leftAt}T00:00:00Z`) : null, salaryBasis: input.salaryBasis, baseSalary: input.baseSalary === null || input.baseSalary === undefined ? null : String(input.baseSalary), remarks: input.remarks ?? null };
+      if (input.id) {
+        const [existing] = await db.select({ id: employeeProfiles.id }).from(employeeProfiles).where(eq(employeeProfiles.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+        await db.update(employeeProfiles).set(values).where(eq(employeeProfiles.id, input.id));
+      } else await db.insert(employeeProfiles).values(values);
+      await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: input.id ? "update_employee_profile" : "create_employee_profile", targetType: "employee_profile", targetId: String(input.id ?? input.userId ?? input.laborWorkerId), summary: `${input.id ? "维护" : "新建"}${input.employeeType === "management" ? "管理人员" : input.employeeType === "operator" ? "机械操作员" : "施工队工人"}员工档案` });
+      return { success: true };
+    }),
+    saveInsurance: protectedProcedure.input(employeeInsuranceInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [profile] = await db.select({ id: employeeProfiles.id }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
+      if (!profile) throw new TRPCError({ code: "BAD_REQUEST", message: "请先建立有效员工档案" });
+      const values = { employeeProfileId: input.employeeProfileId, insuranceType: input.insuranceType, providerName: input.providerName ?? null, policyReference: input.policyReference ?? null, purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`), expiresAt: new Date(`${input.expiresAt}T00:00:00Z`), status: input.status, remarks: input.remarks ?? null };
+      if (input.id) await db.update(employeeInsurancePolicies).set(values).where(eq(employeeInsurancePolicies.id, input.id));
+      else await db.insert(employeeInsurancePolicies).values(values);
+      await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: input.id ? "update_employee_insurance" : "create_employee_insurance", targetType: "employee_insurance", targetId: String(input.id ?? input.employeeProfileId), summary: `${input.id ? "维护" : "登记"}员工保险：${input.insuranceType}` });
+      return { success: true };
+    }),
+  }),
+
+  assetMaintenance: router({
+    list: protectedProcedure.input(z.object({ assetType: z.enum(["vehicle", "machine"]).optional(), projectId: z.number().int().positive().optional(), assetId: z.number().int().positive().optional(), status: z.enum(["draft", "approved", "settled", "void"]).optional() }).optional()).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(assetMaintenanceRecords).orderBy(desc(assetMaintenanceRecords.occurredAt));
+      const filtered = rows.filter(row => (!input?.assetType || row.assetType === input.assetType) && (!input?.projectId || row.projectId === input.projectId) && (!input?.assetId || row.assetId === input.assetId) && (!input?.status || row.status === input.status));
+      return Promise.all(filtered.map(async row => {
+        const [asset] = row.assetType === "vehicle" ? await db.select({ name: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, row.assetId)).limit(1) : await db.select({ name: machines.name, code: machines.code }).from(machines).where(eq(machines.id, row.assetId)).limit(1);
+        return { ...row, assetName: asset ? ("code" in asset && asset.code ? `${asset.name} · ${asset.code}` : asset.name) : `资源 #${row.assetId}` };
+      }));
+    }),
+    summary: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), assetType: z.enum(["vehicle", "machine"]).optional(), assetId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { vehicleMaintenanceAmount: 0, vehicleRepairAmount: 0, machineMaintenanceAmount: 0, machineRepairAmount: 0, machineOperatingCostAmount: 0, totalAmount: 0 };
+      const records = (await db.select().from(assetMaintenanceRecords)).filter(row => row.status !== "void" && (!input?.projectId || row.projectId === input.projectId) && (!input?.assetType || row.assetType === input.assetType) && (!input?.assetId || row.assetId === input.assetId));
+      const amountOf = (assetType: "vehicle" | "machine", costCategory: "maintenance" | "repair") => records.filter(row => row.assetType === assetType && row.costCategory === costCategory).reduce((sum, row) => sum + Number(row.amount), 0);
+      const machineCosts = (await db.select().from(machineCostRecords)).filter(row => row.status !== "void" && (!input?.projectId || row.projectId === input.projectId) && (!input?.assetType || input.assetType === "machine") && (!input?.assetId || row.machineId === input.assetId));
+      const machineOperatingCostAmount = machineCosts.reduce((sum, row) => sum + Number(row.amount), 0);
+      const vehicleMaintenanceAmount = amountOf("vehicle", "maintenance");
+      const vehicleRepairAmount = amountOf("vehicle", "repair");
+      const machineMaintenanceAmount = amountOf("machine", "maintenance");
+      const machineRepairAmount = amountOf("machine", "repair");
+      return { vehicleMaintenanceAmount, vehicleRepairAmount, machineMaintenanceAmount, machineRepairAmount, machineOperatingCostAmount, totalAmount: vehicleMaintenanceAmount + vehicleRepairAmount + machineMaintenanceAmount + machineRepairAmount + machineOperatingCostAmount };
+    }),
+    save: protectedProcedure.input(assetMaintenanceInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [asset] = input.assetType === "vehicle" ? await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.assetId)).limit(1) : await db.select({ id: machines.id, projectId: machines.projectId }).from(machines).where(eq(machines.id, input.assetId)).limit(1);
+      if (!asset || asset.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "维修保养资源必须属于所选项目" });
+      const values = { assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, costCategory: input.costCategory, amount: String(input.amount), occurredAt: new Date(input.occurredAt), serviceProvider: input.serviceProvider ?? null, meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), nextDueAt: input.nextDueAt ? new Date(`${input.nextDueAt}T00:00:00Z`) : null, remarks: input.remarks ?? null, status: input.status };
+      if (input.id) await db.update(assetMaintenanceRecords).set(values).where(eq(assetMaintenanceRecords.id, input.id));
+      else await db.insert(assetMaintenanceRecords).values(values);
+      await db.insert(auditLogs).values({ userId: admin.id, module: input.assetType === "vehicle" ? "transport" : "machinery", action: input.id ? "update_asset_maintenance" : "create_asset_maintenance", targetType: `${input.assetType}_maintenance`, targetId: String(input.id ?? input.assetId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.costCategory === "maintenance" ? "保养" : "维修"}费用：¥${input.amount}` });
+      return { success: true };
+    }),
   }),
 
   vehicle: router({
