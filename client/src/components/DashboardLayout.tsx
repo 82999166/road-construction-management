@@ -37,6 +37,8 @@ export type DashboardMenuItem = {
   icon: LucideIcon;
   label: string;
   path: string;
+  /** 侧栏分区标题；未提供时归入“工作台”。 */
+  section?: string;
 };
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -127,6 +129,13 @@ function DashboardLayoutContent({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const activeMenuItem = menuItems.find(item => location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`)));
   const isMobile = useIsMobile();
+  const menuGroups = menuItems.reduce<Array<{ label: string; items: DashboardMenuItem[] }>>((groups, item) => {
+    const label = item.section ?? "工作台";
+    const existing = groups.find(group => group.label === label);
+    if (existing) existing.items.push(item);
+    else groups.push({ label, items: [item] });
+    return groups;
+  }, []);
 
   useEffect(() => {
     if (isCollapsed) {
@@ -169,63 +178,67 @@ function DashboardLayoutContent({
       <div className="relative" ref={sidebarRef}>
         <Sidebar
           collapsible="icon"
-          className="border-r-0"
+          className="border-r border-white/10 !bg-[#14242c] !text-[#e8efec]"
           disableTransition={isResizing}
         >
-          <SidebarHeader className="h-16 justify-center">
-            <div className="flex items-center gap-3 px-2 transition-all w-full">
+          <SidebarHeader className="h-auto border-b border-white/10 px-3 py-4">
+            <div className="flex w-full items-center gap-3 transition-all">
               <button
                 onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f3c64e]"
                 aria-label="Toggle navigation"
               >
-                <PanelLeft className="h-4 w-4 text-muted-foreground" />
+                <PanelLeft className="h-4 w-4" />
               </button>
               {!isCollapsed ? (
-                <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-semibold tracking-tight truncate">{title}</span>
+                <div className="min-w-0">
+                    <span className="block truncate text-sm font-semibold tracking-wide text-white">{title}</span>
+                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">ROAD · COMMAND · OS</span>
                 </div>
               ) : null}
             </div>
           </SidebarHeader>
 
-          <SidebarContent className="gap-0">
-            <SidebarMenu className="px-2 py-1">
-              {menuItems.map(item => {
-                const isActive = location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`));
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => setLocation(item.path)}
-                      tooltip={item.label}
-                      className={`h-10 transition-all font-normal`}
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
+          <SidebarContent className="gap-0 py-3">
+            {menuGroups.map(group => (
+              <div className="mb-3 last:mb-0" key={group.label}>
+                {!isCollapsed ? <p className="px-5 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-[#829590]">{group.label}</p> : null}
+                <SidebarMenu className="px-2">
+                  {group.items.map(item => {
+                    const isActive = location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`));
+                    return (
+                      <SidebarMenuItem key={item.path}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          onClick={() => setLocation(item.path)}
+                          tooltip={item.label}
+                          className="relative h-10 rounded-md px-3 text-slate-300 transition-colors hover:bg-white/10 hover:text-white data-[active=true]:bg-[#263a43] data-[active=true]:font-medium data-[active=true]:text-white data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-full data-[active=true]:before:bg-[#f3c64e]"
+                        >
+                          <item.icon className={`h-4 w-4 ${isActive ? "text-[#f3c64e]" : "text-[#a8b8b4]"}`} />
+                          <span>{item.label}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </div>
+            ))}
           </SidebarContent>
 
-          <SidebarFooter className="p-3">
+          <SidebarFooter className="border-t border-white/10 p-3">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <Avatar className="h-9 w-9 border shrink-0">
-                    <AvatarFallback className="text-xs font-medium">
+                <button className="flex w-full items-center gap-3 rounded-lg px-1 py-1 text-left transition-colors hover:bg-white/10 group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f3c64e]">
+                  <Avatar className="h-9 w-9 shrink-0 border border-white/20">
+                    <AvatarFallback className="bg-[#29424b] text-xs font-medium text-[#f6d36c]">
                       {user?.name?.charAt(0).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                    <p className="text-sm font-medium truncate leading-none">
+                    <p className="truncate text-sm font-medium leading-none text-white">
                       {user?.name || "-"}
                     </p>
-                    <p className="text-xs text-muted-foreground truncate mt-1.5">
+                    <p className="mt-1.5 truncate text-xs text-[#9fb1ad]">
                       {user?.email || "已登录用户"}
                     </p>
                   </div>
@@ -253,14 +266,20 @@ function DashboardLayoutContent({
         />
       </div>
 
-      <SidebarInset>
+      <SidebarInset className="bg-[#f5f5f0]">
+        {!isMobile && (
+          <div className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-[#dce3de] bg-[#f8f8f4]/95 px-6 backdrop-blur md:flex lg:px-8">
+            <div className="flex min-w-0 items-center gap-3"><span className="text-xs font-semibold tracking-[0.14em] text-[#70827b]">项目指挥台</span><span className="text-[#c5cfca]">/</span><span className="truncate text-sm font-medium text-[#1b2d34]">{activeMenuItem?.label ?? "系统治理"}</span></div>
+            <div className="flex items-center gap-2 text-xs text-[#60736c]"><span className="h-2 w-2 rounded-full bg-[#f3c64e]" />PC 超级治理 · 已授权</div>
+          </div>
+        )}
         {isMobile && (
-          <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
+          <div className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-[#dce3de] bg-[#f8f8f4]/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur">
             <div className="flex items-center gap-2">
-              <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
+              <SidebarTrigger className="h-9 w-9 rounded-lg border border-[#dce3de] bg-white" />
               <div className="flex items-center gap-3">
                 <div className="flex flex-col gap-1">
-                  <span className="tracking-tight text-foreground">
+                  <span className="tracking-tight text-[#1b2d34]">
                     {activeMenuItem?.label ?? "Menu"}
                   </span>
                 </div>
@@ -268,7 +287,7 @@ function DashboardLayoutContent({
             </div>
           </div>
         )}
-        <main className="flex-1 p-4">{children}</main>
+        <main className="admin-command-canvas flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
       </SidebarInset>
     </>
   );

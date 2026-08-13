@@ -37,20 +37,20 @@ import { useLocation } from "wouter";
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
  */
 const ADMIN_MENU: DashboardMenuItem[] = [
-  { icon: LayoutDashboard, label: "运营概览", path: "/admin" },
-  { icon: Building2, label: "组织与项目", path: "/admin/organization" },
-  { icon: Truck, label: "车辆与资源", path: "/admin/vehicles" },
-  { icon: FolderKanban, label: "施工执行", path: "/admin/construction" },
-  { icon: UsersRound, label: "劳务工资", path: "/admin/labor" },
-  { icon: Settings2, label: "机械资源", path: "/admin/machinery" },
-  { icon: Truck, label: "运输调度", path: "/admin/transport" },
-  { icon: UsersRound, label: "人员与权限", path: "/admin/permission" },
-  { icon: BarChart3, label: "财务管理", path: "/admin/finance" },
-  { icon: Megaphone, label: "范围通知", path: "/admin/broadcast" },
-  { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login" },
-  { icon: BarChart3, label: "业务治理与备份", path: "/admin/business" },
-  { icon: Settings2, label: "系统设置", path: "/admin/settings" },
-  { icon: ScrollText, label: "发布与审计", path: "/admin/audit" },
+  { icon: LayoutDashboard, label: "运营概览", path: "/admin", section: "决策总览" },
+  { icon: Building2, label: "组织与项目", path: "/admin/organization", section: "项目执行" },
+  { icon: FolderKanban, label: "施工执行", path: "/admin/construction", section: "项目执行" },
+  { icon: Truck, label: "车辆与资源", path: "/admin/vehicles", section: "资源协同" },
+  { icon: Settings2, label: "机械资源", path: "/admin/machinery", section: "资源协同" },
+  { icon: Truck, label: "运输调度", path: "/admin/transport", section: "资源协同" },
+  { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源协同" },
+  { icon: UsersRound, label: "人员与权限", path: "/admin/permission", section: "资源协同" },
+  { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财与控制" },
+  { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "业财与控制" },
+  { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login", section: "平台治理" },
+  { icon: BarChart3, label: "业务治理与备份", path: "/admin/business", section: "平台治理" },
+  { icon: Settings2, label: "系统设置", path: "/admin/settings", section: "平台治理" },
+  { icon: ScrollText, label: "发布与审计", path: "/admin/audit", section: "平台治理" },
 ];
 
 /** 超级管理员从业务治理页进入时，优先落在 PC 端受控台账；其他模块仍使用已部署的既有工作台。 */
@@ -272,14 +272,14 @@ function MetricCard({
   icon: LucideIcon;
 }) {
   return (
-    <Card className="border-slate-200 shadow-sm">
-      <CardContent className="flex items-start justify-between p-5">
+    <Card className="overflow-hidden border-[#dce3de] shadow-[0_8px_24px_rgba(21,38,45,0.05)]">
+      <CardContent className="relative flex items-start justify-between p-5 before:absolute before:inset-x-0 before:top-0 before:h-1 before:bg-[#f3c64e]">
         <div>
-          <p className="text-xs font-medium text-slate-500">{title}</p>
-          <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">{value ?? "—"}</p>
-          <p className="mt-2 text-xs text-slate-500">{description}</p>
+          <p className="text-xs font-semibold tracking-[0.1em] text-[#6d8179]">{title}</p>
+          <p className="mt-2 text-2xl font-semibold tracking-tight text-[#172a32]">{value ?? "—"}</p>
+          <p className="mt-2 text-xs text-[#71817b]">{description}</p>
         </div>
-        <div className="rounded-xl bg-slate-100 p-2.5 text-[#203c48]">
+        <div className="rounded-xl bg-[#f7f4e7] p-2.5 text-[#203c48]">
           <Icon className="h-4 w-4" />
         </div>
       </CardContent>
