@@ -59,4 +59,14 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("登记维修保养");
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
+
+  it("在手机宽度将新增台账的动作区与筛选控件分区换行，保留完整文案和足够触控高度", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto");
+    expect(source).toContain("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4");
+    expect(source).toContain("min-h-11 w-full text-sm sm:min-h-8 sm:w-auto");
+    expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
+    expect(source).toContain("min-h-11 w-full self-end text-sm xl:w-auto");
+  });
 });
