@@ -26,6 +26,7 @@ import {
   systemRoles,
   systemSettings,
   transportTrips,
+  transportVehicleLeaseRules,
   transportVehicles,
   userProfiles,
   userRoleAssignments,
@@ -67,6 +68,7 @@ const vehicleManagementInput = z.object({
   organizationId: z.number().int().positive().nullable().optional(),
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
   vehicleType: z.enum(["dump_truck", "tractor", "mixer", "flatbed", "other"]),
+  ownership: z.enum(["owned", "leased"]).default("owned"),
   ownerName: z.string().trim().max(128).nullable().optional(),
   driverUserId: z.number().int().positive().nullable().optional(),
   boxLengthMeters: z.number().gt(0).max(100),
@@ -75,6 +77,16 @@ const vehicleManagementInput = z.object({
   loadFactor: z.number().gt(0).max(1.5).default(1),
   payloadTons: z.number().gt(0).max(9999).nullable().optional(),
   status: z.enum(["active", "suspended", "disabled"]),
+  leaseTerms: z.object({
+    billingType: z.enum(["monthly", "daily", "hourly", "shift"]),
+    rate: z.number().gt(0, "租金必须大于 0").max(999999999999.99),
+    effectiveFrom: z.string().date("租赁起租日期格式应为 YYYY-MM-DD"),
+    effectiveTo: z.string().date("租赁截止日期格式应为 YYYY-MM-DD").nullable().optional(),
+  }).refine(value => !value.effectiveTo || value.effectiveTo >= value.effectiveFrom, { message: "租赁截止日期不得早于起租日期", path: ["effectiveTo"] }).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.ownership !== "leased") return;
+  if (!value.ownerName?.trim()) ctx.addIssue({ code: "custom", path: ["ownerName"], message: "外租车辆必须填写出租方" });
+  if (!value.leaseTerms) ctx.addIssue({ code: "custom", path: ["leaseTerms"], message: "外租车辆必须填写租金、计费方式和租赁起止时间" });
 });
 
 const roleInput = z.object({
@@ -472,9 +484,14 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       const rows = await db.select().from(transportVehicles).orderBy(desc(transportVehicles.updatedAt));
-      return rows.map(vehicle => ({
-        ...vehicle,
-        theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
+      return Promise.all(rows.map(async vehicle => {
+        const rules = vehicle.ownership === "leased" ? await db.select().from(transportVehicleLeaseRules).where(eq(transportVehicleLeaseRules.vehicleId, vehicle.id)).orderBy(desc(transportVehicleLeaseRules.updatedAt)) : [];
+        const activeRule = rules.find(rule => rule.projectId === vehicle.projectId && rule.status === "active");
+        return {
+          ...vehicle,
+          theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
+          leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
+        };
       }));
     }),
     save: protectedProcedure.input(vehicleManagementInput).mutation(async ({ ctx, input }) => {
@@ -518,6 +535,7 @@ export const adminRouter = router({
         organizationId: input.organizationId ?? null,
         plateNo: input.plateNo,
         vehicleType: input.vehicleType,
+        ownership: input.ownership,
         ownerName: input.ownerName ?? null,
         driverUserId: input.driverUserId ?? null,
         boxLengthMeters: String(input.boxLengthMeters),
@@ -527,15 +545,31 @@ export const adminRouter = router({
         payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons),
         status: input.status,
       };
+      let vehicleId = input.id;
       if (existing) await db.update(transportVehicles).set(values).where(eq(transportVehicles.id, existing.id));
-      else await db.insert(transportVehicles).values(values);
+      else {
+        await db.insert(transportVehicles).values(values);
+        const [created] = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.plateNo, input.plateNo)).limit(1);
+        if (!created) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "车辆台账保存后未找到记录" });
+        vehicleId = created.id;
+      }
+      if (!vehicleId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "车辆台账标识无效" });
+      const existingRules = await db.select().from(transportVehicleLeaseRules).where(eq(transportVehicleLeaseRules.vehicleId, vehicleId)).orderBy(desc(transportVehicleLeaseRules.updatedAt));
+      const activeRule = existingRules.find(rule => rule.projectId === input.projectId && rule.status === "active");
+      if (input.ownership === "leased" && input.leaseTerms) {
+        const leaseValues = { vehicleId, projectId: input.projectId, billingType: input.leaseTerms.billingType, rate: String(input.leaseTerms.rate), effectiveFrom: new Date(`${input.leaseTerms.effectiveFrom}T00:00:00Z`), effectiveTo: input.leaseTerms.effectiveTo ? new Date(`${input.leaseTerms.effectiveTo}T00:00:00Z`) : null, status: "active" as const };
+        if (activeRule) await db.update(transportVehicleLeaseRules).set(leaseValues).where(eq(transportVehicleLeaseRules.id, activeRule.id));
+        else await db.insert(transportVehicleLeaseRules).values(leaseValues);
+      } else if (activeRule) {
+        await db.update(transportVehicleLeaseRules).set({ status: "disabled" }).where(eq(transportVehicleLeaseRules.id, activeRule.id));
+      }
       await db.insert(auditLogs).values({
         userId: admin.id,
         module: "transport",
         action: input.id ? "admin_update_vehicle" : "admin_create_vehicle",
         targetType: "transport_vehicle",
-        targetId: String(input.id ?? input.plateNo),
-        summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}`,
+        targetId: String(vehicleId),
+        summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}${input.ownership === "leased" ? "，已维护外租租金与租期" : ""}`,
       });
       return {
         success: true,

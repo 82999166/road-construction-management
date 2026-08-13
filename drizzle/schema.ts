@@ -705,6 +705,8 @@ export const transportVehicles = mysqlTable(
     plateNo: varchar("plateNo", { length: 32 }).notNull(),
     /** 车辆类型仅描述车辆资源属性，不参与运费计算；默认渣土车兼容既有运输台账。 */
     vehicleType: mysqlEnum("vehicleType", ["dump_truck", "tractor", "mixer", "flatbed", "other"]).default("dump_truck").notNull(),
+    /** 自有或外租；既有车辆默认自有，外租车辆的租金和租期保存于独立租赁规则表。 */
+    ownership: mysqlEnum("ownership", ["owned", "leased"]).default("owned").notNull(),
     ownerName: varchar("ownerName", { length: 128 }),
     driverUserId: int("driverUserId"),
     boxLengthMeters: decimal("boxLengthMeters", { precision: 8, scale: 3 }).notNull(),
@@ -717,6 +719,24 @@ export const transportVehicles = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo) }),
+);
+
+/** 外租车辆租金规则；车辆自有时不建立启用规则，历史外租合同继续保留用于结算与审计。 */
+export const transportVehicleLeaseRules = mysqlTable(
+  "transport_vehicle_lease_rules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    billingType: mysqlEnum("billingType", ["monthly", "daily", "hourly", "shift"]).notNull(),
+    rate: decimal("rate", { precision: 16, scale: 2 }).notNull(),
+    effectiveFrom: date("effectiveFrom").notNull(),
+    effectiveTo: date("effectiveTo"),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ vehicleStatusIndex: index("transport_vehicle_lease_rules_vehicle_status_index").on(table.vehicleId, table.status) }),
 );
 
 /**

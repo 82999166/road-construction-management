@@ -37,6 +37,17 @@ const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结�
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const isoDateTimeSchema = z.string().datetime({ offset: true, message: "时间必须使用 ISO 8601 格式" });
 
+/** 外租资源保存时必须同时记录可结算的租金、计费方式与租期。 */
+const assetLeaseTermsInput = z.object({
+  billingType: z.enum(["monthly", "daily", "hourly", "shift"]),
+  rate: z.number().gt(0, "租金必须大于 0").max(999999999999.99),
+  effectiveFrom: businessDateSchema,
+  effectiveTo: businessDateSchema.nullable().optional(),
+}).refine(value => !value.effectiveTo || value.effectiveTo >= value.effectiveFrom, {
+  message: "租赁截止日期不得早于起租日期",
+  path: ["effectiveTo"],
+});
+
 /** 机械台账写入输入。项目不可为空，避免无归属设备绕开数据范围控制。 */
 const machineInput = z.object({
   id: z.number().int().positive().optional(),
@@ -49,6 +60,11 @@ const machineInput = z.object({
   supplierName: z.string().trim().max(200).nullable().optional(),
   plateOrAssetNo: z.string().trim().max(64).nullable().optional(),
   status: z.enum(["idle", "working", "repairing", "offsite", "retired"]),
+  leaseTerms: assetLeaseTermsInput.nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.ownership !== "leased") return;
+  if (!value.supplierName?.trim()) ctx.addIssue({ code: "custom", path: ["supplierName"], message: "外租机械必须填写出租方" });
+  if (!value.leaseTerms) ctx.addIssue({ code: "custom", path: ["leaseTerms"], message: "外租机械必须填写租金、计费方式和租赁起止时间" });
 });
 
 /** 机械合同计价规则由后台录入，所有金额最终仅在服务端参与核算。 */
@@ -462,7 +478,15 @@ export const machineryRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
-    return db.select().from(machines).where(eq(machines.projectId, input.projectId)).orderBy(desc(machines.updatedAt));
+    const rows = await db.select().from(machines).where(eq(machines.projectId, input.projectId)).orderBy(desc(machines.updatedAt));
+    return Promise.all(rows.map(async machine => {
+      const rules = machine.ownership === "leased" ? await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machine.id)).orderBy(desc(machineLeaseRules.createdAt)) : [];
+      const activeRule = rules.find(rule => rule.projectId === input.projectId && rule.status === "active");
+      return {
+        ...machine,
+        leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
+      };
+    }));
   }),
 
   /** 新建或维护机械台账；跨项目编辑时需同时校验原项目和目标项目授权。 */
@@ -483,6 +507,7 @@ export const machineryRouter = router({
       plateOrAssetNo: input.plateOrAssetNo ?? null,
       status: input.status,
     };
+    let machineId = input.id;
     if (input.id) {
       const [existing] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1);
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "机械台账不存在" });
@@ -490,8 +515,31 @@ export const machineryRouter = router({
       await db.update(machines).set(values).where(eq(machines.id, input.id));
     } else {
       await db.insert(machines).values(values);
+      const [created] = await db.select({ id: machines.id }).from(machines).where(eq(machines.code, input.code)).limit(1);
+      if (!created) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "机械台账保存后未找到记录" });
+      machineId = created.id;
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(input.id ?? input.code), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}` });
+    if (!machineId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "机械台账标识无效" });
+
+    const existingRules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machineId)).orderBy(desc(machineLeaseRules.createdAt));
+    const activeRule = existingRules.find(rule => rule.projectId === input.projectId && rule.status === "active");
+    if (input.ownership === "leased" && input.leaseTerms) {
+      const leaseValues = {
+        machineId,
+        projectId: input.projectId,
+        billingType: input.leaseTerms.billingType,
+        rate: String(roundMoney(input.leaseTerms.rate)),
+        overtimeHourlyRate: "0",
+        effectiveFrom: toBusinessDate(input.leaseTerms.effectiveFrom),
+        effectiveTo: input.leaseTerms.effectiveTo ? toBusinessDate(input.leaseTerms.effectiveTo) : null,
+        status: "active" as const,
+      };
+      if (activeRule) await db.update(machineLeaseRules).set(leaseValues).where(eq(machineLeaseRules.id, activeRule.id));
+      else await db.insert(machineLeaseRules).values(leaseValues);
+    } else if (activeRule) {
+      await db.update(machineLeaseRules).set({ status: "disabled" }).where(eq(machineLeaseRules.id, activeRule.id));
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(machineId), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}${input.ownership === "leased" ? "，已维护外租租金与租期" : ""}` });
     return { success: true };
   }),
 

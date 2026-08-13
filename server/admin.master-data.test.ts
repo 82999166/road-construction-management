@@ -44,6 +44,7 @@ function createSequentialLimitDb(...responses: unknown[][]) {
         where: vi.fn(() => {
           const result = {
             limit: vi.fn(nextResponse),
+            orderBy: vi.fn(nextResponse),
             then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => nextResponse().then(resolve, reject),
           };
           return result;
@@ -73,6 +74,7 @@ const vehicleInput = {
   organizationId: null,
   plateNo: "粤A12345",
   vehicleType: "dump_truck" as const,
+  ownership: "owned" as const,
   ownerName: "自有车辆",
   driverUserId: null,
   boxLengthMeters: 6.2,
@@ -81,6 +83,7 @@ const vehicleInput = {
   loadFactor: 1,
   payloadTons: 20,
   status: "active" as const,
+  leaseTerms: null,
 };
 
 describe("超级管理主数据约束", () => {
@@ -193,6 +196,12 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("车牌") });
   });
 
+  it("拒绝外租车辆遗漏出租方、租金或租赁起止时间，防止形成无法结算的外租台账", async () => {
+    vi.mocked(getDb).mockResolvedValue({} as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, ownership: "leased", ownerName: null, leaseTerms: null })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("外租车辆") });
+  });
+
   it("拒绝直接停用存在未结算趟次的车辆", async () => {
     const db = createSequentialLimitDb(
       [{ id: 20, status: "active" }],
@@ -209,11 +218,13 @@ describe("超级管理主数据约束", () => {
     const db = createSequentialLimitDb(
       [{ id: 20, status: "active" }],
       [],
+      [{ id: 88 }],
+      [],
     );
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
-    expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", projectId: 20 }));
+    expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", ownership: "owned", projectId: 20 }));
     expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
   });
 

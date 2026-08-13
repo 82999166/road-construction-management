@@ -39,6 +39,10 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("机械档案维护");
     expect(source).toContain("新建机械档案");
     expect(source).toContain("录入机械成本");
+    expect(source).toContain("外租合同与租金");
+    expect(source).toContain("外租车辆");
+    expect(source).toContain("起租日期");
+    expect(source).toContain("截止日期");
     expect(source).toContain("saveMachine.mutate");
     expect(source).toContain("saveMachineCost.mutate");
   });

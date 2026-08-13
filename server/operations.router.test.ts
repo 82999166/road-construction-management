@@ -91,6 +91,21 @@ describe("机械与运输 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("拒绝外租机械遗漏出租方、租金或租赁起止时间，防止产生无法结算的台账", async () => {
+    await expect(machineryRouter.createCaller(createAuthContext()).saveMachine({
+      projectId: 10,
+      operatorUserId: null,
+      code: "EXC-001",
+      name: "挖掘机",
+      model: null,
+      ownership: "leased",
+      supplierName: null,
+      plateOrAssetNo: null,
+      status: "idle",
+      leaseTerms: null,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("外租机械") });
+  });
+
   it("纯司机岗位仅能读取分配给本人的车辆台账", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
     const db = createSelectDb([

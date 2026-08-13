@@ -169,6 +169,20 @@
       "when": 1786599460318,
       "tag": "0023_burly_umar",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1786631955988,
+      "tag": "0024_short_ikaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1786632019466,
+      "tag": "0025_aberrant_piledriver",
+      "breakpoints": true
     }
   ]
 }

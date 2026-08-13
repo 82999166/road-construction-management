@@ -1,0 +1,1 @@
+ALTER TABLE `transport_vehicles` ADD `ownership` enum('owned','leased') DEFAULT 'owned' NOT NULL;
