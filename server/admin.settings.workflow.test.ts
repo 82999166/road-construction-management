@@ -385,4 +385,14 @@ describe("系统设置安全工作流", () => {
     ]));
     expect(JSON.stringify(db.updatedValues)).not.toContain("WECHAT_OFFICIAL_APP_SECRET");
   });
+
+  it("已知会触发微信 40037 的订阅模板占位条目不能被发布为持续业务通知模板", async () => {
+    const db = createSettingsDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(listPublishedOfficialAccountPrivateTemplates).mockResolvedValue({ success: true, message: "ok", templates: [{ templateId: "subscription-placeholder", title: "订阅模板消息", content: "{{content.DATA}}", fieldMapping: { content: "{content}" } }] });
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.createOfficialAccountTemplateDraft({ templateId: "subscription-placeholder" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("40037") });
+    expect(db.updatedValues).toHaveLength(0);
+    expect(db.insertedValues).toHaveLength(0);
+  });
 });

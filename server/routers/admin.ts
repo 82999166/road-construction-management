@@ -38,7 +38,7 @@ import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
-import { getOfficialAccountNotificationTemplateCoverage, inspectPublishedOfficialAccountTemplateCapability, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -1208,6 +1208,9 @@ export const adminRouter = router({
       if (!discovered.success) throw new TRPCError({ code: "BAD_REQUEST", message: discovered.message });
       const selected = discovered.templates.find(template => template.templateId === input.templateId);
       if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
+      if (!isPersistentBusinessTemplateEligible(selected)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: getPersistentBusinessTemplateEligibilityMessage(selected) ?? "所选模板不可用于持续业务通知。" });
+      }
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const keys = ["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"];

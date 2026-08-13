@@ -23,6 +23,8 @@ export type OfficialAccountPrivateTemplate = {
   title: string;
   content: string;
   fieldMapping: Record<string, string>;
+  persistentBusinessEligible?: boolean;
+  eligibilityMessage?: string;
 };
 
 export type OfficialAccountNotificationResult = {
@@ -107,6 +109,20 @@ export function usesSingleFieldSummaryCompatibility(templateFields: Record<strin
 
 export function buildSingleFieldSummary(variables: Record<string, string>) {
   return `${variables.title}｜${variables.content}｜${variables.eventCode}`.slice(0, 200);
+}
+
+/**
+ * 微信新版后台会将“订阅模板消息”占位条目列入私有模板库，但该项目的实测接口对它返回 40037。
+ * 它不能承载持续的施工、采购、审批及群发提醒，必须等待管理员选用另一条可下发的合规模板。
+ */
+export function isPersistentBusinessTemplateEligible(template: Pick<OfficialAccountPrivateTemplate, "title" | "fieldMapping">) {
+  return !(template.title.trim() === "订阅模板消息" && Object.keys(template.fieldMapping).length <= 1);
+}
+
+export function getPersistentBusinessTemplateEligibilityMessage(template: Pick<OfficialAccountPrivateTemplate, "title" | "fieldMapping">) {
+  return isPersistentBusinessTemplateEligible(template)
+    ? null
+    : "该“订阅模板消息”占位模板实测会被微信返回 40037，不能用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板后重新读取模板库。";
 }
 
 /** 仅保留网络故障类别，禁止把 URL、令牌、OpenID 或响应正文写入业务投递审计。 */
@@ -412,7 +428,11 @@ export async function listPublishedOfficialAccountPrivateTemplates(): Promise<{ 
     const templates = (payload?.template_list ?? [])
       .filter((template): template is Required<Pick<typeof template, "template_id" | "title" | "content">> => Boolean(template.template_id && template.title && template.content))
       .slice(0, 25)
-      .map(template => ({ templateId: template.template_id.slice(0, 128), title: template.title.slice(0, 160), content: template.content.slice(0, 1600), fieldMapping: deriveTemplateFieldMapping(template.content) }));
+      .map(template => {
+        const normalized = { templateId: template.template_id.slice(0, 128), title: template.title.slice(0, 160), content: template.content.slice(0, 1600), fieldMapping: deriveTemplateFieldMapping(template.content) };
+        const eligibilityMessage = getPersistentBusinessTemplateEligibilityMessage(normalized);
+        return eligibilityMessage ? { ...normalized, persistentBusinessEligible: false, eligibilityMessage } : normalized;
+      });
     return { success: true, message: templates.length ? `已读取 ${templates.length} 个私有模板；请选择符合施工业务通知场景的模板生成系统草稿。` : "模板消息功能已开通，但私有模板库暂无可用模板。请在服务号后台设置服务类目后，从公共模板库选用合规业务通知模板。", templates };
   } catch {
     return { success: false, message: "模板消息能力检测无法连接微信接口。请先执行“校验开发密钥”，确认 AppSecret 与 API IP 白名单已通过。", templates: [] };
