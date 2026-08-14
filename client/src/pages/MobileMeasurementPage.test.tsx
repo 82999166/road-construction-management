@@ -11,4 +11,12 @@ describe("工程计量移动端终态展示", () => {
     expect(canVoidMeasurementClaim("settled")).toBe(false);
     expect(canVoidMeasurementClaim("void")).toBe(false);
   });
+
+  it("按服务端能力投影而不是超级管理员身份显示申报动作，并支持收方关联计量申报", async () => {
+    const source = await import("node:fs/promises").then(fs => fs.readFile(new URL("./MobileMeasurementPage.tsx", import.meta.url), "utf8"));
+    expect(source).toContain("trpc.measurement.claimCapabilities.useQuery");
+    expect(source).toContain("claimCapabilities.data?.canReview");
+    expect(source).toContain("关联计量申报（可选）");
+    expect(source).toContain("measurementClaimId: takeoffDraft.measurementClaimId");
+  });
 });

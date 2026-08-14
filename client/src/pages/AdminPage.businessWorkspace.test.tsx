@@ -70,6 +70,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("min-h-11 w-full self-end text-sm xl:w-auto");
   });
 
+  it("在手机宽度将超级后台业务菜单保留为完整可横向滚动的标签条，禁止压缩成裁切单字", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('aria-label="超级管理后台业务菜单"');
+    expect(source).toContain("justify-start gap-1 overflow-x-auto");
+    expect(source).toContain("h-10 shrink-0 whitespace-nowrap px-3 text-xs");
+    expect(source).toContain(">微信登录</TabsTrigger>");
+    expect(source).toContain(">业务治理</TabsTrigger>");
+  });
+
   it("将高频业务台账统一提供响应式表格式总览，保留详情入口和既有状态操作", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

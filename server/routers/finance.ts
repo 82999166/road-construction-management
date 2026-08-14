@@ -705,6 +705,18 @@ export const measurementRouter = router({
     return { canSubmit: canSubmitTakeoff(roleCodes), canReview: canReviewTakeoff(roleCodes) };
   }),
 
+  /** 仅向浏览器投影可办理的计量申报动作，页面不再以“是否超级管理员”替代岗位权限。 */
+  claimCapabilities: protectedProcedure.query(async ({ ctx }) => {
+    const roleCodes = await assertMeasurementAccess(ctx);
+    return {
+      canDraft: true,
+      canSubmit: true,
+      canReview: canReviewMeasurement(roleCodes),
+      canSettle: canSettleMeasurement(roleCodes),
+      canRecordPayment: canRecordMeasurementPayment(roleCodes),
+    };
+  }),
+
   listClaims: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertMeasurementAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -729,6 +741,11 @@ export const measurementRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    if (input.measurementClaimId) {
+      const [claim] = await db.select({ id: measurementClaims.id, projectId: measurementClaims.projectId, status: measurementClaims.status }).from(measurementClaims).where(eq(measurementClaims.id, input.measurementClaimId)).limit(1);
+      if (!claim || claim.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的关联计量申报" });
+      if (claim.status === "void") throw new TRPCError({ code: "CONFLICT", message: "已作废计量申报不可关联收方记录" });
+    }
     const declaredAmount = roundMoney(input.quantity * input.unitPrice);
     const values = {
       projectId: input.projectId,

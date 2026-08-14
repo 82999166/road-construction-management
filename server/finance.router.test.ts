@@ -238,6 +238,17 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     await expect(measurementRouter.createCaller(createAuthContext()).saveTakeoff({ projectId: 10, measurementClaimId: null, workItem: "路基土方", workLocation: "K12+300", unit: "m3", quantity: 100, unitPrice: 23.5, takeoffDate: "2026-08-12" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("计量申报能力按岗位投影，收方不得关联跨项目或已作废申报", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CONSTRUCTION_MANAGER"]);
+    await expect(measurementRouter.createCaller(createAuthContext()).claimCapabilities()).resolves.toEqual({ canDraft: true, canSubmit: true, canReview: false, canSettle: false, canRecordPayment: false });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 504, projectId: 99, status: "draft" }]) as never);
+    await expect(measurementRouter.createCaller(createAuthContext()).saveTakeoff({ projectId: 10, measurementClaimId: 504, workItem: "路基土方", workLocation: "K12+300", unit: "m3", quantity: 100, unitPrice: 23.5, takeoffDate: "2026-08-12" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "未找到当前项目的关联计量申报" });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 505, projectId: 10, status: "void" }]) as never);
+    await expect(measurementRouter.createCaller(createAuthContext()).saveTakeoff({ projectId: 10, measurementClaimId: 505, workItem: "路基土方", workLocation: "K12+300", unit: "m3", quantity: 100, unitPrice: 23.5, takeoffDate: "2026-08-12" })).rejects.toMatchObject({ code: "CONFLICT", message: "已作废计量申报不可关联收方记录" });
+  });
+
   it("收方复核、审核与锁定均写入审计和服务号深链，锁定后不得关联证据", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     const updateWhere = vi.fn(async () => undefined);
