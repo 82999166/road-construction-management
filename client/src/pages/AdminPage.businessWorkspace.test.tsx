@@ -69,4 +69,20 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
     expect(source).toContain("min-h-11 w-full self-end text-sm xl:w-auto");
   });
+
+  it("将高频业务台账统一提供响应式表格式总览，保留详情入口和既有状态操作", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("function LedgerTable");
+    expect(source).toContain("台账列表 · 可筛选 / 可导出");
+    expect(source).toContain("手机端可左右滑动查看完整字段");
+    expect(source).toContain("员工档案、薪资与保险");
+    expect(source).toContain("车辆统一台账");
+    expect(source).toContain("施工日报台账");
+    expect(source).toContain("工资条与结算台账");
+    expect(source).toContain("机械资源与成本台账");
+    expect(source).toContain("运输趟次台账");
+    expect(source).toContain("发票与成本审计台账");
+    expect(source).toContain("范围通知与确认台账");
+  });
 });

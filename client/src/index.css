@@ -165,6 +165,17 @@
   color: #71817b;
 }
 
+.ledger-table-shell [data-slot="table-container"] {
+  scrollbar-color: #9fb1ad transparent;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 639px) {
+  .ledger-table-shell [data-slot="table"] {
+    font-size: 0.75rem;
+  }
+}
+
 @layer components {
   /**
    * Custom container utility that centers content and adds responsive padding.
