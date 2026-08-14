@@ -85,4 +85,21 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("发票与成本审计台账");
     expect(source).toContain("范围通知与确认台账");
   });
+
+  it("对可维护主数据提供行内编辑与受控批量处理，同时不将历史业务单据误作物理删除", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("onEdit?: () => void");
+    expect(source).toContain("onRemove?: () => void");
+    expect(source).toContain("批量受控删除");
+    expect(source).toContain("batchRemoveVehicles");
+    expect(source).toContain("车辆批量受控删除结果");
+    expect(source).toContain("batchSuspendEmployees");
+    expect(source).toContain("员工批量停用结果");
+    expect(source).toContain("batchRetireMachines");
+    expect(source).toContain("机械批量退役结果");
+    expect(source).toContain("工资、考勤、保险和授权历史均被保留");
+    expect(source).toContain("机械记录及其成本、租赁、维修历史均被保留");
+    expect(source).toContain("isEditableConstructionReport");
+  });
 });
