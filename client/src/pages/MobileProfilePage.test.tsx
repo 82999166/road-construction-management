@@ -41,6 +41,7 @@ vi.mock("@/lib/trpc", () => ({
     officialAccount: {
       bindingStatus: { useQuery: () => ({ data: mockBindingStatus, isLoading: false, refetch: vi.fn() }) },
       beginBinding: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
+      verifyFollowStatus: { useMutation: () => ({ mutate: vi.fn(), isPending: false }) },
     },
   },
 }));

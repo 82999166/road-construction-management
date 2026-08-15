@@ -40,6 +40,12 @@ export type OfficialAccountNotificationResult = {
   providerMessageId?: string;
 };
 
+/** 关注状态只能由微信用户信息接口的明确 subscribe 结果确认；投递错误本身不足以直接判定用户已取关。 */
+export type OfficialAccountFollowVerification = {
+  status: "active" | "unsubscribed" | "unbound" | "unavailable" | "verification_failed" | "disabled";
+  failureCode?: string;
+};
+
 export type OfficialAccountBusinessEvent = {
   userId: number;
   recipientUserIds?: number[];
@@ -325,6 +331,46 @@ export async function getOfficialAccountAccessToken(config: OfficialAccountConfi
   return tokenCache.token;
 }
 
+/**
+ * 重新从微信用户信息接口核验一个已绑定身份是否仍关注当前服务号。
+ * 只有 subscribe 明确为 0 才会写入 unsubscribed；网络、配置、令牌或接口异常一律保留原绑定状态，避免误伤已关注人员。
+ */
+export async function verifyOfficialAccountBindingFollowStatus(userId: number): Promise<OfficialAccountFollowVerification> {
+  const db = await getDb();
+  if (!db) return { status: "unavailable", failureCode: "database_unavailable" };
+  const [binding] = await db.select().from(officialAccountBindings).where(eq(officialAccountBindings.userId, userId)).limit(1);
+  if (!binding) return { status: "unbound" };
+  if (binding.status === "disabled" || binding.status === "revoked") return { status: "disabled" };
+  const credentialResult = await loadPublishedOfficialAccountCredentials();
+  if (!credentialResult.config) return { status: "unavailable", failureCode: credentialResult.reason ?? "not_configured" };
+  try {
+    const accessToken = await getOfficialAccountAccessToken(credentialResult.config);
+    const endpoint = new URL("https://api.weixin.qq.com/cgi-bin/user/info");
+    endpoint.searchParams.set("access_token", accessToken);
+    endpoint.searchParams.set("openid", decryptSecret(binding.openIdEncrypted));
+    endpoint.searchParams.set("lang", "zh_CN");
+    const response = await requestOfficialAccountApi(credentialResult.config, endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
+    const payload = await response.json().catch(() => null) as { subscribe?: number; errcode?: number } | null;
+    if (!response.ok || (payload?.subscribe !== 0 && payload?.subscribe !== 1)) {
+      return { status: "verification_failed", failureCode: String(payload?.errcode ?? response.status).slice(0, 64) };
+    }
+    const now = new Date();
+    if (payload.subscribe === 1) {
+      await db.update(officialAccountBindings).set({ status: "active", lastVerifiedAt: now, lastFailureAt: null, failureCount: 0 }).where(eq(officialAccountBindings.id, binding.id));
+      try {
+        await db.insert(auditLogs).values({ userId, module: "security", action: "official_account_follow_verified", targetType: "official_account_binding", targetId: String(binding.id), summary: "微信用户信息接口确认仍关注服务号，已恢复通知身份" });
+      } catch {
+        // 审计写入不应扩大为关注状态核验失败。
+      }
+      return { status: "active" };
+    }
+    await db.update(officialAccountBindings).set({ status: "unsubscribed", lastVerifiedAt: now, lastFailureAt: now, failureCount: binding.failureCount + 1 }).where(eq(officialAccountBindings.id, binding.id));
+    return { status: "unsubscribed" };
+  } catch (error) {
+    return { status: "verification_failed", failureCode: classifyDeliveryRequestFailure(error) };
+  }
+}
+
 async function resolveSupervisorRecipientIds(event: OfficialAccountBusinessEvent) {
   const db = await getDb();
   if (!db) return [];
@@ -438,10 +484,11 @@ export async function sendOfficialAccountNotification(input: { module: OfficialA
     }
     if (!response.ok || payload?.errcode !== 0) {
       const failureCode = String(payload?.errcode ?? response.status).slice(0, 64);
+      const followVerification = failureCode === "43004" ? await verifyOfficialAccountBindingFollowStatus(input.recipientUserId) : null;
       await db.update(officialAccountBindings).set({
         lastFailureAt: new Date(),
         failureCount: binding.failureCount + 1,
-        ...(failureCode === "43004" ? { status: "unsubscribed" as const } : {}),
+        ...(followVerification?.status === "unsubscribed" ? { status: "unsubscribed" as const } : {}),
       }).where(eq(officialAccountBindings.id, binding.id));
       return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode });
     }
