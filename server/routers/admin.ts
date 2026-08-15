@@ -156,7 +156,7 @@ const departmentBusinessScopeInput = z.object({
 
 /** 超级管理员只能创建普通本地账号，初始密码仅在本次请求中用于生成不可逆摘要。 */
 const localManagerAccountInput = z.object({
-  username: z.string().trim().min(3).max(48),
+  username: z.string().trim().min(1, "请输入登录手机号").max(32),
   displayName: z.string().trim().min(2).max(128),
   initialPassword: z.string().min(6, "初始密码至少 6 位").max(128),
   status: z.enum(["active", "disabled"]).default("active"),
@@ -171,7 +171,7 @@ const localManagerStatusInput = z.object({
 /** 编辑账号资料时仅允许维护本地登录标识、展示资料和状态，角色与数据范围仍须通过独立授权流程配置。 */
 const localManagerAccountUpdateInput = z.object({
   userId: z.number().int().positive(),
-  username: z.string().trim().min(3).max(48),
+  username: z.string().trim().min(1, "请输入登录手机号").max(32),
   displayName: z.string().trim().min(2).max(128),
   status: z.enum(["active", "disabled"]),
   loginMode: z.enum(["pc", "mobile", "both"]).default("both"),
@@ -943,7 +943,7 @@ export const adminRouter = router({
       if (!database) throw new Error("数据库连接暂不可用");
       const localUsername = normalizeLocalManagerUsername(input.username);
       if (!isValidLocalManagerUsername(localUsername)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请输入有效的中国大陆手机号码（11 位）" });
       }
       const existing = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
       if (existing[0]) throw new TRPCError({ code: "CONFLICT", message: "该本地账号已存在" });
@@ -1003,7 +1003,7 @@ export const adminRouter = router({
       if (!database) throw new Error("数据库连接暂不可用");
       const localUsername = normalizeLocalManagerUsername(input.username);
       if (!isValidLocalManagerUsername(localUsername)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请输入有效的中国大陆手机号码（11 位）" });
       }
       const [target] = await database.select({ id: users.id, name: users.name, localAccountStatus: users.localAccountStatus, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
       if (!target || target.loginMethod !== "local_manager") {
