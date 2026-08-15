@@ -554,6 +554,9 @@ export default function AdminPage() {
   const [passwordResetTarget, setPasswordResetTarget] = useState<LocalAccountActionTarget | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<LocalAccountActionTarget | null>(null);
+  const [userPermissionTarget, setUserPermissionTarget] = useState<LocalAccountActionTarget | null>(null);
+  const [draftUserPermissionIds, setDraftUserPermissionIds] = useState<number[]>([]);
+  const userPermissionIds = trpc.admin.personnel.userPermissionIds.useQuery({ userId: userPermissionTarget?.id ?? 0 }, { enabled: canQuery && isPermission && Boolean(userPermissionTarget), retry: false });
   const [wechatBindingActionTarget, setWechatBindingActionTarget] = useState<WechatBindingActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
@@ -575,6 +578,9 @@ export default function AdminPage() {
   useEffect(() => {
     setDraftPermissionIds(rolePermissionIds.data ?? []);
   }, [rolePermissionIds.data]);
+  useEffect(() => {
+    if (userPermissionTarget) setDraftUserPermissionIds(userPermissionIds.data ?? []);
+  }, [userPermissionIds.data, userPermissionTarget]);
   // 默认选中第一条配置，方便管理员直接查看其发布历史和回滚入口。
   /** 主清单隐藏停用项和当前无可下发模板的手工字段；历史、审计和服务端兼容读取不受影响。 */
   const allSettings = settings.data ?? [];
@@ -807,6 +813,15 @@ export default function AdminPage() {
       toast.success(`普通管理人员账号已删除，并撤销 ${data.revokedAssignmentCount} 项角色授权`);
       setDeleteTarget(null);
       await Promise.all([users.refetch(), assignments.refetch(), audits.refetch(), overview.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const setUserPermissions = trpc.admin.personnel.setUserPermissions.useMutation({
+    onSuccess: async () => {
+      toast.success("该用户的专属操作权限已保存并即时生效");
+      setUserPermissionTarget(null);
+      setDraftUserPermissionIds([]);
+      await Promise.all([users.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -1459,7 +1474,7 @@ export default function AdminPage() {
             {localManagerUsers.length ? <div className="space-y-2">{filteredLocalManagerUsers.map(user => {
               const accountTarget = { id: user.id, name: user.name || `用户 #${user.id}`, username: user.localUsername || "" };
               const bindingLabel = user.profileStatus === "active" ? "已完成关注绑定" : user.profileStatus === "disabled" ? "绑定已停用" : "待关注绑定";
-              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5 shadow-sm"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{accountTarget.name}</p><span className="font-mono text-xs text-slate-500">{user.localUsername}</span><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Badge variant="outline">登录：{user.localLoginMode === "pc" ? "仅 PC" : user.localLoginMode === "mobile" ? "仅手机" : "双端"}</Badge><Badge variant="outline">公众号：{bindingLabel}</Badge></div><p className="mt-1 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus, loginMode: user.localLoginMode ?? "both" })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
+              return <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-white px-3 py-2.5 shadow-sm"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{accountTarget.name}</p><span className="font-mono text-xs text-slate-500">{user.localUsername}</span><Badge variant={user.localAccountStatus === "active" ? "secondary" : "outline"}>{user.localAccountStatus === "active" ? "已启用" : "已停用"}</Badge><Badge variant="outline">登录：{user.localLoginMode === "pc" ? "仅 PC" : user.localLoginMode === "mobile" ? "仅手机" : "双端"}</Badge><Badge variant="outline">公众号：{bindingLabel}</Badge></div><p className="mt-1 text-xs text-slate-500">密码已设置 · 最近登录：{displayDate(user.lastSignedIn)}</p></div><div className="flex flex-wrap items-center justify-end gap-2"><Button size="sm" className="bg-[#203c48] text-white hover:bg-[#17313b]" disabled={user.localAccountStatus !== "active"} onClick={() => { setDraftUserPermissionIds([]); setUserPermissionTarget(accountTarget); }}>操作权限</Button><Button size="sm" variant="outline" onClick={() => setLocalAccountEditForm({ userId: user.id, username: user.localUsername || "", displayName: accountTarget.name, status: user.localAccountStatus, loginMode: user.localLoginMode ?? "both" })}>编辑</Button><Button size="sm" variant="outline" onClick={() => { setPasswordResetTarget(accountTarget); setResetPassword(""); }}>重置密码</Button><Button size="sm" variant="outline" disabled={setLocalUserStatus.isPending} onClick={() => setLocalUserStatus.mutate({ userId: user.id, status: user.localAccountStatus === "active" ? "disabled" : "active" })}>{user.localAccountStatus === "active" ? "停用" : "启用"}</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => setDeleteTarget(accountTarget)}>删除</Button></div></div>;
             })}</div> : <EmptyState text={personnelSearch ? "未找到匹配的普通管理账号。" : "尚未创建普通管理人员本地账号。创建后请在下方继续配置其角色与数据范围。"} />}
           </CardContent>
         </Card>
@@ -1484,6 +1499,13 @@ export default function AdminPage() {
               <div className="grid gap-1.5"><Label htmlFor="reset-local-account-password">新密码</Label><Input id="reset-local-account-password" type="password" autoComplete="new-password" value={resetPassword} onChange={event => setResetPassword(event.target.value)} placeholder="至少 6 位，任意数字或字符" /></div>
               <DialogFooter><Button type="button" variant="outline" onClick={() => { setPasswordResetTarget(null); setResetPassword(""); }}>取消</Button><Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={resetPassword.length < 6 || resetLocalUserPassword.isPending}>{resetLocalUserPassword.isPending ? "正在重置…" : "确认重置密码"}</Button></DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={Boolean(userPermissionTarget)} onOpenChange={open => { if (!open) { setUserPermissionTarget(null); setDraftUserPermissionIds([]); } }}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
+            <DialogHeader><DialogTitle>分配用户专属操作权限</DialogTitle><DialogDescription>正在为“{userPermissionTarget?.name}”设置具体业务动作。某业务模块配置专属权限后，会覆盖该用户在该模块的岗位角色权限；部门、项目范围、账号状态和业务状态机仍由服务端同时校验。</DialogDescription></DialogHeader>
+            {userPermissionIds.isLoading ? <EmptyState text="正在读取该用户的专属权限…" /> : <div className="space-y-4">{permissionGroups.map(([module, items]) => <div key={module} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-slate-800">{permissionModuleLabels[module] ?? module}</p><p className="mt-0.5 text-xs text-slate-500">已选择 {items.filter(item => draftUserPermissionIds.includes(item.id)).length} / {items.length} 项；留空则沿用角色权限</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setDraftUserPermissionIds(current => Array.from(new Set([...current, ...items.map(item => item.id)])))}>全选本模块</Button><Button size="sm" variant="ghost" className="text-slate-600" onClick={() => setDraftUserPermissionIds(current => current.filter(id => !items.some(item => item.id === id)))}>清空</Button></div></div><div className="grid gap-2 md:grid-cols-2">{items.map(permission => <label key={permission.id} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-white p-3 hover:border-[#9ab6ad] hover:bg-[#f7fbf8]"><Checkbox checked={draftUserPermissionIds.includes(permission.id)} onCheckedChange={checked => setDraftUserPermissionIds(current => checked ? Array.from(new Set([...current, permission.id])) : current.filter(id => id !== permission.id))} /><span><span className="block text-sm font-medium text-slate-700">{permission.name}</span><span className="mt-1 inline-flex rounded bg-[#edf4f1] px-1.5 py-0.5 text-[11px] font-medium text-[#355c52]">操作：{permissionActionLabels[permission.action] ?? permission.action}</span></span></label>)}</div></div>)}</div>}
+            <DialogFooter><Button type="button" variant="outline" onClick={() => { setUserPermissionTarget(null); setDraftUserPermissionIds([]); }}>取消</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!userPermissionTarget || setUserPermissions.isPending} onClick={() => userPermissionTarget && setUserPermissions.mutate({ userId: userPermissionTarget.id, permissionIds: draftUserPermissionIds })}>{setUserPermissions.isPending ? "正在保存…" : "保存该用户权限"}</Button></DialogFooter>
           </DialogContent>
         </Dialog>
         <AlertDialog open={Boolean(deleteTarget)} onOpenChange={open => { if (!open) setDeleteTarget(null); }}>

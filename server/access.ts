@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { departmentBusinessScopes, organizations, projects, rolePermissions, systemPermissions, systemRoles, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
+import { departmentBusinessScopes, organizations, projects, rolePermissions, systemPermissions, systemRoles, userPermissions, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
 import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
@@ -41,6 +41,16 @@ export async function getRoleOperationPermissionDecision(ctx: TrpcContext, modul
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
   const now = new Date();
   const permissionModule = OPERATION_PERMISSION_MODULE_BY_DEPARTMENT[module];
+  const userRows = await db
+    .select({ action: systemPermissions.action })
+    .from(userPermissions)
+    .innerJoin(systemPermissions, eq(userPermissions.permissionId, systemPermissions.id))
+    .where(and(eq(userPermissions.userId, user.id), eq(systemPermissions.module, permissionModule)));
+  const userGrantedActions = Array.from(new Set(userRows.map(row => row.action)));
+  // 具体用户在某业务模块配置过专属权限后，该模块不再回退角色矩阵，确保管理员可收窄或扩展单人权限。
+  if (userGrantedActions.length > 0) {
+    return { hasDetailedPermissions: true, allowed: isRoleOperationGranted(userGrantedActions, action) };
+  }
   const rows = await db
     .select({ action: systemPermissions.action })
     .from(userRoleAssignments)
@@ -64,7 +74,7 @@ export async function assertRoleOperationPermission(ctx: TrpcContext, module: De
   if (!decision.allowed) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: `当前角色未被授予“${getDepartmentBusinessModuleName(module)}”的“${action}”操作权限，请联系超级管理员调整角色权限矩阵`,
+      message: `当前账号未被授予“${getDepartmentBusinessModuleName(module)}”的“${action}”操作权限，请联系超级管理员调整用户或角色权限矩阵`,
     });
   }
   return decision;

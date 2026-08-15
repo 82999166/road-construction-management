@@ -159,4 +159,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("清空</Button>");
     expect(source).toContain("角色一旦配置某业务域的详细权限");
   });
+
+  it("在每位普通管理人员卡片中提供用户专属操作权限入口，并用独立对话框保存到具体用户", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain(">操作权限</Button>");
+    expect(source).toContain("分配用户专属操作权限");
+    expect(source).toContain("正在为“{userPermissionTarget?.name}”设置具体业务动作");
+    expect(source).toContain("setUserPermissions.mutate");
+    expect(source).toContain("保存该用户权限");
+    expect(source).toContain("留空则沿用角色权限");
+  });
 });

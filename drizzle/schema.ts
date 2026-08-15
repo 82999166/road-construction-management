@@ -169,6 +169,23 @@ export const rolePermissions = mysqlTable(
   table => ({ rolePermissionUnique: uniqueIndex("role_permissions_unique").on(table.roleId, table.permissionId) }),
 );
 
+/** 用户专属操作权限；某业务模块存在专属权限时，该模块以用户授权覆盖角色权限，仍受部门与项目范围约束。 */
+export const userPermissions = mysqlTable(
+  "user_permissions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    permissionId: int("permissionId").notNull(),
+    grantedBy: int("grantedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    userPermissionUnique: uniqueIndex("user_permissions_unique").on(table.userId, table.permissionId),
+    userIndex: index("user_permissions_user_index").on(table.userId),
+  }),
+);
+
 /** 用户的角色授权，同时约束项目/组织数据范围及有效期。 */
 export const userRoleAssignments = mysqlTable(
   "user_role_assignments",

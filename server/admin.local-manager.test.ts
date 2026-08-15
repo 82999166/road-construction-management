@@ -170,7 +170,7 @@ describe("后台普通管理人员本地账号管理", () => {
     });
   });
 
-  it("无业务责任的普通账号可删除，服务端会撤销授权、移除档案并保留删除审计", async () => {
+  it("无业务责任的普通账号可删除，服务端会撤销角色与用户专属权限、移除档案并保留删除审计", async () => {
     const targetLimit = vi.fn().mockResolvedValue([{ id: 7301, name: "张三", loginMethod: "local_manager" }]);
     const targetFrom = vi.fn(() => ({ where: vi.fn(() => ({ limit: targetLimit })) }));
     const select = vi.fn()
@@ -189,7 +189,7 @@ describe("后台普通管理人员本地账号管理", () => {
     await expect(createCaller().admin.personnel.deleteLocalUser({ userId: 7301 })).resolves.toEqual({ success: true, revokedAssignmentCount: 0 });
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "revoked" }));
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ loginMethod: "deleted_local_manager", localAccountStatus: "disabled", localPasswordHash: null }));
-    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(deleteWhere).toHaveBeenCalledTimes(2);
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "delete_local_manager_account", targetId: "7301" }));
   });
 });

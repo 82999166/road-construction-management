@@ -117,9 +117,10 @@ describe("后台与项目范围访问控制", () => {
   });
 
   it("已配置劳务模块详细权限的角色不能绕过未勾选的新增动作", async () => {
+    let permissionQueryCount = 0;
     const db = {
       select: vi.fn((fields?: Record<string, unknown>) => {
-        const rows = fields && "action" in fields ? [{ action: "read" }] : [];
+        const rows = fields && "action" in fields ? permissionQueryCount++ === 0 ? [] : [{ action: "read" }] : [];
         const result = Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
         const chain = { innerJoin: vi.fn(), where: vi.fn(() => result) };
         chain.innerJoin.mockReturnValue(chain);
@@ -129,6 +130,24 @@ describe("后台与项目范围访问控制", () => {
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(getRoleOperationPermissionDecision(createContext(), "LABOR", "create")).resolves.toEqual({ hasDetailedPermissions: true, allowed: false });
+  });
+
+  it("用户专属权限在已配置模块覆盖角色矩阵，可单独授予审核并拒绝未勾选的新增", async () => {
+    let permissionQueryCount = 0;
+    const db = {
+      select: vi.fn((fields?: Record<string, unknown>) => {
+        const rows = fields && "action" in fields ? (permissionQueryCount++, [{ action: "review" }]) : [];
+        const result = Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
+        const chain = { innerJoin: vi.fn(), where: vi.fn(() => result) };
+        chain.innerJoin.mockReturnValue(chain);
+        return { from: vi.fn(() => chain) };
+      }),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(getRoleOperationPermissionDecision(createContext(), "LABOR", "review")).resolves.toEqual({ hasDetailedPermissions: true, allowed: true });
+    await expect(getRoleOperationPermissionDecision(createContext(), "LABOR", "create")).resolves.toEqual({ hasDetailedPermissions: true, allowed: false });
+    expect(permissionQueryCount).toBe(2);
   });
 
   it("部门业务范围只返回该部门授权的项目，不能扩大为所有项目", async () => {

@@ -34,6 +34,7 @@ import {
   transportTrips,
   transportVehicleLeaseRules,
   transportVehicles,
+  userPermissions,
   userProfiles,
   userRoleAssignments,
   users,
@@ -1110,6 +1111,48 @@ export const adminRouter = router({
         .leftJoin(projects, eq(userRoleAssignments.projectId, projects.id))
         .orderBy(desc(userRoleAssignments.createdAt));
     }),
+    /** 某用户已配置的专属操作权限；按业务模块存在专属授权时会覆盖其角色权限矩阵。 */
+    userPermissionIds: protectedProcedure.input(z.object({ userId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select({ permissionId: userPermissions.permissionId }).from(userPermissions).where(eq(userPermissions.userId, input.userId));
+      return rows.map(row => row.permissionId);
+    }),
+    setUserPermissions: protectedProcedure.input(z.object({ userId: z.number().int().positive(), permissionIds: z.array(z.number().int().positive()) })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      await ensureFoundationData(db);
+      const [targetUsers, permissionRows] = await Promise.all([
+        db.select({ id: users.id, name: users.name, role: users.role, loginMethod: users.loginMethod, localAccountStatus: users.localAccountStatus }).from(users).where(eq(users.id, input.userId)).limit(1),
+        db.select({ id: systemPermissions.id }).from(systemPermissions),
+      ]);
+      const target = targetUsers[0];
+      if (!target || target.loginMethod === "deleted_local_manager") throw new TRPCError({ code: "NOT_FOUND", message: "该用户不存在或已删除" });
+      if (target.role === "admin") throw new TRPCError({ code: "FORBIDDEN", message: "超级管理员默认拥有全量权限，无需配置用户专属操作权限" });
+      if (target.localAccountStatus === "disabled") throw new TRPCError({ code: "BAD_REQUEST", message: "请先启用该用户账号后再配置专属操作权限" });
+      const activeAssignments = await db.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(and(eq(userRoleAssignments.userId, target.id), eq(userRoleAssignments.status, "active"))).limit(1);
+      if (!activeAssignments[0]) throw new TRPCError({ code: "BAD_REQUEST", message: "请先为该用户分配有效的岗位、部门或项目范围，再配置专属操作权限" });
+      const uniquePermissionIds = Array.from(new Set(input.permissionIds));
+      const validPermissionIds = new Set(permissionRows.map(permission => permission.id));
+      if (uniquePermissionIds.some(permissionId => !validPermissionIds.has(permissionId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "权限配置中包含无效权限点，请刷新后重新设置" });
+      }
+      await db.delete(userPermissions).where(eq(userPermissions.userId, target.id));
+      if (uniquePermissionIds.length) await db.insert(userPermissions).values(uniquePermissionIds.map(permissionId => ({ userId: target.id, permissionId, grantedBy: admin.id })));
+      await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: "assign_user_permissions", targetType: "user", targetId: String(target.id), summary: `更新用户“${target.name || `用户 #${target.id}`}”的专属操作权限，共 ${uniquePermissionIds.length} 项` });
+      dispatchInAppSecurityNotification({
+        eventCode: "user_operation_permissions_updated",
+        idempotencyKey: `user_operation_permissions_updated:${target.id}:${Date.now()}`,
+        recipientUserId: target.id,
+        title: "您的专属操作权限已更新",
+        content: "管理员已更新您的业务操作权限。请重新打开工作台以同步最新授权。",
+        deepLink: "/mobile/profile",
+      });
+      dispatchOfficialAccountSecurityNotification({ userId: admin.id, module: "security", eventCode: "user_operation_permissions_updated", targetType: "user", targetId: String(target.id), title: "用户专属操作权限已更新", deepLink: "/admin/permission" });
+      return { success: true };
+    }),
     createLocalUser: protectedProcedure.input(localManagerAccountInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const database = await getDb();
@@ -1268,6 +1311,7 @@ export const adminRouter = router({
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: `该账号仍关联业务记录或资源责任：${blockers.join("、")}。请先完成交接或改派后再删除。` });
       }
       await database.update(userRoleAssignments).set({ status: "revoked" }).where(and(eq(userRoleAssignments.userId, target.id), eq(userRoleAssignments.status, "active")));
+      await database.delete(userPermissions).where(eq(userPermissions.userId, target.id));
       await database.delete(userProfiles).where(eq(userProfiles.userId, target.id));
       await database.update(users).set({
         openId: `deleted-local-manager:${target.id}:${Date.now()}`,
