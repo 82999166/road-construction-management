@@ -10,6 +10,7 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
   "WECHAT_OFFICIAL_APP_SECRET",
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
+  "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS",
   "WECHAT_OFFICIAL_APP_URL",
   "WECHAT_OFFICIAL_EGRESS_URL",
   "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET",
@@ -19,7 +20,9 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
 
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 type OfficialAccountEgressConfig = { egressUrl?: string; egressSharedSecret?: string };
-export type OfficialAccountConfig = { appId: string; appSecret: string; templateId: string; templateFields: Record<string, string>; appUrl: string | null } & OfficialAccountEgressConfig;
+type OfficialAccountModule = OfficialAccountBusinessEvent["module"];
+type OfficialAccountTemplateBinding = { templateId: string; title: string; templateFields: Record<string, string> };
+export type OfficialAccountConfig = { appId: string; appSecret: string; appUrl: string | null; moduleTemplates: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>>; fallbackTemplate?: OfficialAccountTemplateBinding } & OfficialAccountEgressConfig;
 export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null } & OfficialAccountEgressConfig;
 export type OfficialAccountEventConfig = OfficialAccountCredentialConfig & { eventToken: string; eventAesKey: string };
 export type OfficialAccountPrivateTemplate = {
@@ -99,6 +102,27 @@ function parseTemplateFields(rawValue: string | null) {
   }
 }
 
+function parseModuleTemplateMappings(rawValue: string | null): Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>> {
+  if (!rawValue?.trim()) return {};
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const allowedModules = new Set<OfficialAccountModule>(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"]);
+    const result: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>> = {};
+    for (const [module, binding] of Object.entries(parsed)) {
+      if (!allowedModules.has(module as OfficialAccountModule) || !binding || typeof binding !== "object" || Array.isArray(binding)) continue;
+      const candidate = binding as Record<string, unknown>;
+      if (typeof candidate.templateId !== "string" || typeof candidate.title !== "string" || !candidate.templateId.trim() || !candidate.title.trim()) continue;
+      const rawFields = candidate.templateFields;
+      const templateFields = parseTemplateFields(rawFields && typeof rawFields === "object" && !Array.isArray(rawFields) ? JSON.stringify(rawFields) : null);
+      result[module as OfficialAccountModule] = { templateId: candidate.templateId.trim().slice(0, 128), title: candidate.title.trim().slice(0, 160), templateFields };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 function renderTemplate(value: string, variables: Record<string, string>) {
   return value.replace(/\{(title|content|eventCode|targetType|targetId)\}/g, (_match, key: string) => variables[key] ?? "");
 }
@@ -174,14 +198,16 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
   const appId = settings.get("WECHAT_OFFICIAL_APP_ID")?.valueJson?.trim();
   const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
   const templateId = settings.get("WECHAT_OFFICIAL_TEMPLATE_ID")?.valueJson?.trim();
-  if (!appId || !appSecretEncrypted || !templateId) return { reason: rows.length ? "disabled" : "not_configured" };
+  const moduleTemplates = parseModuleTemplateMappings(settings.get("WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS")?.valueJson ?? null);
+  const fallbackTemplate = templateId ? { templateId, title: "旧版通用业务通知模板", templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null) } : undefined;
+  if (!appId || !appSecretEncrypted || (!fallbackTemplate && !Object.keys(moduleTemplates).length)) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
     return {
       config: {
         appId,
         appSecret: decryptSecret(appSecretEncrypted),
-        templateId,
-        templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null),
+        moduleTemplates,
+        ...(fallbackTemplate ? { fallbackTemplate } : {}),
         appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
         ...(() => {
           const egressUrl = settings.get("WECHAT_OFFICIAL_EGRESS_URL")?.valueJson?.trim();
@@ -198,18 +224,19 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
 /** 后台仅显示字段覆盖结论和业务语义，不返回 AppSecret、OpenID 或模板敏感配置。 */
 export async function getOfficialAccountNotificationTemplateCoverage() {
   const result = await loadPublishedOfficialAccountConfig();
-  const fieldValues = result.config ? Object.values(result.config.templateFields) : [];
-  const variables = new Set(fieldValues.flatMap(value => Array.from(value.matchAll(/\{(title|content|eventCode|targetType|targetId)\}/g)).map(match => match[1])));
-  const singleFieldSummaryCompatibility = Boolean(result.config && usesSingleFieldSummaryCompatibility(result.config.templateFields));
   return {
     configured: Boolean(result.config),
     reason: result.reason ?? null,
-    matrix: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => ({
-      ...item,
-      missingVariables: singleFieldSummaryCompatibility ? [] : item.requiredVariables.filter(variable => !variables.has(variable)),
-      ready: Boolean(result.config) && (singleFieldSummaryCompatibility || item.requiredVariables.every(variable => variables.has(variable))),
-      compatibilityMode: singleFieldSummaryCompatibility ? "single_field_summary" as const : null,
-    })),
+    matrix: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => {
+      const binding = result.config?.moduleTemplates[item.module] ?? result.config?.fallbackTemplate;
+      return {
+        ...item,
+        missingVariables: [],
+        ready: Boolean(binding),
+        compatibilityMode: binding ? (usesSingleFieldSummaryCompatibility(binding.templateFields) ? "single_field_summary" as const : "module_template" as const) : null,
+        templateTitle: binding?.title ?? null,
+      };
+    }),
   };
 }
 
@@ -346,7 +373,7 @@ async function writeAudit(userId: number, event: OfficialAccountBusinessEvent, r
 }
 
 /** 向一个已绑定人员发送服务号模板通知；失败只落审计和站内记录，不回滚业务。 */
-export async function sendOfficialAccountNotification(input: { eventCode: string; idempotencyKey: string; recipientUserId: number; title: string; content: string; deepLink?: string }): Promise<OfficialAccountNotificationResult> {
+export async function sendOfficialAccountNotification(input: { module: OfficialAccountModule; eventCode: string; idempotencyKey: string; recipientUserId: number; title: string; content: string; deepLink?: string }): Promise<OfficialAccountNotificationResult> {
   const db = await getDb();
   if (!db) return { delivered: false, reason: "database_unavailable" };
   const idempotencyKey = input.idempotencyKey.slice(0, 160);
@@ -381,17 +408,19 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
   if (!binding) return update({ delivered: false, reason: "not_bound" }, { status: "skipped", failureCode: "not_bound" });
   const configResult = await loadPublishedOfficialAccountConfig();
   if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
+  const template = configResult.config.moduleTemplates[input.module] ?? configResult.config.fallbackTemplate;
+  if (!template) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: "module_template_not_bound" });
   try {
     const openId = decryptSecret(binding.openIdEncrypted);
     const token = await getOfficialAccountAccessToken(configResult.config);
     const variables = { title: input.title.slice(0, 120), content: input.content.slice(0, 160), eventCode: input.eventCode.slice(0, 64), targetType: "业务事项", targetId: input.eventCode.slice(0, 64) };
-    const singleFieldSummaryCompatibility = usesSingleFieldSummaryCompatibility(configResult.config.templateFields);
-    const data = Object.fromEntries(Object.entries(configResult.config.templateFields).map(([key, value]) => [key, {
+    const singleFieldSummaryCompatibility = usesSingleFieldSummaryCompatibility(template.templateFields);
+    const data = Object.fromEntries(Object.entries(template.templateFields).map(([key, value]) => [key, {
       value: (singleFieldSummaryCompatibility ? buildSingleFieldSummary(variables) : renderTemplate(value, variables)).slice(0, 200),
     }]));
     let response = await requestOfficialAccountApi(configResult.config, `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${encodeURIComponent(token)}`, {
       method: "POST", redirect: "error", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
+      body: JSON.stringify({ touser: openId, template_id: template.templateId, url: buildDeepLink(configResult.config.appUrl, input.deepLink), data }),
       signal: AbortSignal.timeout(8_000),
     });
     let payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
@@ -402,7 +431,7 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     if (payload?.errcode === 40037) {
       response = await requestOfficialAccountApi(configResult.config, `https://api.weixin.qq.com/cgi-bin/message/subscribe/bizsend?access_token=${encodeURIComponent(token)}`, {
         method: "POST", redirect: "error", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ touser: openId, template_id: configResult.config.templateId, data, miniprogram_state: "formal", lang: "zh_CN" }),
+        body: JSON.stringify({ touser: openId, template_id: template.templateId, data, miniprogram_state: "formal", lang: "zh_CN" }),
         signal: AbortSignal.timeout(8_000),
       });
       payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;
@@ -429,7 +458,7 @@ export async function notifyOfficialAccountBusinessEvent(event: OfficialAccountB
   const recipients = Array.from(new Set((resolved.length ? resolved : [event.userId]).filter(Number.isInteger)));
   const content = (event.content || `${event.title}，请进入系统查看。`).replace(/[\r\n]+/g, " ").slice(0, 180);
   return Promise.all(recipients.map(async recipientUserId => {
-    const result = await sendOfficialAccountNotification({ eventCode: event.eventCode, idempotencyKey: `oa:${event.eventCode}:${event.targetType}:${event.targetId}:${recipientUserId}`, recipientUserId, title: event.title, content, deepLink: event.deepLink });
+    const result = await sendOfficialAccountNotification({ module: event.module, eventCode: event.eventCode, idempotencyKey: `oa:${event.eventCode}:${event.targetType}:${event.targetId}:${recipientUserId}`, recipientUserId, title: event.title, content, deepLink: event.deepLink });
     await writeAudit(event.userId, event, recipientUserId, result.reason);
     return { recipientUserId, ...result };
   }));

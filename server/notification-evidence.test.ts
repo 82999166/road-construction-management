@@ -119,7 +119,7 @@ describe("消息、影像与企业微信通知安全边界", () => {
     ]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual(expect.objectContaining({ config: expect.objectContaining({ appId: "wx-test-app", appSecret: "super-secret", templateId: "template-001", appUrl: "https://app.example" }) }));
+    await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual(expect.objectContaining({ config: expect.objectContaining({ appId: "wx-test-app", appSecret: "super-secret", appUrl: "https://app.example", moduleTemplates: {}, fallbackTemplate: expect.objectContaining({ templateId: "template-001" }) }) }));
 
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ settingKey: "WECHAT_OFFICIAL_APP_ID", status: "published", isSensitive: false, valueJson: "wx-test-app" }]) as never);
     await expect(loadPublishedOfficialAccountConfig()).resolves.toEqual({ reason: "disabled" });

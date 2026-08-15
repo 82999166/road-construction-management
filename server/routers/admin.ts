@@ -225,6 +225,7 @@ const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
+  "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS",
   "WECHAT_OFFICIAL_APP_URL",
   "WECHAT_OFFICIAL_EGRESS_URL",
 ]);
@@ -1600,6 +1601,47 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_draft", targetType: "official_account_template", targetId: selected.templateId, summary: `从服务号私有模板库生成模板配置草稿：${selected.title}；安全替换 ${existing.length} 项旧模板配置` });
       });
       return { success: true, replacedExisting: existing.length > 0, message: existing.length ? "新模板草稿已生成；旧模板值已写入可回退历史。请在配置清单核对后发布模板 ID 与字段映射。草稿期间业务模板通知会暂停，避免新旧模板混用。" : "模板 ID 与字段映射草稿已生成。请在配置清单核对后分别发布，业务通知才会启用。" };
+    }),
+    /** 将已核验的私有模板直接绑定到一个业务模块；字段映射由模板 .DATA 字段自动生成并立即发布。 */
+    bindOfficialAccountModuleTemplate: protectedProcedure.input(z.object({
+      templateId: z.string().min(1).max(128),
+      module: z.enum(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"]),
+    })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const discovered = await listPublishedOfficialAccountPrivateTemplates();
+      if (!discovered.success) throw new TRPCError({ code: "BAD_REQUEST", message: discovered.message });
+      const selected = discovered.templates.find(template => template.templateId === input.templateId);
+      if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
+      if (!isPersistentBusinessTemplateEligible(selected)) throw new TRPCError({ code: "BAD_REQUEST", message: getPersistentBusinessTemplateEligibilityMessage(selected) ?? "所选模板不可用于持续业务通知。" });
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const settingKey = "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS";
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, settingKey)).limit(1);
+      let mappings: Record<string, { templateId: string; title: string; templateFields: Record<string, string> }> = {};
+      if (existing?.valueJson) {
+        try {
+          const parsed = JSON.parse(existing.valueJson) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) mappings = parsed as typeof mappings;
+        } catch { /* 损坏配置在本次安全替换时重建 */ }
+      }
+      mappings[input.module] = { templateId: selected.templateId, title: selected.title, templateFields: selected.fieldMapping };
+      const valueJson = JSON.stringify(mappings);
+      await db.transaction(async tx => {
+        if (existing) {
+          const nextVersion = existing.version + 1;
+          const writeResult = await tx.update(systemSettings).set({
+            category: "公众号消息模板", displayName: "公众号业务模块模板绑定", valueJson, valuePreview: `已绑定 ${Object.keys(mappings).length} 个业务模块`, isSensitive: false,
+            status: "published", publishedAt: new Date(), version: nextVersion, remarks: "按业务模块自动选择私有模板并生成字段映射，无需手填内部占位符。", updatedBy: admin.id,
+          }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+        } else {
+          await tx.insert(systemSettings).values({ category: "公众号消息模板", settingKey, displayName: "公众号业务模块模板绑定", valueJson, valuePreview: `已绑定 1 个业务模块`, isSensitive: false, status: "published", publishedAt: new Date(), remarks: "按业务模块自动选择私有模板并生成字段映射，无需手填内部占位符。", updatedBy: admin.id });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_module_template_bind", targetType: "official_account_template", targetId: `${input.module}:${selected.templateId}`, summary: `绑定服务号模板：${input.module} -> ${selected.title}` });
+      });
+      return { success: true, message: `已将“${selected.title}”绑定到${input.module}模块，系统已自动完成字段映射并发布。` };
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);

@@ -123,4 +123,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("其它系统参数");
     expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
   });
+
+  it("允许私有模板按业务模块绑定并自动映射字段，不再要求用户手填内部占位符", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("bindOfficialAccountModuleTemplate");
+    expect(source).toContain("绑定并自动映射");
+    expect(source).toContain("运输刷卡与趟次");
+    expect(source).toContain("机械/车辆维保审核");
+    expect(source).toContain("待绑定对应模板");
+    expect(source).toContain("系统按模板 `.DATA` 字段自动映射");
+  });
 });
