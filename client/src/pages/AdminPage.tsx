@@ -564,6 +564,17 @@ export default function AdminPage() {
       includeEmptyProjects: dailyDigestSettings.data.includeEmptyProjects,
     });
   }, [dailyDigestSettings.data]);
+  /** 已发布公开字段可安全回显；两项密钥始终保持空值，只以状态提示“留空保留密文”。 */
+  useEffect(() => {
+    if (!isSettings || !allSettings.length) return;
+    const publishedValue = (settingKey: string) => allSettings.find(item => item.settingKey === settingKey && item.status === "published")?.valueJson ?? "";
+    setOfficialAccountConfigurationForm(current => ({
+      ...current,
+      appId: current.appId || publishedValue("WECHAT_OFFICIAL_APP_ID"),
+      appUrl: current.appUrl === EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM.appUrl ? (publishedValue("WECHAT_OFFICIAL_APP_URL") || current.appUrl) : current.appUrl,
+      egressUrl: current.egressUrl === EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM.egressUrl ? (publishedValue("WECHAT_OFFICIAL_EGRESS_URL") || current.egressUrl) : current.egressUrl,
+    }));
+  }, [allSettings, isSettings]);
   useEffect(() => {
     if (!isBusinessWorkspace || businessWorkspaceProjectId || !projects.data?.length) return;
     const firstAvailableProject = projects.data.find(project => project.status !== "archived");
@@ -1543,10 +1554,10 @@ export default function AdminPage() {
           <CardContent>
             <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountConfigurationValidation(null); saveOfficialAccountConfiguration.mutate(officialAccountConfigurationForm); }}>
               <Field label="微信公众服务号 AppID"><Input value={officialAccountConfigurationForm.appId} placeholder="填写服务号 AppID" autoComplete="off" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appId: event.target.value }))} /></Field>
-              <Field label="微信公众服务号 AppSecret"><Input type="password" value={officialAccountConfigurationForm.appSecret} placeholder="首次必填；后续留空保留已加密密钥" autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appSecret: event.target.value }))} /></Field>
+              <Field label="微信公众服务号 AppSecret"><Input type="password" value={officialAccountConfigurationForm.appSecret} placeholder={publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_SECRET") ? "已安全托管；留空保持不变" : "首次必填"} autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appSecret: event.target.value }))} /></Field>
               <Field label="公众号业务跳转地址"><Input type="url" value={officialAccountConfigurationForm.appUrl} placeholder="https://example.com" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appUrl: event.target.value }))} /></Field>
               <Field label="微信 API 固定出口网关地址"><Input type="url" value={officialAccountConfigurationForm.egressUrl} placeholder="https://wechat-egress.example.com" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, egressUrl: event.target.value }))} /></Field>
-              <Field label="固定出口网关签名密钥"><Input type="password" value={officialAccountConfigurationForm.egressSigningSecret} placeholder="首次必填；后续留空保留已加密密钥" autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, egressSigningSecret: event.target.value }))} /></Field>
+              <Field label="固定出口网关签名密钥"><Input type="password" value={officialAccountConfigurationForm.egressSigningSecret} placeholder={publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_EGRESS_SHARED_SECRET") ? "已安全托管；留空保持不变" : "首次必填"} autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, egressSigningSecret: event.target.value }))} /></Field>
               <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">密钥仅在服务端加密保存，不会回显、写入日志或出现在版本记录中。保存后系统会自动校验服务号凭据，不会向员工发送测试消息。</p>
               <Button type="submit" className="min-h-11 w-full bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountConfiguration.isPending || !officialAccountConfigurationForm.appId.trim() || !officialAccountConfigurationForm.appUrl.trim() || !officialAccountConfigurationForm.egressUrl.trim()}>{saveOfficialAccountConfiguration.isPending ? "正在保存并校验…" : "保存并校验服务号配置"}</Button>
               {officialAccountConfigurationValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountConfigurationValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountConfigurationValidation.success ? "校验通过：" : "需要处理："}{officialAccountConfigurationValidation.message}</div> : null}
