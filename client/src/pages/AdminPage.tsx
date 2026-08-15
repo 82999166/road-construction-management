@@ -93,6 +93,7 @@ type LocalAccountActionTarget = { id: number; name: string; username: string };
 type AssignmentForm = { id?: number; userId: string; roleId: string; organizationId: string; projectId: string; validFrom: string; validTo: string };
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
+type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type BroadcastAudienceType = "project" | "organization" | "role";
@@ -119,16 +120,17 @@ const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", 
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
+const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
 const CONSTRUCTION_WEATHER_LABELS: Record<ConstructionWeather, string> = { sunny: "晴", cloudy: "多云", rainy: "雨", snowy: "雪", windy: "大风", other: "其他" };
-const OFFICIAL_ACCOUNT_SETTING_PRESETS: Array<Omit<SettingForm, "id" | "expectedVersion">> = [
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: "", isSensitive: false, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息。此值填写 AppID，不要填入显示名称。用于员工微信身份绑定和业务通知。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_SECRET", displayName: "微信公众号服务号 AppSecret", value: "", isSensitive: true, remarks: "新版路径：微信开发者平台 → 我的业务 → 服务号 → 基础信息 → 开发密钥。请先确认 AppSecret 为启用状态；仅在服务端 AES-GCM 加密保存。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: "https://roadmanage-xjifzbue.manus.space", isSensitive: false, remarks: "必须是正式 HTTPS 站点根地址；用于模板消息跳转和员工 OAuth 绑定回调。若已绑定自有域名，请替换为自有正式域名。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EGRESS_URL", displayName: "微信 API 固定出口网关地址", value: "https://wechat-egress.maomaoyx.com", isSensitive: false, remarks: "仅用于服务端访问 api.weixin.qq.com 的固定出口。微信 API IP 白名单应只加入该网关公网 IP；地址与签名密钥须同时发布后才启用。" },
-  { category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET", displayName: "固定出口网关签名密钥", value: "", isSensitive: true, remarks: "由网关部署时生成；仅服务端加密托管，不在页面、日志或审计中回显。" },
-];
+const OFFICIAL_ACCOUNT_BASE_SETTING_KEYS = new Set([
+  "WECHAT_OFFICIAL_APP_ID",
+  "WECHAT_OFFICIAL_APP_SECRET",
+  "WECHAT_OFFICIAL_APP_URL",
+  "WECHAT_OFFICIAL_EGRESS_URL",
+  "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET",
+]);
 /** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */
 function resolveOfficialAccountSensitivity(settingKey: string, fallback: boolean) {
   if (settingKey === "WECHAT_OFFICIAL_APP_SECRET") return true;
@@ -519,6 +521,8 @@ export default function AdminPage() {
   const [wechatBindingActionTarget, setWechatBindingActionTarget] = useState<WechatBindingActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{ organizationId: string; module: DepartmentModuleCode | "" }>({ organizationId: "", module: "" });
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
+  const [officialAccountConfigurationForm, setOfficialAccountConfigurationForm] = useState<OfficialAccountConfigurationForm>(EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM);
+  const [officialAccountConfigurationValidation, setOfficialAccountConfigurationValidation] = useState<{ success: boolean; message: string; statusCode?: number } | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
   const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
@@ -539,7 +543,7 @@ export default function AdminPage() {
   /** 主清单隐藏停用项和当前无可下发模板的手工字段；历史、审计和服务端兼容读取不受影响。 */
   const allSettings = settings.data ?? [];
   const templateSettingKeys = new Set(["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"]);
-  const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey));
+  const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey) && !OFFICIAL_ACCOUNT_BASE_SETTING_KEYS.has(item.settingKey));
   const publishedOfficialSettingKeys = new Set(allSettings.filter(item => item.status === "published").map(item => item.settingKey));
   const officialCredentialsReady = publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_ID") && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_SECRET");
   const officialBindingReady = officialCredentialsReady && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_URL");
@@ -773,6 +777,18 @@ export default function AdminPage() {
       await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
     },
     onError: refreshAfterSettingConflict,
+  });
+  const saveOfficialAccountConfiguration = trpc.admin.settings.saveOfficialAccountConfiguration.useMutation({
+    onSuccess: async result => {
+      setOfficialAccountConfigurationValidation(result);
+      result.success ? toast.success("服务号五项配置已一次保存并校验通过") : toast.error(`服务号配置已保存，但校验未通过：${result.message}`);
+      setOfficialAccountConfigurationForm(current => ({ ...current, appSecret: "", egressSigningSecret: "" }));
+      await Promise.all([settings.refetch(), officialTemplateCoverage.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => {
+      setOfficialAccountConfigurationValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
   });
   const publishSetting = trpc.admin.settings.publish.useMutation({
     onSuccess: async () => {
@@ -1523,16 +1539,30 @@ export default function AdminPage() {
           </CardContent>
         </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
-          <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>先发布 AppID、AppSecret 与 HTTPS 跳转地址以完成凭据校验和员工绑定；模板 ID 与字段映射用于后续业务通知。密钥只会加密保存；“校验开发密钥”不会向员工推送测试消息。</CardDescription></CardHeader>
-          <CardContent className="space-y-2">{OFFICIAL_ACCOUNT_SETTING_PRESETS.map(preset => <Button key={preset.settingKey} variant="outline" className="w-full justify-start border-[#203c48] text-left text-[#203c48]" onClick={() => setSettingForm(preset)}>{preset.displayName}</Button>)}</CardContent>
+          <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>五项基础参数在此一次填写、一次保存并自动校验。首次配置请完整填写；后续只修改公开参数时，两个密钥留空即可保留已加密的现有值。</CardDescription></CardHeader>
+          <CardContent>
+            <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountConfigurationValidation(null); saveOfficialAccountConfiguration.mutate(officialAccountConfigurationForm); }}>
+              <Field label="微信公众服务号 AppID"><Input value={officialAccountConfigurationForm.appId} placeholder="填写服务号 AppID" autoComplete="off" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appId: event.target.value }))} /></Field>
+              <Field label="微信公众服务号 AppSecret"><Input type="password" value={officialAccountConfigurationForm.appSecret} placeholder="首次必填；后续留空保留已加密密钥" autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appSecret: event.target.value }))} /></Field>
+              <Field label="公众号业务跳转地址"><Input type="url" value={officialAccountConfigurationForm.appUrl} placeholder="https://example.com" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, appUrl: event.target.value }))} /></Field>
+              <Field label="微信 API 固定出口网关地址"><Input type="url" value={officialAccountConfigurationForm.egressUrl} placeholder="https://wechat-egress.example.com" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, egressUrl: event.target.value }))} /></Field>
+              <Field label="固定出口网关签名密钥"><Input type="password" value={officialAccountConfigurationForm.egressSigningSecret} placeholder="首次必填；后续留空保留已加密密钥" autoComplete="new-password" onChange={event => setOfficialAccountConfigurationForm(current => ({ ...current, egressSigningSecret: event.target.value }))} /></Field>
+              <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">密钥仅在服务端加密保存，不会回显、写入日志或出现在版本记录中。保存后系统会自动校验服务号凭据，不会向员工发送测试消息。</p>
+              <Button type="submit" className="min-h-11 w-full bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountConfiguration.isPending || !officialAccountConfigurationForm.appId.trim() || !officialAccountConfigurationForm.appUrl.trim() || !officialAccountConfigurationForm.egressUrl.trim()}>{saveOfficialAccountConfiguration.isPending ? "正在保存并校验…" : "保存并校验服务号配置"}</Button>
+              {officialAccountConfigurationValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountConfigurationValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountConfigurationValidation.success ? "校验通过：" : "需要处理："}{officialAccountConfigurationValidation.message}</div> : null}
+            </form>
+          </CardContent>
         </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
           <CardHeader><CardTitle className="text-base">企业身份账号恢复</CardTitle><CardDescription>仅配置身份提供方公开 HTTPS 恢复页面。系统不保存企业密码，登录页和个人中心将通过受控端点跳转至该地址。</CardDescription></CardHeader>
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份平台账号恢复地址", value: "", isSensitive: false, remarks: "仅限企业统一身份提供方的账号找回或密码重置页面；保存草稿后需发布才会对用户生效。" })}>填入身份恢复地址模板</Button></CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-base">{settingForm.id ? "编辑配置草稿" : "新建配置草稿"}</CardTitle><CardDescription>{settingForm.id ? "编辑会生成新的草稿版本。敏感值留空时保留现有密文；输入完整新值才会替换。配置键与敏感等级需通过新建替代配置变更。" : "密钥类内容会在服务端立即进行 AES-GCM 加密且不会回传明文；既有配置可从左侧编辑、停用或删除。"}</CardDescription></CardHeader>
-          <CardContent className="space-y-3">
+          <CardHeader><CardTitle className="text-base">其它系统参数</CardTitle><CardDescription>服务号五项配置请使用上方统一表单；这里仅用于按需维护其它系统参数、业务规则或外部连接器。</CardDescription></CardHeader>
+          <CardContent>
+            <details className="group">
+              <summary className="flex min-h-11 cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-[#203c48] marker:hidden">{settingForm.id ? "正在编辑其它配置草稿" : "展开维护其它系统参数"}<span className="text-xs text-slate-500 group-open:hidden">按需展开</span><span className="hidden text-xs text-slate-500 group-open:inline">收起</span></summary>
+              <div className="mt-3 space-y-3">
             <div><Label>配置分类</Label><Select value={settingForm.category} onValueChange={value => setSettingForm({ ...settingForm, category: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="账号安全">账号安全与身份平台</SelectItem><SelectItem value="微信公众号服务号">微信公众号服务号</SelectItem><SelectItem value="公众号消息模板">公众号消息模板</SelectItem><SelectItem value="外部API">外部 API 连接器</SelectItem><SelectItem value="业务参数">业务参数与计价规则</SelectItem><SelectItem value="文档影像">文档影像与归档</SelectItem></SelectContent></Select></div>
             <div><Label>配置键</Label><Input value={settingForm.settingKey} disabled={Boolean(settingForm.id)} placeholder="WECHAT_OFFICIAL_APP_ID" onChange={event => { const settingKey = event.target.value.toUpperCase(); setSettingForm({ ...settingForm, settingKey, isSensitive: resolveOfficialAccountSensitivity(settingKey, settingForm.isSensitive) }); }} /></div>
             <div><Label>显示名称（仅系统内标签）</Label><Input value={settingForm.displayName} placeholder="微信公众号服务号 AppID" onChange={event => setSettingForm({ ...settingForm, displayName: event.target.value })} /><p className="mt-1 text-xs text-slate-500">不要将 AppID、AppSecret、模板 ID 填在这里；请填入下方“配置值”。</p></div>
@@ -1540,6 +1570,8 @@ export default function AdminPage() {
             <label className="flex items-center gap-2 text-sm text-slate-600"><Checkbox checked={settingForm.isSensitive} disabled={Boolean(settingForm.id) || settingForm.settingKey.startsWith("WECHAT_OFFICIAL_")} onCheckedChange={checked => setSettingForm({ ...settingForm, isSensitive: Boolean(checked) })} />按敏感密钥加密托管{settingForm.settingKey.startsWith("WECHAT_OFFICIAL_") ? <span className="text-xs text-slate-400">（服务号字段按安全规则自动设置）</span> : null}</label>
             <div><Label>备注</Label><Input value={settingForm.remarks} placeholder="用途、回调地址或维护说明" onChange={event => setSettingForm({ ...settingForm, remarks: event.target.value })} /></div>
             <div className="flex gap-2"><Button className="flex-1 bg-[#203c48] hover:bg-[#17313b]" disabled={!settingForm.settingKey || !settingForm.displayName || (!settingForm.value && !(settingForm.id && settingForm.isSensitive)) || saveSetting.isPending} onClick={() => saveSetting.mutate(settingForm)}>{settingForm.id ? "保存修订草稿" : "保存草稿"}</Button>{settingForm.id ? <Button variant="outline" onClick={() => setSettingForm(EMPTY_SETTING_FORM)}>取消编辑</Button> : null}</div>
+              </div>
+            </details>
           </CardContent>
         </Card>
         <AlertDialog open={Boolean(settingDeleteTarget)} onOpenChange={open => { if (!open) setSettingDeleteTarget(null); }}>

@@ -183,6 +183,15 @@ const localManagerPasswordResetInput = z.object({
   newPassword: z.string().min(6, "新密码至少 6 位").max(128),
 });
 
+/** 服务号基础接入一次性保存：两项密钥允许在后续修订时留空以保留原有密文。 */
+const officialAccountConfigurationInput = z.object({
+  appId: z.string().trim().min(1, "请填写服务号 AppID").max(256),
+  appSecret: z.string().max(2048),
+  appUrl: z.string().trim().min(1, "请填写公众号业务跳转地址").max(1024),
+  egressUrl: z.string().trim().min(1, "请填写微信 API 固定出口网关地址").max(1024),
+  egressSigningSecret: z.string().max(2048),
+});
+
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
 const wechatBindingUserInput = z.object({ userId: z.number().int().positive() });
 
@@ -1276,6 +1285,73 @@ export const adminRouter = router({
       if (!db) return [];
       const settings = await db.select({ id: systemSettings.id, category: systemSettings.category, settingKey: systemSettings.settingKey, displayName: systemSettings.displayName, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, isSensitive: systemSettings.isSensitive, status: systemSettings.status, version: systemSettings.version, publishedAt: systemSettings.publishedAt, updatedAt: systemSettings.updatedAt, remarks: systemSettings.remarks }).from(systemSettings).orderBy(systemSettings.category, systemSettings.settingKey);
       return settings.filter(setting => !RETIRED_NOTIFICATION_SETTING_KEYS.has(setting.settingKey));
+    }),
+    /**
+     * 服务号接入的五项参数作为一个原子配置组保存并发布，避免管理员逐项草稿/发布造成半配置状态。
+     * 敏感字段在后续修订时允许留空，表示保留既有密文；接口永不返回密钥明文。
+     */
+    saveOfficialAccountConfiguration: protectedProcedure.input(officialAccountConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const definitions = [
+        { settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: input.appId, isSensitive: false, remarks: "服务号 AppID；用于员工微信身份绑定和业务通知。" },
+        { settingKey: OFFICIAL_ACCOUNT_APP_SECRET_KEY, displayName: "微信公众号服务号 AppSecret", value: input.appSecret, isSensitive: true, remarks: "服务号 AppSecret；仅服务端 AES-GCM 加密托管。" },
+        { settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: input.appUrl, isSensitive: false, remarks: "正式 HTTPS 站点根地址；用于模板消息跳转和员工 OAuth 绑定回调。" },
+        { settingKey: "WECHAT_OFFICIAL_EGRESS_URL", displayName: "微信 API 固定出口网关地址", value: input.egressUrl, isSensitive: false, remarks: "服务端访问微信 API 的固定出口地址。" },
+        { settingKey: OFFICIAL_ACCOUNT_EGRESS_SECRET_KEY, displayName: "固定出口网关签名密钥", value: input.egressSigningSecret, isSensitive: true, remarks: "固定出口网关签名密钥；仅服务端 AES-GCM 加密托管。" },
+      ] as const;
+      const keys = definitions.map(item => item.settingKey);
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, keys));
+      const existingByKey = new Map(existingRows.map(item => [item.settingKey, item]));
+
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.settingKey);
+          const submittedValue = definition.value.trim();
+          const preserveExistingSecret = definition.isSensitive && !submittedValue;
+          if (!definition.isSensitive && !submittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: `请填写${definition.displayName}` });
+          if (preserveExistingSecret && !existing?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: `首次配置必须填写${definition.displayName}` });
+          assertOfficialAccountSettingContract({ settingKey: definition.settingKey, value: submittedValue, isSensitive: definition.isSensitive });
+          const nextValue = submittedValue;
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const writeResult = await tx.update(systemSettings).set({
+              category: "微信公众号服务号",
+              displayName: definition.displayName,
+              valueJson: definition.isSensitive ? null : nextValue,
+              secretEncrypted: definition.isSensitive ? (preserveExistingSecret ? existing.secretEncrypted : encryptSecret(nextValue)) : null,
+              valuePreview: definition.isSensitive ? (preserveExistingSecret ? existing.valuePreview : maskSecret(nextValue)) : nextValue.slice(0, 256),
+              isSensitive: definition.isSensitive,
+              status: "published",
+              version: nextVersion,
+              publishedAt: new Date(),
+              remarks: definition.remarks,
+              updatedBy: admin.id,
+            }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(writeResult);
+            const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+          } else {
+            await tx.insert(systemSettings).values({
+              category: "微信公众号服务号",
+              settingKey: definition.settingKey,
+              displayName: definition.displayName,
+              valueJson: definition.isSensitive ? null : nextValue,
+              secretEncrypted: definition.isSensitive ? encryptSecret(nextValue) : null,
+              valuePreview: definition.isSensitive ? maskSecret(nextValue) : nextValue.slice(0, 256),
+              isSensitive: definition.isSensitive,
+              status: "published",
+              publishedAt: new Date(),
+              remarks: definition.remarks,
+              updatedBy: admin.id,
+            });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_configuration", targetType: "official_account", targetId: "configuration_bundle", summary: "一次性保存并发布服务号五项基础配置" });
+      });
+      const validation = await testPublishedOfficialAccountConfiguration();
+      return { success: validation.success, message: validation.message };
     }),
     saveDraft: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))

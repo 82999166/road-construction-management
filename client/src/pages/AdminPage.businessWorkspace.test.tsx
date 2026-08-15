@@ -112,4 +112,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("机械记录及其成本、租赁、维修历史均被保留");
     expect(source).toContain("isEditableConstructionReport");
   });
+
+  it("将服务号全部五项参数集中为一次保存并校验的单一表单，不再以分项预设按钮引导配置", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("saveOfficialAccountConfiguration");
+    expect(source).toContain("保存并校验服务号配置");
+    expect(source).toContain("微信 API 固定出口网关地址");
+    expect(source).toContain("固定出口网关签名密钥");
+    expect(source).toContain("其它系统参数");
+    expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
+  });
 });
