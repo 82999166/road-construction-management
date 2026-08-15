@@ -1063,6 +1063,8 @@ export default function AdminPage() {
     onError: error => toast.error(error.message),
   });
 
+  const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", evidence: "影像取证", message: "消息中心" };
+  const permissionActionLabels: Record<string, string> = { read: "查看", create: "新增", edit: "编辑", submit: "提交", review: "审核", settle: "结算/发放", void: "作废/归档", export: "导出", print: "打印", manage: "全量办理", publish: "发布", rollback: "回滚", test: "测试" };
   // 按功能模块分组展示权限，避免管理员在长列表中难以辨识业务归属。
   const permissionGroups = useMemo(() => {
     const grouped: Record<string, Array<NonNullable<typeof permissions.data>[number]>> = {};
@@ -1398,23 +1400,23 @@ export default function AdminPage() {
         <Dialog open={employeeInsuranceDialogOpen} onOpenChange={open => { setEmployeeInsuranceDialogOpen(open); if (!open) setEmployeeInsuranceForm(EMPTY_EMPLOYEE_INSURANCE_FORM); }}><DialogContent className="sm:max-w-xl"><DialogHeader><DialogTitle>登记员工保险</DialogTitle><DialogDescription>到期提醒在后台加载时实时计算；请填写真实购买日与到期日。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveEmployeeInsurance.mutate({ id: employeeInsuranceForm.id, employeeProfileId: Number(employeeInsuranceForm.employeeProfileId), insuranceType: employeeInsuranceForm.insuranceType, providerName: employeeInsuranceForm.providerName || null, policyReference: employeeInsuranceForm.policyReference || null, purchasedAt: employeeInsuranceForm.purchasedAt, expiresAt: employeeInsuranceForm.expiresAt, status: employeeInsuranceForm.status, remarks: employeeInsuranceForm.remarks || null }); }}><div className="grid gap-3 sm:grid-cols-2"><Field label="保险类型"><Select value={employeeInsuranceForm.insuranceType} onValueChange={value => setEmployeeInsuranceForm(current => ({ ...current, insuranceType: value as EmployeeInsuranceForm["insuranceType"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="work_injury">工伤保险</SelectItem><SelectItem value="accident">意外险</SelectItem><SelectItem value="medical">医疗保险</SelectItem><SelectItem value="employer_liability">雇主责任险</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></Field><Field label="保险状态"><Select value={employeeInsuranceForm.status} onValueChange={value => setEmployeeInsuranceForm(current => ({ ...current, status: value as EmployeeInsuranceForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">有效</SelectItem><SelectItem value="expired">已到期</SelectItem><SelectItem value="cancelled">已取消</SelectItem></SelectContent></Select></Field><Field label="保险公司"><Input value={employeeInsuranceForm.providerName} onChange={event => setEmployeeInsuranceForm(current => ({ ...current, providerName: event.target.value }))} /></Field><Field label="保单编号 / 参考号"><Input value={employeeInsuranceForm.policyReference} onChange={event => setEmployeeInsuranceForm(current => ({ ...current, policyReference: event.target.value }))} /></Field><Field label="购买日期"><Input type="date" value={employeeInsuranceForm.purchasedAt} onChange={event => setEmployeeInsuranceForm(current => ({ ...current, purchasedAt: event.target.value }))} /></Field><Field label="到期日期"><Input type="date" value={employeeInsuranceForm.expiresAt} onChange={event => setEmployeeInsuranceForm(current => ({ ...current, expiresAt: event.target.value }))} /></Field></div><Field label="备注"><Textarea value={employeeInsuranceForm.remarks} onChange={event => setEmployeeInsuranceForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setEmployeeInsuranceDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveEmployeeInsurance.isPending || !employeeInsuranceForm.employeeProfileId || !employeeInsuranceForm.purchasedAt || !employeeInsuranceForm.expiresAt}>{saveEmployeeInsurance.isPending ? "正在保存…" : "保存保险台账"}</Button></DialogFooter></form></DialogContent></Dialog>
       </section>
       <section className="space-y-4">
-        <details className="rounded-xl border border-slate-200 bg-white p-3">
-          <summary className="cursor-pointer text-sm font-medium text-slate-700">高级治理：权限矩阵与部门业务开关</summary>
-          <p className="mt-1 text-xs leading-5 text-slate-500">岗位模板已说明标准职责。仅在维护角色权限矩阵或启停部门业务模块时展开。</p>
+        <details open className="rounded-xl border border-slate-200 bg-white p-3">
+          <summary className="cursor-pointer text-sm font-medium text-slate-700">角色详细操作权限与部门业务开关</summary>
+          <p className="mt-1 text-xs leading-5 text-slate-500">岗位模板用于快速分配标准职责；请在此按业务模块设置角色可查看、新增、审核、结算、作废、导出或打印的具体操作。</p>
           <div className="mt-3 space-y-4">
         <Card>
-          <CardHeader><CardTitle className="text-base">权限分配</CardTitle><CardDescription>选择角色后勾选其可操作的后台及移动端权限；保存后对下一次请求即时生效。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">角色详细操作权限</CardTitle><CardDescription>选择角色后，按业务模块勾选查看、新增、编辑、提交、审核、结算、作废、导出或打印等动作。角色一旦配置某业务域的详细权限，服务端将拒绝该域未勾选的直接接口调用；岗位、部门和项目范围仍同时校验。</CardDescription></CardHeader>
           <CardContent>
             {selectedRoleId === undefined ? <EmptyState text="正在加载可分配角色…" /> : (
               <div className="space-y-5">
                 {permissionGroups.map(([module, items]) => (
-                  <div key={module}>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{module}</p>
+                  <div key={module} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-slate-800">{permissionModuleLabels[module] ?? module}</p><p className="mt-0.5 text-xs text-slate-500">已选择 {items.filter(item => draftPermissionIds.includes(item.id)).length} / {items.length} 项操作权限</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setDraftPermissionIds(current => Array.from(new Set([...current, ...items.map(item => item.id)])))}>全选本模块</Button><Button size="sm" variant="ghost" className="text-slate-600" onClick={() => setDraftPermissionIds(current => current.filter(id => !items.some(item => item.id === id)))}>清空</Button></div></div>
                     <div className="grid gap-2 md:grid-cols-2">
                       {items.map(permission => (
-                        <label key={permission.id} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-100 p-3 hover:bg-slate-50">
+                        <label key={permission.id} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-white p-3 hover:border-[#9ab6ad] hover:bg-[#f7fbf8]">
                           <Checkbox checked={draftPermissionIds.includes(permission.id)} onCheckedChange={checked => setDraftPermissionIds(current => checked ? Array.from(new Set([...current, permission.id])) : current.filter(id => id !== permission.id))} />
-                          <span><span className="block text-sm font-medium text-slate-700">{permission.name}</span><span className="block text-xs text-slate-400">{permission.code}</span></span>
+                          <span><span className="block text-sm font-medium text-slate-700">{permission.name}</span><span className="mt-1 inline-flex rounded bg-[#edf4f1] px-1.5 py-0.5 text-[11px] font-medium text-[#355c52]">操作：{permissionActionLabels[permission.action] ?? permission.action}</span><span className="mt-1 block text-xs text-slate-400">{permission.code}</span></span>
                         </label>
                       ))}
                     </div>

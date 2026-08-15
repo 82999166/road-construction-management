@@ -2,7 +2,8 @@ import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
-import { getSuperAdminAccess } from "../access";
+import { getRoleOperationPermissionDecision, getSuperAdminAccess, type BusinessOperationAction } from "../access";
+import type { DepartmentBusinessModule } from "../../shared/department";
 import { assertLocalManagerTerminalAccess } from "../localAuth";
 
 const t = initTRPC.context<TrpcContext>().create({
@@ -16,8 +17,18 @@ export const publicProcedure = t.procedure;
  * 业务模块的高影响写入不能仅依赖前端隐藏按钮；客户端可直接调用 RPC。
  * 普通管理人员只能在其已授权模块与项目范围内新增、查看，既有记录修改与状态流转由超级管理员负责。
  */
-const BUSINESS_ROUTER_PREFIXES = ["labor.", "machinery.", "transport.", "purchasing.", "measurement.", "finance.", "evidence."] as const;
+const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "finance.", "evidence."] as const;
 const HIGH_IMPACT_MUTATION_SEGMENTS = ["transition", "approve", "pay", "void", "reverse", "ocr", "recordSettlement", "recordPayment"] as const;
+const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
+  construction: "CONSTRUCTION",
+  labor: "LABOR",
+  machinery: "MACHINERY",
+  transport: "TRANSPORT",
+  purchasing: "PURCHASING",
+  measurement: "MEASUREMENT",
+  finance: "FINANCE",
+  evidence: "EVIDENCE",
+};
 /**
  * 工资条的提交、审核、发放和作废已在 labor 路由内分别实施劳资、会计、财务负责人角色、部门模块、项目范围及状态机校验。
  * 因此不应再由泛化守卫一律要求超级管理员；其余高影响业务突变仍保持统一管理员兜底。
@@ -39,6 +50,30 @@ function hasExistingRecordId(input: unknown) {
 
 function isHighImpactBusinessMutation(path: string) {
   return HIGH_IMPACT_MUTATION_SEGMENTS.some(segment => path.toLowerCase().includes(segment.toLowerCase()));
+}
+
+/** 从过程名称推导业务动作，保证前端隐藏按钮或直接 RPC 调用都绕不过角色详细操作权限。 */
+function inferBusinessOperationAction(path: string, input: unknown): BusinessOperationAction {
+  const normalized = path.toLowerCase();
+  if (normalized.includes("transition")) {
+    const nextStatus = typeof input === "object" && input !== null && "nextStatus" in input ? String((input as { nextStatus?: unknown }).nextStatus ?? "") : "";
+    if (["void", "locked", "archived", "cancelled"].includes(nextStatus)) return "void";
+    if (["settled", "paid", "issued"].includes(nextStatus)) return "settle";
+    if (["approved", "rejected", "verified", "certified"].includes(nextStatus)) return "review";
+    if (nextStatus === "submitted") return "submit";
+  }
+  if (normalized.includes("export")) return "export";
+  if (normalized.includes("print")) return "print";
+  if (["void", "reverse", "cancel", "archive", "revoke"].some(segment => normalized.includes(segment))) return "void";
+  if (["settle", "payment", "pay", "closing"].some(segment => normalized.includes(segment))) return "settle";
+  if (["approve", "review", "verify", "certify"].some(segment => normalized.includes(segment))) return "review";
+  if (["submit", "load", "unload"].some(segment => normalized.includes(segment))) return "submit";
+  return hasExistingRecordId(input) ? "edit" : "create";
+}
+
+function getBusinessModuleForPath(path: string) {
+  const routerName = path.split(".")[0] ?? "";
+  return BUSINESS_MODULE_BY_ROUTER[routerName];
 }
 
 const requireUser = t.middleware(async opts => {
@@ -79,7 +114,19 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
 
   const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
   const usesDedicatedLaborRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path);
+  const businessModule = getBusinessModuleForPath(path);
+  const operation = inferBusinessOperationAction(path, input);
+  const detailedPermission = !isSuperAdmin && businessModule
+    ? await getRoleOperationPermissionDecision(ctx, businessModule, operation)
+    : null;
+  if (detailedPermission?.hasDetailedPermissions && !detailedPermission.allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `当前角色未获“${operation}”操作权限，请联系超级管理员在角色详细操作权限中授权`,
+    });
+  }
   if (!isSuperAdmin && !usesDedicatedLaborRoleGuard && (hasExistingRecordId(input) || isHighImpactBusinessMutation(path))) {
+    if (detailedPermission?.hasDetailedPermissions && detailedPermission.allowed) return next({ ctx });
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "普通管理人员仅可在已授权业务范围内新增和查看数据；修改既有记录、审批、结算及作废操作仅限超级管理员",

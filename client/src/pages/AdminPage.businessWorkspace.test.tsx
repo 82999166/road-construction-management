@@ -148,4 +148,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("待绑定对应模板");
     expect(source).toContain("系统按模板 `.DATA` 字段自动映射");
   });
+
+  it("提供角色级详细操作权限矩阵，支持按模块设置动作并批量全选或清空", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("角色详细操作权限");
+    expect(source).toContain("查看、新增、编辑、提交、审核、结算、作废、导出或打印");
+    expect(source).toContain("permissionActionLabels");
+    expect(source).toContain("全选本模块");
+    expect(source).toContain("清空</Button>");
+    expect(source).toContain("角色一旦配置某业务域的详细权限");
+  });
 });

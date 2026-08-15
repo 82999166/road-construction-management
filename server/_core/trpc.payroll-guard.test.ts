@@ -4,6 +4,7 @@ import type { TrpcContext } from "./context";
 
 vi.mock("../access", () => ({
   getSuperAdminAccess: vi.fn(),
+  getRoleOperationPermissionDecision: vi.fn(async () => ({ hasDetailedPermissions: false, allowed: true })),
 }));
 
 import { getSuperAdminAccess } from "../access";

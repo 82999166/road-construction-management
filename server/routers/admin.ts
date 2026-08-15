@@ -947,11 +947,21 @@ export const adminRouter = router({
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
-      await db.delete(rolePermissions).where(eq(rolePermissions.roleId, input.roleId));
-      if (input.permissionIds.length > 0) {
-        await db.insert(rolePermissions).values(input.permissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
+      const [roleRows, permissionRows] = await Promise.all([
+        db.select({ id: systemRoles.id, name: systemRoles.name }).from(systemRoles).where(eq(systemRoles.id, input.roleId)).limit(1),
+        db.select({ id: systemPermissions.id }).from(systemPermissions),
+      ]);
+      if (!roleRows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在或已被删除" });
+      const uniquePermissionIds = Array.from(new Set(input.permissionIds));
+      const validPermissionIds = new Set(permissionRows.map(permission => permission.id));
+      if (uniquePermissionIds.some(permissionId => !validPermissionIds.has(permissionId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "权限配置中包含无效权限点，请刷新后重新设置" });
       }
-      await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: "更新角色权限集合" });
+      await db.delete(rolePermissions).where(eq(rolePermissions.roleId, input.roleId));
+      if (uniquePermissionIds.length > 0) {
+        await db.insert(rolePermissions).values(uniquePermissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
+      }
+      await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: `更新角色“${roleRows[0].name}”的详细操作权限，共 ${uniquePermissionIds.length} 项` });
       dispatchOfficialAccountSecurityNotification({
         userId: admin.id,
         module: "security",
