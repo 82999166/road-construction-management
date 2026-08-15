@@ -60,10 +60,24 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
+  it("将新建员工档案固定放在实际员工台账标题栏，并复用既有员工档案弹窗", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const ledgerStart = source.indexOf('title="员工档案、薪资与保险"');
+    const tableActionStart = source.indexOf("titleActions={<Button", ledgerStart);
+    const filterHeader = source.slice(source.indexOf("人员主数据 · 人事与用工台账"), source.indexOf("employeeProfiles.isLoading"));
+
+    expect(source).toContain("titleActions?: ReactNode");
+    expect(ledgerStart).toBeGreaterThan(-1);
+    expect(tableActionStart).toBeGreaterThan(ledgerStart);
+    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("新建员工档案");
+    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("setEmployeeProfileDialogOpen(true)");
+    expect(filterHeader).not.toContain(">新建员工档案</Button>");
+  });
+
   it("在手机宽度将新增台账的动作区与筛选控件分区换行，保留完整文案和足够触控高度", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto");
+    expect(source).toContain("min-h-10 bg-[#203c48] text-white hover:bg-[#17313b]");
     expect(source).toContain("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4");
     expect(source).toContain("min-h-11 w-full text-sm sm:min-h-8 sm:w-auto");
     expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
