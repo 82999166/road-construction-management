@@ -729,12 +729,17 @@ export const machineCostRecords = mysqlTable(
     quantity: decimal("quantity", { precision: 12, scale: 3 }).default("0").notNull(),
     unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    /** 项目部或加油站柴油领用生成的机械油料成本关联；手工成本保持为空。 */
+    dieselRefuelRecordId: bigint("dieselRefuelRecordId", { mode: "number" }),
     occurredAt: datetime("occurredAt").notNull(),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ machineDateIndex: index("machine_cost_records_machine_date_index").on(table.machineId, table.occurredAt) }),
+  table => ({
+    machineDateIndex: index("machine_cost_records_machine_date_index").on(table.machineId, table.occurredAt),
+    dieselRefuelUnique: uniqueIndex("machine_cost_records_diesel_refuel_unique").on(table.dieselRefuelRecordId),
+  }),
 );
 
 /** 车辆与机械共用的维修、保养费用台账；不替代既有机械油料/租赁成本明细。 */
@@ -802,6 +807,68 @@ export const transportVehicleLeaseRules = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({ vehicleStatusIndex: index("transport_vehicle_lease_rules_vehicle_status_index").on(table.vehicleId, table.status) }),
+);
+
+/** 项目柴油指导单价；项目部供油按生效规则取价，历史领用保留单价快照。 */
+export const dieselGuidelinePrices = mysqlTable(
+  "diesel_guideline_prices",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    pricePerLiter: decimal("pricePerLiter", { precision: 16, scale: 2 }).notNull(),
+    effectiveFrom: date("effectiveFrom").notNull(),
+    effectiveTo: date("effectiveTo"),
+    status: mysqlEnum("status", ["draft", "active", "disabled"]).default("draft").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ projectStatusDateIndex: index("diesel_guideline_prices_project_status_date_index").on(table.projectId, table.status, table.effectiveFrom) }),
+);
+
+/**
+ * 柴油领用/加油台账。车辆项目部供油可在运输结算中扣减，机械供油自动计入机械油料成本；
+ * 所有金额均由服务端按升数和价格快照计算，避免前端修改金额。
+ */
+export const dieselRefuelRecords = mysqlTable(
+  "diesel_refuel_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    recordNo: varchar("recordNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(),
+    vehicleId: int("vehicleId"),
+    machineId: int("machineId"),
+    /** 车辆需从运费扣油款时必须关联具体运输趟次；已结算趟次不得重复领用。 */
+    transportTripId: bigint("transportTripId", { mode: "number" }),
+    supplyMethod: mysqlEnum("supplyMethod", ["project_supply", "external_station"]).notNull(),
+    stationOrSupplierName: varchar("stationOrSupplierName", { length: 160 }),
+    liters: decimal("liters", { precision: 12, scale: 3 }).notNull(),
+    /** 加油站自购填写实际单价；项目部供油由有效指导价快照写入。 */
+    actualUnitPrice: decimal("actualUnitPrice", { precision: 16, scale: 2 }),
+    appliedUnitPrice: decimal("appliedUnitPrice", { precision: 16, scale: 2 }).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    deductFromFreight: boolean("deductFromFreight").default(false).notNull(),
+    refueledAt: datetime("refueledAt").notNull(),
+    meterReading: decimal("meterReading", { precision: 14, scale: 2 }),
+    receiptNo: varchar("receiptNo", { length: 64 }),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
+    createdBy: int("createdBy").notNull(),
+    approvedBy: int("approvedBy"),
+    approvedAt: datetime("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    recordNoUnique: uniqueIndex("diesel_refuel_records_no_unique").on(table.recordNo),
+    projectDateIndex: index("diesel_refuel_records_project_date_index").on(table.projectId, table.refueledAt),
+    tripStatusIndex: index("diesel_refuel_records_trip_status_index").on(table.transportTripId, table.status),
+    vehicleDateIndex: index("diesel_refuel_records_vehicle_date_index").on(table.vehicleId, table.refueledAt),
+    machineDateIndex: index("diesel_refuel_records_machine_date_index").on(table.machineId, table.refueledAt),
+  }),
 );
 
 /**
@@ -927,6 +994,10 @@ export const transportTrips = mysqlTable(
    weightTons: decimal("weightTons", { precision: 12, scale: 3 }),
    calculatedUnitPrice: decimal("calculatedUnitPrice", { precision: 16, scale: 2 }),
    calculatedAmount: decimal("calculatedAmount", { precision: 16, scale: 2 }),
+   /** 仅在结算时由已核准且关联本趟的柴油领用记录汇总，不得由浏览器直接写入。 */
+   fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+   netSettlementAmount: decimal("netSettlementAmount", { precision: 16, scale: 2 }),
+   fuelSettlementSnapshot: json("fuelSettlementSnapshot"),
    routeSnapshot: json("routeSnapshot"),
    evidenceId: bigint("evidenceId", { mode: "number" }),
    status: mysqlEnum("status", ["draft", "submitted", "verified", "settled", "void"]).default("draft").notNull(),

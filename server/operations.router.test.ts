@@ -68,6 +68,7 @@ function createSelectDbSequence(...responses: unknown[][]) {
           where: vi.fn(() => ({
             orderBy: vi.fn(async () => rows),
             limit: vi.fn(async () => rows),
+            then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
           })),
         })),
       };
@@ -175,6 +176,32 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(tripDb as never);
 
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("运输结算将已核准的项目供油从总运费扣除，固化净结算快照并锁定柴油记录", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const settlementWrites: unknown[] = [];
+    const update = vi.fn(() => ({ set: vi.fn((values: unknown) => {
+      settlementWrites.push(values);
+      return { where: vi.fn(async () => [{ affectedRows: 1 }]) };
+    }) }));
+    const auditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 33, projectId: 10, vehicleId: 11, status: "verified", calculatedAmount: "1200.00" }],
+        [{ id: 701, recordNo: "DS1001", liters: "60", appliedUnitPrice: "7.50", amount: "450.00", supplyMethod: "project_supply", deductFromFreight: true, status: "approved" }],
+      ),
+      update,
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 33, projectId: 10, nextStatus: "settled" })).resolves.toEqual({ success: true });
+
+    expect(settlementWrites).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "settled", fuelDeductionAmount: "450", netSettlementAmount: "750", fuelSettlementSnapshot: expect.objectContaining({ grossFreightAmount: 1200, fuelDeductionAmount: 450, netSettlementAmount: 750 }) }),
+      expect.objectContaining({ status: "settled" }),
+    ]));
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "transition_trip", summary: expect.stringContaining("油款扣减¥450.00") }));
   });
 
   it("机械与运输正向流转同时留下审计和公众号业务深链", async () => {

@@ -219,6 +219,15 @@ describe("超级管理主数据约束", () => {
     await expect(caller.assetMaintenance.save({ assetType: "vehicle", assetId: 1, projectId: 1, costCategory: "maintenance", amount: 0, occurredAt: "2026-08-10T08:00:00.000Z", serviceProvider: null, meterReading: null, nextDueAt: null, remarks: null, status: "draft" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("拒绝柴油外站加油遗漏实际单价，并拒绝车辆扣油未关联运输趟次", async () => {
+    vi.mocked(getDb).mockResolvedValue({} as never);
+    const caller = adminRouter.createCaller(createAdminContext());
+    const base = { projectId: 1, assetType: "vehicle" as const, vehicleId: 11, machineId: null, transportTripId: null, supplyMethod: "external_station" as const, stationOrSupplierName: "测试加油站", liters: 50, actualUnitPrice: null, deductFromFreight: false, refueledAt: "2026-08-15T08:00:00.000Z", meterReading: null, receiptNo: null, evidenceId: null, remarks: null, status: "approved" as const };
+
+    await expect(caller.diesel.saveRefuelRecord(base)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.diesel.saveRefuelRecord({ ...base, actualUnitPrice: 7.2, deductFromFreight: true })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("拒绝直接停用存在未结算趟次的车辆", async () => {
     const db = createSequentialLimitDb(
       [{ id: 20, status: "active" }],
