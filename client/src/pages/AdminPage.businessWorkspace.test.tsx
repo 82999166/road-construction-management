@@ -181,3 +181,17 @@ describe("后台服务号绑定状态映射", () => {
     expect(source).not.toContain("user.profileStatus === \"active\" ? \"已完成关注绑定\"");
   });
 });
+
+describe("后台全员上下班考勤定位展示", () => {
+  it("分别展示上班和下班的精确定位，并将两段坐标纳入 CSV 导出", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("function formatAttendanceLocation");
+    expect(source).toContain("上班打卡位置");
+    expect(source).toContain("下班打卡位置");
+    expect(source).toContain("上班位置");
+    expect(source).toContain("下班位置");
+    expect(source).toContain("item.checkoutLongitude");
+    expect(source).toContain("item.checkoutLocationAccuracyMeters");
+  });
+});
