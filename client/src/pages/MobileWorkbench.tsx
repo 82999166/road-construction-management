@@ -6,7 +6,6 @@ import { trpc } from "@/lib/trpc";
 import {
   Bell,
   Camera,
-  ChevronRight,
   ClipboardCheck,
   CloudOff,
   ContactRound,
@@ -167,7 +166,6 @@ export default function MobileWorkbench() {
   const userSpecificModules = activeWorkbench?.user.userSpecificModules ?? [];
   // 超级管理员的角色由服务端下发，界面仅作来源说明，不能据此绕过任何接口鉴权。
   const hasGlobalBusinessAccess = activeWorkbench?.user.roleCodes.includes("SUPER_ADMIN") ?? false;
-  const canUseEvidence = businessMenus.some(menu => menu.code === "EVIDENCE");
 
   return (
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
@@ -187,10 +185,11 @@ export default function MobileWorkbench() {
         <main className="space-y-6 px-5 pb-24 pt-5">
           {isUsingSnapshot ? <section role="status" className="flex items-start gap-3 rounded-2xl border border-[#dfb78a] bg-[#fff0db] p-3 text-[#6d3d20]"><CloudOff className="mt-0.5 h-4 w-4 shrink-0" /><div className="min-w-0"><p className="text-xs font-semibold">{isOnline ? "网络连接暂时不稳定" : "离线查看模式"}</p><p className="mt-1 text-xs leading-5">正在显示本机上次同步的岗位菜单和摘要（{new Date(snapshot?.savedAt ?? Date.now()).toLocaleString()}）。{isOnline ? "网络恢复后会自动同步，您也可以立即重新同步。" : "离线期间不可提交业务操作。"}</p></div><button aria-label="恢复网络后重新尝试同步" disabled={!isOnline} className="ml-auto rounded-lg p-1.5 transition-colors hover:bg-[#f5dfc4] disabled:cursor-not-allowed disabled:opacity-50" onClick={retryWorkbench}><RefreshCw className="h-4 w-4" /></button></section> : null}
           <section className="grid grid-cols-2 gap-3">
-            {[{ label: "待处理审批", value: statistics?.pendingApprovals ?? 0, icon: ClipboardCheck, tone: "bg-[#fff1df] text-[#9b4f25]" }, { label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }, { label: "未读消息", value: statistics?.unreadMessages ?? 0, icon: Bell, tone: "bg-[#efe9dd] text-[#655244]" }].map(item => {
+            {[{ label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }, { label: "未读消息", value: statistics?.unreadMessages ?? 0, icon: Bell, tone: "bg-[#efe9dd] text-[#655244]", onClick: () => navigate("/mobile/messages") }].map(item => {
               // 将图标提升为大写组件变量，符合 JSX 动态组件的语法约束。
               const StatisticIcon = item.icon;
-              return <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4"><div className={`grid h-10 w-10 place-items-center rounded-xl ${item.tone}`}><StatisticIcon className="h-5 w-5" /></div><div><p className="text-lg font-semibold leading-none">{item.value}</p><p className="mt-1 text-xs text-[#8f7566]">{item.label}</p></div></CardContent></Card>;
+              const cardBody = <><div className={`grid h-10 w-10 place-items-center rounded-xl ${item.tone}`}><StatisticIcon className="h-5 w-5" /></div><div><p className="text-lg font-semibold leading-none">{item.value}</p><p className="mt-1 text-xs text-[#8f7566]">{item.label}</p></div></>;
+              return item.onClick ? <button key={item.label} type="button" aria-label="打开未读消息" disabled={!isOnline} className="flex items-center gap-3 rounded-xl bg-white p-4 text-left shadow-[0_8px_22px_rgba(71,42,30,.07)] transition-transform enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60" onClick={item.onClick}>{cardBody}</button> : <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4">{cardBody}</CardContent></Card>;
             })}
           </section>
 
@@ -204,8 +203,6 @@ export default function MobileWorkbench() {
               {!businessMenus.length ? <p className="col-span-4 rounded-xl bg-white p-4 text-center text-xs text-[#8f7566]">当前账号尚未获分配业务岗位，请联系超级管理员授权。</p> : null}
             </div>
           </section>
-
-          {canUseEvidence ? <section className="rounded-2xl bg-[#f0dfc7] p-4"><div className="flex gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#c9854a] text-white"><Camera className="h-5 w-5" /></div><div><h2 className="text-sm font-semibold">现场取证已就绪</h2><p className="mt-1 text-xs leading-5 text-[#79533e]">拍照后将自动记录项目、时间和定位信息；照片可关联运输、考勤、采购与安全业务单据。</p><button disabled={!isOnline} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-[#8b3f20] disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/mobile/evidence")}>打开水印相机 <ChevronRight className="h-3.5 w-3.5" /></button></div></div></section> : null}
         </main>
 
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><LayoutDashboard className="h-5 w-5" /><span className="text-[10px] font-medium">工作台</span></button><button disabled={!isOnline} className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566] disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>

@@ -53,6 +53,9 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("劳务工资");
     expect(markup).not.toContain("财务成本");
     expect(markup).toContain("已开通 1 项部门业务");
+    expect(markup).not.toContain("待处理审批");
+    expect(markup).not.toContain("现场取证已就绪");
+    expect(markup).toContain('aria-label="打开未读消息"');
   });
 
   it("没有部门业务授权时展示受控的空状态而不是猜测菜单", () => {
