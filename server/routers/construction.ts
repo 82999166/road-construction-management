@@ -56,6 +56,16 @@ function asBadRequest(error: unknown): never {
   throw error;
 }
 
+/** 仅将公共天气码映射为日报枚举；坐标只用于本次请求，不写入日报或审计记录。 */
+function mapCurrentWeather(weatherCode: number, windSpeed: number): "sunny" | "cloudy" | "rainy" | "snowy" | "windy" | "other" {
+  if (windSpeed >= 10.8) return "windy";
+  if ([0].includes(weatherCode)) return "sunny";
+  if ([1, 2, 3].includes(weatherCode)) return "cloudy";
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(weatherCode)) return "rainy";
+  if ([71, 73, 75, 77, 85, 86].includes(weatherCode)) return "snowy";
+  return "other";
+}
+
 /**
  * 施工日报的草稿维护和状态流转均以读取时的状态作为写入条件。
  * 若受影响行数为 0，表示另一请求已先行更新，禁止继续写入审计。
@@ -72,6 +82,22 @@ export const constructionRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertConstructionAccess(ctx);
     return listConstructionProjects(ctx);
+  }),
+
+  /** 新建日报时按用户已授权定位自动读取当前天气；外部服务异常只返回可人工选择的降级结果。 */
+  resolveCurrentWeather: protectedProcedure.input(z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180) })).query(async ({ ctx, input }) => {
+    await assertConstructionAccess(ctx);
+    try {
+      const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${input.latitude.toFixed(4)}&longitude=${input.longitude.toFixed(4)}&current=weather_code,wind_speed_10m&timezone=auto`, { signal: AbortSignal.timeout(6_000) });
+      if (!response.ok) throw new Error(`天气服务返回 HTTP ${response.status}`);
+      const payload = await response.json() as { current?: { weather_code?: number; wind_speed_10m?: number; time?: string } };
+      const weatherCode = payload.current?.weather_code;
+      if (!Number.isFinite(weatherCode)) throw new Error("天气服务未返回有效天气码");
+      const windSpeed = Number(payload.current?.wind_speed_10m ?? 0);
+      return { weather: mapCurrentWeather(Number(weatherCode), windSpeed), observedAt: payload.current?.time ?? new Date().toISOString(), source: "auto" as const };
+    } catch {
+      return { weather: "other" as const, observedAt: new Date().toISOString(), source: "fallback" as const };
+    }
   }),
 
   listReports: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

@@ -67,6 +67,18 @@ describe("施工日报 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("新建日报可按当前定位自动解析天气，天气服务异常时安全回退为手动选择", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ current: { weather_code: 63, wind_speed_10m: 3, time: "2026-08-16T05:00" } }) })
+      .mockRejectedValueOnce(new Error("weather unavailable"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).resolveCurrentWeather({ latitude: 30.1234, longitude: 120.5678 })).resolves.toEqual({ weather: "rainy", observedAt: "2026-08-16T05:00", source: "auto" });
+    await expect(constructionRouter.createCaller(createAuthContext()).resolveCurrentWeather({ latitude: 30.1234, longitude: 120.5678 })).resolves.toMatchObject({ weather: "other", source: "fallback" });
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "read");
+    vi.unstubAllGlobals();
+  });
+
   it("新建施工日报由服务端保存项目归属、业务日期和最小化审计记录", async () => {
     const auditValues = vi.fn(async () => undefined);
     const reportValues = vi.fn(() => ({ $returningId: async () => [{ id: 88 }] }));

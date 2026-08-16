@@ -103,8 +103,8 @@ export default function MobileEvidencePage() {
   const [sourceType, setSourceType] = useState<(typeof SOURCE_OPTIONS)[number]["value"]>("site_photo");
   const [description, setDescription] = useState("");
   const [sourceId, setSourceId] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [coordinates, setCoordinates] = useState<{ longitude: number; latitude: number } | null>(null);
   const [captureWeather, setCaptureWeather] = useState("");
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
@@ -123,25 +123,13 @@ export default function MobileEvidencePage() {
     if (capturePreset.description) setDescription(capturePreset.description);
   }, [capturePreset.projectId, capturePreset.sourceId, capturePreset.sourceType, capturePreset.weather, capturePreset.description, projectId, projectOptions.data]);
 
-  /** 释放本地预览 URL，防止多次拍照选择造成浏览器内存持续占用。 */
-  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+  /** 释放本地预览 URL，防止多次连续拍照选择造成浏览器内存持续占用。 */
+  useEffect(() => () => { previewUrls.forEach(url => URL.revokeObjectURL(url)); }, [previewUrls]);
 
   const selectedProjectId = projectId ?? 0;
   const evidenceListInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const evidence = trpc.evidence.list.useQuery(evidenceListInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const upload = trpc.evidence.upload.useMutation({
-    onSuccess: async result => {
-      toast.success(sourceType === "purchase" ? "采购影像已归档，正在自动识别票据内容" : "现场影像已安全归档");
-      setDescription("");
-      setSourceId("");
-      setFile(null);
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      setPreviewUrl(null);
-      await evidence.refetch();
-      if (sourceType === "purchase" && result.id) runOcr.mutate({ id: result.id });
-    },
-    onError: error => toast.error(error.message),
-  });
+  const upload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   /** OCR 仅作辅助，采购影像上传后自动执行一次，其他影像仍保留用户主动触发入口。 */
   const runOcr = trpc.evidence.ocr.useMutation({
     onSuccess: async () => {
@@ -155,13 +143,16 @@ export default function MobileEvidencePage() {
 
   /** 前端仅做体验校验；服务端会再次检查格式、大小、文件头、项目范围和坐标合法性。 */
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const selected = event.target.files?.[0] ?? null;
-    if (!selected) return;
-    if (!["image/jpeg", "image/png"].includes(selected.type)) return toast.error("仅支持 JPG 或 PNG 格式影像");
-    if (selected.size > 8 * 1024 * 1024) return toast.error("单张影像不能超过 8MB");
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setFile(selected);
-    setPreviewUrl(URL.createObjectURL(selected));
+    const selected = Array.from(event.target.files ?? []);
+    if (!selected.length) return;
+    if (selected.some(file => !["image/jpeg", "image/png"].includes(file.type))) return toast.error("仅支持 JPG 或 PNG 格式影像");
+    if (selected.some(file => file.size > 8 * 1024 * 1024)) return toast.error("单张影像不能超过 8MB");
+    const combined = [...files, ...selected].slice(0, 12);
+    if (combined.length < files.length + selected.length) toast.warning("单次最多连续归档 12 张照片，超出部分未加入队列");
+    previewUrls.forEach(url => URL.revokeObjectURL(url));
+    setFiles(combined);
+    setPreviewUrls(combined.map(file => URL.createObjectURL(file)));
+    event.target.value = "";
   }
 
   /** 定位权限由用户主动触发；拒绝或超时不阻断影像归档。 */
@@ -181,7 +172,7 @@ export default function MobileEvidencePage() {
     if (captureConfig.isError) return toast.error("采集连接器配置加载失败，请稍后重试");
     if (!cameraEnabled) return toast.error("现场影像采集连接器已被管理员停用");
     if (locationRequired && !coordinates) return toast.error("当前项目要求上传影像时读取定位");
-    if (!file) return toast.error("请拍摄或选择现场影像");
+    if (!files.length) return toast.error("请拍摄或选择至少一张现场影像");
     if (!description.trim()) return toast.error("请填写现场说明");
     try {
       const capturedAt = new Date();
@@ -193,10 +184,19 @@ export default function MobileEvidencePage() {
         coordinates ? `定位：${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : "定位：未取得",
         captureWeather ? `天气：${captureWeather}` : "",
       ];
-      const watermarkedFile = await createWatermarkedImage(file, watermarkLines);
-      const base64Data = await readImageAsBase64(watermarkedFile);
       const auditedDescription = `${description.trim()}｜${watermarkLines.filter(Boolean).join("；")}`.slice(0, 500);
-      upload.mutate({ projectId: selectedProjectId, sourceType, sourceId: sourceId.trim() || null, description: auditedDescription, capturedAt: capturedAt.toISOString(), longitude: coordinates?.longitude ?? null, latitude: coordinates?.latitude ?? null, fileName: watermarkedFile.name, mimeType: "image/jpeg", base64Data });
+      const results = [] as Array<{ id: number | null }>;
+      for (const file of files) {
+        const watermarkedFile = await createWatermarkedImage(file, watermarkLines);
+        const base64Data = await readImageAsBase64(watermarkedFile);
+        results.push(await upload.mutateAsync({ projectId: selectedProjectId, sourceType, sourceId: sourceId.trim() || null, description: auditedDescription, capturedAt: capturedAt.toISOString(), longitude: coordinates?.longitude ?? null, latitude: coordinates?.latitude ?? null, fileName: watermarkedFile.name, mimeType: "image/jpeg", base64Data }));
+      }
+      previewUrls.forEach(url => URL.revokeObjectURL(url));
+      setFiles([]);
+      setPreviewUrls([]);
+      await evidence.refetch();
+      toast.success(`${results.length} 张现场影像已安全归档`);
+      if (sourceType === "purchase") results.filter(result => result.id).forEach(result => runOcr.mutate({ id: result.id! }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "影像水印或读取失败");
     }
@@ -221,7 +221,7 @@ export default function MobileEvidencePage() {
               <div><Label>现场说明</Label><Textarea className="mt-2 min-h-20 border-[#ead9c8] bg-[#fffaf5]" value={description} maxLength={500} placeholder="例如：K12+500 路基压实作业完成情况" onChange={event => setDescription(event.target.value)} /></div>
               <div className="flex items-center justify-between rounded-xl bg-[#f9eddf] px-3 py-2.5"><span className="inline-flex items-center gap-1.5 text-xs text-[#80543d]"><MapPin className="h-3.5 w-3.5" />{coordinates ? `${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : locationEnabled ? (locationRequired ? "需读取定位后上传" : "尚未读取定位") : "定位连接器已停用"}</span><button className="inline-flex items-center gap-1 text-xs font-semibold text-[#9a5128] disabled:cursor-not-allowed disabled:opacity-50" disabled={!locationEnabled} onClick={requestCoordinates}><LocateFixed className="h-3.5 w-3.5" />读取定位</button></div>
             </CardContent></Card>
-            <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><Label>现场影像</Label><label className={`mt-2 flex min-h-36 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3 text-center ${cameraEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"}`}><input className="sr-only" type="file" accept="image/jpeg,image/png" capture="environment" disabled={!cameraEnabled} onChange={handleFileChange} />{previewUrl ? <img src={previewUrl} alt="待归档现场影像预览" className="max-h-52 rounded-xl object-cover" /> : <><ImagePlus className="h-7 w-7 text-[#ad6335]" /><span className="mt-2 text-xs font-medium text-[#80543d]">{cameraEnabled ? "拍摄或选择 JPG、PNG 影像" : "影像采集连接器已停用"}</span><span className="mt-1 text-[11px] text-[#765544]">单张不超过 8MB</span></>}</label>{file ? <p className="mt-2 truncate text-xs text-[#80685b]">已选择：{file.name}</p> : null}<Button className="mt-4 w-full bg-[#9a5128] text-white hover:bg-[#7e3d1c]" disabled={upload.isPending || captureConfig.isError || !cameraEnabled || (locationRequired && !coordinates)} onClick={submitEvidence}>{upload.isPending ? "正在安全归档…" : "归档现场影像"}</Button></CardContent></Card>
+            <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><div className="flex items-end justify-between gap-3"><div><Label>现场影像</Label><p className="mt-1 text-[11px] text-[#80685b]">可连续添加多张；每张将固化管理员、项目、定位、日期、时间与天气水印。</p></div>{files.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {files.length}/12 张</span> : null}</div><label className={`mt-3 flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3 text-center ${cameraEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"}`}><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" disabled={!cameraEnabled} onChange={handleFileChange} /><ImagePlus className="h-7 w-7 text-[#ad6335]" /><span className="mt-2 text-xs font-medium text-[#80543d]">{cameraEnabled ? (files.length ? "继续拍摄或添加照片" : "拍摄或选择 JPG、PNG 影像") : "影像采集连接器已停用"}</span><span className="mt-1 text-[11px] text-[#765544]">单张不超过 8MB，单次最多 12 张</span></label>{previewUrls.length ? <div className="mt-3 grid grid-cols-3 gap-2">{previewUrls.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待归档现场影像 ${index + 1}`} className="aspect-square w-full rounded-xl object-cover" />)}</div> : null}<Button className="mt-4 w-full bg-[#9a5128] text-white hover:bg-[#7e3d1c]" disabled={upload.isPending || captureConfig.isError || !cameraEnabled || !files.length || (locationRequired && !coordinates)} onClick={submitEvidence}>{upload.isPending ? "正在逐张安全归档…" : `归档 ${files.length || ""} 张现场影像`}</Button></CardContent></Card>
             <section>
               <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">最近取证</h2><p className="mt-0.5 text-xs text-[#9b8170]">仅显示当前授权项目的影像记录</p></div><CheckCircle2 className="h-5 w-5 text-[#b87333]" /></div>
               {evidence.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-xs text-[#9c4d27]">影像台账加载失败：{evidence.error.message}</CardContent></Card> : evidence.isLoading ? <Card className="border-0 bg-white"><CardContent className="p-4 text-center text-sm text-[#8f7566]">正在加载影像台账…</CardContent></Card> : !evidence.data?.length ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-xs leading-5 text-[#765544]">该项目暂未归档现场影像。</CardContent></Card> : <div className="grid grid-cols-2 gap-3">

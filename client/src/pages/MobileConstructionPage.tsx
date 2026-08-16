@@ -33,6 +33,10 @@ function getTodayText() {
   return new Date(now.getTime() - offset).toISOString().slice(0, 10);
 }
 
+function formatReportDateTime(value: Date) {
+  return value.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
 function getBusinessDateText(value: Date | string | null | undefined) {
   if (!value) return "—";
   if (typeof value === "string") return value.slice(0, 10);
@@ -64,6 +68,9 @@ export default function MobileConstructionPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ ...emptyDraft, reportDate: getTodayText() });
   const [captureAfterSave, setCaptureAfterSave] = useState(false);
+  const [reportCapturedAt, setReportCapturedAt] = useState(() => new Date());
+  const [weatherCoordinates, setWeatherCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [weatherStatus, setWeatherStatus] = useState("打开新建日报后将自动获取当前天气；您仍可手动调整。");
 
   const projectOptions = trpc.construction.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -74,6 +81,17 @@ export default function MobileConstructionPage() {
   const reportInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const reports = trpc.construction.listReports.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.construction.summary.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+  const resolvedWeather = trpc.construction.resolveCurrentWeather.useQuery(weatherCoordinates ?? { latitude: 0, longitude: 0 }, { enabled: isAuthenticated && dialogOpen && !editingId && Boolean(weatherCoordinates), retry: false });
+
+  useEffect(() => {
+    if (!resolvedWeather.data) return;
+    if (resolvedWeather.data.source === "auto") {
+      setDraft(current => ({ ...current, weather: resolvedWeather.data.weather }));
+      setWeatherStatus(`已自动获取天气：${getWeatherLabel(resolvedWeather.data.weather)}（可手动修改）`);
+    } else {
+      setWeatherStatus("当前无法自动获取天气，请手动选择。");
+    }
+  }, [resolvedWeather.data]);
 
   const saveReport = trpc.construction.saveReport.useMutation({
     onSuccess: async result => {
@@ -101,7 +119,19 @@ export default function MobileConstructionPage() {
   function openCreate() {
     setEditingId(null);
     setDraft({ ...emptyDraft, reportDate: getTodayText() });
+    setReportCapturedAt(new Date());
+    setWeatherCoordinates(null);
+    setWeatherStatus("正在获取定位与当前天气；您仍可手动调整天气。");
     setDialogOpen(true);
+    if (!navigator.geolocation) {
+      setWeatherStatus("当前设备不支持定位，无法自动获取天气，请手动选择。");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      position => setWeatherCoordinates({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+      () => setWeatherStatus("未取得定位，无法自动获取天气，请手动选择。"),
+      { enableHighAccuracy: false, timeout: 8_000, maximumAge: 10 * 60_000 },
+    );
   }
 
   function openEdit(report: NonNullable<typeof reports.data>[number]) {
@@ -115,6 +145,9 @@ export default function MobileConstructionPage() {
       issueNotes: report.issueNotes ?? "",
       progressPercent: String(report.progressPercent ?? 0),
     });
+    setReportCapturedAt(new Date());
+    setWeatherCoordinates(null);
+    setWeatherStatus("修改日报时保留原天气；如需调整请手动选择。");
     setDialogOpen(true);
   }
 
@@ -166,7 +199,30 @@ export default function MobileConstructionPage() {
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><HardHat className="h-5 w-5" /><span className="text-[10px] font-medium">施工</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}><DialogContent className="max-h-[92vh] overflow-y-auto"><DialogHeader><DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle><DialogDescription>项目范围和日报状态由服务端校验；可保存后直接拍摄带管理员、定位、时间和天气水印的现场照片。</DialogDescription></DialogHeader><div className="space-y-4"><div className="grid grid-cols-2 gap-3"><div><Label htmlFor="report-date">日期</Label><Input id="report-date" type="date" value={draft.reportDate} onChange={event => setDraft(current => ({ ...current, reportDate: event.target.value }))} /></div><div><Label htmlFor="report-weather">天气</Label><Select value={draft.weather} onValueChange={value => setDraft(current => ({ ...current, weather: value as Weather }))}><SelectTrigger id="report-weather"><SelectValue /></SelectTrigger><SelectContent>{(["sunny", "cloudy", "rainy", "snowy", "windy", "other"] as Weather[]).map(weather => <SelectItem key={weather} value={weather}>{getWeatherLabel(weather)}</SelectItem>)}</SelectContent></Select></div></div><div><Label htmlFor="report-area">施工部位 / 作业面</Label><Input id="report-area" value={draft.workArea} maxLength={200} placeholder="例如：K12+500 路基填筑作业面" onChange={event => setDraft(current => ({ ...current, workArea: event.target.value }))} /></div><div><Label htmlFor="report-progress">累计完成比例（%）</Label><Input id="report-progress" type="number" min="0" max="100" step="0.01" value={draft.progressPercent} onChange={event => setDraft(current => ({ ...current, progressPercent: event.target.value }))} /></div><div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div><div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div><div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button disabled={saveReport.isPending} variant="outline" onClick={() => submitDraft(true)}><Camera className="mr-1.5 h-4 w-4" />保存并现场拍照</Button><Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={() => submitDraft(false)}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle>
+            <DialogDescription>项目范围和日报状态由服务端校验；保存后可连续添加多张现场照片，每张都会固化管理员、项目、定位、日期、时间和天气水印。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label htmlFor="report-date">日期 + 时间</Label><Input id="report-date" type="date" value={draft.reportDate} onChange={event => setDraft(current => ({ ...current, reportDate: event.target.value }))} /><p className="mt-1 text-[11px] text-[#8f7566]">{formatReportDateTime(reportCapturedAt)}</p></div>
+              <div><Label htmlFor="report-weather">天气</Label><Select value={draft.weather} onValueChange={value => { setDraft(current => ({ ...current, weather: value as Weather })); setWeatherStatus("天气已手动调整。"); }}><SelectTrigger id="report-weather"><SelectValue /></SelectTrigger><SelectContent>{(["sunny", "cloudy", "rainy", "snowy", "windy", "other"] as Weather[]).map(weather => <SelectItem key={weather} value={weather}>{getWeatherLabel(weather)}</SelectItem>)}</SelectContent></Select><p className="mt-1 text-[11px] leading-4 text-[#47744d]">{weatherStatus}</p></div>
+            </div>
+            <div><Label htmlFor="report-area">施工部位 / 作业面</Label><Input id="report-area" value={draft.workArea} maxLength={200} placeholder="例如：K12+500 路基填筑作业面" onChange={event => setDraft(current => ({ ...current, workArea: event.target.value }))} /></div>
+            <div><Label htmlFor="report-progress">累计完成比例（%）</Label><Input id="report-progress" type="number" min="0" max="100" step="0.01" value={draft.progressPercent} onChange={event => setDraft(current => ({ ...current, progressPercent: event.target.value }))} /></div>
+            <div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div>
+            <div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div>
+            <div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} placeholder="不得填写个人敏感信息；现场照片将统一固化管理员、项目、定位、日期、时间和天气水印。" onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
+            <Button disabled={saveReport.isPending} variant="outline" onClick={() => submitDraft(true)}><Camera className="mr-1.5 h-4 w-4" />保存并添加照片</Button>
+            <Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={() => submitDraft(false)}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
