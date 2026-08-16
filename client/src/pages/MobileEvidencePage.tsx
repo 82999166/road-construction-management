@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -7,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
-import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LayoutDashboard, LocateFixed, MapPin, ReceiptText, ScanLine, ShieldCheck, UserRound } from "lucide-react";
+import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LayoutDashboard, LocateFixed, MapPin, ReceiptText, ScanLine, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -122,6 +123,7 @@ export default function MobileEvidencePage() {
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [coordinates, setCoordinates] = useState<{ longitude: number; latitude: number } | null>(null);
   const [captureWeather, setCaptureWeather] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState<{ id: number; fileName: string } | null>(null);
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const cameraEnabled = captureConfig.data?.camera.enabled ?? true;
@@ -151,6 +153,14 @@ export default function MobileEvidencePage() {
     onSuccess: async () => {
       toast.success("票据识别已完成，请人工复核结果");
       await evidence.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const removeEvidence = trpc.evidence.delete.useMutation({
+    onSuccess: async () => {
+      setDeleteCandidate(null);
+      await evidence.refetch();
+      toast.success("现场影像已删除，操作已记录审计");
     },
     onError: error => toast.error(error.message),
   });
@@ -252,12 +262,19 @@ export default function MobileEvidencePage() {
                     <p className="line-clamp-2 text-xs font-medium leading-5">{item.description}</p>
                     <p className="text-[10px] text-[#9d8574]">{formatCapturedTime(item.capturedAt)}</p>
                     {item.ocrResult ? <div className="rounded-lg bg-[#f9eddf] p-2 text-[10px] leading-4 text-[#704b38]"><p className="flex items-center gap-1 font-semibold text-[#905027]"><ReceiptText className="h-3 w-3" />OCR 结果 · 需人工复核</p><p className="mt-1 line-clamp-2">{item.ocrResult.summary || "未能识别摘要"}</p><p className="mt-1">金额：{item.ocrResult.amount || "未识别"}</p></div> : <Button size="sm" variant="outline" className="h-7 w-full border-[#d6ae8e] px-2 text-[10px] text-[#8a4b25] hover:bg-[#fff3e5]" disabled={runOcr.isPending} onClick={() => runOcr.mutate({ id: item.id })}><ScanLine className="mr-1 h-3 w-3" />{runOcr.isPending ? "正在识别…" : "票据 OCR"}</Button>}
+                    {item.canDelete ? <Button size="sm" variant="outline" className="h-7 w-full border-[#e8c2bc] px-2 text-[10px] text-[#a44336] hover:bg-[#fff2f0]" onClick={() => setDeleteCandidate({ id: item.id, fileName: item.fileName || "现场影像" })}><Trash2 className="mr-1 h-3 w-3" />删除照片</Button> : null}
                   </CardContent>
                 </Card>)}
               </div>}
             </section>
           </>}
         </main>
+        <AlertDialog open={Boolean(deleteCandidate)} onOpenChange={open => { if (!open && !removeEvidence.isPending) setDeleteCandidate(null); }}>
+          <AlertDialogContent className="border-[#ead9c8] bg-[#fffaf5] text-[#3b2118]">
+            <AlertDialogHeader><AlertDialogTitle>确认删除现场影像？</AlertDialogTitle><AlertDialogDescription>“{deleteCandidate?.fileName || "该照片"}”将从系统影像台账中移除。已关联业务单据的照片不可删除，所有删除操作会留存审计记录。</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel disabled={removeEvidence.isPending}>取消</AlertDialogCancel><AlertDialogAction className="bg-[#a44336] text-white hover:bg-[#843328]" disabled={!deleteCandidate || removeEvidence.isPending} onClick={() => { if (deleteCandidate) removeEvidence.mutate({ id: deleteCandidate.id }); }}>{removeEvidence.isPending ? "正在删除…" : "确认删除"}</AlertDialogAction></AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Camera className="h-5 w-5" /><span className="text-[10px] font-medium">取证</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
     </div>

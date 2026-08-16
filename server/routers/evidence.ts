@@ -3,8 +3,8 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY, type EvidenceWatermarkTemplate } from "../../shared/watermarkTemplate";
-import { auditLogs, evidenceRecords, projects, systemSettings } from "../../drizzle/schema";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { attendanceRecords, auditLogs, dieselRefuelRecords, evidenceRecords, financialInvoices, financialRecords, machineCostRecords, measurementTakeoffEvidences, projects, purchaseOrders, systemSettings, transportTrips } from "../../drizzle/schema";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
 import { storageGet, storageGetSignedUrl, storagePut } from "../storage";
@@ -142,6 +142,7 @@ export const evidenceRouter = router({
         .orderBy(desc(evidenceRecords.capturedAt), desc(evidenceRecords.createdAt))
         .limit(input.limit);
       const filteredRows = input.sourceType ? rows.filter(row => row.sourceType === input.sourceType) : rows;
+      const deleteDecision = await getRoleOperationPermissionDecision(ctx, "EVIDENCE", "void");
       return Promise.all(filteredRows.map(async row => {
         const file = await storageGet(row.fileKey);
         let watermark: { description?: string } | null = null;
@@ -162,6 +163,7 @@ export const evidenceRouter = router({
           createdAt: row.createdAt,
           url: file.url,
           ocrResult,
+          canDelete: row.uploadedBy === ctx.user?.id || deleteDecision.allowed,
         };
       }));
     }),
@@ -205,6 +207,50 @@ export const evidenceRouter = router({
     const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
     await db.insert(auditLogs).values({ userId: user.id, module: "evidence", action: "upload", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档现场影像：${input.sourceType} · ${input.description.slice(0, 80)}` });
     return { success: true, id: evidenceId || null, url: storedFile.url };
+  }),
+
+  /**
+   * 删除未被业务单据引用的取证影像。对象存储模板不提供物理删除接口；删除数据库
+   * 文件键和所有 UI 引用后，对象会成为不可访问的无引用对象，由平台生命周期管理。
+   */
+  delete: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertEvidenceAccess(ctx);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [evidence] = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.id)).limit(1);
+    if (!evidence) throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在或已被删除" });
+    if (!evidence.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "未归属项目的影像不能执行删除" });
+    await assertProjectInCurrentScope(ctx, evidence.projectId);
+
+    if (evidence.uploadedBy !== user.id) {
+      await assertDepartmentBusinessAccess(ctx, "EVIDENCE", "void");
+    }
+
+    const dependencies = await Promise.all([
+      db.select({ id: attendanceRecords.id }).from(attendanceRecords).where(eq(attendanceRecords.evidenceId, evidence.id)).limit(1),
+      db.select({ id: machineCostRecords.id }).from(machineCostRecords).where(eq(machineCostRecords.evidenceId, evidence.id)).limit(1),
+      db.select({ id: dieselRefuelRecords.id }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.evidenceId, evidence.id)).limit(1),
+      db.select({ id: transportTrips.id }).from(transportTrips).where(eq(transportTrips.evidenceId, evidence.id)).limit(1),
+      db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.evidenceId, evidence.id)).limit(1),
+      db.select({ id: measurementTakeoffEvidences.takeoffId }).from(measurementTakeoffEvidences).where(eq(measurementTakeoffEvidences.evidenceId, evidence.id)).limit(1),
+      db.select({ id: financialRecords.id }).from(financialRecords).where(eq(financialRecords.evidenceId, evidence.id)).limit(1),
+      db.select({ id: financialInvoices.id }).from(financialInvoices).where(eq(financialInvoices.evidenceId, evidence.id)).limit(1),
+    ]);
+    if (dependencies.some(rows => rows.length > 0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "该影像已关联考勤、成本、运输、采购、计量或财务单据，不能删除；请保留作为业务审计凭证" });
+    }
+
+    await db.delete(evidenceRecords).where(eq(evidenceRecords.id, evidence.id));
+    await db.insert(auditLogs).values({
+      userId: user.id,
+      module: "evidence",
+      action: "delete",
+      targetType: "evidence",
+      targetId: String(evidence.id),
+      summary: `删除未关联现场影像：${evidence.sourceType} · ${evidence.fileName}；对象存储文件已失去系统引用`,
+    });
+    return { success: true };
   }),
 
   /**
