@@ -113,3 +113,13 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("isEditableConstructionReport");
   });
 });
+
+
+describe("后台服务号绑定状态映射", () => {
+  it("使用官方账号绑定状态而不是员工档案状态显示绑定结果", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("officialAccountBindingStatus");
+    expect(source).toContain("user.officialAccountBindingStatus === \"active\" ? \"已绑定\"");
+    expect(source).not.toContain("user.profileStatus === \"active\" ? \"已完成关注绑定\"");
+  });
+});

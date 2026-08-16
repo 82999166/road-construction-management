@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { departmentBusinessScopes, organizations, projects, systemRoles, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
+import { departmentBusinessScopes, officialAccountBindings, organizations, projects, systemRoles, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
 import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
@@ -374,5 +374,9 @@ export async function listLoginUsers() {
     localPasswordChangeRequired: users.localPasswordChangeRequired,
     lastSignedIn: users.lastSignedIn,
     profileStatus: userProfiles.status,
-  }).from(users).leftJoin(userProfiles, eq(userProfiles.userId, users.id));
+    officialAccountBindingStatus: officialAccountBindings.status,
+    officialAccountLastVerifiedAt: officialAccountBindings.lastVerifiedAt,
+  }).from(users)
+    .leftJoin(userProfiles, eq(userProfiles.userId, users.id))
+    .leftJoin(officialAccountBindings, eq(officialAccountBindings.userId, users.id));
 }
