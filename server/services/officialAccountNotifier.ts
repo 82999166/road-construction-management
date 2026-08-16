@@ -22,7 +22,7 @@ type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 type OfficialAccountEgressConfig = { egressUrl?: string; egressSharedSecret?: string };
 export type OfficialAccountModule = "purchasing" | "measurement" | "finance" | "machinery" | "transport" | "security" | "labor" | "construction";
 type OfficialAccountTemplateBinding = { templateId: string; title: string; templateFields: Record<string, string> };
-export type OfficialAccountConfig = { appId: string; appSecret: string; templateId?: string; templateFields?: Record<string, string>; moduleTemplates: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>>; appUrl: string | null } & OfficialAccountEgressConfig;
+export type OfficialAccountConfig = { appId: string; appSecret: string; appUrl: string | null; moduleTemplates: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>>; fallbackTemplate?: OfficialAccountTemplateBinding } & OfficialAccountEgressConfig;
 export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null } & OfficialAccountEgressConfig;
 export type OfficialAccountEventConfig = OfficialAccountCredentialConfig & { eventToken: string; eventAesKey: string };
 export type OfficialAccountPrivateTemplate = {
@@ -38,6 +38,12 @@ export type OfficialAccountNotificationResult = {
   delivered: boolean;
   reason: "sent" | "duplicate" | "not_bound" | "not_configured" | "disabled" | "invalid_config" | "delivery_failed" | "database_unavailable";
   providerMessageId?: string;
+};
+
+/** 关注状态只能由微信用户信息接口的明确 subscribe 结果确认；投递错误本身不足以直接判定用户已取关。 */
+export type OfficialAccountFollowVerification = {
+  status: "active" | "unsubscribed" | "unbound" | "unavailable" | "verification_failed" | "disabled";
+  failureCode?: string;
 };
 
 export type OfficialAccountBusinessEvent = {
@@ -105,17 +111,17 @@ function parseTemplateFields(rawValue: string | null) {
 function parseModuleTemplateMappings(rawValue: string | null): Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>> {
   if (!rawValue?.trim()) return {};
   try {
-    const parsed = JSON.parse(rawValue) as Record<string, unknown>;
-    const modules: OfficialAccountModule[] = ["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"];
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const allowedModules = new Set<OfficialAccountModule>(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"]);
     const result: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>> = {};
-    for (const module of modules) {
-      const candidate = parsed[module];
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
-      const value = candidate as Record<string, unknown>;
-      if (typeof value.templateId !== "string" || !value.templateId.trim() || typeof value.title !== "string" || !value.title.trim()) continue;
-      const rawFields = value.templateFields;
+    for (const [module, binding] of Object.entries(parsed)) {
+      if (!allowedModules.has(module as OfficialAccountModule) || !binding || typeof binding !== "object" || Array.isArray(binding)) continue;
+      const candidate = binding as Record<string, unknown>;
+      if (typeof candidate.templateId !== "string" || typeof candidate.title !== "string" || !candidate.templateId.trim() || !candidate.title.trim()) continue;
+      const rawFields = candidate.templateFields;
       const templateFields = parseTemplateFields(rawFields && typeof rawFields === "object" && !Array.isArray(rawFields) ? JSON.stringify(rawFields) : null);
-      result[module] = { templateId: value.templateId.trim().slice(0, 128), title: value.title.trim().slice(0, 160), templateFields };
+      result[module as OfficialAccountModule] = { templateId: candidate.templateId.trim().slice(0, 128), title: candidate.title.trim().slice(0, 160), templateFields };
     }
     return result;
   } catch {
@@ -212,14 +218,15 @@ export async function loadPublishedOfficialAccountConfig(): Promise<{ config?: O
   const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
   const templateId = settings.get("WECHAT_OFFICIAL_TEMPLATE_ID")?.valueJson?.trim();
   const moduleTemplates = parseModuleTemplateMappings(settings.get("WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS")?.valueJson ?? null);
-  if (!appId || !appSecretEncrypted || (!templateId && !Object.keys(moduleTemplates).length)) return { reason: rows.length ? "disabled" : "not_configured" };
+  const fallbackTemplate = templateId ? { templateId, title: "旧版通用业务通知模板", templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null) } : undefined;
+  if (!appId || !appSecretEncrypted || (!fallbackTemplate && !Object.keys(moduleTemplates).length)) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
     return {
       config: {
         appId,
         appSecret: decryptSecret(appSecretEncrypted),
-        ...(templateId ? { templateId, templateFields: parseTemplateFields(settings.get("WECHAT_OFFICIAL_TEMPLATE_FIELDS")?.valueJson ?? null) } : {}),
         moduleTemplates,
+        ...(fallbackTemplate ? { fallbackTemplate } : {}),
         appUrl: settings.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null,
         ...(() => {
           const egressUrl = settings.get("WECHAT_OFFICIAL_EGRESS_URL")?.valueJson?.trim();
@@ -240,14 +247,12 @@ export async function getOfficialAccountNotificationTemplateCoverage() {
     configured: Boolean(result.config),
     reason: result.reason ?? null,
     matrix: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => {
-      const binding = result.config?.moduleTemplates[item.module] ?? (result.config?.templateId && result.config.templateFields ? { templateId: result.config.templateId, title: "旧版通用业务通知模板", templateFields: result.config.templateFields } : undefined);
-      const variables = new Set(Object.values(binding?.templateFields ?? {}).flatMap(value => Array.from(value.matchAll(/\{(title|content|eventCode|targetType|targetId)\}/g)).map(match => match[1])));
-      const singleFieldSummaryCompatibility = Boolean(binding && usesSingleFieldSummaryCompatibility(binding.templateFields));
+      const binding = result.config?.moduleTemplates[item.module] ?? result.config?.fallbackTemplate;
       return {
         ...item,
-        missingVariables: singleFieldSummaryCompatibility ? [] : item.requiredVariables.filter(variable => !variables.has(variable)),
-        ready: Boolean(binding) && (singleFieldSummaryCompatibility || item.requiredVariables.every(variable => variables.has(variable))),
-        compatibilityMode: singleFieldSummaryCompatibility ? "single_field_summary" as const : "module_template" as const,
+        missingVariables: [],
+        ready: Boolean(binding),
+        compatibilityMode: binding ? (usesSingleFieldSummaryCompatibility(binding.templateFields) ? "single_field_summary" as const : "module_template" as const) : null,
         templateTitle: binding?.title ?? null,
       };
     }),
@@ -339,6 +344,46 @@ export async function getOfficialAccountAccessToken(config: OfficialAccountConfi
   return tokenCache.token;
 }
 
+/**
+ * 重新从微信用户信息接口核验一个已绑定身份是否仍关注当前服务号。
+ * 只有 subscribe 明确为 0 才会写入 unsubscribed；网络、配置、令牌或接口异常一律保留原绑定状态，避免误伤已关注人员。
+ */
+export async function verifyOfficialAccountBindingFollowStatus(userId: number): Promise<OfficialAccountFollowVerification> {
+  const db = await getDb();
+  if (!db) return { status: "unavailable", failureCode: "database_unavailable" };
+  const [binding] = await db.select().from(officialAccountBindings).where(eq(officialAccountBindings.userId, userId)).limit(1);
+  if (!binding) return { status: "unbound" };
+  if (binding.status === "disabled" || binding.status === "revoked") return { status: "disabled" };
+  const credentialResult = await loadPublishedOfficialAccountCredentials();
+  if (!credentialResult.config) return { status: "unavailable", failureCode: credentialResult.reason ?? "not_configured" };
+  try {
+    const accessToken = await getOfficialAccountAccessToken(credentialResult.config);
+    const endpoint = new URL("https://api.weixin.qq.com/cgi-bin/user/info");
+    endpoint.searchParams.set("access_token", accessToken);
+    endpoint.searchParams.set("openid", decryptSecret(binding.openIdEncrypted));
+    endpoint.searchParams.set("lang", "zh_CN");
+    const response = await requestOfficialAccountApi(credentialResult.config, endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(8_000) });
+    const payload = await response.json().catch(() => null) as { subscribe?: number; errcode?: number } | null;
+    if (!response.ok || (payload?.subscribe !== 0 && payload?.subscribe !== 1)) {
+      return { status: "verification_failed", failureCode: String(payload?.errcode ?? response.status).slice(0, 64) };
+    }
+    const now = new Date();
+    if (payload.subscribe === 1) {
+      await db.update(officialAccountBindings).set({ status: "active", lastVerifiedAt: now, lastFailureAt: null, failureCount: 0 }).where(eq(officialAccountBindings.id, binding.id));
+      try {
+        await db.insert(auditLogs).values({ userId, module: "security", action: "official_account_follow_verified", targetType: "official_account_binding", targetId: String(binding.id), summary: "微信用户信息接口确认仍关注服务号，已恢复通知身份" });
+      } catch {
+        // 审计写入不应扩大为关注状态核验失败。
+      }
+      return { status: "active" };
+    }
+    await db.update(officialAccountBindings).set({ status: "unsubscribed", lastVerifiedAt: now, lastFailureAt: now, failureCount: binding.failureCount + 1 }).where(eq(officialAccountBindings.id, binding.id));
+    return { status: "unsubscribed" };
+  } catch (error) {
+    return { status: "verification_failed", failureCode: classifyDeliveryRequestFailure(error) };
+  }
+}
+
 async function resolveSupervisorRecipientIds(event: OfficialAccountBusinessEvent) {
   const db = await getDb();
   if (!db) return [];
@@ -387,7 +432,7 @@ async function writeAudit(userId: number, event: OfficialAccountBusinessEvent, r
 }
 
 /** 向一个已绑定人员发送服务号模板通知；失败只落审计和站内记录，不回滚业务。 */
-export async function sendOfficialAccountNotification(input: { eventCode: string; idempotencyKey: string; recipientUserId: number; title: string; content: string; deepLink?: string; module?: OfficialAccountModule }): Promise<OfficialAccountNotificationResult> {
+export async function sendOfficialAccountNotification(input: { module: OfficialAccountModule; eventCode: string; idempotencyKey: string; recipientUserId: number; title: string; content: string; deepLink?: string }): Promise<OfficialAccountNotificationResult> {
   const db = await getDb();
   if (!db) return { delivered: false, reason: "database_unavailable" };
   const idempotencyKey = input.idempotencyKey.slice(0, 160);
@@ -422,8 +467,8 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
   if (!binding) return update({ delivered: false, reason: "not_bound" }, { status: "skipped", failureCode: "not_bound" });
   const configResult = await loadPublishedOfficialAccountConfig();
   if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
-  const template = (input.module ? configResult.config.moduleTemplates[input.module] : undefined) ?? (configResult.config.templateId && configResult.config.templateFields ? { templateId: configResult.config.templateId, title: "旧版通用业务通知模板", templateFields: configResult.config.templateFields } : undefined);
-  if (!template) return update({ delivered: false, reason: "disabled" }, { status: "failed", failureCode: "template_not_bound" });
+  const template = configResult.config.moduleTemplates[input.module] ?? configResult.config.fallbackTemplate;
+  if (!template) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: "module_template_not_bound" });
   try {
     const openId = decryptSecret(binding.openIdEncrypted);
     const token = await getOfficialAccountAccessToken(configResult.config);
@@ -452,10 +497,11 @@ export async function sendOfficialAccountNotification(input: { eventCode: string
     }
     if (!response.ok || payload?.errcode !== 0) {
       const failureCode = String(payload?.errcode ?? response.status).slice(0, 64);
+      const followVerification = failureCode === "43004" ? await verifyOfficialAccountBindingFollowStatus(input.recipientUserId) : null;
       await db.update(officialAccountBindings).set({
         lastFailureAt: new Date(),
         failureCount: binding.failureCount + 1,
-        ...(failureCode === "43004" ? { status: "unsubscribed" as const } : {}),
+        ...(followVerification?.status === "unsubscribed" ? { status: "unsubscribed" as const } : {}),
       }).where(eq(officialAccountBindings.id, binding.id));
       return update({ delivered: false, reason: "delivery_failed" }, { status: "failed", failureCode });
     }
@@ -472,7 +518,7 @@ export async function notifyOfficialAccountBusinessEvent(event: OfficialAccountB
   const recipients = Array.from(new Set((resolved.length ? resolved : [event.userId]).filter(Number.isInteger)));
   const content = (event.content || `${event.title}，请进入系统查看。`).replace(/[\r\n]+/g, " ").slice(0, 180);
   return Promise.all(recipients.map(async recipientUserId => {
-    const result = await sendOfficialAccountNotification({ eventCode: event.eventCode, idempotencyKey: `oa:${event.eventCode}:${event.targetType}:${event.targetId}:${recipientUserId}`, recipientUserId, title: event.title, content, deepLink: event.deepLink, module: event.module });
+    const result = await sendOfficialAccountNotification({ module: event.module, eventCode: event.eventCode, idempotencyKey: `oa:${event.eventCode}:${event.targetType}:${event.targetId}:${recipientUserId}`, recipientUserId, title: event.title, content, deepLink: event.deepLink });
     await writeAudit(event.userId, event, recipientUserId, result.reason);
     return { recipientUserId, ...result };
   }));

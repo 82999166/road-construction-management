@@ -13,14 +13,14 @@ vi.mock("./services/secretVault", () => ({
 }));
 vi.mock("./services/officialAccountNotifier", async importOriginal => {
   const actual = await importOriginal<typeof import("./services/officialAccountNotifier")>();
-  return { ...actual, listPublishedOfficialAccountPrivateTemplates: vi.fn() };
+  return { ...actual, listPublishedOfficialAccountPrivateTemplates: vi.fn(), testPublishedOfficialAccountConfiguration: vi.fn() };
 });
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
 import { adminRouter } from "./routers/admin";
 import { encryptSecret, maskSecret } from "./services/secretVault";
-import { listPublishedOfficialAccountPrivateTemplates } from "./services/officialAccountNotifier";
+import { listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -82,6 +82,7 @@ describe("系统设置安全工作流", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAdminContext().user!);
+    vi.mocked(testPublishedOfficialAccountConfiguration).mockResolvedValue({ success: true, message: "服务号凭据校验通过" });
   });
 
   it("微信登录管理解除绑定仅撤销绑定状态并写入最小化审计", async () => {
@@ -157,6 +158,32 @@ describe("系统设置安全工作流", () => {
       expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_SECRET", valueJson: null, secretEncrypted: "cipher:opaque-value", isSensitive: true }),
     ]));
     expect(JSON.stringify(db.insertedValues)).not.toContain("official-account-secret");
+  });
+
+  it("服务号五项配置一次保存、发布并统一校验，敏感值不进入公开字段或审计", async () => {
+    const db = createSettingsDb([[]]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await adminRouter.createCaller(createAdminContext()).settings.saveOfficialAccountConfiguration({
+      appId: "wx1234567890abcdef",
+      appSecret: "official-account-secret",
+      appUrl: "https://road.example.com",
+      egressUrl: "https://wechat-egress.example.com",
+      egressSigningSecret: "egress-signing-secret",
+    });
+
+    expect(result).toEqual({ success: true, message: "服务号凭据校验通过" });
+    expect(testPublishedOfficialAccountConfiguration).toHaveBeenCalledTimes(1);
+    const settings = db.insertedValues.filter(value => (value as { settingKey?: string }).settingKey?.startsWith("WECHAT_OFFICIAL_"));
+    expect(settings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_ID", valueJson: "wx1234567890abcdef", isSensitive: false, status: "published" }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_SECRET", valueJson: null, secretEncrypted: "cipher:opaque-value", isSensitive: true, status: "published" }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_APP_URL", valueJson: "https://road.example.com", isSensitive: false, status: "published" }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_EGRESS_URL", valueJson: "https://wechat-egress.example.com", isSensitive: false, status: "published" }),
+      expect.objectContaining({ settingKey: "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET", valueJson: null, secretEncrypted: "cipher:opaque-value", isSensitive: true, status: "published" }),
+    ]));
+    expect(JSON.stringify(db.insertedValues)).not.toContain("official-account-secret");
+    expect(JSON.stringify(db.insertedValues)).not.toContain("egress-signing-secret");
   });
 
   it("身份恢复地址必须以非敏感公开 HTTPS 配置保存，并移除浏览器片段", async () => {

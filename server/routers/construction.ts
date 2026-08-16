@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, constructionDailyReports, projects } from "../../drizzle/schema";
 import { assertConstructionDailyReportStatusTransition, ConstructionDomainError } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, type BusinessOperationAction, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -29,8 +29,8 @@ function toBusinessDate(value: string) {
 }
 
 /** 施工现场业务仅面向项目负责人、施工负责人、安全负责人及全局超级管理员。 */
-async function assertConstructionAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
-  await assertDepartmentBusinessAccess(ctx, "CONSTRUCTION");
+async function assertConstructionAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0], action: BusinessOperationAction = "read") {
+  await assertDepartmentBusinessAccess(ctx, "CONSTRUCTION", action);
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "SAFETY_MANAGER"];
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
@@ -102,7 +102,7 @@ export const constructionRouter = router({
   /** 新日报可由获授权现场岗位创建；更新既有日报仅限超级管理员，防止普通人员重写历史现场记录。 */
   saveReport: protectedProcedure.input(dailyReportInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertConstructionAccess(ctx);
+    await assertConstructionAccess(ctx, input.id ? "edit" : "create");
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -145,7 +145,7 @@ export const constructionRouter = router({
   /** 日报提交、审核和归档属于高影响动作，仅超级管理员可处理，已锁定日报不支持回退。 */
   transitionReport: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), nextStatus: reportStatusSchema })).mutation(async ({ ctx, input }) => {
     const user = await assertExistingBusinessRecordChangeAccess(ctx);
-    await assertConstructionAccess(ctx);
+    await assertConstructionAccess(ctx, input.nextStatus === "submitted" ? "submit" : input.nextStatus === "locked" ? "void" : "review");
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });

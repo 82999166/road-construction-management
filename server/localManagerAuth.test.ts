@@ -14,18 +14,18 @@ vi.mock("./_core/sdk", () => ({
 
 import { assertSuperAdmin } from "./access";
 import { getDb, getLocalManagerByUsername, updateLocalManagerPassword, upsertUser } from "./db";
-import { createLocalManagerPasswordHash, resetTemporaryAdminLoginRateLimitForTests } from "./localAuth";
+import { createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername, resetTemporaryAdminLoginRateLimitForTests } from "./localAuth";
 import { appRouter } from "./routers";
 
 const initialPassword = "ManagerPass2026";
 const managerUser = {
   id: 12001,
-  openId: "local-manager:zhangsan",
+  openId: "local-manager:13800138000",
   name: "张三",
   email: null,
   loginMethod: "local_manager",
   role: "user",
-  localUsername: "zhangsan",
+  localUsername: "13800138000",
   localPasswordHash: createLocalManagerPasswordHash(initialPassword),
   localAccountStatus: "active",
   // 模拟历史账号遗留的旧标记；新策略下登录也不能被强制拦截。
@@ -68,13 +68,19 @@ describe("普通管理人员本地账号认证", () => {
 
   it("启用账号使用正确口令登录后签发八小时会话，且不再要求首次改密", async () => {
     const { caller, response } = createCaller();
-    await expect(caller.auth.localManagerLogin({ username: " ZhangSan ", password: initialPassword })).resolves.toEqual({
+    await expect(caller.auth.localManagerLogin({ username: " +86 138-0013-8000 ", password: initialPassword })).resolves.toEqual({
       success: true,
       expiresInMs: 8 * 60 * 60 * 1000,
       mustChangePassword: false,
     });
     expect(upsertUser).toHaveBeenCalledWith(expect.objectContaining({ openId: managerUser.openId }));
     expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-local-manager-session", expect.objectContaining({ httpOnly: true, maxAge: 8 * 60 * 60 * 1000 }));
+  });
+
+  it("手机号可规范化国家码、空格和短横线，并拒绝旧英文账号格式", () => {
+    expect(normalizeLocalManagerUsername(" +86 138-0013-8000 ")).toBe("13800138000");
+    expect(isValidLocalManagerUsername("13800138000")).toBe(true);
+    expect(isValidLocalManagerUsername("zhangsan")).toBe(false);
   });
 
   it("停用账号、错误口令与连续失败均不会签发会话或泄露凭据", async () => {

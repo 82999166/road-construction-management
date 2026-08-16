@@ -42,8 +42,9 @@ function createAdminDb(selectResponses: unknown[][] = []) {
   const insertedValues: unknown[] = [];
   const query = () => {
     const rows = selectResponses[selectIndex++] ?? [];
-    const result = Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
-    return { where: vi.fn(() => result) };
+    const result = Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) }) as Promise<unknown[]> & { where?: ReturnType<typeof vi.fn> };
+    result.where = vi.fn(() => result);
+    return result;
   };
   return {
     select: vi.fn(() => ({ from: vi.fn(() => query()) })),
@@ -63,7 +64,7 @@ describe("后台安全通知", () => {
   });
 
   it("角色权限更新后发送最小化公众号安全通知，且投递失败不回滚权限写入", async () => {
-    const db = createAdminDb();
+    const db = createAdminDb([[{ id: 12, name: "运输管理员" }], [{ id: 3 }, { id: 4 }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
     mockNotifyOfficialAccountBusinessEventSafely.mockRejectedValueOnce(new Error("通知通道暂不可用"));
 

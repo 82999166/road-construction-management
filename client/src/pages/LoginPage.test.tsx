@@ -37,8 +37,10 @@ describe("独立登录页", () => {
     expect(markup).toContain("进入超级管理员登录");
     expect(markup).not.toContain("超级管理员账号登录");
     expect(markup).not.toContain("企业身份登录");
-    expect(markup).toContain("管理人员账号登录");
-    expect(markup).toContain("账号由超级管理员在后台创建");
+    expect(markup).toContain("管理人员手机号登录");
+    expect(markup).toContain("手机号由超级管理员在后台创建");
+    expect(markup).toContain("请输入 11 位手机号");
+    expect(markup).toContain('type="tel"');
     expect(markup).toContain('type="password"');
     expect(markup).not.toContain("admin123");
   });

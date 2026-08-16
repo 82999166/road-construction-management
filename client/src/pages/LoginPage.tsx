@@ -129,10 +129,10 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               </form>
             ) : <>
             {!localAdminOnly ? <form className="mt-5 rounded-2xl border border-[#c7d7dc] bg-[#f4fafb] p-4" onSubmit={handleLocalManagerLogin}>
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />管理人员账号登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">账号由超级管理员在后台创建。登录后系统自动进入您获授权的管理功能版块，不显示未获授权的菜单。</p>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />管理人员手机号登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">手机号由超级管理员在后台创建。登录后系统自动进入您获授权的管理功能版块，不显示未获授权的菜单。</p>
               <div className="mt-3 grid gap-3">
-                <div className="grid gap-1.5"><Label htmlFor="local-manager-username">账号</Label><Input id="local-manager-username" autoComplete="username" value={managerUsername} onChange={event => setManagerUsername(event.target.value)} disabled={managerLogin.isPending} required /></div>
+                <div className="grid gap-1.5"><Label htmlFor="local-manager-username">手机号</Label><Input id="local-manager-username" type="tel" inputMode="numeric" autoComplete="tel" placeholder="请输入 11 位手机号" value={managerUsername} onChange={event => setManagerUsername(event.target.value)} disabled={managerLogin.isPending} required /></div>
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-password">密码</Label><Input id="local-manager-password" type="password" autoComplete="current-password" value={managerPassword} onChange={event => setManagerPassword(event.target.value)} disabled={managerLogin.isPending} required /></div>
               </div>
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}

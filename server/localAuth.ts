@@ -107,13 +107,17 @@ function ensureTemporaryAdminConfiguration() {
   return { username, password };
 }
 
-/** 普通本地账号使用小写、安全字符的固定用户名，确保生成的内部 openId 始终可预测且不可伪造。 */
+/**
+ * 普通本地账号统一以中国大陆手机号登录。允许管理员按常见格式输入空格、短横线或国家码，
+ * 保存与认证时收敛为 11 位号码，以保持唯一性和内部 openId 的稳定性。
+ */
 export function normalizeLocalManagerUsername(value: string) {
-  return value.trim().toLowerCase();
+  const compact = value.trim().replace(/[\s()-]/g, "");
+  return compact.replace(/^(?:\+86|0086|86)(?=1[3-9]\d{9}$)/, "");
 }
 
 export function isValidLocalManagerUsername(value: string) {
-  return /^[a-z][a-z0-9._-]{2,47}$/.test(value);
+  return /^1[3-9]\d{9}$/.test(value);
 }
 
 export function createLocalManagerOpenId(localUsername: string) {

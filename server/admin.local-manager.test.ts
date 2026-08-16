@@ -42,7 +42,7 @@ describe("后台普通管理人员本地账号管理", () => {
 
     const initialPassword = "123456";
     await expect(createCaller().admin.personnel.createLocalUser({
-      username: "zhangsan",
+      username: "13800138000",
       displayName: "张三",
       initialPassword,
       status: "active",
@@ -51,8 +51,8 @@ describe("后台普通管理人员本地账号管理", () => {
     const payloads = insertValues.mock.calls.map(([payload]) => payload);
     expect(payloads).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        openId: "local-manager:zhangsan",
-        localUsername: "zhangsan",
+        openId: "local-manager:13800138000",
+        localUsername: "13800138000",
         loginMethod: "local_manager",
         role: "user",
         localAccountStatus: "active",
@@ -92,7 +92,7 @@ describe("后台普通管理人员本地账号管理", () => {
 
     const ordinaryUser = { ...adminUser, id: 7301, role: "user", loginMethod: "local_manager" };
     await expect(createCaller(ordinaryUser).admin.personnel.createLocalUser({
-      username: "lisi",
+      username: "13900139000",
       displayName: "李四",
       initialPassword: "ManagerPass2026",
       status: "active",
@@ -137,7 +137,7 @@ describe("后台普通管理人员本地账号管理", () => {
 
     await expect(createCaller().admin.personnel.updateLocalUser({
       userId: 7301,
-      username: "zhangsan.new",
+      username: "13800138001",
       displayName: "张三（项目部）",
       status: "active",
     })).resolves.toEqual({ success: true });
@@ -146,7 +146,7 @@ describe("后台普通管理人员本地账号管理", () => {
 
     const writePayloads = updateSet.mock.calls.map(([payload]) => payload);
     expect(writePayloads).toEqual(expect.arrayContaining([
-      expect.objectContaining({ openId: "local-manager:zhangsan.new", localUsername: "zhangsan.new", name: "张三（项目部）" }),
+      expect.objectContaining({ openId: "local-manager:13800138001", localUsername: "13800138001", name: "张三（项目部）" }),
       expect.objectContaining({ status: "pending" }),
       expect.objectContaining({ localPasswordChangeRequired: false, localPasswordHash: expect.stringMatching(/^scrypt\$[0-9a-f]+\$[0-9a-f]+$/) }),
     ]));
@@ -170,7 +170,7 @@ describe("后台普通管理人员本地账号管理", () => {
     });
   });
 
-  it("无业务责任的普通账号可删除，服务端会撤销授权、移除档案并保留删除审计", async () => {
+  it("无业务责任的普通账号可删除，服务端会撤销角色与用户专属权限、移除档案并保留删除审计", async () => {
     const targetLimit = vi.fn().mockResolvedValue([{ id: 7301, name: "张三", loginMethod: "local_manager" }]);
     const targetFrom = vi.fn(() => ({ where: vi.fn(() => ({ limit: targetLimit })) }));
     const select = vi.fn()
@@ -189,7 +189,7 @@ describe("后台普通管理人员本地账号管理", () => {
     await expect(createCaller().admin.personnel.deleteLocalUser({ userId: 7301 })).resolves.toEqual({ success: true, revokedAssignmentCount: 0 });
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "revoked" }));
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ loginMethod: "deleted_local_manager", localAccountStatus: "disabled", localPasswordHash: null }));
-    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    expect(deleteWhere).toHaveBeenCalledTimes(2);
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "delete_local_manager_account", targetId: "7301" }));
   });
 });

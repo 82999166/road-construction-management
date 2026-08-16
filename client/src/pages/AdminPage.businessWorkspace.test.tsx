@@ -60,10 +60,24 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
+  it("将新建员工档案固定放在实际员工台账标题栏，并复用既有员工档案弹窗", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const ledgerStart = source.indexOf('title="员工档案、薪资与保险"');
+    const tableActionStart = source.indexOf("titleActions={<Button", ledgerStart);
+    const filterHeader = source.slice(source.indexOf("人员主数据 · 人事与用工台账"), source.indexOf("employeeProfiles.isLoading"));
+
+    expect(source).toContain("titleActions?: ReactNode");
+    expect(ledgerStart).toBeGreaterThan(-1);
+    expect(tableActionStart).toBeGreaterThan(ledgerStart);
+    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("新建员工档案");
+    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("setEmployeeProfileDialogOpen(true)");
+    expect(filterHeader).not.toContain(">新建员工档案</Button>");
+  });
+
   it("在手机宽度将新增台账的动作区与筛选控件分区换行，保留完整文案和足够触控高度", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto");
+    expect(source).toContain("min-h-10 bg-[#203c48] text-white hover:bg-[#17313b]");
     expect(source).toContain("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4");
     expect(source).toContain("min-h-11 w-full text-sm sm:min-h-8 sm:w-auto");
     expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
@@ -111,6 +125,50 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("工资、考勤、保险和授权历史均被保留");
     expect(source).toContain("机械记录及其成本、租赁、维修历史均被保留");
     expect(source).toContain("isEditableConstructionReport");
+  });
+
+  it("将服务号全部五项参数集中为一次保存并校验的单一表单，不再以分项预设按钮引导配置", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("saveOfficialAccountConfiguration");
+    expect(source).toContain("保存并校验服务号配置");
+    expect(source).toContain("微信 API 固定出口网关地址");
+    expect(source).toContain("固定出口网关签名密钥");
+    expect(source).toContain("其它系统参数");
+    expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
+  });
+
+  it("允许私有模板按业务模块绑定并自动映射字段，不再要求用户手填内部占位符", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("bindOfficialAccountModuleTemplate");
+    expect(source).toContain("绑定并自动映射");
+    expect(source).toContain("运输刷卡与趟次");
+    expect(source).toContain("机械/车辆维保审核");
+    expect(source).toContain("待绑定对应模板");
+    expect(source).toContain("系统按模板 `.DATA` 字段自动映射");
+  });
+
+  it("提供角色级详细操作权限矩阵，支持按模块设置动作并批量全选或清空", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("角色详细操作权限");
+    expect(source).toContain("查看、新增、编辑、提交、审核、结算、作废、导出或打印");
+    expect(source).toContain("permissionActionLabels");
+    expect(source).toContain("全选本模块");
+    expect(source).toContain("清空</Button>");
+    expect(source).toContain("角色一旦配置某业务域的详细权限");
+  });
+
+  it("在每位普通管理人员卡片中提供用户专属操作权限入口，并用独立对话框保存到具体用户", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain(">操作权限</Button>");
+    expect(source).toContain("分配用户专属操作权限");
+    expect(source).toContain("正在为“{userPermissionTarget?.name}”设置具体业务动作");
+    expect(source).toContain("setUserPermissions.mutate");
+    expect(source).toContain("保存该用户权限");
+    expect(source).toContain("留空则沿用角色权限");
   });
 });
 

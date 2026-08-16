@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
+  dieselRefuelRecords,
   evidenceRecords,
   freightRateRules,
   machineCostRecords,
@@ -1012,11 +1013,33 @@ export const transportRouter = router({
     if (["verified", "void"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权核验或作废运输趟次" });
     if (input.nextStatus === "settled" && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可确认运输结算" });
     try { assertTransportTripStatusTransition(trip.status, input.nextStatus); } catch (error) { throwDomainAsBadRequest(error); }
+    const approvedFuelRecords = input.nextStatus === "settled"
+      ? await db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.transportTripId, input.id), eq(dieselRefuelRecords.status, "approved")))
+      : [];
+    const deductibleFuelRecords = approvedFuelRecords.filter(record => record.deductFromFreight);
+    const fuelDeductionAmount = deductibleFuelRecords.reduce((total, record) => total + Number(record.amount), 0);
+    const grossAmount = Number(trip.calculatedAmount ?? 0);
+    const settlementValues = input.nextStatus === "settled"
+      ? {
+          status: input.nextStatus,
+          fuelDeductionAmount: String(fuelDeductionAmount),
+          netSettlementAmount: String(Number((grossAmount - fuelDeductionAmount).toFixed(2))),
+          fuelSettlementSnapshot: {
+            grossFreightAmount: grossAmount,
+            fuelDeductionAmount,
+            netSettlementAmount: Number((grossAmount - fuelDeductionAmount).toFixed(2)),
+            records: deductibleFuelRecords.map(record => ({ id: record.id, recordNo: record.recordNo, liters: Number(record.liters), unitPrice: Number(record.appliedUnitPrice), amount: Number(record.amount), supplyMethod: record.supplyMethod })),
+          },
+        }
+      : { status: input.nextStatus };
     const updateResult = await db.update(transportTrips)
-      .set({ status: input.nextStatus })
+      .set(settlementValues)
       .where(and(eq(transportTrips.id, input.id), eq(transportTrips.status, trip.status)));
     assertConditionalStatusWrite(updateResult, "运输趟次");
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}` });
+    if (input.nextStatus === "settled" && approvedFuelRecords.length) {
+      await db.update(dieselRefuelRecords).set({ status: "settled" }).where(and(eq(dieselRefuelRecords.transportTripId, input.id), eq(dieselRefuelRecords.status, "approved")));
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
     return { success: true };
   }),

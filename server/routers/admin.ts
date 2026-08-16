@@ -9,6 +9,8 @@ import {
   configPublishLogs,
   constructionDailyReports,
   departmentBusinessScopes,
+  dieselGuidelinePrices,
+  dieselRefuelRecords,
   employeeInsurancePolicies,
   employeeProfiles,
   evidenceRecords,
@@ -32,6 +34,7 @@ import {
   transportTrips,
   transportVehicleLeaseRules,
   transportVehicles,
+  userPermissions,
   userProfiles,
   userRoleAssignments,
   users,
@@ -91,6 +94,43 @@ const vehicleManagementInput = z.object({
   if (value.ownership !== "leased") return;
   if (!value.ownerName?.trim()) ctx.addIssue({ code: "custom", path: ["ownerName"], message: "外租车辆必须填写出租方" });
   if (!value.leaseTerms) ctx.addIssue({ code: "custom", path: ["leaseTerms"], message: "外租车辆必须填写租金、计费方式和租赁起止时间" });
+});
+
+/** 柴油指导价按项目和生效期维护；项目部供油记录必须采用当期有效价格。 */
+const dieselGuidelinePriceInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  pricePerLiter: z.number().gt(0, "柴油指导单价必须大于 0").max(9999.99),
+  effectiveFrom: z.string().date("生效日期格式应为 YYYY-MM-DD"),
+  effectiveTo: z.string().date("截止日期格式应为 YYYY-MM-DD").nullable().optional(),
+  status: z.enum(["draft", "active", "disabled"]),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).refine(value => !value.effectiveTo || value.effectiveTo >= value.effectiveFrom, { message: "截止日期不得早于生效日期", path: ["effectiveTo"] });
+
+const dieselRefuelInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  assetType: z.enum(["vehicle", "machine"]),
+  vehicleId: z.number().int().positive().nullable().optional(),
+  machineId: z.number().int().positive().nullable().optional(),
+  transportTripId: z.number().int().positive().nullable().optional(),
+  supplyMethod: z.enum(["project_supply", "external_station"]),
+  stationOrSupplierName: z.string().trim().max(160).nullable().optional(),
+  liters: z.number().gt(0, "加油量必须大于 0").max(999999.999),
+  actualUnitPrice: z.number().gt(0, "加油站实际单价必须大于 0").max(9999.99).nullable().optional(),
+  deductFromFreight: z.boolean().default(false),
+  refueledAt: z.string().datetime("加油时间格式错误"),
+  meterReading: z.number().min(0).max(999999999).nullable().optional(),
+  receiptNo: z.string().trim().max(64).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+  status: z.enum(["draft", "approved", "void"]),
+}).superRefine((value, ctx) => {
+  if (value.assetType === "vehicle" && !value.vehicleId) ctx.addIssue({ code: "custom", path: ["vehicleId"], message: "车辆供油必须选择车辆" });
+  if (value.assetType === "machine" && !value.machineId) ctx.addIssue({ code: "custom", path: ["machineId"], message: "机械供油必须选择机械" });
+  if (value.assetType === "machine" && value.deductFromFreight) ctx.addIssue({ code: "custom", path: ["deductFromFreight"], message: "机械油料不得扣减运输运费" });
+  if (value.deductFromFreight && !value.transportTripId) ctx.addIssue({ code: "custom", path: ["transportTripId"], message: "扣减运费必须关联具体运输趟次" });
+  if (value.supplyMethod === "external_station" && !value.actualUnitPrice) ctx.addIssue({ code: "custom", path: ["actualUnitPrice"], message: "加油站加油必须填写实际单价" });
 });
 
 const employeeProfileInput = z.object({
@@ -156,7 +196,7 @@ const departmentBusinessScopeInput = z.object({
 
 /** 超级管理员只能创建普通本地账号，初始密码仅在本次请求中用于生成不可逆摘要。 */
 const localManagerAccountInput = z.object({
-  username: z.string().trim().min(3).max(48),
+  username: z.string().trim().min(1, "请输入登录手机号").max(32),
   displayName: z.string().trim().min(2).max(128),
   initialPassword: z.string().min(6, "初始密码至少 6 位").max(128),
   status: z.enum(["active", "disabled"]).default("active"),
@@ -171,7 +211,7 @@ const localManagerStatusInput = z.object({
 /** 编辑账号资料时仅允许维护本地登录标识、展示资料和状态，角色与数据范围仍须通过独立授权流程配置。 */
 const localManagerAccountUpdateInput = z.object({
   userId: z.number().int().positive(),
-  username: z.string().trim().min(3).max(48),
+  username: z.string().trim().min(1, "请输入登录手机号").max(32),
   displayName: z.string().trim().min(2).max(128),
   status: z.enum(["active", "disabled"]),
   loginMode: z.enum(["pc", "mobile", "both"]).default("both"),
@@ -181,6 +221,15 @@ const localManagerAccountUpdateInput = z.object({
 const localManagerPasswordResetInput = z.object({
   userId: z.number().int().positive(),
   newPassword: z.string().min(6, "新密码至少 6 位").max(128),
+});
+
+/** 服务号基础接入一次性保存：两项密钥允许在后续修订时留空以保留原有密文。 */
+const officialAccountConfigurationInput = z.object({
+  appId: z.string().trim().min(1, "请填写服务号 AppID").max(256),
+  appSecret: z.string().max(2048),
+  appUrl: z.string().trim().min(1, "请填写公众号业务跳转地址").max(1024),
+  egressUrl: z.string().trim().min(1, "请填写微信 API 固定出口网关地址").max(1024),
+  egressSigningSecret: z.string().max(2048),
 });
 
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
@@ -216,6 +265,7 @@ const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
   "WECHAT_OFFICIAL_TEMPLATE_ID",
   "WECHAT_OFFICIAL_TEMPLATE_FIELDS",
+  "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS",
   "WECHAT_OFFICIAL_APP_URL",
   "WECHAT_OFFICIAL_EGRESS_URL",
 ]);
@@ -633,6 +683,120 @@ export const adminRouter = router({
     }),
   }),
 
+  /** 柴油价格、领用、运输扣款与每日汇总均由超级管理后台受控维护。 */
+  diesel: router({
+    listGuidelinePrices: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(dieselGuidelinePrices).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
+      return rows.filter(row => !input?.projectId || row.projectId === input.projectId);
+    }),
+    saveGuidelinePrice: protectedProcedure.input(dieselGuidelinePriceInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油指导价必须归属有效项目" });
+      const values = { projectId: input.projectId, pricePerLiter: String(input.pricePerLiter), effectiveFrom: new Date(`${input.effectiveFrom}T00:00:00Z`), effectiveTo: input.effectiveTo ? new Date(`${input.effectiveTo}T00:00:00Z`) : null, status: input.status, remarks: input.remarks ?? null, createdBy: admin.id };
+      if (input.id) {
+        const [existing] = await db.select({ id: dieselGuidelinePrices.id }).from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "柴油指导价不存在" });
+        await db.update(dieselGuidelinePrices).set(values).where(eq(dieselGuidelinePrices.id, input.id));
+      } else await db.insert(dieselGuidelinePrices).values(values);
+      await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_guideline_price" : "create_guideline_price", targetType: "diesel_guideline_price", targetId: String(input.id ?? input.projectId), summary: `${input.id ? "维护" : "新增"}柴油指导价：¥${input.pricePerLiter}/L` });
+      return { success: true };
+    }),
+    listRefuelRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), assetType: z.enum(["vehicle", "machine"]).optional(), assetId: z.number().int().positive().optional(), status: z.enum(["draft", "approved", "settled", "void"]).optional(), date: z.string().date().optional() }).optional()).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
+      const date = input?.date;
+      const filtered = rows.filter(row => (!input?.projectId || row.projectId === input.projectId) && (!input?.assetType || row.assetType === input.assetType) && (!input?.status || row.status === input.status) && (!input?.assetId || (row.assetType === "vehicle" ? row.vehicleId === input.assetId : row.machineId === input.assetId)) && (!date || new Date(row.refueledAt).toISOString().slice(0, 10) === date));
+      return Promise.all(filtered.map(async row => {
+        const [asset] = row.assetType === "vehicle" && row.vehicleId ? await db.select({ name: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, row.vehicleId)).limit(1) : row.assetType === "machine" && row.machineId ? await db.select({ name: machines.name, code: machines.code }).from(machines).where(eq(machines.id, row.machineId)).limit(1) : [];
+        const [trip] = row.transportTripId ? await db.select({ tripNo: transportTrips.tripNo, calculatedAmount: transportTrips.calculatedAmount }).from(transportTrips).where(eq(transportTrips.id, row.transportTripId)).limit(1) : [];
+        return { ...row, assetName: asset ? ("code" in asset && asset.code ? `${asset.name} · ${asset.code}` : asset.name) : "未关联资源", tripNo: trip?.tripNo ?? null, grossFreightAmount: trip?.calculatedAmount ?? null };
+      }));
+    }),
+    dailySummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: z.string().date() })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { totalLiters: 0, totalAmount: 0, projectSupplyLiters: 0, stationLiters: 0, vehicleLiters: 0, machineLiters: 0, deductibleAmount: 0, records: [] };
+      const rows = (await db.select().from(dieselRefuelRecords)).filter(row => row.projectId === input.projectId && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 10) === input.date);
+      const sum = (predicate: (row: typeof rows[number]) => boolean, field: "liters" | "amount") => rows.filter(predicate).reduce((total, row) => total + Number(row[field]), 0);
+      return {
+        totalLiters: sum(() => true, "liters"),
+        totalAmount: sum(() => true, "amount"),
+        projectSupplyLiters: sum(row => row.supplyMethod === "project_supply", "liters"),
+        stationLiters: sum(row => row.supplyMethod === "external_station", "liters"),
+        vehicleLiters: sum(row => row.assetType === "vehicle", "liters"),
+        machineLiters: sum(row => row.assetType === "machine", "liters"),
+        deductibleAmount: sum(row => row.deductFromFreight, "amount"),
+        records: rows,
+      };
+    }),
+    saveRefuelRecord: protectedProcedure.input(dieselRefuelInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      if (input.assetType === "vehicle" && !input.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆柴油领用必须关联车辆" });
+      if (input.assetType === "machine" && !input.machineId) throw new TRPCError({ code: "BAD_REQUEST", message: "机械柴油领用必须关联机械" });
+      if (input.supplyMethod === "external_station" && (!input.stationOrSupplierName?.trim() || !input.actualUnitPrice || input.actualUnitPrice <= 0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "加油站加油必须填写加油站/供应商和实际单价" });
+      }
+      if (input.deductFromFreight && (input.assetType !== "vehicle" || !input.transportTripId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "运费扣油必须关联车辆和未结算运输趟次" });
+      }
+      const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油记录必须归属有效项目" });
+      if (input.assetType === "vehicle") {
+        const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId!)).limit(1);
+        if (!vehicle || vehicle.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆必须归属所选项目" });
+      } else {
+        const [machine] = await db.select({ id: machines.id, projectId: machines.projectId }).from(machines).where(eq(machines.id, input.machineId!)).limit(1);
+        if (!machine || machine.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "机械必须归属所选项目" });
+      }
+      if (input.transportTripId) {
+        const [trip] = await db.select({ id: transportTrips.id, projectId: transportTrips.projectId, vehicleId: transportTrips.vehicleId, status: transportTrips.status }).from(transportTrips).where(eq(transportTrips.id, input.transportTripId)).limit(1);
+        if (!trip || trip.projectId !== input.projectId || trip.vehicleId !== input.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "运输趟次必须属于所选项目和车辆" });
+        if (trip.status === "settled" || trip.status === "void") throw new TRPCError({ code: "BAD_REQUEST", message: "已结算或已作废趟次不得新增柴油扣款" });
+      }
+      const refuelDate = input.refueledAt.slice(0, 10);
+      let appliedUnitPrice = input.actualUnitPrice ?? 0;
+      if (input.supplyMethod === "project_supply") {
+        const prices = await db.select().from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.projectId, input.projectId)).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
+        const activePrice = prices.find(price => price.status === "active" && new Date(price.effectiveFrom).toISOString().slice(0, 10) <= refuelDate && (!price.effectiveTo || new Date(price.effectiveTo).toISOString().slice(0, 10) >= refuelDate));
+        if (!activePrice) throw new TRPCError({ code: "BAD_REQUEST", message: "项目部供油前请先维护当日有效的柴油指导单价" });
+        appliedUnitPrice = Number(activePrice.pricePerLiter);
+      }
+      const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
+      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: input.status, createdBy: admin.id, approvedBy: input.status === "approved" ? admin.id : null, approvedAt: input.status === "approved" ? new Date() : null };
+      let recordId = input.id;
+      if (input.id) {
+        const [existing] = await db.select({ id: dieselRefuelRecords.id, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.id, input.id)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "柴油领用记录不存在" });
+        if (existing.status === "settled") throw new TRPCError({ code: "BAD_REQUEST", message: "已结算柴油记录不得修改或作废" });
+        await db.update(dieselRefuelRecords).set(values).where(eq(dieselRefuelRecords.id, input.id));
+      } else {
+        const recordNo = `DS${input.projectId}${Date.now().toString().slice(-8)}`;
+        await db.insert(dieselRefuelRecords).values({ ...values, recordNo });
+        const [created] = await db.select({ id: dieselRefuelRecords.id }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.recordNo, recordNo)).limit(1);
+        recordId = created?.id;
+      }
+      if (!recordId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "柴油记录保存后无法确认编号" });
+      if (input.assetType === "machine") {
+        const [existingCost] = await db.select({ id: machineCostRecords.id }).from(machineCostRecords).where(eq(machineCostRecords.dieselRefuelRecordId, recordId)).limit(1);
+        const costValues = { machineId: input.machineId!, projectId: input.projectId, costType: "fuel" as const, quantity: String(input.liters), unitPrice: String(appliedUnitPrice), amount: String(amount), dieselRefuelRecordId: recordId, occurredAt: new Date(input.refueledAt), evidenceId: input.evidenceId ?? null, status: input.status === "void" ? "void" as const : input.status === "approved" ? "approved" as const : "draft" as const };
+        if (existingCost) await db.update(machineCostRecords).set(costValues).where(eq(machineCostRecords.id, existingCost.id));
+        else if (input.status !== "void") await db.insert(machineCostRecords).values(costValues);
+      }
+      await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${input.deductFromFreight ? "，结算扣油" : ""}` });
+      return { success: true, id: recordId, amount, appliedUnitPrice };
+    }),
+  }),
+
   vehicle: router({
     /** 超级管理员从唯一的运输车辆台账读取全局资源，理论方量始终由货厢参数实时计算。 */
     list: protectedProcedure.query(async ({ ctx }) => {
@@ -784,11 +948,21 @@ export const adminRouter = router({
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
-      await db.delete(rolePermissions).where(eq(rolePermissions.roleId, input.roleId));
-      if (input.permissionIds.length > 0) {
-        await db.insert(rolePermissions).values(input.permissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
+      const [roleRows, permissionRows] = await Promise.all([
+        db.select({ id: systemRoles.id, name: systemRoles.name }).from(systemRoles).where(eq(systemRoles.id, input.roleId)).limit(1),
+        db.select({ id: systemPermissions.id }).from(systemPermissions),
+      ]);
+      if (!roleRows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在或已被删除" });
+      const uniquePermissionIds = Array.from(new Set(input.permissionIds));
+      const validPermissionIds = new Set(permissionRows.map(permission => permission.id));
+      if (uniquePermissionIds.some(permissionId => !validPermissionIds.has(permissionId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "权限配置中包含无效权限点，请刷新后重新设置" });
       }
-      await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: "更新角色权限集合" });
+      await db.delete(rolePermissions).where(eq(rolePermissions.roleId, input.roleId));
+      if (uniquePermissionIds.length > 0) {
+        await db.insert(rolePermissions).values(uniquePermissionIds.map(permissionId => ({ roleId: input.roleId, permissionId })));
+      }
+      await db.insert(auditLogs).values({ userId: admin.id, module: "role", action: "assign_permissions", targetType: "role", targetId: String(input.roleId), summary: `更新角色“${roleRows[0].name}”的详细操作权限，共 ${uniquePermissionIds.length} 项` });
       dispatchOfficialAccountSecurityNotification({
         userId: admin.id,
         module: "security",
@@ -937,13 +1111,55 @@ export const adminRouter = router({
         .leftJoin(projects, eq(userRoleAssignments.projectId, projects.id))
         .orderBy(desc(userRoleAssignments.createdAt));
     }),
+    /** 某用户已配置的专属操作权限；按业务模块存在专属授权时会覆盖其角色权限矩阵。 */
+    userPermissionIds: protectedProcedure.input(z.object({ userId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select({ permissionId: userPermissions.permissionId }).from(userPermissions).where(eq(userPermissions.userId, input.userId));
+      return rows.map(row => row.permissionId);
+    }),
+    setUserPermissions: protectedProcedure.input(z.object({ userId: z.number().int().positive(), permissionIds: z.array(z.number().int().positive()) })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      await ensureFoundationData(db);
+      const [targetUsers, permissionRows] = await Promise.all([
+        db.select({ id: users.id, name: users.name, role: users.role, loginMethod: users.loginMethod, localAccountStatus: users.localAccountStatus }).from(users).where(eq(users.id, input.userId)).limit(1),
+        db.select({ id: systemPermissions.id }).from(systemPermissions),
+      ]);
+      const target = targetUsers[0];
+      if (!target || target.loginMethod === "deleted_local_manager") throw new TRPCError({ code: "NOT_FOUND", message: "该用户不存在或已删除" });
+      if (target.role === "admin") throw new TRPCError({ code: "FORBIDDEN", message: "超级管理员默认拥有全量权限，无需配置用户专属操作权限" });
+      if (target.localAccountStatus === "disabled") throw new TRPCError({ code: "BAD_REQUEST", message: "请先启用该用户账号后再配置专属操作权限" });
+      const activeAssignments = await db.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(and(eq(userRoleAssignments.userId, target.id), eq(userRoleAssignments.status, "active"))).limit(1);
+      if (!activeAssignments[0]) throw new TRPCError({ code: "BAD_REQUEST", message: "请先为该用户分配有效的岗位、部门或项目范围，再配置专属操作权限" });
+      const uniquePermissionIds = Array.from(new Set(input.permissionIds));
+      const validPermissionIds = new Set(permissionRows.map(permission => permission.id));
+      if (uniquePermissionIds.some(permissionId => !validPermissionIds.has(permissionId))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "权限配置中包含无效权限点，请刷新后重新设置" });
+      }
+      await db.delete(userPermissions).where(eq(userPermissions.userId, target.id));
+      if (uniquePermissionIds.length) await db.insert(userPermissions).values(uniquePermissionIds.map(permissionId => ({ userId: target.id, permissionId, grantedBy: admin.id })));
+      await db.insert(auditLogs).values({ userId: admin.id, module: "permission", action: "assign_user_permissions", targetType: "user", targetId: String(target.id), summary: `更新用户“${target.name || `用户 #${target.id}`}”的专属操作权限，共 ${uniquePermissionIds.length} 项` });
+      dispatchInAppSecurityNotification({
+        eventCode: "user_operation_permissions_updated",
+        idempotencyKey: `user_operation_permissions_updated:${target.id}:${Date.now()}`,
+        recipientUserId: target.id,
+        title: "您的专属操作权限已更新",
+        content: "管理员已更新您的业务操作权限。请重新打开工作台以同步最新授权。",
+        deepLink: "/mobile/profile",
+      });
+      dispatchOfficialAccountSecurityNotification({ userId: admin.id, module: "security", eventCode: "user_operation_permissions_updated", targetType: "user", targetId: String(target.id), title: "用户专属操作权限已更新", deepLink: "/admin/permission" });
+      return { success: true };
+    }),
     createLocalUser: protectedProcedure.input(localManagerAccountInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const database = await getDb();
       if (!database) throw new Error("数据库连接暂不可用");
       const localUsername = normalizeLocalManagerUsername(input.username);
       if (!isValidLocalManagerUsername(localUsername)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请输入有效的中国大陆手机号码（11 位）" });
       }
       const existing = await database.select({ id: users.id }).from(users).where(eq(users.localUsername, localUsername)).limit(1);
       if (existing[0]) throw new TRPCError({ code: "CONFLICT", message: "该本地账号已存在" });
@@ -1003,7 +1219,7 @@ export const adminRouter = router({
       if (!database) throw new Error("数据库连接暂不可用");
       const localUsername = normalizeLocalManagerUsername(input.username);
       if (!isValidLocalManagerUsername(localUsername)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "账号须以字母开头，只能包含小写字母、数字、点、下划线或连字符，长度为 3—48 位" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请输入有效的中国大陆手机号码（11 位）" });
       }
       const [target] = await database.select({ id: users.id, name: users.name, localAccountStatus: users.localAccountStatus, loginMethod: users.loginMethod }).from(users).where(eq(users.id, input.userId)).limit(1);
       if (!target || target.loginMethod !== "local_manager") {
@@ -1095,6 +1311,7 @@ export const adminRouter = router({
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: `该账号仍关联业务记录或资源责任：${blockers.join("、")}。请先完成交接或改派后再删除。` });
       }
       await database.update(userRoleAssignments).set({ status: "revoked" }).where(and(eq(userRoleAssignments.userId, target.id), eq(userRoleAssignments.status, "active")));
+      await database.delete(userPermissions).where(eq(userPermissions.userId, target.id));
       await database.delete(userProfiles).where(eq(userProfiles.userId, target.id));
       await database.update(users).set({
         openId: `deleted-local-manager:${target.id}:${Date.now()}`,
@@ -1276,6 +1493,73 @@ export const adminRouter = router({
       if (!db) return [];
       const settings = await db.select({ id: systemSettings.id, category: systemSettings.category, settingKey: systemSettings.settingKey, displayName: systemSettings.displayName, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, isSensitive: systemSettings.isSensitive, status: systemSettings.status, version: systemSettings.version, publishedAt: systemSettings.publishedAt, updatedAt: systemSettings.updatedAt, remarks: systemSettings.remarks }).from(systemSettings).orderBy(systemSettings.category, systemSettings.settingKey);
       return settings.filter(setting => !RETIRED_NOTIFICATION_SETTING_KEYS.has(setting.settingKey));
+    }),
+    /**
+     * 服务号接入的五项参数作为一个原子配置组保存并发布，避免管理员逐项草稿/发布造成半配置状态。
+     * 敏感字段在后续修订时允许留空，表示保留既有密文；接口永不返回密钥明文。
+     */
+    saveOfficialAccountConfiguration: protectedProcedure.input(officialAccountConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const definitions = [
+        { settingKey: "WECHAT_OFFICIAL_APP_ID", displayName: "微信公众号服务号 AppID", value: input.appId, isSensitive: false, remarks: "服务号 AppID；用于员工微信身份绑定和业务通知。" },
+        { settingKey: OFFICIAL_ACCOUNT_APP_SECRET_KEY, displayName: "微信公众号服务号 AppSecret", value: input.appSecret, isSensitive: true, remarks: "服务号 AppSecret；仅服务端 AES-GCM 加密托管。" },
+        { settingKey: "WECHAT_OFFICIAL_APP_URL", displayName: "公众号业务跳转地址", value: input.appUrl, isSensitive: false, remarks: "正式 HTTPS 站点根地址；用于模板消息跳转和员工 OAuth 绑定回调。" },
+        { settingKey: "WECHAT_OFFICIAL_EGRESS_URL", displayName: "微信 API 固定出口网关地址", value: input.egressUrl, isSensitive: false, remarks: "服务端访问微信 API 的固定出口地址。" },
+        { settingKey: OFFICIAL_ACCOUNT_EGRESS_SECRET_KEY, displayName: "固定出口网关签名密钥", value: input.egressSigningSecret, isSensitive: true, remarks: "固定出口网关签名密钥；仅服务端 AES-GCM 加密托管。" },
+      ] as const;
+      const keys = definitions.map(item => item.settingKey);
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, keys));
+      const existingByKey = new Map(existingRows.map(item => [item.settingKey, item]));
+
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.settingKey);
+          const submittedValue = definition.value.trim();
+          const preserveExistingSecret = definition.isSensitive && !submittedValue;
+          if (!definition.isSensitive && !submittedValue) throw new TRPCError({ code: "BAD_REQUEST", message: `请填写${definition.displayName}` });
+          if (preserveExistingSecret && !existing?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: `首次配置必须填写${definition.displayName}` });
+          assertOfficialAccountSettingContract({ settingKey: definition.settingKey, value: submittedValue, isSensitive: definition.isSensitive });
+          const nextValue = submittedValue;
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const writeResult = await tx.update(systemSettings).set({
+              category: "微信公众号服务号",
+              displayName: definition.displayName,
+              valueJson: definition.isSensitive ? null : nextValue,
+              secretEncrypted: definition.isSensitive ? (preserveExistingSecret ? existing.secretEncrypted : encryptSecret(nextValue)) : null,
+              valuePreview: definition.isSensitive ? (preserveExistingSecret ? existing.valuePreview : maskSecret(nextValue)) : nextValue.slice(0, 256),
+              isSensitive: definition.isSensitive,
+              status: "published",
+              version: nextVersion,
+              publishedAt: new Date(),
+              remarks: definition.remarks,
+              updatedBy: admin.id,
+            }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(writeResult);
+            const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+          } else {
+            await tx.insert(systemSettings).values({
+              category: "微信公众号服务号",
+              settingKey: definition.settingKey,
+              displayName: definition.displayName,
+              valueJson: definition.isSensitive ? null : nextValue,
+              secretEncrypted: definition.isSensitive ? encryptSecret(nextValue) : null,
+              valuePreview: definition.isSensitive ? maskSecret(nextValue) : nextValue.slice(0, 256),
+              isSensitive: definition.isSensitive,
+              status: "published",
+              publishedAt: new Date(),
+              remarks: definition.remarks,
+              updatedBy: admin.id,
+            });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_configuration", targetType: "official_account", targetId: "configuration_bundle", summary: "一次性保存并发布服务号五项基础配置" });
+      });
+      const validation = await testPublishedOfficialAccountConfiguration();
+      return { success: validation.success, message: validation.message };
     }),
     saveDraft: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))
@@ -1524,6 +1808,47 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_template_draft", targetType: "official_account_template", targetId: selected.templateId, summary: `从服务号私有模板库生成模板配置草稿：${selected.title}；安全替换 ${existing.length} 项旧模板配置` });
       });
       return { success: true, replacedExisting: existing.length > 0, message: existing.length ? "新模板草稿已生成；旧模板值已写入可回退历史。请在配置清单核对后发布模板 ID 与字段映射。草稿期间业务模板通知会暂停，避免新旧模板混用。" : "模板 ID 与字段映射草稿已生成。请在配置清单核对后分别发布，业务通知才会启用。" };
+    }),
+    /** 将已核验的私有模板直接绑定到一个业务模块；字段映射由模板 .DATA 字段自动生成并立即发布。 */
+    bindOfficialAccountModuleTemplate: protectedProcedure.input(z.object({
+      templateId: z.string().min(1).max(128),
+      module: z.enum(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"]),
+    })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const discovered = await listPublishedOfficialAccountPrivateTemplates();
+      if (!discovered.success) throw new TRPCError({ code: "BAD_REQUEST", message: discovered.message });
+      const selected = discovered.templates.find(template => template.templateId === input.templateId);
+      if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
+      if (!isPersistentBusinessTemplateEligible(selected)) throw new TRPCError({ code: "BAD_REQUEST", message: getPersistentBusinessTemplateEligibilityMessage(selected) ?? "所选模板不可用于持续业务通知。" });
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const settingKey = "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS";
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, settingKey)).limit(1);
+      let mappings: Record<string, { templateId: string; title: string; templateFields: Record<string, string> }> = {};
+      if (existing?.valueJson) {
+        try {
+          const parsed = JSON.parse(existing.valueJson) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) mappings = parsed as typeof mappings;
+        } catch { /* 损坏配置在本次安全替换时重建 */ }
+      }
+      mappings[input.module] = { templateId: selected.templateId, title: selected.title, templateFields: selected.fieldMapping };
+      const valueJson = JSON.stringify(mappings);
+      await db.transaction(async tx => {
+        if (existing) {
+          const nextVersion = existing.version + 1;
+          const writeResult = await tx.update(systemSettings).set({
+            category: "公众号消息模板", displayName: "公众号业务模块模板绑定", valueJson, valuePreview: `已绑定 ${Object.keys(mappings).length} 个业务模块`, isSensitive: false,
+            status: "published", publishedAt: new Date(), version: nextVersion, remarks: "按业务模块自动选择私有模板并生成字段映射，无需手填内部占位符。", updatedBy: admin.id,
+          }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+        } else {
+          await tx.insert(systemSettings).values({ category: "公众号消息模板", settingKey, displayName: "公众号业务模块模板绑定", valueJson, valuePreview: `已绑定 1 个业务模块`, isSensitive: false, status: "published", publishedAt: new Date(), remarks: "按业务模块自动选择私有模板并生成字段映射，无需手填内部占位符。", updatedBy: admin.id });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_module_template_bind", targetType: "official_account_template", targetId: `${input.module}:${selected.templateId}`, summary: `绑定服务号模板：${input.module} -> ${selected.title}` });
+      });
+      return { success: true, message: `已将“${selected.title}”绑定到${input.module}模块，系统已自动完成字段映射并发布。` };
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);

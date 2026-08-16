@@ -63,7 +63,7 @@ describe("施工日报 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
 
     await expect(constructionRouter.createCaller(createAuthContext()).listReports({ projectId: 10 })).resolves.toEqual([]);
-    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION");
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "read");
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 

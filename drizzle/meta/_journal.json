@@ -190,6 +190,20 @@
       "when": 1786632959530,
       "tag": "0026_light_rictor",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "5",
+      "when": 1786808040214,
+      "tag": "0027_wealthy_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1786812701666,
+      "tag": "0028_outgoing_the_spike",
+      "breakpoints": true
     }
   ]
 }

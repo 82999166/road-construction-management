@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { departmentBusinessScopes, officialAccountBindings, organizations, projects, systemRoles, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
+import { departmentBusinessScopes, officialAccountBindings, organizations, projects, rolePermissions, systemPermissions, systemRoles, userPermissions, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
 import { MOBILE_MENU_CATALOG } from "../shared/domain";
 import { getDb } from "./db";
@@ -8,6 +8,77 @@ import type { TrpcContext } from "./_core/context";
 
 type DepartmentScopedContext = TrpcContext & { departmentModule?: DepartmentBusinessModule };
 type DataScope = { userId: number; hasAllProjects: boolean; projectIds: number[]; organizationIds: number[] };
+
+/** 角色详细授权按业务域与动作拆分；未配置详细权限的历史角色继续沿用既有岗位授权，避免升级时误锁业务。 */
+export type BusinessOperationAction = "read" | "create" | "edit" | "submit" | "review" | "settle" | "void" | "export" | "print";
+
+const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule, string> = {
+  CONSTRUCTION: "construction",
+  LABOR: "labor",
+  MACHINERY: "machinery",
+  TRANSPORT: "transport",
+  PURCHASING: "purchase",
+  MEASUREMENT: "measurement",
+  FINANCE: "finance",
+  EVIDENCE: "evidence",
+};
+
+/** 兼容旧版“manage”总授权；管理员一旦为角色配置细粒度项，未勾选的动作将被明确拒绝。 */
+export function isRoleOperationGranted(grantedActions: readonly string[], requestedAction: BusinessOperationAction) {
+  if (grantedActions.length === 0) return true;
+  return grantedActions.includes("manage") || grantedActions.includes(requestedAction);
+}
+
+export type RoleOperationPermissionDecision = { hasDetailedPermissions: boolean; allowed: boolean };
+
+export async function getRoleOperationPermissionDecision(ctx: TrpcContext, module: DepartmentBusinessModule, action: BusinessOperationAction, knownNonSuperAdmin = false): Promise<RoleOperationPermissionDecision> {
+  const user = requireAuthenticatedUser(ctx);
+  if (!knownNonSuperAdmin) {
+    const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+    if (isSuperAdmin) return { hasDetailedPermissions: true, allowed: true };
+  }
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const now = new Date();
+  const permissionModule = OPERATION_PERMISSION_MODULE_BY_DEPARTMENT[module];
+  const userRows = await db
+    .select({ action: systemPermissions.action })
+    .from(userPermissions)
+    .innerJoin(systemPermissions, eq(userPermissions.permissionId, systemPermissions.id))
+    .where(and(eq(userPermissions.userId, user.id), eq(systemPermissions.module, permissionModule)));
+  const userGrantedActions = Array.from(new Set(userRows.map(row => row.action)));
+  // 具体用户在某业务模块配置过专属权限后，该模块不再回退角色矩阵，确保管理员可收窄或扩展单人权限。
+  if (userGrantedActions.length > 0) {
+    return { hasDetailedPermissions: true, allowed: isRoleOperationGranted(userGrantedActions, action) };
+  }
+  const rows = await db
+    .select({ action: systemPermissions.action })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .innerJoin(rolePermissions, eq(rolePermissions.roleId, systemRoles.id))
+    .innerJoin(systemPermissions, eq(rolePermissions.permissionId, systemPermissions.id))
+    .where(and(
+      eq(userRoleAssignments.userId, user.id),
+      eq(userRoleAssignments.status, "active"),
+      eq(systemRoles.status, "active"),
+      eq(systemPermissions.module, permissionModule),
+      or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
+      or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
+    ));
+  const grantedActions = Array.from(new Set(rows.map(row => row.action)));
+  return { hasDetailedPermissions: grantedActions.length > 0, allowed: isRoleOperationGranted(grantedActions, action) };
+}
+
+export async function assertRoleOperationPermission(ctx: TrpcContext, module: DepartmentBusinessModule, action: BusinessOperationAction, knownNonSuperAdmin = false) {
+  const decision = await getRoleOperationPermissionDecision(ctx, module, action, knownNonSuperAdmin);
+  if (!decision.allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `当前账号未被授予“${getDepartmentBusinessModuleName(module)}”的“${action}”操作权限，请联系超级管理员调整用户或角色权限矩阵`,
+    });
+  }
+  return decision;
+}
 
 /** 岗位必须能够办理目标模块；`ALL` 菜单表示任一已授权业务岗位均可使用该通用模块。 */
 function canRoleHandleDepartmentModule(roleCode: string, module: DepartmentBusinessModule) {
@@ -229,10 +300,11 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   };
 }
 
-/** 当前用户是否可代表其已配置部门办理指定业务；角色和部门业务范围均必须有效。 */
-export async function assertDepartmentBusinessAccess(ctx: TrpcContext, module: DepartmentBusinessModule) {
+/** 当前用户是否可代表其已配置部门办理指定业务；角色、部门业务范围及已配置的详细操作权限均必须有效。 */
+export async function assertDepartmentBusinessAccess(ctx: TrpcContext, module: DepartmentBusinessModule, action: BusinessOperationAction = "read") {
   const access = await getCurrentDepartmentAccess(ctx);
   if (access.hasAllDepartments || access.moduleCodes.includes(module)) {
+    if (!access.hasAllDepartments) await assertRoleOperationPermission(ctx, module, action, true);
     // 上下文仅存在于当前服务端请求内；客户端无法注入该字段。
     (ctx as DepartmentScopedContext).departmentModule = module;
     return access;
