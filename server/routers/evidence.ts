@@ -7,7 +7,7 @@ import { attendanceRecords, auditLogs, dieselRefuelRecords, evidenceRecords, fin
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
-import { storageGet, storageGetSignedUrl, storagePut } from "../storage";
+import { storageGetSignedUrl, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
@@ -144,7 +144,9 @@ export const evidenceRouter = router({
       const filteredRows = input.sourceType ? rows.filter(row => row.sourceType === input.sourceType) : rows;
       const deleteDecision = await getRoleOperationPermissionDecision(ctx, "EVIDENCE", "void");
       return Promise.all(filteredRows.map(async row => {
-        const file = await storageGet(row.fileKey);
+        // 正式部署的托管存储代理可能以 307 跳转到对象域名；部分微信浏览器不会在
+        // `<img>` 请求中可靠跟随该跳转，直接签发短时图片 URL 可避免页面只显示 alt 文本。
+        const signedImageUrl = await storageGetSignedUrl(row.fileKey);
         let watermark: { description?: string } | null = null;
         let ocrResult: z.infer<typeof ocrResultSchema> | null = null;
         try { watermark = row.watermarkJson ? JSON.parse(row.watermarkJson) as { description?: string } : null; } catch { watermark = null; }
@@ -161,7 +163,7 @@ export const evidenceRouter = router({
           latitude: row.latitude,
           capturedAt: row.capturedAt,
           createdAt: row.createdAt,
-          url: file.url,
+          url: signedImageUrl,
           ocrResult,
           canDelete: row.uploadedBy === ctx.user?.id || deleteDecision.allowed,
         };
