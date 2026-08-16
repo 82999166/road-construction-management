@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
-const { mockGetCurrentDataScope, mockGetCurrentDepartmentAccess, mockGetEffectiveRoleCodes } = vi.hoisted(() => ({
+const { mockGetCurrentDataScope, mockGetCurrentDepartmentAccess, mockGetCurrentUserSpecificMenuModules, mockGetEffectiveRoleCodes } = vi.hoisted(() => ({
   mockGetCurrentDataScope: vi.fn(),
   mockGetCurrentDepartmentAccess: vi.fn().mockResolvedValue({ departments: [], moduleCodes: [], hasAllDepartments: true }),
+  mockGetCurrentUserSpecificMenuModules: vi.fn().mockResolvedValue([]),
   mockGetEffectiveRoleCodes: vi.fn(),
 }));
 
@@ -14,6 +15,7 @@ vi.mock("./access", async importOriginal => {
     ...actual,
     getCurrentDataScope: mockGetCurrentDataScope,
     getCurrentDepartmentAccess: mockGetCurrentDepartmentAccess,
+    getCurrentUserSpecificMenuModules: mockGetCurrentUserSpecificMenuModules,
     getEffectiveRoleCodes: mockGetEffectiveRoleCodes,
   };
 });
@@ -99,5 +101,19 @@ describe("移动工作台 tRPC 路由", () => {
     expect(result.user.departments).toEqual([{ id: 31, name: "劳务管理部", type: "department" }]);
     expect(result.menus.some(menu => menu.code === "LABOR")).toBe(true);
     expect(result.menus.some(menu => menu.code === "FINANCE")).toBe(false);
+  });
+
+  it("项目范围内的用户专属查看权限应补充业务菜单，但不把未授权部门模块一并开放", async () => {
+    mockGetEffectiveRoleCodes.mockResolvedValue(["MACHINERY_MANAGER"]);
+    mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [88], organizationIds: [] });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY", "CONSTRUCTION"], hasAllDepartments: false });
+    mockGetCurrentUserSpecificMenuModules.mockResolvedValueOnce(["CONSTRUCTION"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
+
+    const result = await mobileRouter.createCaller(createAuthContext()).workbench();
+
+    expect(result.user.userSpecificModules).toEqual(["CONSTRUCTION"]);
+    expect(result.menus.some(menu => menu.code === "CONSTRUCTION")).toBe(true);
+    expect(result.menus.some(menu => menu.code === "TRANSPORT")).toBe(false);
   });
 });

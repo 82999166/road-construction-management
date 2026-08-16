@@ -164,6 +164,7 @@ export default function MobileWorkbench() {
   const greetingName = activeWorkbench?.user.name ?? snapshot?.userName ?? user?.name ?? "同事";
   const departmentNames = activeWorkbench?.user.departments.map(department => department.name) ?? snapshot?.departmentNames ?? [];
   const departmentModules = activeWorkbench?.user.departmentModules ?? snapshot?.departmentModules ?? [];
+  const userSpecificModules = activeWorkbench?.user.userSpecificModules ?? [];
   // 超级管理员的角色由服务端下发，界面仅作来源说明，不能据此绕过任何接口鉴权。
   const hasGlobalBusinessAccess = activeWorkbench?.user.roleCodes.includes("SUPER_ADMIN") ?? false;
   const canUseEvidence = businessMenus.some(menu => menu.code === "EVIDENCE");
@@ -180,7 +181,7 @@ export default function MobileWorkbench() {
               <button aria-label="进入消息中心" disabled={!isOnline} className="relative grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" />{(statistics?.unreadMessages ?? 0) > 0 ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[#f3bf6b]" /> : null}</button>
             </div>
           </div>
-          <div className="relative mt-8"><p className="text-sm text-[#e8cfb2]">您好，{greetingName}</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">今天先完成最重要的事</h1><p className="mt-2 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{hasGlobalBusinessAccess ? "当前权限：超级管理员（全局业务授权）" : departmentNames.length ? `当前部门：${departmentNames.join("、")}` : "当前账号尚未配置业务部门"}</p></div>
+          <div className="relative mt-8"><p className="text-sm text-[#e8cfb2]">您好，{greetingName}</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">今天先完成最重要的事</h1><p className="mt-2 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{hasGlobalBusinessAccess ? "当前权限：超级管理员（全局业务授权）" : departmentNames.length ? `当前部门：${departmentNames.join("、")}` : "当前账号尚未配置业务部门"}</p>{userSpecificModules.length ? <p className="mt-2 text-xs leading-5 text-[#f4d7b6]">已按专属权限开放：{userSpecificModules.map(module => ({ CONSTRUCTION: "施工", LABOR: "劳务", MACHINERY: "机械", TRANSPORT: "运输", PURCHASING: "采购", MEASUREMENT: "计量", FINANCE: "财务", EVIDENCE: "影像" })[module]).filter(Boolean).join("、")}</p> : null}</div>
         </header>
 
         <main className="space-y-6 px-5 pb-24 pt-5">
@@ -194,7 +195,7 @@ export default function MobileWorkbench() {
           </section>
 
           <section>
-            <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">我的业务</h2><p className="mt-0.5 text-xs text-[#9b8170]">{hasGlobalBusinessAccess ? "已启用超级管理员全局业务授权，接口仍执行服务端校验" : `菜单随部门、岗位、项目范围与授权有效期动态更新${departmentModules.length ? ` · 已开通 ${departmentModules.length} 项部门业务` : ""}`}</p></div><ShieldCheck className="h-5 w-5 text-[#b87333]" /></div>
+            <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">我的业务</h2><p className="mt-0.5 text-xs text-[#9b8170]">{hasGlobalBusinessAccess ? "已启用超级管理员全局业务授权，接口仍执行服务端校验" : `菜单随部门、岗位、项目范围与授权有效期动态更新${departmentModules.length ? ` · 已开通 ${departmentModules.length} 项部门业务` : ""}${userSpecificModules.length ? ` · 其中 ${userSpecificModules.length} 项来自专属权限` : ""}`}</p></div><ShieldCheck className="h-5 w-5 text-[#b87333]" /></div>
             <div className="grid grid-cols-4 gap-3 sm:grid-cols-5">
               {businessMenus.map(menu => {
                 const Icon = MENU_ICONS[menu.code] ?? LayoutDashboard;

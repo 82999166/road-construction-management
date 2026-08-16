@@ -23,6 +23,10 @@ const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule
   EVIDENCE: "evidence",
 };
 
+const DEPARTMENT_MODULE_BY_OPERATION_PERMISSION = Object.fromEntries(
+  Object.entries(OPERATION_PERMISSION_MODULE_BY_DEPARTMENT).map(([departmentModule, permissionModule]) => [permissionModule, departmentModule as DepartmentBusinessModule]),
+) as Record<string, DepartmentBusinessModule | undefined>;
+
 /** 兼容旧版“manage”总授权；管理员一旦为角色配置细粒度项，未勾选的动作将被明确拒绝。 */
 export function isRoleOperationGranted(grantedActions: readonly string[], requestedAction: BusinessOperationAction) {
   if (grantedActions.length === 0) return true;
@@ -78,6 +82,35 @@ export async function assertRoleOperationPermission(ctx: TrpcContext, module: De
     });
   }
   return decision;
+}
+
+/** 用户专属权限中拥有查看或总办理授权的业务域，可作为移动菜单投影候选；仍需绑定一个有效项目范围。 */
+async function getUserSpecificMenuModulesForUser(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, userId: number) {
+  const rows = await db
+    .select({ module: systemPermissions.module, action: systemPermissions.action })
+    .from(userPermissions)
+    .innerJoin(systemPermissions, eq(userPermissions.permissionId, systemPermissions.id))
+    .where(eq(userPermissions.userId, userId));
+  const actionsByModule = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const actions = actionsByModule.get(row.module) ?? new Set<string>();
+    actions.add(row.action);
+    actionsByModule.set(row.module, actions);
+  }
+  return Array.from(actionsByModule.entries())
+    .filter(([, actions]) => actions.has("read") || actions.has("manage"))
+    .map(([permissionModule]) => DEPARTMENT_MODULE_BY_OPERATION_PERMISSION[permissionModule])
+    .filter((module): module is DepartmentBusinessModule => Boolean(module));
+}
+
+/** 供工作台展示“已按用户专属权限开放”的业务模块；不得单独用于放宽项目数据范围。 */
+export async function getCurrentUserSpecificMenuModules(ctx: TrpcContext) {
+  const user = requireAuthenticatedUser(ctx);
+  const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+  if (isSuperAdmin) return [] as DepartmentBusinessModule[];
+  const db = await getDb();
+  if (!db) return [] as DepartmentBusinessModule[];
+  return getUserSpecificMenuModulesForUser(db, user.id);
 }
 
 /** 岗位必须能够办理目标模块；`ALL` 菜单表示任一已授权业务岗位均可使用该通用模块。 */
@@ -286,6 +319,8 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
   const projectModuleCodes = projectScopedRows.flatMap(row => getRoleDepartmentModules(row.roleCode));
+  // 用户专属权限只能复用其既有的直接项目范围，不能在无项目角色授权时凭空扩大数据边界。
+  const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
   const departmentMap = new Map<number, { id: number; name: string; type: "department" | "project_department" }>();
   for (const row of authorizedRows) {
     // 查询条件已限制为两类部门节点；显式保护让未来扩展组织枚举时仍不会放宽部门边界。
@@ -295,7 +330,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   }
   return {
     departments: Array.from(departmentMap.values()),
-    moduleCodes: Array.from(new Set([...authorizedRows.map(row => row.module), ...projectModuleCodes])) as DepartmentBusinessModule[],
+    moduleCodes: Array.from(new Set([...authorizedRows.map(row => row.module), ...projectModuleCodes, ...userSpecificModuleCodes])) as DepartmentBusinessModule[],
     hasAllDepartments: false,
   };
 }
@@ -343,8 +378,9 @@ async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: Dep
     );
   const departmentScopedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
   const directProjectRows = projectScopedRows
-    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module))
+    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module) || userSpecificModuleCodes.includes(module))
     .map(row => ({ projectId: row.projectId, organizationId: null }));
   return toDataScope(user.id, [...departmentScopedRows, ...directProjectRows]);
 }
