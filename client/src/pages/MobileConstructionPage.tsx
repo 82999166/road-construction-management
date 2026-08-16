@@ -9,8 +9,9 @@ import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
+import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, ImagePlus, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
+import React, { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -47,6 +48,69 @@ function getWeatherLabel(value: Weather) {
   return { sunny: "晴", cloudy: "多云", rainy: "雨", snowy: "雪", windy: "大风", other: "其他" }[value];
 }
 
+function readImageAsBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("影像文件读取失败"));
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^;]+;base64,/, ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+function createWatermarkedImage(file: File, watermarkLines: string[], template: EvidenceWatermarkTemplate) {
+  return new Promise<File>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("水印影像生成失败")); };
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("当前浏览器不支持水印绘制");
+        context.drawImage(image, 0, 0);
+        const fontSize = Math.max(15, Math.round(Math.min(canvas.width, canvas.height) / 34));
+        const lineHeight = Math.round(fontSize * 1.46);
+        const padding = Math.round(fontSize * 0.72);
+        const visibleLines = watermarkLines.filter(Boolean).slice(0, 8);
+        context.font = `600 ${fontSize}px sans-serif`;
+        const textWidth = Math.min(canvas.width - padding * 2, Math.max(...visibleLines.map(line => context.measureText(line).width), canvas.width * 0.42));
+        const headerHeight = Math.round(lineHeight * 1.35);
+        const footerHeight = Math.round(lineHeight * 1.1);
+        const boxHeight = headerHeight + visibleLines.length * lineHeight + footerHeight + padding * 2;
+        const boxY = canvas.height - boxHeight - padding;
+        context.fillStyle = "rgba(255, 255, 255, .88)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, boxHeight);
+        context.fillStyle = "rgba(33, 119, 211, .9)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, headerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `700 ${Math.round(fontSize * 1.08)}px sans-serif`;
+        context.fillText(template.title, padding * 2, boxY + Math.round(padding * .55));
+        context.fillStyle = "#26333d";
+        context.font = `600 ${fontSize}px sans-serif`;
+        context.textBaseline = "top";
+        visibleLines.forEach((line, index) => context.fillText(line, padding * 2, boxY + headerHeight + padding + index * lineHeight));
+        context.fillStyle = "rgba(33, 119, 211, .92)";
+        context.fillRect(padding, boxY + boxHeight - footerHeight - padding, textWidth + padding * 2, footerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `600 ${Math.round(fontSize * .78)}px sans-serif`;
+        context.fillText(template.footerLabel, padding * 2, boxY + boxHeight - footerHeight - Math.round(padding * .1));
+        canvas.toBlob(blob => {
+          URL.revokeObjectURL(objectUrl);
+          if (!blob) return reject(new Error("水印影像生成失败"));
+          const name = file.name.replace(/\.(jpe?g|png)$/i, "") || "construction-photo";
+          resolve(new File([blob], `${name}-watermark.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
+        }, "image/jpeg", 0.9);
+      } catch (error) {
+        URL.revokeObjectURL(objectUrl);
+        reject(error instanceof Error ? error : new Error("水印影像生成失败"));
+      }
+    };
+    image.src = objectUrl;
+  });
+}
+
 function getStatusMeta(value: ReportStatus) {
   return {
     draft: { label: "草稿", className: "bg-[#f7ead8] text-[#8a542e]" },
@@ -67,7 +131,8 @@ export default function MobileConstructionPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ ...emptyDraft, reportDate: getTodayText() });
-  const [captureAfterSave, setCaptureAfterSave] = useState(false);
+  const [pendingEvidenceFiles, setPendingEvidenceFiles] = useState<File[]>([]);
+  const [pendingEvidencePreviews, setPendingEvidencePreviews] = useState<string[]>([]);
   const [reportCapturedAt, setReportCapturedAt] = useState(() => new Date());
   const [weatherCoordinates, setWeatherCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [weatherStatus, setWeatherStatus] = useState("打开新建日报后将自动获取当前天气；您仍可手动调整。");
@@ -84,6 +149,8 @@ export default function MobileConstructionPage() {
   const reports = trpc.construction.listReports.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.construction.summary.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const resolvedWeather = trpc.construction.resolveCurrentWeather.useQuery(weatherCoordinates ?? { latitude: 0, longitude: 0 }, { enabled: isAuthenticated && dialogOpen && !editingId && Boolean(weatherCoordinates), retry: false });
+  const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
 
   useEffect(() => {
     if (!resolvedWeather.data) return;
@@ -97,16 +164,44 @@ export default function MobileConstructionPage() {
 
   const saveReport = trpc.construction.saveReport.useMutation({
     onSuccess: async result => {
-      const shouldCapture = captureAfterSave;
-      const captureWeather = getWeatherLabel(draft.weather);
-      const captureDescription = `${draft.workArea} · ${draft.workContent.slice(0, 100)}`;
-      toast.success(editingId ? "施工日报已更新" : "施工日报已保存为草稿");
+      const files = pendingEvidenceFiles;
+      const watermarkTemplate = captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
+      const locationRequired = captureConfig.data?.location.required ?? false;
+      const selectedProject = projectOptions.data?.find(project => project.id === selectedProjectId);
+      try {
+        if (files.length) {
+          if (locationRequired && !weatherCoordinates) throw new Error("当前项目要求上传现场照片时读取定位");
+          const capturedAt = new Date();
+          const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}`;
+          const watermarkValues: Record<string, string> = {
+            capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
+            principal: `施工负责人：${user?.name || "当前管理员"}`,
+            weather: `天气：${getWeatherLabel(draft.weather)}`,
+            location: `地点：${weatherCoordinates ? "现场定位已获取" : "未取得定位"}`,
+            coordinates: `经纬度：${weatherCoordinates ? `${weatherCoordinates.longitude.toFixed(6)}°E，${weatherCoordinates.latitude.toFixed(6)}°N` : "未取得"}`,
+            organization: `施工单位：${watermarkTemplate.organizationLabel}`,
+            project: `项目名称：${selectedProject?.name || `项目 #${selectedProjectId}`}`,
+            antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
+          };
+          const watermarkLines = watermarkTemplate.fields.map(field => watermarkValues[field]).filter(Boolean);
+          const description = `${draft.workArea} · ${draft.workContent.slice(0, 100)}｜${watermarkLines.join("；")}`.slice(0, 500);
+          for (const file of files) {
+            const watermarkedFile = await createWatermarkedImage(file, watermarkLines, watermarkTemplate);
+            const base64Data = await readImageAsBase64(watermarkedFile);
+            await evidenceUpload.mutateAsync({ projectId: selectedProjectId, sourceType: "site_photo", sourceId: `construction-report-${result.id}`, description, capturedAt: capturedAt.toISOString(), longitude: weatherCoordinates?.longitude ?? null, latitude: weatherCoordinates?.latitude ?? null, fileName: watermarkedFile.name, mimeType: "image/jpeg", base64Data });
+          }
+        }
+        toast.success(files.length ? `施工日报已保存，${files.length} 张水印照片已关联本日报` : (editingId ? "施工日报已更新" : "施工日报已保存为草稿"));
+      } catch (error) {
+        toast.error(error instanceof Error ? `日报已保存，但照片处理失败：${error.message}` : "日报已保存，但照片处理失败");
+      }
       setDialogOpen(false);
       setEditingId(null);
       setDraft({ ...emptyDraft, reportDate: getTodayText() });
-      setCaptureAfterSave(false);
+      pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+      setPendingEvidenceFiles([]);
+      setPendingEvidencePreviews([]);
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
-      if (shouldCapture) navigate(`/mobile/evidence?projectId=${selectedProjectId}&sourceType=site_photo&sourceId=construction-report-${result.id}&weather=${encodeURIComponent(captureWeather)}&description=${encodeURIComponent(captureDescription)}`);
     },
     onError: error => toast.error(error.message),
   });
@@ -139,6 +234,9 @@ export default function MobileConstructionPage() {
     setDraft({ ...emptyDraft, reportDate: getTodayText() });
     setReportCapturedAt(new Date());
     setWeatherCoordinates(null);
+    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+    setPendingEvidenceFiles([]);
+    setPendingEvidencePreviews([]);
     setWeatherStatus("正在获取定位与当前天气；您仍可手动调整天气。");
     setDialogOpen(true);
     if (!navigator.geolocation) {
@@ -165,18 +263,33 @@ export default function MobileConstructionPage() {
     });
     setReportCapturedAt(new Date());
     setWeatherCoordinates(null);
+    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+    setPendingEvidenceFiles([]);
+    setPendingEvidencePreviews([]);
     setWeatherStatus("修改日报时保留原天气；如需调整请手动选择。");
     setDialogOpen(true);
   }
 
-  function submitDraft(withEvidence = false) {
+  function handleEvidenceFiles(event: ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []);
+    if (!selected.length) return;
+    if (selected.some(file => !["image/jpeg", "image/png"].includes(file.type))) return toast.error("仅支持 JPG 或 PNG 格式照片");
+    if (selected.some(file => file.size > 8 * 1024 * 1024)) return toast.error("单张照片不能超过 8MB");
+    const combined = [...pendingEvidenceFiles, ...selected].slice(0, 12);
+    if (combined.length < pendingEvidenceFiles.length + selected.length) toast.warning("单次最多连续添加 12 张照片，超出部分未加入");
+    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+    setPendingEvidenceFiles(combined);
+    setPendingEvidencePreviews(combined.map(file => URL.createObjectURL(file)));
+    event.target.value = "";
+  }
+
+  function submitDraft() {
     if (!selectedProjectId) return;
     const progressPercent = Number(draft.progressPercent);
     if (!Number.isFinite(progressPercent)) {
       toast.error("请填写有效的累计完成比例");
       return;
     }
-    setCaptureAfterSave(withEvidence);
     saveReport.mutate({
       ...(editingId ? { id: editingId } : {}),
       projectId: selectedProjectId,
@@ -226,7 +339,7 @@ export default function MobileConstructionPage() {
         <DialogContent className="max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle>
-            <DialogDescription>项目范围和日报状态由服务端校验；保存后可连续添加多张现场照片，每张都会固化管理员、项目、定位、日期、时间和天气水印。</DialogDescription>
+            <DialogDescription>先保存日报与本次照片，再由日报卡片点击“提交主管审核”。照片将自动关联本日报，无须跳转或反复返回填写页面。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
@@ -238,11 +351,11 @@ export default function MobileConstructionPage() {
             <div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div>
             <div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div>
             <div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} placeholder="不得填写个人敏感信息；现场照片将统一固化管理员、项目、定位、日期、时间和天气水印。" onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div>
+            <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3"><div className="flex items-center justify-between gap-3"><div><Label>现场水印照片（可连续添加）</Label><p className="mt-1 text-[11px] leading-4 text-[#80685b]">保存日报时会逐张生成水印并自动关联本日报；之后直接在日报卡提交主管审核。</p></div>{pendingEvidenceFiles.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {pendingEvidenceFiles.length}/12 张</span> : null}</div><label className="mt-3 flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" onChange={handleEvidenceFiles} /><ImagePlus className="h-6 w-6 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">拍摄或选择照片</span></label>{pendingEvidencePreviews.length ? <div className="mt-3 grid grid-cols-4 gap-2">{pendingEvidencePreviews.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待关联日报照片 ${index + 1}`} className="aspect-square w-full rounded-lg object-cover" />)}</div> : null}</div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-            <Button disabled={saveReport.isPending} variant="outline" onClick={() => submitDraft(true)}><Camera className="mr-1.5 h-4 w-4" />保存并添加照片</Button>
-            <Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={() => submitDraft(false)}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button>
+            <Button disabled={saveReport.isPending || evidenceUpload.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={submitDraft}><Camera className="mr-1.5 h-4 w-4" />{saveReport.isPending || evidenceUpload.isPending ? "正在保存…" : pendingEvidenceFiles.length ? `保存日报并归档 ${pendingEvidenceFiles.length} 张照片` : (editingId ? "保存修改" : "保存草稿")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
