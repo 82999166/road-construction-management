@@ -324,6 +324,8 @@ export const constructionDailyReports = mysqlTable(
     progressPercent: decimal("progressPercent", { precision: 5, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("status", ["draft", "submitted", "approved", "rejected", "locked"]).default("draft").notNull(),
     createdBy: int("createdBy").notNull(),
+    /** 主管审核时填写的回复，确认通过或退回后与审核人、审核时间共同固化。 */
+    reviewReply: varchar("reviewReply", { length: 1000 }),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

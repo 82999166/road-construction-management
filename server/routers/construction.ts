@@ -1,12 +1,13 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { auditLogs, constructionDailyReports, projects } from "../../drizzle/schema";
+import { auditLogs, constructionDailyReports, projects, systemRoles, userRoleAssignments } from "../../drizzle/schema";
 import { assertConstructionDailyReportStatusTransition, ConstructionDomainError } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, type BusinessOperationAction, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { createInAppMessage } from "./messages";
 
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const reportStatusSchema = z.enum(["draft", "submitted", "approved", "rejected", "locked"]);
@@ -77,6 +78,39 @@ function assertConditionalDailyReportWrite(result: unknown) {
   }
 }
 
+/** 仅从当前项目的有效主管角色中解析审核收件人，避免日报提交越权通知到无关项目。 */
+async function getProjectReportSupervisorIds(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, excludeUserId: number) {
+  const now = new Date();
+  const rows = await db
+    .select({ userId: userRoleAssignments.userId })
+    .from(userRoleAssignments)
+    .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
+    .where(and(
+      eq(userRoleAssignments.projectId, projectId),
+      eq(userRoleAssignments.status, "active"),
+      eq(systemRoles.status, "active"),
+      inArray(systemRoles.code, ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "SAFETY_MANAGER"]),
+      or(isNull(userRoleAssignments.validFrom), lte(userRoleAssignments.validFrom, now)),
+      or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
+    ));
+  return Array.from(new Set(rows.map(row => row.userId).filter(userId => userId !== excludeUserId)));
+}
+
+/** 主管通知不回滚日报状态；站内消息和服务号通知均保留独立投递审计。 */
+async function notifyReportSupervisors(input: { projectId: number; reportId: number; supervisorIds: number[]; eventCode: string; title: string; content: string }) {
+  await Promise.all(input.supervisorIds.map(async supervisorId => {
+    await createInAppMessage({
+      eventCode: input.eventCode,
+      idempotencyKey: `${input.eventCode}:${input.reportId}:${supervisorId}`,
+      recipientUserId: supervisorId,
+      title: input.title,
+      content: input.content,
+      deepLink: "/mobile/construction",
+    }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: supervisorId, projectId: input.projectId, module: "construction", eventCode: input.eventCode, targetType: "construction_daily_report", targetId: String(input.reportId), title: input.title, content: input.content, deepLink: "/mobile/construction" }).catch(() => undefined);
+  }));
+}
+
 /** 施工日报路由：项目范围、岗位权限、终态锁定及审计均由服务端强制执行。 */
 export const constructionRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
@@ -144,7 +178,6 @@ export const constructionRouter = router({
     };
 
     if (input.id) {
-      await assertExistingBusinessRecordChangeAccess(ctx);
       const [existing] = await db.select().from(constructionDailyReports).where(eq(constructionDailyReports.id, input.id)).limit(1);
       if (!existing || existing.projectId !== input.projectId) {
         throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的施工日报" });
@@ -152,8 +185,9 @@ export const constructionRouter = router({
       if (existing.status !== "draft" && existing.status !== "rejected") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "仅草稿或退回的施工日报可修改" });
       }
+      if (existing.createdBy !== user.id) await assertExistingBusinessRecordChangeAccess(ctx);
       const updateResult = await db.update(constructionDailyReports)
-        .set(values)
+        .set({ ...values, status: existing.status === "rejected" ? "draft" : existing.status, reviewReply: existing.status === "rejected" ? null : existing.reviewReply, reviewedBy: existing.status === "rejected" ? null : existing.reviewedBy, reviewedAt: existing.status === "rejected" ? null : existing.reviewedAt })
         .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
       assertConditionalDailyReportWrite(updateResult);
       await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "update_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `更新施工日报：${input.reportDate} ${input.workArea}` });
@@ -166,6 +200,52 @@ export const constructionRouter = router({
     await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "create_daily_report", targetType: "construction_daily_report", targetId: String(id), summary: `新建施工日报：${input.reportDate} ${input.workArea}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: "construction_daily_report_created", targetType: "construction_daily_report", targetId: String(id), title: "施工日报已提交记录", content: "一份施工日报已录入，请进入系统办理或查看。", deepLink: "/mobile/construction" }).catch(() => undefined);
     return { id, created: true };
+  }),
+
+  /** 现场填报人将草稿上报至本项目有效主管角色，提交后不可再直接编辑。 */
+  submitReportForReview: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertConstructionAccess(ctx, "submit");
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [existing] = await db.select().from(constructionDailyReports).where(eq(constructionDailyReports.id, input.id)).limit(1);
+    if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的施工日报" });
+    if (existing.createdBy !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "仅日报填报人可以提交主管审核" });
+    try { assertConstructionDailyReportStatusTransition(existing.status, "submitted"); } catch (error) { asBadRequest(error); }
+    const supervisors = await getProjectReportSupervisorIds(db, input.projectId, user.id);
+    if (!supervisors.length) throw new TRPCError({ code: "BAD_REQUEST", message: "当前项目未配置有效主管审核人，请联系超级管理员先分配项目主管岗位" });
+    const updateResult = await db.update(constructionDailyReports).set({ status: "submitted" }).where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, "draft")));
+    assertConditionalDailyReportWrite(updateResult);
+    await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "submit_daily_report_for_review", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报提交项目主管审核，通知 ${supervisors.length} 位主管` });
+    await notifyReportSupervisors({ projectId: input.projectId, reportId: input.id, supervisorIds: supervisors, eventCode: "construction_daily_report_review_requested", title: "施工日报待您审核", content: "一份施工日报已提交至项目主管审核，请填写回复并确认处理。" });
+    return { success: true, supervisorCount: supervisors.length };
+  }),
+
+  /** 项目主管填写审核回复：确认通过即自动归档锁定，退回则回到填报人修改。 */
+  reviewReport: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), decision: z.enum(["confirm", "return"]), reply: z.string().trim().min(2, "请填写审核回复").max(1000, "审核回复不得超过 1000 字") })).mutation(async ({ ctx, input }) => {
+    const reviewer = requireAuthenticatedUser(ctx);
+    await assertConstructionAccess(ctx, "review");
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [existing] = await db.select().from(constructionDailyReports).where(eq(constructionDailyReports.id, input.id)).limit(1);
+    if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的施工日报" });
+    if (existing.status !== "submitted") throw new TRPCError({ code: "BAD_REQUEST", message: "仅待审核施工日报可以回复处理" });
+    const supervisorIds = await getProjectReportSupervisorIds(db, input.projectId, -1);
+    if (!supervisorIds.includes(reviewer.id)) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号不是该项目的有效主管审核人" });
+    if (input.decision === "confirm") {
+      try { assertConstructionDailyReportStatusTransition(existing.status, "approved"); assertConstructionDailyReportStatusTransition("approved", "locked"); } catch (error) { asBadRequest(error); }
+    } else {
+      try { assertConstructionDailyReportStatusTransition(existing.status, "rejected"); } catch (error) { asBadRequest(error); }
+    }
+    const nextStatus = input.decision === "confirm" ? "locked" : "rejected";
+    const updateResult = await db.update(constructionDailyReports).set({ status: nextStatus, reviewReply: input.reply, reviewedBy: reviewer.id, reviewedAt: new Date() }).where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, "submitted")));
+    assertConditionalDailyReportWrite(updateResult);
+    await db.insert(auditLogs).values({ userId: reviewer.id, module: "construction", action: input.decision === "confirm" ? "confirm_and_archive_daily_report" : "return_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: input.decision === "confirm" ? "主管确认施工日报并自动归档" : "主管退回施工日报修改" });
+    await createInAppMessage({ eventCode: `construction_daily_report_${nextStatus}`, idempotencyKey: `construction_daily_report_${nextStatus}:${input.id}:${existing.createdBy}`, recipientUserId: existing.createdBy, title: input.decision === "confirm" ? "施工日报已确认归档" : "施工日报已退回修改", content: input.reply, deepLink: "/mobile/construction" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: existing.createdBy, projectId: input.projectId, module: "construction", eventCode: `construction_daily_report_${nextStatus}`, targetType: "construction_daily_report", targetId: String(input.id), title: input.decision === "confirm" ? "施工日报已确认归档" : "施工日报已退回修改", content: "您的施工日报已由项目主管处理，请进入系统查看审核回复。", deepLink: "/mobile/construction" }).catch(() => undefined);
+    return { success: true, status: nextStatus };
   }),
 
   /** 日报提交、审核和归档属于高影响动作，仅超级管理员可处理，已锁定日报不支持回退。 */

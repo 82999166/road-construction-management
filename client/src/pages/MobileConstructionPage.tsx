@@ -59,7 +59,7 @@ function getStatusMeta(value: ReportStatus) {
 
 /** 施工现场日报页：所有可见数据均以服务端项目范围为准，页面只提供受控操作入口。 */
 export default function MobileConstructionPage() {
-  const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
+  const { user, isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
   const { isSuperAdmin } = useManagementPermissions();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
@@ -71,6 +71,8 @@ export default function MobileConstructionPage() {
   const [reportCapturedAt, setReportCapturedAt] = useState(() => new Date());
   const [weatherCoordinates, setWeatherCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [weatherStatus, setWeatherStatus] = useState("打开新建日报后将自动获取当前天气；您仍可手动调整。");
+  const [reviewTarget, setReviewTarget] = useState<NonNullable<typeof reports.data>[number] | null>(null);
+  const [reviewReply, setReviewReply] = useState("");
 
   const projectOptions = trpc.construction.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -111,6 +113,22 @@ export default function MobileConstructionPage() {
   const transitionReport = trpc.construction.transitionReport.useMutation({
     onSuccess: async () => {
       toast.success("施工日报状态已更新");
+      await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const submitForReview = trpc.construction.submitReportForReview.useMutation({
+    onSuccess: async result => {
+      toast.success(`日报已上报 ${result.supervisorCount} 位项目主管审核`);
+      await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const reviewReport = trpc.construction.reviewReport.useMutation({
+    onSuccess: async result => {
+      toast.success(result.status === "locked" ? "已确认通过并自动归档" : "日报已退回填报人修改");
+      setReviewTarget(null);
+      setReviewReply("");
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
     onError: error => toast.error(error.message),
@@ -189,10 +207,15 @@ export default function MobileConstructionPage() {
           {!projectOptions.isLoading && !projectOptions.data?.length ? <Card className="border-[#ead9c8] bg-white"><CardContent className="p-5 text-center text-sm text-[#8f7566]">当前账号尚未获施工现场项目范围授权。请由超级管理员在“人员与权限”中配置角色和项目范围。</CardContent></Card> : null}
           {selectedProjectId ? <section className="grid grid-cols-2 gap-3 print:hidden"><Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><p className="text-xs text-[#8f7566]">日报数量</p><p className="mt-1 text-2xl font-semibold">{summary.data?.total ?? 0}</p><p className="mt-1 text-xs text-[#9b8170]">待审核 {summary.data?.submitted ?? 0} 份</p></CardContent></Card><Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><p className="text-xs text-[#8f7566]">平均累计进度</p><p className="mt-1 text-2xl font-semibold">{summary.data?.averageProgressPercent ?? 0}%</p><p className="mt-1 text-xs text-[#9b8170]">已审核 {summary.data?.approved ?? 0} 份</p></CardContent></Card></section> : null}
 
-          <section id="construction-print-area" className="space-y-3"><div className="flex items-center justify-between"><div><h1 className="text-lg font-semibold">施工日报</h1><p className="mt-1 text-xs text-[#9b8170]">日报提交后由超级管理员审核与归档，归档记录不支持回退。</p></div><Button disabled={!selectedProjectId || saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f] print:hidden" onClick={openCreate}><Plus className="mr-1.5 h-4 w-4" />新建日报</Button></div>
+          <section id="construction-print-area" className="space-y-3"><div className="flex items-center justify-between"><div><h1 className="text-lg font-semibold">施工日报</h1><p className="mt-1 text-xs text-[#9b8170]">填报人提交后上报项目主管审核；主管回复并确认后自动归档锁定。</p></div><Button disabled={!selectedProjectId || saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f] print:hidden" onClick={openCreate}><Plus className="mr-1.5 h-4 w-4" />新建日报</Button></div>
             {isBusy ? <Card className="border-[#ead9c8] bg-white"><CardContent className="p-6 text-center text-sm text-[#8f7566]">正在读取真实施工日报…</CardContent></Card> : null}
             {!isBusy && selectedProjectId && !reports.data?.length ? <Card className="border-dashed border-[#dfc4a9] bg-[#fffaf2]"><CardContent className="p-8 text-center"><HardHat className="mx-auto h-8 w-8 text-[#b87333]" /><p className="mt-3 text-sm font-medium">暂无施工日报</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">请根据真实现场情况录入第一份日报，不会生成演示数据。</p></CardContent></Card> : null}
-            {reports.data?.map(report => { const status = getStatusMeta(report.status); return <Card key={report.id} className="border-[#ead9c8] bg-white"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{getBusinessDateText(report.reportDate)} · {report.workArea}</p><span className={`rounded-full px-2 py-0.5 text-xs ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#9b8170]">天气：{getWeatherLabel(report.weather)} · 累计完成 {Number(report.progressPercent ?? 0).toFixed(2)}%</p></div>{isSuperAdmin && (report.status === "draft" || report.status === "rejected") ? <Button variant="outline" size="sm" className="border-[#dfc4a9] bg-white print:hidden" onClick={() => openEdit(report)}><Pencil className="mr-1 h-3.5 w-3.5" />修改</Button> : null}</div><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#5b3b2e]">{report.workContent}</p>{report.safetyNotes ? <p className="mt-2 rounded-xl bg-[#fff3df] p-2 text-xs leading-5 text-[#7a4d25]">安全：{report.safetyNotes}</p> : null}{report.issueNotes ? <p className="mt-2 rounded-xl bg-[#f9e9e4] p-2 text-xs leading-5 text-[#934936]">问题：{report.issueNotes}</p> : null}{isSuperAdmin ? <div className="mt-3 flex flex-wrap gap-2 print:hidden">{report.status === "draft" ? <Button size="sm" variant="outline" onClick={() => transitionReport.mutate({ id: report.id, projectId: selectedProjectId, nextStatus: "submitted" })}>提交审核</Button> : null}{report.status === "submitted" ? <><Button size="sm" className="bg-[#47744d] text-white hover:bg-[#3a603f]" onClick={() => transitionReport.mutate({ id: report.id, projectId: selectedProjectId, nextStatus: "approved" })}>审核通过</Button><Button size="sm" variant="outline" onClick={() => transitionReport.mutate({ id: report.id, projectId: selectedProjectId, nextStatus: "rejected" })}>退回修改</Button></> : null}{report.status === "approved" ? <Button size="sm" variant="outline" onClick={() => transitionReport.mutate({ id: report.id, projectId: selectedProjectId, nextStatus: "locked" })}>归档锁定</Button> : null}</div> : null}</CardContent></Card>; })}
+            {reports.data?.map(report => {
+              const status = getStatusMeta(report.status);
+              const isOwner = report.createdBy === user?.id;
+              const canEdit = (isOwner || isSuperAdmin) && (report.status === "draft" || report.status === "rejected");
+              return <Card key={report.id} className="border-[#ead9c8] bg-white"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{getBusinessDateText(report.reportDate)} · {report.workArea}</p><span className={`rounded-full px-2 py-0.5 text-xs ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#9b8170]">天气：{getWeatherLabel(report.weather)} · 累计完成 {Number(report.progressPercent ?? 0).toFixed(2)}%</p></div>{canEdit ? <Button variant="outline" size="sm" className="border-[#dfc4a9] bg-white print:hidden" onClick={() => openEdit(report)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑</Button> : null}</div><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#5b3b2e]">{report.workContent}</p>{report.safetyNotes ? <p className="mt-2 rounded-xl bg-[#fff3df] p-2 text-xs leading-5 text-[#7a4d25]">安全：{report.safetyNotes}</p> : null}{report.issueNotes ? <p className="mt-2 rounded-xl bg-[#f9e9e4] p-2 text-xs leading-5 text-[#934936]">问题：{report.issueNotes}</p> : null}{report.reviewReply ? <p className={`mt-2 rounded-xl p-2 text-xs leading-5 ${report.status === "rejected" ? "bg-[#f9e9e4] text-[#934936]" : "bg-[#eaf4ec] text-[#3f6d46]"}`}>主管回复：{report.reviewReply}</p> : null}<div className="mt-3 flex flex-wrap gap-2 print:hidden">{isOwner && report.status === "draft" ? <Button size="sm" className="bg-[#9f582b] text-white hover:bg-[#85451f]" disabled={submitForReview.isPending} onClick={() => submitForReview.mutate({ id: report.id, projectId: selectedProjectId })}>提交主管审核</Button> : null}{report.status === "submitted" ? <Button size="sm" variant="outline" className="border-[#6f9775] text-[#3f6d46]" onClick={() => { setReviewTarget(report); setReviewReply(""); }}>主管审核回复</Button> : null}</div></CardContent></Card>;
+            })}
           </section>
         </main>
 
@@ -221,6 +244,16 @@ export default function MobileConstructionPage() {
             <Button disabled={saveReport.isPending} variant="outline" onClick={() => submitDraft(true)}><Camera className="mr-1.5 h-4 w-4" />保存并添加照片</Button>
             <Button disabled={saveReport.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={() => submitDraft(false)}><FileText className="mr-1.5 h-4 w-4" />{editingId ? "保存修改" : "保存草稿"}</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(reviewTarget)} onOpenChange={open => { if (!open) { setReviewTarget(null); setReviewReply(""); } }}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>主管审核施工日报</DialogTitle>
+            <DialogDescription>请填写审核回复。确认通过后，日报将立即归档锁定；退回后仅填报人可修改并重新提交。</DialogDescription>
+          </DialogHeader>
+          {reviewTarget ? <div className="space-y-4"><div className="rounded-xl bg-[#fff5e8] p-3 text-sm"><p className="font-semibold">{getBusinessDateText(reviewTarget.reportDate)} · {reviewTarget.workArea}</p><p className="mt-1 text-xs leading-5 text-[#80604c]">{reviewTarget.workContent}</p></div><div><Label htmlFor="review-reply">审核回复</Label><Textarea id="review-reply" value={reviewReply} maxLength={1000} placeholder="填写确认意见、整改要求或退回原因。" onChange={event => setReviewReply(event.target.value)} /></div></div> : null}
+          <DialogFooter className="gap-2 sm:gap-2"><Button variant="outline" onClick={() => { setReviewTarget(null); setReviewReply(""); }}>取消</Button><Button variant="outline" className="border-[#c98666] text-[#9a432b]" disabled={!reviewTarget || reviewReport.isPending || reviewReply.trim().length < 2} onClick={() => reviewTarget && reviewReport.mutate({ id: reviewTarget.id, projectId: selectedProjectId, decision: "return", reply: reviewReply })}>退回修改</Button><Button className="bg-[#47744d] text-white hover:bg-[#3a603f]" disabled={!reviewTarget || reviewReport.isPending || reviewReply.trim().length < 2} onClick={() => reviewTarget && reviewReport.mutate({ id: reviewTarget.id, projectId: selectedProjectId, decision: "confirm", reply: reviewReply })}>{reviewReport.isPending ? "正在处理…" : "确认通过并归档"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

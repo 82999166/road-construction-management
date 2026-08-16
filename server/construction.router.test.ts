@@ -14,11 +14,13 @@ vi.mock("./access", async importOriginal => {
   };
 });
 vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./routers/messages", () => ({ createInAppMessage: vi.fn().mockResolvedValue({ created: true }) }));
 
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { constructionRouter } from "./routers/construction";
 import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
+import { createInAppMessage } from "./routers/messages";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -128,5 +130,46 @@ describe("施工日报 tRPC 路由", () => {
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
     expect(notifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
+  });
+
+  it("填报人提交草稿会通知本项目有效主管，且不改变项目范围", async () => {
+    const auditValues = vi.fn(async () => undefined);
+    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+    let selectCount = 0;
+    const db = {
+      select: vi.fn(() => {
+        selectCount += 1;
+        if (selectCount === 1) return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 93, projectId: 10, status: "draft", createdBy: 1 }]) })) })) };
+        return { from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 2 }]) })) })) };
+      }),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 93, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 1 });
+    expect(createInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 2, eventCode: "construction_daily_report_review_requested" }));
+    expect(notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ userId: 2, projectId: 10, eventCode: "construction_daily_report_review_requested" }));
+    expect(updateWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it("项目主管填写回复确认后会直接归档并通知填报人", async () => {
+    const auditValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    let selectCount = 0;
+    const db = {
+      select: vi.fn(() => {
+        selectCount += 1;
+        if (selectCount === 1) return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 94, projectId: 10, status: "submitted", createdBy: 2 }]) })) })) };
+        return { from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 1 }]) })) })) };
+      }),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).reviewReport({ id: 94, projectId: 10, decision: "confirm", reply: "日报内容属实，确认归档。" })).resolves.toEqual({ success: true, status: "locked" });
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "locked", reviewReply: "日报内容属实，确认归档。", reviewedBy: 1 }));
+    expect(createInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 2, eventCode: "construction_daily_report_locked" }));
   });
 });
