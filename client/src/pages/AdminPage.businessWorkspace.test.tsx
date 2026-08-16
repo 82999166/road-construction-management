@@ -120,6 +120,14 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("施工日报关联影像");
   });
 
+  it("仅保留统计卡下方的一套施工日报工作区，避免同一日报在页面顶部和底部重复展示", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toContain('activeSection === "construction" ? <LedgerTable');
+    expect(source).toContain("日报统一在项目筛选与统计卡下方展示，避免重复列表");
+    expect((source.match(/<CardTitle className="text-base">施工日报台账<\/CardTitle>/g) ?? []).length).toBe(1);
+  });
+
   it("对可维护主数据提供行内编辑与受控批量处理，同时不将历史业务单据误作物理删除", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
