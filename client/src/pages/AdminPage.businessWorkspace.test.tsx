@@ -110,6 +110,21 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("范围通知与确认台账");
   });
 
+  it("将车辆资源改为全宽表格台账，并把新增车辆档案放在台账上方的受控档案区", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("车辆资源 · 全宽台账");
+    expect(source).toContain("新增车辆档案");
+    expect(source).toContain("vehicleEditorOpen ? <Card");
+    expect(source).toContain("车牌 / 类型");
+    expect(source).toContain("批量受控删除（{selectedVehicleRows.length}）");
+    expect(source).toContain("详情、编辑、删除和状态变更仍由服务端逐条校验项目范围");
+    expect(source).toContain('className="flex flex-col gap-6"');
+    expect(source).not.toContain('activeSection === "vehicles" ? <LedgerTable');
+    expect(source).not.toContain("点击一辆车即可在右侧编辑");
+    expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
+  });
+
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
