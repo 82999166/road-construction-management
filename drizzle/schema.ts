@@ -593,12 +593,18 @@ export const attendanceCheckIns = mysqlTable(
     projectId: int("projectId").notNull(),
     businessDate: date("businessDate").notNull(),
     checkedInAt: datetime("checkedInAt").notNull(),
+    /** 下班打卡仅在本人完成当日上班打卡后写入；为空表示当天尚未完成下班打卡。 */
+    checkedOutAt: datetime("checkedOutAt"),
     deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
     deviceLabel: varchar("deviceLabel", { length: 160 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     locationAccuracyMeters: decimal("locationAccuracyMeters", { precision: 10, scale: 2 }),
     status: mysqlEnum("status", ["normal", "location_missing"]).default("normal").notNull(),
+    checkoutLongitude: decimal("checkoutLongitude", { precision: 10, scale: 7 }),
+    checkoutLatitude: decimal("checkoutLatitude", { precision: 10, scale: 7 }),
+    checkoutLocationAccuracyMeters: decimal("checkoutLocationAccuracyMeters", { precision: 10, scale: 2 }),
+    checkoutStatus: mysqlEnum("checkoutStatus", ["normal", "location_missing"]),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({

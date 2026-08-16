@@ -17,6 +17,7 @@ import Home from "./pages/Home";
 import LoginPage from "./pages/LoginPage";
 import ManagementPortal from "./pages/ManagementPortal";
 import MobileConstructionPage from "./pages/MobileConstructionPage";
+import MobileAttendancePage from "./pages/MobileAttendancePage";
 import MobileEvidencePage from "./pages/MobileEvidencePage";
 import MobileFinancePage from "./pages/MobileFinancePage";
 import MobileLaborPage from "./pages/MobileLaborPage";
@@ -80,6 +81,7 @@ function Router() {
       <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
       <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
+      <Route path={"/mobile/attendance"} component={MobileAttendancePage} />
       <Route path={"/mobile/construction"} component={MobileConstructionPage} />
       <Route path={"/mobile/labor"} component={MobileLaborPage} />
       <Route path={"/mobile/machinery"} component={MobileMachineryPage} />

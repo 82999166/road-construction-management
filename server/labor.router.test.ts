@@ -296,4 +296,23 @@ describe("labor tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(paidDb as never);
     await expect(laborRouter.createCaller(createAuthContext()).payroll.void({ id: 10, reason: "不可回退验证" })).rejects.toMatchObject({ code: "CONFLICT" });
   });
+
+  it("下班打卡必须先完成上班打卡，并仅写入一次下班时间和定位状态", async () => {
+    const fingerprint = "a".repeat(64);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const existing = { id: 44, checkedInAt: new Date("2026-08-16T01:00:00.000Z"), checkedOutAt: null, status: "normal", checkoutStatus: null };
+    const binding = { id: 9, status: "active" };
+    const results = [[existing], [binding]];
+    const checkoutSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => results.shift() ?? []) })) })) })),
+      update: vi.fn(() => ({ set: checkoutSet })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 12 })).resolves.toMatchObject({ success: true, duplicate: false, punchType: "out", id: 44, status: "normal" });
+    expect(checkoutSet).toHaveBeenCalledWith(expect.objectContaining({ checkedOutAt: expect.any(Date), checkoutLongitude: "120.1", checkoutLatitude: "30.2", checkoutStatus: "normal" }));
+  });
 });

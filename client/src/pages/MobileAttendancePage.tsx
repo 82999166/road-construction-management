@@ -1,0 +1,74 @@
+import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+import { ArrowLeft, Clock3, MapPin, Smartphone } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { useLocation } from "wouter";
+
+async function getDeviceFingerprint() {
+  const storageKey = "road-construction-attendance-device-key";
+  let localKey = window.localStorage.getItem(storageKey);
+  if (!localKey) {
+    localKey = crypto.randomUUID();
+    window.localStorage.setItem(storageKey, localKey);
+  }
+  const source = `${localKey}|${navigator.userAgent}|${navigator.language}|${screen.width}x${screen.height}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, "0")).join("");
+}
+
+function getDeviceLabel() {
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || "移动设备";
+  const browser = /MicroMessenger/i.test(navigator.userAgent) ? "微信内置浏览器" : /Chrome/i.test(navigator.userAgent) ? "Chrome" : /Safari/i.test(navigator.userAgent) ? "Safari" : "浏览器";
+  return `${String(platform).slice(0, 80)} · ${browser}`;
+}
+
+function displayTime(value: Date | string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** 面向所有已登录人员的每日考勤页；项目范围与上下班记录均由服务端约束。 */
+export default function MobileAttendancePage() {
+  const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
+  const [, navigate] = useLocation();
+  const [projectId, setProjectId] = useState<number | undefined>();
+  const projectOptions = trpc.mobile.attendanceProjects.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const selectedProjectId = projectId ?? projectOptions.data?.projects[0]?.id ?? 0;
+  const statusInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
+  const attendanceStatus = trpc.labor.attendance.myCheckInStatus.useQuery(statusInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+  const punch = trpc.labor.attendance.checkIn.useMutation({
+    onSuccess: async result => {
+      const label = result.punchType === "out" ? "下班" : "上班";
+      toast.success(result.duplicate ? `今日${label}打卡已完成` : `${label}打卡成功，已记录服务端时间`);
+      await attendanceStatus.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+
+  useEffect(() => {
+    if (!projectId && projectOptions.data?.projects.length) setProjectId(projectOptions.data.projects[0].id);
+  }, [projectId, projectOptions.data]);
+
+  async function submitPunch(punchType: "in" | "out") {
+    if (!selectedProjectId) return toast.error("请先选择已授权项目");
+    try {
+      const deviceFingerprintHash = await getDeviceFingerprint();
+      const deviceLabel = getDeviceLabel();
+      const submit = (position?: GeolocationPosition) => punch.mutate({ projectId: selectedProjectId, punchType, deviceFingerprintHash, deviceLabel, longitude: position?.coords.longitude ?? null, latitude: position?.coords.latitude ?? null, locationAccuracyMeters: position?.coords.accuracy ?? null });
+      if (!navigator.geolocation) return submit();
+      navigator.geolocation.getCurrentPosition(submit, () => { toast.info("未取得定位，本次打卡会标记为缺少定位，待项目负责人核验"); submit(); }, { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 });
+    } catch {
+      toast.error("无法生成设备匿名指纹，请检查浏览器隐私设置后重试");
+    }
+  }
+
+  if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载今日考勤…" title="上下班考勤" description="请使用企业统一身份进入已授权项目完成每日打卡。" Icon={Clock3} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
+
+  return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]"><div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]"><header className="bg-[#3a2117] px-5 pb-6 pt-5 text-[#fff7ea]"><div className="flex items-center justify-between"><button aria-label="返回移动工作台" onClick={() => navigate("/mobile")} className="grid h-10 w-10 place-items-center rounded-full bg-white/10"><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="font-semibold">上下班考勤</p><p className="mt-0.5 text-xs text-[#e8cfb2]">每日上班、下班均需完成打卡</p></div><span className="grid h-10 w-10 place-items-center rounded-full bg-white/10"><Clock3 className="h-5 w-5" /></span></div></header><main className="space-y-5 px-5 pt-5"><Select value={selectedProjectId ? String(selectedProjectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="h-11 border-[#e9d8c6] bg-white"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.projects.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select>{!projectOptions.data?.projects.length ? <Card><CardContent className="p-6 text-center text-sm text-[#8f7566]">当前账号尚未配置项目范围，无法完成项目考勤。请联系主管分配项目范围。</CardContent></Card> : <Card className="border-0 bg-gradient-to-br from-[#6d3421] to-[#3a2117] text-[#fff7ea] shadow-[0_10px_24px_rgba(75,39,24,.18)]"><CardContent className="p-5"><div className="flex items-center gap-2"><Smartphone className="h-5 w-5 text-[#f0bd7d]" /><p className="font-semibold">今日考勤状态</p></div><p className="mt-2 text-xs leading-5 text-[#e8cfb2]">设备匿名指纹、服务端时间与定位复核会分别记录。未完成下班打卡的考勤将显示在管理后台统一台账。</p><div className="mt-5 grid grid-cols-2 gap-3"><div className="rounded-xl bg-white/10 p-3"><p className="text-xs text-[#e8cfb2]">上班打卡</p><p className="mt-1 font-semibold">{attendanceStatus.data?.checkedIn ? displayTime(attendanceStatus.data.checkIn?.checkedInAt) : "未完成"}</p><Button className="mt-3 w-full bg-[#f2bb79] text-[#4b2517] hover:bg-[#f6cb93]" size="sm" disabled={punch.isPending || attendanceStatus.data?.checkedIn} onClick={() => void submitPunch("in")}>{attendanceStatus.data?.checkedIn ? "已上班" : punch.isPending ? "打卡中…" : "上班打卡"}</Button></div><div className="rounded-xl bg-white/10 p-3"><p className="text-xs text-[#e8cfb2]">下班打卡</p><p className="mt-1 font-semibold">{attendanceStatus.data?.checkedOut ? displayTime(attendanceStatus.data.checkOut?.checkedOutAt) : "未完成"}</p><Button className="mt-3 w-full border-[#f2bb79] bg-transparent text-[#fff7ea] hover:bg-white/10 hover:text-white" variant="outline" size="sm" disabled={punch.isPending || !attendanceStatus.data?.checkedIn || attendanceStatus.data?.checkedOut} onClick={() => void submitPunch("out")}>{attendanceStatus.data?.checkedOut ? "已下班" : punch.isPending ? "打卡中…" : "下班打卡"}</Button></div></div><p className="mt-4 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{attendanceStatus.data?.checkedIn ? `上班定位：${attendanceStatus.data.checkIn?.status === "normal" ? "正常" : "缺少定位，待核验"}` : "打卡时将请求现场定位"}</p></CardContent></Card>}</main></div></div>;
+}

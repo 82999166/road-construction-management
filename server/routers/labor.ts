@@ -1,7 +1,7 @@
-import { and, desc, eq, gte, lt, lte } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects } from "../../drizzle/schema";
+import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects, users } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -48,6 +48,7 @@ const attendanceInput = z
 /** 设备原始标识仅在浏览器本地生成并哈希；服务端只接收不可逆的 SHA-256 指纹。 */
 const mobileCheckInInput = z.object({
   projectId: z.number().int().positive(),
+  punchType: z.enum(["in", "out"]).default("in"),
   deviceFingerprintHash: z.string().regex(/^[a-f0-9]{64}$/i, "设备指纹格式无效"),
   deviceLabel: z.string().trim().min(1).max(160),
   longitude: z.number().min(-180).max(180).nullable().optional(),
@@ -404,30 +405,30 @@ export const laborRouter = router({
   }),
 
   attendance: router({
-    /** 当前账号在已授权项目上的打卡状态；只返回本人设备的匿名标签和受控定位状态。 */
+    /** 当前账号在已授权项目上的上下班状态；只返回本人设备的匿名标签和受控定位状态。 */
     myCheckInStatus: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
-      await assertLaborBusinessAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
       const db = await getDb();
-      if (!db) return { checkedIn: false, businessDate: getChinaBusinessDate(new Date()), checkIn: null };
+      if (!db) return { checkedIn: false, checkedOut: false, businessDate: getChinaBusinessDate(new Date()), checkIn: null, checkOut: null };
       const businessDate = getChinaBusinessDate(new Date());
-      const [checkIn] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, deviceLabel: attendanceCheckIns.deviceLabel, status: attendanceCheckIns.status, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, toBusinessDate(businessDate)))).limit(1);
-      return { checkedIn: Boolean(checkIn), businessDate, checkIn: checkIn ?? null };
+      const [checkIn] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, checkoutLongitude: attendanceCheckIns.checkoutLongitude, checkoutLatitude: attendanceCheckIns.checkoutLatitude, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, toBusinessDate(businessDate)))).limit(1);
+      return { checkedIn: Boolean(checkIn), checkedOut: Boolean(checkIn?.checkedOutAt), businessDate, checkIn: checkIn ?? null, checkOut: checkIn?.checkedOutAt ? { checkedOutAt: checkIn.checkedOutAt, status: checkIn.checkoutStatus, longitude: checkIn.checkoutLongitude, latitude: checkIn.checkoutLatitude, locationAccuracyMeters: checkIn.checkoutLocationAccuracyMeters } : null };
     }),
 
-    /** 一键打卡绑定首台设备；每个账号至多绑定三台活动设备，日期重复请求不生成重复打卡。 */
+    /** 上班/下班打卡绑定首台设备；每人每天每项目仅允许各完成一次，服务端时间为准。 */
     checkIn: protectedProcedure.input(mobileCheckInInput).mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
-      await assertLaborBusinessAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
       const now = new Date();
       const businessDateText = getChinaBusinessDate(now);
       const businessDate = toBusinessDate(businessDateText);
-      const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
-      if (existing) return { success: true, duplicate: true, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
+      const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
+      if (input.punchType === "in" && existing) return { success: true, duplicate: true, punchType: "in" as const, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
+      if (input.punchType === "out" && !existing) throw new TRPCError({ code: "BAD_REQUEST", message: "请先完成今日上班打卡后再进行下班打卡" });
+      if (input.punchType === "out" && existing?.checkedOutAt) return { success: true, duplicate: true, punchType: "out" as const, id: existing.id, checkedOutAt: existing.checkedOutAt, businessDate: businessDateText, status: existing.checkoutStatus ?? "normal" };
       const [binding] = await db.select().from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.deviceFingerprintHash, input.deviceFingerprintHash.toLowerCase()))).limit(1);
       if (binding?.status === "disabled") throw new TRPCError({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
       let newlyBound = false;
@@ -444,14 +445,19 @@ export const laborRouter = router({
         await db.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
       }
       const hasLocation = input.longitude !== null && input.longitude !== undefined && input.latitude !== null && input.latitude !== undefined;
+      if (input.punchType === "out" && existing) {
+        await db.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate), isNull(attendanceCheckIns.checkedOutAt)));
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · ${hasLocation ? "已记录定位" : "缺少定位"} · 设备 ${input.deviceLabel.slice(0, 60)}` });
+        return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
+      }
       try {
         const [created] = await db.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
         const id = Number(created?.id);
         await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(id), summary: `移动一键打卡：${businessDateText} · ${hasLocation ? "已记录定位" : "缺少定位"} · 设备 ${input.deviceLabel.slice(0, 60)}` });
-        return { success: true, duplicate: false, id, checkedInAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
+        return { success: true, duplicate: false, punchType: "in" as const, id, checkedInAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
       } catch {
         const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
-        if (concurrent) return { success: true, duplicate: true, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
+        if (concurrent) return { success: true, duplicate: true, punchType: "in" as const, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡保存失败，请稍后重试" });
       }
     }),
@@ -464,7 +470,7 @@ export const laborRouter = router({
       const db = await getDb();
       if (!db) return [];
       const businessDate = input.businessDate ? toBusinessDate(input.businessDate) : toBusinessDate(getChinaBusinessDate(new Date()));
-      return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, projectId: attendanceCheckIns.projectId, checkedInAt: attendanceCheckIns.checkedInAt, deviceLabel: attendanceCheckIns.deviceLabel, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).orderBy(desc(attendanceCheckIns.checkedInAt));
+      return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, userName: users.name, projectId: attendanceCheckIns.projectId, businessDate: attendanceCheckIns.businessDate, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, longitude: attendanceCheckIns.longitude, latitude: attendanceCheckIns.latitude, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status, checkoutLongitude: attendanceCheckIns.checkoutLongitude, checkoutLatitude: attendanceCheckIns.checkoutLatitude, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).innerJoin(users, eq(attendanceCheckIns.userId, users.id)).where(and(eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).orderBy(desc(attendanceCheckIns.checkedInAt));
     }),
 
     /** 按项目和日期范围查询考勤台账，并携带实名人员姓名以便移动端展示。 */

@@ -47,6 +47,16 @@ async function resolveScopedProjectIds(
  * 不依赖客户端缓存，人员被撤权后刷新即可失去入口。
  */
 export const mobileRouter = router({
+  /** 所有登录人员的考勤项目选项，仅返回服务端已授权的数据范围，不能用于读取任何劳务工资数据。 */
+  attendanceProjects: protectedProcedure.query(async ({ ctx }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const [db, dataScope] = await Promise.all([getDb(), getCurrentDataScope(ctx)]);
+    if (!db) return { userId: user.id, projects: [] };
+    const scopedProjectIds = await resolveScopedProjectIds(db, dataScope);
+    if (scopedProjectIds !== null && scopedProjectIds.length === 0) return { userId: user.id, projects: [] };
+    const rows = await db.select({ id: projects.id, name: projects.name, status: projects.status }).from(projects).orderBy(projects.sortOrder, projects.id);
+    return { userId: user.id, projects: scopedProjectIds === null ? rows : rows.filter(project => scopedProjectIds.includes(project.id)) };
+  }),
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
     const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules] = await Promise.all([getEffectiveRoleCodes(ctx), getCurrentDataScope(ctx), getCurrentDepartmentAccess(ctx), getCurrentUserSpecificMenuModules(ctx)]);

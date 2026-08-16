@@ -390,14 +390,15 @@ export default function MobileLaborPage() {
     });
   }
 
-  /** 打卡时间由服务端生成；定位授权拒绝不绕过记录，而是明确标记为待核验。 */
-  async function submitMobileCheckIn() {
+  /** 上下班时间由服务端生成；定位授权拒绝不绕过记录，而是明确标记为待核验。 */
+  async function submitMobileCheckIn(punchType: "in" | "out") {
     if (!selectedProjectId) return toast.error("请先选择项目");
     try {
       const deviceFingerprintHash = await getAttendanceDeviceFingerprint();
       const deviceLabel = getAttendanceDeviceLabel();
       const sendCheckIn = (position?: GeolocationPosition) => mobileCheckIn.mutate({
         projectId: selectedProjectId,
+        punchType,
         deviceFingerprintHash,
         deviceLabel,
         longitude: position?.coords.longitude ?? null,
@@ -473,7 +474,7 @@ export default function MobileLaborPage() {
             <Input aria-label="工资统计期间" className="h-11 w-[112px] border-[#e9d8c6] bg-white text-[#4d2e22]" type="month" value={period} onChange={event => setPeriod(event.target.value)} />
           </section>
 
-          {selectedProjectId ? <Card className="border-0 bg-gradient-to-br from-[#6d3421] to-[#3a2117] text-[#fff7ea] shadow-[0_10px_24px_rgba(75,39,24,.18)] print:hidden"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Smartphone className="h-4 w-4 text-[#f0bd7d]" /><p className="font-semibold">现场考勤一键打卡</p></div><p className="mt-1 text-xs leading-5 text-[#e8cfb2]">绑定当前设备匿名指纹，服务端记录打卡时间；点击后请求现场定位。</p>{checkInStatus.data?.checkedIn ? <p className="mt-2 text-xs text-[#d8f0d4]">今日已打卡：{new Date(checkInStatus.data.checkIn!.checkedInAt).toLocaleString("zh-CN")} · {checkInStatus.data.checkIn?.status === "normal" ? "已记录定位" : "缺少定位，待核验"}</p> : <p className="mt-2 text-xs text-[#f4d9b4]">尚未打卡；未取得定位时将记录异常状态。</p>}</div><Button size="sm" className="shrink-0 bg-[#f2bb79] text-[#4b2517] hover:bg-[#f6cb93]" disabled={mobileCheckIn.isPending || checkInStatus.data?.checkedIn} onClick={() => void submitMobileCheckIn()}>{mobileCheckIn.isPending ? "打卡中…" : checkInStatus.data?.checkedIn ? "已打卡" : "一键打卡"}</Button></div></CardContent></Card> : null}
+          {selectedProjectId ? <Card className="border-0 bg-gradient-to-br from-[#6d3421] to-[#3a2117] text-[#fff7ea] shadow-[0_10px_24px_rgba(75,39,24,.18)] print:hidden"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Smartphone className="h-4 w-4 text-[#f0bd7d]" /><p className="font-semibold">今日上下班考勤</p></div><p className="mt-1 text-xs leading-5 text-[#e8cfb2]">所有登录人员每天须完成上班、下班打卡；服务端记录时间，定位用于现场复核。</p><div className="mt-2 space-y-1 text-xs"><p className={checkInStatus.data?.checkedIn ? "text-[#d8f0d4]" : "text-[#f4d9b4]"}>上班：{checkInStatus.data?.checkedIn ? `${new Date(checkInStatus.data.checkIn!.checkedInAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · ${checkInStatus.data.checkIn?.status === "normal" ? "已记录定位" : "缺少定位，待核验"}` : "尚未打卡"}</p><p className={checkInStatus.data?.checkedOut ? "text-[#d8f0d4]" : "text-[#f4d9b4]"}>下班：{checkInStatus.data?.checkedOut ? `${new Date(checkInStatus.data.checkOut!.checkedOutAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · ${checkInStatus.data.checkOut?.status === "normal" ? "已记录定位" : "缺少定位，待核验"}` : "尚未打卡"}</p></div></div><div className="flex shrink-0 flex-col gap-2"><Button size="sm" className="bg-[#f2bb79] text-[#4b2517] hover:bg-[#f6cb93]" disabled={mobileCheckIn.isPending || checkInStatus.data?.checkedIn} onClick={() => void submitMobileCheckIn("in")}>{mobileCheckIn.isPending && !checkInStatus.data?.checkedIn ? "打卡中…" : checkInStatus.data?.checkedIn ? "已上班" : "上班打卡"}</Button><Button size="sm" variant="outline" className="border-[#f2bb79] bg-transparent text-[#fff7ea] hover:bg-white/10 hover:text-white" disabled={mobileCheckIn.isPending || !checkInStatus.data?.checkedIn || checkInStatus.data?.checkedOut} onClick={() => void submitMobileCheckIn("out")}>{mobileCheckIn.isPending && checkInStatus.data?.checkedIn ? "打卡中…" : checkInStatus.data?.checkedOut ? "已下班" : "下班打卡"}</Button></div></div></CardContent></Card> : null}
 
           {!projectOptions.data?.length ? <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-5 text-center"><span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#fff1dd] text-[#b96e34]"><HardHat className="h-6 w-6" /></span><p className="mt-4 text-[11px] font-medium tracking-[0.16em] text-[#b36c39]">项目范围保护中</p><h2 className="mt-1 text-sm font-semibold">尚未配置项目数据范围</h2><p className="mt-2 text-xs leading-5 text-[#8f7566]">请联系超级管理员在 PC 管理后台为您的岗位配置有效的项目数据范围。</p></CardContent></Card> : null}
 

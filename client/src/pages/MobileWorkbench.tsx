@@ -7,6 +7,7 @@ import {
   Bell,
   Camera,
   ClipboardCheck,
+  Clock3,
   CloudOff,
   ContactRound,
   HardHat,
@@ -192,6 +193,8 @@ export default function MobileWorkbench() {
               return item.onClick ? <button key={item.label} type="button" aria-label="打开未读消息" disabled={!isOnline} className="flex items-center gap-3 rounded-xl bg-white p-4 text-left shadow-[0_8px_22px_rgba(71,42,30,.07)] transition-transform enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60" onClick={item.onClick}>{cardBody}</button> : <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4">{cardBody}</CardContent></Card>;
             })}
           </section>
+
+          <button type="button" disabled={!isOnline} onClick={() => navigate("/mobile/attendance")} className="flex w-full items-center justify-between rounded-2xl border border-[#e7c79f] bg-[#fff4e5] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)] transition-transform enabled:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d99855] text-white"><Clock3 className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#683a24]">每日上下班考勤</p><p className="mt-1 text-xs text-[#8f7566]">所有登录人员每天完成上班、下班打卡</p></div></div><span className="text-sm font-medium text-[#9f582b]">去打卡</span></button>
 
           <section>
             <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">我的业务</h2><p className="mt-0.5 text-xs text-[#9b8170]">{hasGlobalBusinessAccess ? "已启用超级管理员全局业务授权，接口仍执行服务端校验" : `菜单随部门、岗位、项目范围与授权有效期动态更新${departmentModules.length ? ` · 已开通 ${departmentModules.length} 项部门业务` : ""}${userSpecificModules.length ? ` · 其中 ${userSpecificModules.length} 项来自专属权限` : ""}`}</p></div><ShieldCheck className="h-5 w-5 text-[#b87333]" /></div>
