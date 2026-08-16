@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-const { mockUseQuery } = vi.hoisted(() => ({ mockUseQuery: vi.fn() }));
+const { mockWorkbenchUseQuery, mockAttendanceProjectsUseQuery, mockAttendanceStatusUseQuery, mockAttendancePunchUseMutation } = vi.hoisted(() => ({ mockWorkbenchUseQuery: vi.fn(), mockAttendanceProjectsUseQuery: vi.fn(), mockAttendanceStatusUseQuery: vi.fn(), mockAttendancePunchUseMutation: vi.fn() }));
 
 vi.mock("@/_core/hooks/useAuth", () => ({
   useAuth: () => ({
@@ -15,7 +15,7 @@ vi.mock("@/_core/hooks/useAuth", () => ({
 }));
 
 vi.mock("@/lib/trpc", () => ({
-  trpc: { mobile: { workbench: { useQuery: mockUseQuery } } },
+  trpc: { mobile: { workbench: { useQuery: mockWorkbenchUseQuery }, attendanceProjects: { useQuery: mockAttendanceProjectsUseQuery } }, labor: { attendance: { myCheckInStatus: { useQuery: mockAttendanceStatusUseQuery }, checkIn: { useMutation: mockAttendancePunchUseMutation } } } },
 }));
 
 vi.mock("wouter", () => ({
@@ -27,7 +27,10 @@ import MobileWorkbench, { shouldRetryMobileWorkbenchRequest } from "./MobileWork
 /** 工作台只展示服务端按岗位、部门和项目范围投影后的结果，前端不自行推导权限。 */
 function renderWorkbench(data: unknown) {
   vi.stubGlobal("navigator", { onLine: true });
-  mockUseQuery.mockReturnValue({ data, isLoading: false, error: null, refetch: vi.fn() });
+  mockWorkbenchUseQuery.mockReturnValue({ data, isLoading: false, error: null, refetch: vi.fn() });
+  mockAttendanceProjectsUseQuery.mockReturnValue({ data: { projects: [] }, isLoading: false, error: null, refetch: vi.fn() });
+  mockAttendanceStatusUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: vi.fn() });
+  mockAttendancePunchUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
   return renderToStaticMarkup(<MobileWorkbench />);
 }
 
@@ -55,7 +58,8 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("已开通 1 项部门业务");
     expect(markup).not.toContain("待处理审批");
     expect(markup).not.toContain("现场取证已就绪");
-    expect(markup).toContain('aria-label="打开未读消息"');
+    expect(markup).not.toContain('aria-label="打开未读消息"');
+    expect(markup).toContain('aria-label="进入消息中心"');
   });
 
   it("没有部门业务授权时展示受控的空状态而不是猜测菜单", () => {
@@ -93,13 +97,16 @@ describe("移动工作台部门业务投影", () => {
     expect(shouldRetryMobileWorkbenchRequest(1, new Error("Network request failed"))).toBe(true);
     expect(shouldRetryMobileWorkbenchRequest(2, new Error("Failed to fetch"))).toBe(false);
     expect(shouldRetryMobileWorkbenchRequest(0, new Error("无权访问该项目"))).toBe(false);
-    const [, queryOptions] = mockUseQuery.mock.calls.at(-1) ?? [];
+    const [, queryOptions] = mockWorkbenchUseQuery.mock.calls.at(-1) ?? [];
     expect(queryOptions).toMatchObject({ refetchOnReconnect: true });
   });
 
   it("没有缓存摘要时以可恢复状态替代原始网络错误文本", () => {
     vi.stubGlobal("navigator", { onLine: true });
-    mockUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: new Error("Failed to fetch"), refetch: vi.fn() });
+    mockWorkbenchUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: new Error("Failed to fetch"), refetch: vi.fn() });
+    mockAttendanceProjectsUseQuery.mockReturnValue({ data: { projects: [] }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendanceStatusUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendancePunchUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
     const markup = renderToStaticMarkup(<MobileWorkbench />);
 
     expect(markup).toContain("工作台暂时无法连接");

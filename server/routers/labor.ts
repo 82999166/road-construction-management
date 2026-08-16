@@ -425,6 +425,8 @@ export const laborRouter = router({
       const now = new Date();
       const businessDateText = getChinaBusinessDate(now);
       const businessDate = toBusinessDate(businessDateText);
+      const hasLocation = input.longitude !== null && input.longitude !== undefined && input.latitude !== null && input.latitude !== undefined;
+      if (!hasLocation) throw new TRPCError({ code: "BAD_REQUEST", message: "上下班打卡必须上传实时定位信息，请允许浏览器定位后重试" });
       const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
       if (input.punchType === "in" && existing) return { success: true, duplicate: true, punchType: "in" as const, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
       if (input.punchType === "out" && !existing) throw new TRPCError({ code: "BAD_REQUEST", message: "请先完成今日上班打卡后再进行下班打卡" });
@@ -444,17 +446,16 @@ export const laborRouter = router({
       } else {
         await db.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
       }
-      const hasLocation = input.longitude !== null && input.longitude !== undefined && input.latitude !== null && input.latitude !== undefined;
       if (input.punchType === "out" && existing) {
         await db.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate), isNull(attendanceCheckIns.checkedOutAt)));
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · ${hasLocation ? "已记录定位" : "缺少定位"} · 设备 ${input.deviceLabel.slice(0, 60)}` });
-        return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
+        return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
       }
       try {
         const [created] = await db.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
         const id = Number(created?.id);
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(id), summary: `移动一键打卡：${businessDateText} · ${hasLocation ? "已记录定位" : "缺少定位"} · 设备 ${input.deviceLabel.slice(0, 60)}` });
-        return { success: true, duplicate: false, punchType: "in" as const, id, checkedInAt: now, businessDate: businessDateText, status: hasLocation ? "normal" as const : "location_missing" as const, newlyBound };
+        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(id), summary: `移动一键打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
+        return { success: true, duplicate: false, punchType: "in" as const, id, checkedInAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
       } catch {
         const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
         if (concurrent) return { success: true, duplicate: true, punchType: "in" as const, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };

@@ -24,6 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useLocation } from "wouter";
 
 /**
@@ -54,6 +55,27 @@ type WorkbenchSnapshot = {
 
 const WORKBENCH_SNAPSHOT_KEY = "road-construction-workbench-snapshot";
 
+async function getAttendanceDeviceFingerprint() {
+  const storageKey = "road-construction-attendance-device-key";
+  let localKey = window.localStorage.getItem(storageKey);
+  if (!localKey) { localKey = crypto.randomUUID(); window.localStorage.setItem(storageKey, localKey); }
+  const source = `${localKey}|${navigator.userAgent}|${navigator.language}|${screen.width}x${screen.height}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, "0")).join("");
+}
+
+function getAttendanceDeviceLabel() {
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || navigator.platform || "移动设备";
+  const browser = /MicroMessenger/i.test(navigator.userAgent) ? "微信内置浏览器" : /Chrome/i.test(navigator.userAgent) ? "Chrome" : /Safari/i.test(navigator.userAgent) ? "Safari" : "浏览器";
+  return `${String(platform).slice(0, 80)} · ${browser}`;
+}
+
+function displayAttendanceTime(value: Date | string | null | undefined) {
+  if (!value) return "未完成";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "未完成" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
 /**
  * 预览代理、移动 WebView 或网络从离线恢复时，浏览器可能在请求尚未抵达服务端前抛出 Failed to fetch。
  * 仅对此类传输层错误作有限重试；权限、输入校验和业务错误必须立即交由服务端返回，不能被客户端重试掩盖。
@@ -83,12 +105,18 @@ export default function MobileWorkbench() {
   const [, navigate] = useLocation();
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(() => readWorkbenchSnapshot());
+  const [attendanceProjectId, setAttendanceProjectId] = useState<number | undefined>();
   const workbench = trpc.mobile.workbench.useQuery(undefined, {
     enabled: isAuthenticated,
     retry: shouldRetryMobileWorkbenchRequest,
     retryDelay: attemptIndex => Math.min(500 * 2 ** attemptIndex, 2_000),
     refetchOnReconnect: true,
   });
+  const attendanceProjects = trpc.mobile.attendanceProjects.useQuery(undefined, { enabled: isAuthenticated && isOnline, retry: false });
+  const authorizedAttendanceProjects = attendanceProjects.data?.projects ?? [];
+  const selectedAttendanceProjectId = attendanceProjectId ?? authorizedAttendanceProjects[0]?.id ?? 0;
+  const attendanceStatus = trpc.labor.attendance.myCheckInStatus.useQuery({ projectId: selectedAttendanceProjectId }, { enabled: isAuthenticated && isOnline && Boolean(selectedAttendanceProjectId), retry: false });
+  const attendancePunch = trpc.labor.attendance.checkIn.useMutation({ onSuccess: async result => { toast.success(result.duplicate ? `今日${result.punchType === "out" ? "下班" : "上班"}打卡已完成` : `${result.punchType === "out" ? "下班" : "上班"}打卡成功，定位已上传`); await attendanceStatus.refetch(); }, onError: error => toast.error(error.message) });
 
   /** 离线缓存仅可阅读，不允许通过重试按钮主动发起业务接口调用。 */
   const retryWorkbench = () => {
@@ -126,6 +154,20 @@ export default function MobileWorkbench() {
       // 本地存储被浏览器禁用时不影响在线工作台读取。
     }
   }, [workbench.data]);
+
+  useEffect(() => {
+    if (!attendanceProjectId && authorizedAttendanceProjects.length) setAttendanceProjectId(authorizedAttendanceProjects[0].id);
+  }, [attendanceProjectId, authorizedAttendanceProjects]);
+
+  async function submitAttendancePunch(punchType: "in" | "out") {
+    if (!selectedAttendanceProjectId) return toast.error("请先选择已授权项目后打卡");
+    if (!navigator.geolocation) return toast.error("当前浏览器不支持定位，无法完成考勤打卡");
+    try {
+      const deviceFingerprintHash = await getAttendanceDeviceFingerprint();
+      const deviceLabel = getAttendanceDeviceLabel();
+      navigator.geolocation.getCurrentPosition(position => attendancePunch.mutate({ projectId: selectedAttendanceProjectId, punchType, deviceFingerprintHash, deviceLabel, longitude: position.coords.longitude, latitude: position.coords.latitude, locationAccuracyMeters: position.coords.accuracy }), () => toast.error("未取得实时定位，无法完成考勤打卡。请允许定位权限后重试"), { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 });
+    } catch { toast.error("无法生成设备匿名指纹，请检查浏览器隐私设置后重试"); }
+  }
 
   // 离线且没有可安全阅读的本地摘要时，不主动发起业务请求。
   if (!isOnline && isAuthenticated && !snapshot) {
@@ -186,15 +228,15 @@ export default function MobileWorkbench() {
         <main className="space-y-6 px-5 pb-24 pt-5">
           {isUsingSnapshot ? <section role="status" className="flex items-start gap-3 rounded-2xl border border-[#dfb78a] bg-[#fff0db] p-3 text-[#6d3d20]"><CloudOff className="mt-0.5 h-4 w-4 shrink-0" /><div className="min-w-0"><p className="text-xs font-semibold">{isOnline ? "网络连接暂时不稳定" : "离线查看模式"}</p><p className="mt-1 text-xs leading-5">正在显示本机上次同步的岗位菜单和摘要（{new Date(snapshot?.savedAt ?? Date.now()).toLocaleString()}）。{isOnline ? "网络恢复后会自动同步，您也可以立即重新同步。" : "离线期间不可提交业务操作。"}</p></div><button aria-label="恢复网络后重新尝试同步" disabled={!isOnline} className="ml-auto rounded-lg p-1.5 transition-colors hover:bg-[#f5dfc4] disabled:cursor-not-allowed disabled:opacity-50" onClick={retryWorkbench}><RefreshCw className="h-4 w-4" /></button></section> : null}
           <section className="grid grid-cols-2 gap-3">
-            {[{ label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }, { label: "未读消息", value: statistics?.unreadMessages ?? 0, icon: Bell, tone: "bg-[#efe9dd] text-[#655244]", onClick: () => navigate("/mobile/messages") }].map(item => {
+            {[{ label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }].map(item => {
               // 将图标提升为大写组件变量，符合 JSX 动态组件的语法约束。
               const StatisticIcon = item.icon;
               const cardBody = <><div className={`grid h-10 w-10 place-items-center rounded-xl ${item.tone}`}><StatisticIcon className="h-5 w-5" /></div><div><p className="text-lg font-semibold leading-none">{item.value}</p><p className="mt-1 text-xs text-[#8f7566]">{item.label}</p></div></>;
-              return item.onClick ? <button key={item.label} type="button" aria-label="打开未读消息" disabled={!isOnline} className="flex items-center gap-3 rounded-xl bg-white p-4 text-left shadow-[0_8px_22px_rgba(71,42,30,.07)] transition-transform enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60" onClick={item.onClick}>{cardBody}</button> : <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4">{cardBody}</CardContent></Card>;
+              return <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4">{cardBody}</CardContent></Card>;
             })}
           </section>
 
-          <button type="button" disabled={!isOnline} onClick={() => navigate("/mobile/attendance")} className="flex w-full items-center justify-between rounded-2xl border border-[#e7c79f] bg-[#fff4e5] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)] transition-transform enabled:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d99855] text-white"><Clock3 className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#683a24]">每日上下班考勤</p><p className="mt-1 text-xs text-[#8f7566]">所有登录人员每天完成上班、下班打卡</p></div></div><span className="text-sm font-medium text-[#9f582b]">去打卡</span></button>
+          <section className="rounded-2xl border border-[#e7c79f] bg-[#fff4e5] p-4 shadow-[0_6px_18px_rgba(71,42,30,.05)]"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d99855] text-white"><Clock3 className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#683a24]">每日上下班考勤</p><p className="mt-1 text-xs text-[#8f7566]">打卡时必须上传实时定位</p></div></div><MapPin className="mt-1 h-5 w-5 text-[#b46836]" /></div>{authorizedAttendanceProjects.length ? <><div className="mt-3 rounded-xl border border-[#ead4b4] bg-white px-3 py-2"><select aria-label="选择考勤项目" className="w-full bg-transparent text-sm text-[#623d2d] outline-none" value={selectedAttendanceProjectId ? String(selectedAttendanceProjectId) : ""} onChange={event => setAttendanceProjectId(Number(event.target.value))}>{authorizedAttendanceProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div><div className="mt-3 grid grid-cols-2 gap-3"><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">上班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceStatus.data?.checkedIn ? displayAttendanceTime(attendanceStatus.data.checkIn?.checkedInAt) : "未完成"}</p><Button className="mt-3 w-full bg-[#b96932] text-white hover:bg-[#995022]" size="sm" disabled={!isOnline || attendancePunch.isPending || attendanceStatus.data?.checkedIn} onClick={() => void submitAttendancePunch("in")}>{attendanceStatus.data?.checkedIn ? "已上班" : attendancePunch.isPending ? "定位打卡中…" : "上班打卡"}</Button></div><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">下班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceStatus.data?.checkedOut ? displayAttendanceTime(attendanceStatus.data.checkOut?.checkedOutAt) : "未完成"}</p><Button className="mt-3 w-full border-[#b96932] text-[#995022] hover:bg-[#f8e3c8]" variant="outline" size="sm" disabled={!isOnline || attendancePunch.isPending || !attendanceStatus.data?.checkedIn || attendanceStatus.data?.checkedOut} onClick={() => void submitAttendancePunch("out")}>{attendanceStatus.data?.checkedOut ? "已下班" : attendancePunch.isPending ? "定位打卡中…" : "下班打卡"}</Button></div></div></> : <p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-5 text-[#8f7566]">当前账号尚未配置项目范围，无法完成项目考勤。请联系主管分配项目范围。</p>}</section>
 
           <section>
             <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">我的业务</h2><p className="mt-0.5 text-xs text-[#9b8170]">{hasGlobalBusinessAccess ? "已启用超级管理员全局业务授权，接口仍执行服务端校验" : `菜单随部门、岗位、项目范围与授权有效期动态更新${departmentModules.length ? ` · 已开通 ${departmentModules.length} 项部门业务` : ""}${userSpecificModules.length ? ` · 其中 ${userSpecificModules.length} 项来自专属权限` : ""}`}</p></div><ShieldCheck className="h-5 w-5 text-[#b87333]" /></div>

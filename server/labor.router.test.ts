@@ -299,6 +299,9 @@ describe("labor tRPC 路由", () => {
 
   it("下班打卡必须先完成上班打卡，并仅写入一次下班时间和定位状态", async () => {
     const fingerprint = "a".repeat(64);
+    vi.mocked(getDb).mockResolvedValue({} as never);
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "in", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "上下班打卡必须上传实时定位信息，请允许浏览器定位后重试" });
+
     vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
     await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
