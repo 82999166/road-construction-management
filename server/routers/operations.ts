@@ -27,7 +27,7 @@ import {
   calculateTieredFreightAmount,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -411,7 +411,8 @@ async function assertMachineryAccess(ctx: Parameters<typeof requireAuthenticated
   await assertDepartmentBusinessAccess(ctx, "MACHINERY");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["MACHINERY_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER"];
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+  const hasUserSpecificReadPermission = await hasUserSpecificOperationPermission(ctx, "MACHINERY", "read");
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role)) && !hasUserSpecificReadPermission) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获机械管理数据访问授权" });
   }
   return roleCodes;
@@ -422,7 +423,8 @@ async function assertTransportAccess(ctx: Parameters<typeof requireAuthenticated
   await assertDepartmentBusinessAccess(ctx, "TRANSPORT");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["TRANSPORT_MANAGER", "DRIVER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+  const hasUserSpecificReadPermission = await hasUserSpecificOperationPermission(ctx, "TRANSPORT", "read");
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role)) && !hasUserSpecificReadPermission) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获运输管理数据访问授权" });
   }
   return roleCodes;

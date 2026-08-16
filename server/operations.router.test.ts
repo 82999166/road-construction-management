@@ -16,11 +16,13 @@ vi.mock("./access", async importOriginal => {
     ...actual,
     assertDepartmentBusinessAccess: vi.fn(),
     assertProjectInCurrentScope: vi.fn(),
+    getCurrentDataScope: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
+    hasUserSpecificOperationPermission: vi.fn(),
   };
 });
 
-import { assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission } from "./access";
 import { getDb } from "./db";
 import { machineryRouter, transportRouter } from "./routers/operations";
 import { encryptSecret } from "./services/secretVault";
@@ -57,6 +59,10 @@ function createSelectDb(rows: unknown[]) {
   };
 }
 
+function createProjectOptionsDb(rows: unknown[]) {
+  return { select: vi.fn(() => ({ from: vi.fn(() => ({ orderBy: vi.fn(async () => rows) })) })) };
+}
+
 /** 支持运输保存流程按车辆、影像与运价规则的读取顺序返回不同数据。 */
 function createSelectDbSequence(...responses: unknown[][]) {
   let queryIndex = 0;
@@ -81,6 +87,8 @@ describe("机械与运输 tRPC 路由", () => {
     vi.clearAllMocks();
     process.env.JWT_SECRET = "operations-router-rfid-test-secret";
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+    vi.mocked(getCurrentDataScope).mockResolvedValue({ userId: 1, hasAllProjects: false, projectIds: [], organizationIds: [] });
+    vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(false);
     mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
   });
 
@@ -90,6 +98,16 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(machineryRouter.createCaller(createAuthContext()).listMachines({ projectId: 10 })).resolves.toEqual([]);
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
+  it("用户专属运输查看权限可在已有项目范围内读取项目选项，不再受旧岗位白名单误拦截", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    vi.mocked(hasUserSpecificOperationPermission).mockResolvedValueOnce(true);
+    vi.mocked(getCurrentDataScope).mockResolvedValueOnce({ userId: 1, hasAllProjects: false, projectIds: [88], organizationIds: [] });
+    vi.mocked(getDb).mockResolvedValue(createProjectOptionsDb([{ id: 88, code: "TR-88", name: "运输授权项目", status: "active", organizationId: null }]) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).projectOptions()).resolves.toEqual([{ id: 88, code: "TR-88", name: "运输授权项目", status: "active", organizationId: null }]);
+    expect(vi.mocked(hasUserSpecificOperationPermission)).toHaveBeenCalledWith(expect.anything(), "TRANSPORT", "read");
   });
 
   it("拒绝外租机械遗漏出租方、租金或租赁起止时间，防止产生无法结算的台账", async () => {

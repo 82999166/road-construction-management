@@ -84,6 +84,20 @@ export async function assertRoleOperationPermission(ctx: TrpcContext, module: De
   return decision;
 }
 
+/** 判断用户是否在指定业务域拥有显式专属操作权限；用于兼容业务路由历史岗位白名单，不能替代项目范围校验。 */
+export async function hasUserSpecificOperationPermission(ctx: TrpcContext, module: DepartmentBusinessModule, action: BusinessOperationAction) {
+  const user = requireAuthenticatedUser(ctx);
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const rows = await db
+    .select({ action: systemPermissions.action })
+    .from(userPermissions)
+    .innerJoin(systemPermissions, eq(userPermissions.permissionId, systemPermissions.id))
+    .where(and(eq(userPermissions.userId, user.id), eq(systemPermissions.module, OPERATION_PERMISSION_MODULE_BY_DEPARTMENT[module])));
+  const grantedActions = Array.from(new Set(rows.map(row => row.action)));
+  return grantedActions.length > 0 && isRoleOperationGranted(grantedActions, action);
+}
+
 /** 用户专属权限中拥有查看或总办理授权的业务域，可作为移动菜单投影候选；仍需绑定一个有效项目范围。 */
 async function getUserSpecificMenuModulesForUser(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, userId: number) {
   const rows = await db
