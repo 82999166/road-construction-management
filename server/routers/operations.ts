@@ -589,6 +589,26 @@ export const machineryRouter = router({
     return db.select().from(machineCostRecords).where(and(...predicates)).orderBy(desc(machineCostRecords.occurredAt));
   }),
 
+  /** 统一机械台账仅汇总当前已授权项目内的真实成本；作废记录不计入金额但仍保留于单机详情审计。 */
+  listCostSummaries: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const rows = await db.select().from(machineCostRecords).where(eq(machineCostRecords.projectId, input.projectId)).orderBy(desc(machineCostRecords.occurredAt));
+    const summaries = new Map<number, { machineId: number; totalAmount: number; repairAmount: number; recordCount: number; lastOccurredAt: Date | null }>();
+    rows.filter(row => row.status !== "void").forEach(row => {
+      const current = summaries.get(row.machineId) ?? { machineId: row.machineId, totalAmount: 0, repairAmount: 0, recordCount: 0, lastOccurredAt: null };
+      const amount = Number(row.amount);
+      current.totalAmount += amount;
+      if (row.costType === "repair") current.repairAmount += amount;
+      current.recordCount += 1;
+      if (!current.lastOccurredAt || new Date(row.occurredAt).getTime() > current.lastOccurredAt.getTime()) current.lastOccurredAt = new Date(row.occurredAt);
+      summaries.set(row.machineId, current);
+    });
+    return Array.from(summaries.values());
+  }),
+
   /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */
   saveCost: protectedProcedure.input(machineCostInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);

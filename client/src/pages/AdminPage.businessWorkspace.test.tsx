@@ -36,9 +36,10 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("管理人员角色授权");
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("RFID 写卡");
-    expect(source).toContain("机械档案维护");
+    expect(source).toContain("机械资源、维修与租赁台账");
     expect(source).toContain("新建机械档案");
-    expect(source).toContain("录入机械成本");
+    expect(source).toContain("机械业务详情");
+    expect(source).toContain("录入成本");
     expect(source).toContain("外租合同与租金");
     expect(source).toContain("外租车辆");
     expect(source).toContain("起租日期");
@@ -104,7 +105,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("施工日报台账");
     expect(source).toContain("工资条与结算台账");
-    expect(source).toContain("机械资源与成本台账");
+    expect(source).toContain("机械资源、维修与租赁台账");
     expect(source).toContain("运输趟次台账");
     expect(source).toContain("发票与成本审计台账");
     expect(source).toContain("范围通知与确认台账");
@@ -123,6 +124,18 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain('activeSection === "vehicles" ? <LedgerTable');
     expect(source).not.toContain("点击一辆车即可在右侧编辑");
     expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
+  });
+
+  it("将机械档案、维修保养、成本与外租规则合并为全宽综合台账，并提供单机详情", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("trpc.machinery.listCostSummaries.useQuery");
+    expect(source).toContain("机械资源 · 综合台账");
+    expect(source).toContain("机械资源、维修与租赁台账");
+    expect(source).toContain("维修成本");
+    expect(source).toContain("租金 / 租赁日期");
+    expect(source).toContain("机械业务详情");
+    expect(source).not.toContain('activeSection === "machinery" ? <LedgerTable');
   });
 
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {

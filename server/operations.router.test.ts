@@ -100,6 +100,20 @@ describe("机械与运输 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("机械成本汇总仅返回当前项目内未作废的真实成本，并在读取前校验项目范围", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([
+      { machineId: 7, amount: "1200.50", costType: "repair", status: "approved", occurredAt: new Date("2026-08-16T00:00:00.000Z") },
+      { machineId: 7, amount: "300", costType: "fuel", status: "draft", occurredAt: new Date("2026-08-15T00:00:00.000Z") },
+      { machineId: 8, amount: "999", costType: "repair", status: "void", occurredAt: new Date("2026-08-14T00:00:00.000Z") },
+    ]) as never);
+
+    await expect(machineryRouter.createCaller(createAuthContext()).listCostSummaries({ projectId: 10 })).resolves.toEqual([
+      expect.objectContaining({ machineId: 7, totalAmount: 1500.5, repairAmount: 1200.5, recordCount: 2 }),
+    ]);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
   it("用户专属运输查看权限可在已有项目范围内读取项目选项，不再受旧岗位白名单误拦截", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValueOnce(true);
