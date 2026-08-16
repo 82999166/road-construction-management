@@ -38,8 +38,24 @@ export function registerStorageProxy(app: Express) {
         return;
       }
 
-      res.set("Cache-Control", "no-store");
-      res.redirect(307, url);
+      /**
+       * 影像在微信内置浏览器等受限环境中可能无法跟随跨域 307 到对象存储域名，
+       * 因而表现为数据库记录正常但 `<img>` 只显示 alt 文本。由本应用代理回传
+       * 已签名对象字节，可保持图片请求始终位于应用的 HTTPS 域名内。
+       */
+      const objectResp = await fetch(url);
+      if (!objectResp.ok) {
+        console.error(`[StorageProxy] object error: ${objectResp.status}`);
+        res.status(502).send("Storage object unavailable");
+        return;
+      }
+
+      const contentType = objectResp.headers.get("content-type") || "application/octet-stream";
+      const contentLength = objectResp.headers.get("content-length");
+      res.set("Cache-Control", "private, max-age=300");
+      res.set("Content-Type", contentType);
+      if (contentLength) res.set("Content-Length", contentLength);
+      res.send(Buffer.from(await objectResp.arrayBuffer()));
     } catch (err) {
       console.error("[StorageProxy] failed:", err);
       res.status(502).send("Storage proxy error");
