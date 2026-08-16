@@ -15,12 +15,14 @@ vi.mock("./access", async importOriginal => {
 });
 vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./routers/messages", () => ({ createInAppMessage: vi.fn().mockResolvedValue({ created: true }) }));
+vi.mock("./storage", () => ({ storageGetSignedUrl: vi.fn().mockResolvedValue("https://signed.example/evidence-photo.jpg") }));
 
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { constructionRouter } from "./routers/construction";
 import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
 import { createInAppMessage } from "./routers/messages";
+import { storageGetSignedUrl } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -67,6 +69,31 @@ describe("施工日报 tRPC 路由", () => {
     await expect(constructionRouter.createCaller(createAuthContext()).listReports({ projectId: 10 })).resolves.toEqual([]);
     expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "read");
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
+  it("日报关联影像仅按日报来源编号返回当前项目内的短时签名照片", async () => {
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{
+      id: 601,
+      projectId: 10,
+      sourceType: "site_photo",
+      sourceId: "construction-report-95",
+      fileKey: "evidence/10/photo.jpg",
+      fileName: "日报现场照片.jpg",
+      watermarkJson: JSON.stringify({ description: "K12+500 填筑碾压完成" }),
+      capturedAt: new Date("2026-08-16T08:30:00.000Z"),
+      createdAt: new Date("2026-08-16T08:31:00.000Z"),
+    }]) as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).reportEvidence({ projectId: 10, reportIds: [95] })).resolves.toEqual([expect.objectContaining({
+      id: 601,
+      reportId: 95,
+      fileName: "日报现场照片.jpg",
+      description: "K12+500 填筑碾压完成",
+      url: "https://signed.example/evidence-photo.jpg",
+    })]);
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "read");
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(vi.mocked(storageGetSignedUrl)).toHaveBeenCalledWith("evidence/10/photo.jpg");
   });
 
   it("新建日报可按当前定位自动解析天气，天气服务异常时安全回退为手动选择", async () => {

@@ -1,10 +1,11 @@
 import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { auditLogs, constructionDailyReports, projects, systemRoles, userRoleAssignments } from "../../drizzle/schema";
+import { auditLogs, constructionDailyReports, evidenceRecords, projects, systemRoles, userRoleAssignments } from "../../drizzle/schema";
 import { assertConstructionDailyReportStatusTransition, ConstructionDomainError } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, type BusinessOperationAction, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
+import { storageGetSignedUrl } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { createInAppMessage } from "./messages";
@@ -140,6 +141,21 @@ export const constructionRouter = router({
     const db = await getDb();
     if (!db) return [];
     return db.select().from(constructionDailyReports).where(eq(constructionDailyReports.projectId, input.projectId)).orderBy(desc(constructionDailyReports.reportDate), desc(constructionDailyReports.updatedAt));
+  }),
+
+  /** 日报附件影像仅对当前日报项目范围内的施工业务人员返回，URL 为短时签名地址。 */
+  reportEvidence: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), reportIds: z.array(z.number().int().positive()).min(1).max(100) })).query(async ({ ctx, input }) => {
+    await assertConstructionAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const sourceIds = input.reportIds.map(id => `construction-report-${id}`);
+    const rows = await db.select().from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.sourceType, "site_photo"), inArray(evidenceRecords.sourceId, sourceIds))).orderBy(desc(evidenceRecords.capturedAt), desc(evidenceRecords.createdAt));
+    return Promise.all(rows.map(async row => {
+      let description = "施工日报现场影像";
+      try { description = row.watermarkJson ? (JSON.parse(row.watermarkJson) as { description?: string }).description || description : description; } catch { /* 损坏元数据不阻断受控影像读取 */ }
+      return { id: row.id, reportId: Number(String(row.sourceId || "").replace("construction-report-", "")), fileName: row.fileName, capturedAt: row.capturedAt, description, url: await storageGetSignedUrl(row.fileKey) };
+    }));
   }),
 
   summary: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

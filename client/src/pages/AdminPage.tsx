@@ -452,6 +452,14 @@ export default function AdminPage() {
   const broadcastDeliveries = trpc.broadcast.getDeliveries.useQuery({ broadcastId: selectedBroadcastId ?? 0 }, { enabled: canQuery && isBroadcast && selectedBroadcastId !== undefined, retry: false });
   const constructionDailyReports = trpc.construction.listReports.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
   const constructionDailySummary = trpc.construction.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject });
+  const constructionReportEvidenceIds = useMemo(() => (constructionDailyReports.data ?? []).map(report => Number(report.id)).filter(Number.isInteger), [constructionDailyReports.data]);
+  const constructionReportEvidenceInput = useMemo(() => ({ projectId: workspaceProjectId, reportIds: constructionReportEvidenceIds.length ? constructionReportEvidenceIds : [0] }), [workspaceProjectId, constructionReportEvidenceIds]);
+  const constructionReportEvidence = trpc.construction.reportEvidence.useQuery(constructionReportEvidenceInput, { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject && constructionReportEvidenceIds.length > 0, retry: false });
+  const constructionEvidenceByReport = useMemo(() => {
+    const grouped = new Map<number, NonNullable<typeof constructionReportEvidence.data>>();
+    (constructionReportEvidence.data ?? []).forEach(item => grouped.set(item.reportId, [...(grouped.get(item.reportId) ?? []), item]));
+    return grouped;
+  }, [constructionReportEvidence.data]);
   const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
   const laborAttendance = trpc.labor.attendance.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
   const laborCheckIns = trpc.labor.attendance.listCheckIns.useQuery(laborCheckInWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
@@ -1816,6 +1824,17 @@ export default function AdminPage() {
     const openConstructionEditor = (item?: typeof rows[number]) => setConstructionReportEditor(item ? {
       id: Number(item.id), projectId: workspaceProjectId, status: item.status, reportDate: toBusinessDateInput(item.reportDate), workArea: item.workArea, weather: item.weather, workContent: item.workContent, safetyNotes: item.safetyNotes ?? "", issueNotes: item.issueNotes ?? "", progressPercent: String(item.progressPercent),
     } : { projectId: workspaceProjectId, status: "draft", reportDate: toLocalDateInput(), workArea: "", weather: "other", workContent: "", safetyNotes: "", issueNotes: "", progressPercent: "0" });
+    const showConstructionEvidence = (item: typeof rows[number]) => {
+      const evidence = constructionEvidenceByReport.get(Number(item.id)) ?? [];
+      setDesktopRecordDetail({
+        title: `施工日报关联影像 · ${item.workArea}`,
+        description: evidence.length ? `以下 ${evidence.length} 张水印照片随日报一并提交，图片链接为短时签名地址，仅在当前项目与施工权限范围内可查看。` : "该日报暂未关联现场影像；填报人员可在日报新建或编辑窗口中一次性补充照片后再提交审核。",
+        fields: evidence.length ? evidence.map((photo, index) => ({
+          label: `照片 ${index + 1}`,
+          value: <a className="block max-w-sm overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2 hover:border-[#2d6b63]" href={photo.url} target="_blank" rel="noreferrer"><img className="h-40 w-full rounded object-cover" src={photo.url} alt={photo.description || `施工日报照片 ${index + 1}`} /><span className="mt-2 block text-xs leading-5 text-slate-600">{photo.description || "施工日报现场影像"} · {displayDate(photo.capturedAt)}</span></a>,
+        })) : [{ label: "关联状态", value: "尚无已归档照片" }],
+      });
+    };
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1836,7 +1855,7 @@ export default function AdminPage() {
               <CardContent className="space-y-3">
                 {rows.length ? rows.map(item => (
                   <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.workArea}</p><BusinessStatusBadge status={item.status} /><Badge variant="outline">{CONSTRUCTION_WEATHER_LABELS[item.weather]}</Badge></div><p className="mt-1 text-xs text-slate-500">{displayDate(item.reportDate)} · 累计完成 {Number(item.progressPercent).toFixed(2)}%</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openConstructionEditor(item)}>{["draft", "rejected"].includes(item.status) ? "查看/编辑" : "查看详情"}</Button>{item.status === "draft" ? <Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "submitted" })} disabled={transitionConstructionReport.isPending}>提交</Button> : null}{item.status === "submitted" ? <><Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "approved" })} disabled={transitionConstructionReport.isPending}>审核通过</Button><Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "rejected" })} disabled={transitionConstructionReport.isPending}>退回</Button></> : null}{item.status === "approved" ? <Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "locked" })} disabled={transitionConstructionReport.isPending}>归档</Button> : null}</div></div>
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.workArea}</p><BusinessStatusBadge status={item.status} /><Badge variant="outline">{CONSTRUCTION_WEATHER_LABELS[item.weather]}</Badge><Badge className="bg-slate-100 text-slate-700 hover:bg-slate-100">关联照片 {constructionEvidenceByReport.get(Number(item.id))?.length ?? 0} 张</Badge></div><p className="mt-1 text-xs text-slate-500">{displayDate(item.reportDate)} · 累计完成 {Number(item.progressPercent).toFixed(2)}%</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => showConstructionEvidence(item)} disabled={constructionReportEvidence.isFetching}>查看照片</Button><Button size="sm" variant="outline" onClick={() => openConstructionEditor(item)}>{["draft", "rejected"].includes(item.status) ? "查看/编辑" : "查看详情"}</Button>{item.status === "draft" ? <Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "submitted" })} disabled={transitionConstructionReport.isPending}>提交</Button> : null}{item.status === "submitted" ? <><Button size="sm" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "approved" })} disabled={transitionConstructionReport.isPending}>审核通过</Button><Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "rejected" })} disabled={transitionConstructionReport.isPending}>退回</Button></> : null}{item.status === "approved" ? <Button size="sm" variant="outline" onClick={() => transitionConstructionReport.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "locked" })} disabled={transitionConstructionReport.isPending}>归档</Button> : null}</div></div>
                     <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{item.workContent}</p>
                     {(item.safetyNotes || item.issueNotes) ? <div className="mt-3 grid gap-2 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600 md:grid-cols-2"><p><b className="text-slate-700">安全：</b>{item.safetyNotes || "未记录"}</p><p><b className="text-slate-700">问题：</b>{item.issueNotes || "未记录"}</p></div> : null}
                   </div>

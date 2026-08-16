@@ -110,6 +110,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("范围通知与确认台账");
   });
 
+  it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("trpc.construction.reportEvidence.useQuery");
+    expect(source).toContain("constructionEvidenceByReport");
+    expect(source).toContain("关联照片 {constructionEvidenceByReport");
+    expect(source).toContain("查看照片");
+    expect(source).toContain("施工日报关联影像");
+  });
+
   it("对可维护主数据提供行内编辑与受控批量处理，同时不将历史业务单据误作物理删除", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
