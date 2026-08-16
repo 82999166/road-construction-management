@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
+import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY, type EvidenceWatermarkTemplate } from "../../shared/watermarkTemplate";
 import { auditLogs, evidenceRecords, projects, systemSettings } from "../../drizzle/schema";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -11,10 +12,11 @@ import { protectedProcedure, router } from "../_core/trpc";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
 const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "other"]);
-const CAPTURE_CONNECTOR_SETTING_KEYS = ["EVIDENCE_CAMERA_PROVIDER", "EVIDENCE_LOCATION_PROVIDER", "EVIDENCE_LOCATION_REQUIRED"] as const;
+const CAPTURE_CONNECTOR_SETTING_KEYS = ["EVIDENCE_CAMERA_PROVIDER", "EVIDENCE_LOCATION_PROVIDER", "EVIDENCE_LOCATION_REQUIRED", WATERMARK_TEMPLATE_SETTING_KEY] as const;
 type CaptureConnectorConfig = {
   camera: { provider: "browser" | "disabled"; enabled: boolean };
   location: { provider: "browser" | "disabled"; enabled: boolean; required: boolean };
+  watermark: EvidenceWatermarkTemplate;
 };
 const ocrResultSchema = z.object({
   documentType: z.string().max(80),
@@ -84,13 +86,16 @@ async function getCaptureConnectorConfig(db: NonNullable<Awaited<ReturnType<type
     .select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, isSensitive: systemSettings.isSensitive })
     .from(systemSettings)
     .where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, CAPTURE_CONNECTOR_SETTING_KEYS)));
-  const values = new Map(rows.filter(row => !row.isSensitive && row.valueJson !== null).map(row => [row.settingKey, String(row.valueJson).trim().toLowerCase()]));
-  const cameraProvider = values.get("EVIDENCE_CAMERA_PROVIDER") === "disabled" ? "disabled" : "browser";
-  const locationProvider = values.get("EVIDENCE_LOCATION_PROVIDER") === "disabled" ? "disabled" : "browser";
-  const locationRequired = locationProvider === "browser" && values.get("EVIDENCE_LOCATION_REQUIRED") === "true";
+  const values = new Map(rows.filter(row => !row.isSensitive && row.valueJson !== null).map(row => [row.settingKey, String(row.valueJson).trim()]));
+  const cameraProvider = values.get("EVIDENCE_CAMERA_PROVIDER")?.toLowerCase() === "disabled" ? "disabled" : "browser";
+  const locationProvider = values.get("EVIDENCE_LOCATION_PROVIDER")?.toLowerCase() === "disabled" ? "disabled" : "browser";
+  const locationRequired = locationProvider === "browser" && values.get("EVIDENCE_LOCATION_REQUIRED")?.toLowerCase() === "true";
+  let watermark = { ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] };
+  try { watermark = normalizeEvidenceWatermarkTemplate(values.get(WATERMARK_TEMPLATE_SETTING_KEY) ? JSON.parse(values.get(WATERMARK_TEMPLATE_SETTING_KEY)!) : null); } catch { /* 损坏模板安全降级为默认工程水印 */ }
   return {
     camera: { provider: cameraProvider, enabled: cameraProvider === "browser" },
     location: { provider: locationProvider, enabled: locationProvider === "browser", required: locationRequired },
+    watermark,
   };
 }
 
@@ -111,7 +116,7 @@ export const evidenceRouter = router({
   captureConfig: protectedProcedure.query(async ({ ctx }) => {
     await assertEvidenceAccess(ctx);
     const db = await getDb();
-    if (!db) return { camera: { provider: "browser" as const, enabled: true }, location: { provider: "browser" as const, enabled: true, required: false } };
+    if (!db) return { camera: { provider: "browser" as const, enabled: true }, location: { provider: "browser" as const, enabled: true, required: false }, watermark: { ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] } };
     return getCaptureConnectorConfig(db);
   }),
 

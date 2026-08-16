@@ -86,13 +86,28 @@ describe("消息、影像与企业微信通知安全边界", () => {
     vi.mocked(getDb).mockResolvedValue(db as never);
     vi.mocked(storagePut).mockResolvedValue({ key: "evidence/2/现场.jpg", url: "https://storage.example/evidence.jpg" } as never);
 
-    await expect(evidenceRouter.createCaller(createAuthContext()).captureConfig()).resolves.toEqual({
+    await expect(evidenceRouter.createCaller(createAuthContext()).captureConfig()).resolves.toMatchObject({
       camera: { provider: "browser", enabled: true },
       location: { provider: "browser", enabled: true, required: true },
+      watermark: expect.objectContaining({ title: "工程水印", fields: expect.arrayContaining(["capturedAt", "principal", "project"]) }),
     });
     const jpegBase64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
     await expect(evidenceRouter.createCaller(createAuthContext()).upload({ projectId: 2, sourceType: "site_photo", description: "定位必填测试", capturedAt: "2026-07-25T04:00:00.000Z", longitude: null, latitude: null, fileName: "现场.jpg", mimeType: "image/jpeg", base64Data: jpegBase64 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "当前项目要求上传现场影像时附带有效定位" });
     expect(storagePut).not.toHaveBeenCalled();
+  });
+
+  it("取证连接器会读取已发布的工程水印字段顺序，损坏模板则安全降级为默认样式", async () => {
+    const db = createSelectDb([
+      { settingKey: "EVIDENCE_WATERMARK_TEMPLATE", valueJson: JSON.stringify({ title: "道路施工取证", organizationLabel: "南丰高速项目部", footerLabel: "工程影像 · 防伪归档", fields: ["project", "capturedAt", "coordinates"] }), isSensitive: false },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(evidenceRouter.createCaller(createAuthContext()).captureConfig()).resolves.toMatchObject({
+      watermark: { title: "道路施工取证", organizationLabel: "南丰高速项目部", footerLabel: "工程影像 · 防伪归档", fields: ["project", "capturedAt", "coordinates"] },
+    });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ settingKey: "EVIDENCE_WATERMARK_TEMPLATE", valueJson: "{损坏的配置", isSensitive: false }]) as never);
+    await expect(evidenceRouter.createCaller(createAuthContext()).captureConfig()).resolves.toMatchObject({ watermark: expect.objectContaining({ title: "工程水印" }) });
   });
 
   it("票据 OCR 仅处理已授权项目的影像，并强制将模型结果标记为人工复核", async () => {

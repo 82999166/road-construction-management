@@ -41,6 +41,7 @@ import {
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
 import { calculateTheoreticalVolume } from "../../shared/domain";
+import { normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY } from "../../shared/watermarkTemplate";
 import { INDUSTRY_ROLE_TEMPLATES } from "../../shared/industryRoleTemplates";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
@@ -237,6 +238,14 @@ const wechatBindingUserInput = z.object({ userId: z.number().int().positive() })
 
 /** 删除配置必须携带当前版本，防止管理员基于旧页面误删已被他人修订的配置。 */
 const settingDeleteInput = z.object({ id: z.number().int().positive(), expectedVersion: z.number().int().positive() });
+
+/** 工程水印模板仅允许维护展示字段与文案，实际时间、人员、项目、定位仍由取证端和服务端产生。 */
+const evidenceWatermarkTemplateInput = z.object({
+  title: z.string().trim().min(2, "请填写水印标题").max(24),
+  organizationLabel: z.string().trim().min(2, "请填写施工单位").max(48),
+  footerLabel: z.string().trim().min(2, "请填写底部防伪文案").max(48),
+  fields: z.array(z.enum(["capturedAt", "principal", "weather", "location", "coordinates", "organization", "project", "antiCounterfeit"])).min(2, "至少保留两项水印信息").max(8),
+}).transform(value => normalizeEvidenceWatermarkTemplate(value));
 
 /** 后台主数据删除统一走受控入口；角色授权仅撤销，不物理删除可追溯历史。 */
 const masterDataRemoveInput = z.object({
@@ -1849,6 +1858,38 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "official_account_module_template_bind", targetType: "official_account_template", targetId: `${input.module}:${selected.templateId}`, summary: `绑定服务号模板：${input.module} -> ${selected.title}` });
       });
       return { success: true, message: `已将“${selected.title}”绑定到${input.module}模块，系统已自动完成字段映射并发布。` };
+    }),
+    /** 读取已发布的工程水印模板；模板仅控制显示顺序和文案，不接收或保存现场人员输入。 */
+    evidenceWatermarkTemplate: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { template: normalizeEvidenceWatermarkTemplate(null), version: 0, status: "default" as const };
+      const [setting] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, WATERMARK_TEMPLATE_SETTING_KEY)).limit(1);
+      let template = normalizeEvidenceWatermarkTemplate(null);
+      try { template = normalizeEvidenceWatermarkTemplate(setting?.valueJson ? JSON.parse(setting.valueJson) : null); } catch { /* 安全降级到默认模板 */ }
+      return { template, version: setting?.version ?? 0, status: setting?.status ?? "default" as const };
+    }),
+    /** 超级管理员保存并立即发布工程水印模板，同时生成可回滚的设置历史和操作审计。 */
+    saveEvidenceWatermarkTemplate: protectedProcedure.input(evidenceWatermarkTemplateInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const valueJson = JSON.stringify(input);
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, WATERMARK_TEMPLATE_SETTING_KEY)).limit(1);
+      let version = 1;
+      await db.transaction(async tx => {
+        if (existing) {
+          version = existing.version + 1;
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          const writeResult = await tx.update(systemSettings).set({ category: "文档影像", displayName: "工程水印信息模板", valueJson, valuePreview: `${input.title} · ${input.fields.length} 项信息`, isSensitive: false, secretEncrypted: null, status: "published", version, publishedAt: new Date(), remarks: "控制工程水印信息卡的字段开关、顺序和展示文案；现场实际信息在采集时生成。", updatedBy: admin.id }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+          assertVersionedSettingWrite(writeResult);
+          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+        } else {
+          await tx.insert(systemSettings).values({ category: "文档影像", settingKey: WATERMARK_TEMPLATE_SETTING_KEY, displayName: "工程水印信息模板", valueJson, valuePreview: `${input.title} · ${input.fields.length} 项信息`, isSensitive: false, status: "published", publishedAt: new Date(), remarks: "控制工程水印信息卡的字段开关、顺序和展示文案；现场实际信息在采集时生成。", updatedBy: admin.id });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_evidence_watermark_template", targetType: "setting", targetId: WATERMARK_TEMPLATE_SETTING_KEY, summary: `发布工程水印模板：${input.title}，启用 ${input.fields.length} 项信息` });
+      });
+      return { success: true, version };
     }),
     history: protectedProcedure.input(z.object({ settingId: z.number().int().positive() })).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);

@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
+import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LayoutDashboard, LocateFixed, MapPin, ReceiptText, ScanLine, ShieldCheck, UserRound } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -40,7 +41,7 @@ function formatCapturedTime(value: Date | string | null | undefined) {
 }
 
 /** 将现场关键水印写入图片像素；原图只保留在当前浏览器，服务端仍保存独立审计元数据。 */
-function createWatermarkedImage(file: File, watermarkLines: string[]) {
+function createWatermarkedImage(file: File, watermarkLines: string[], template: EvidenceWatermarkTemplate) {
   return new Promise<File>((resolve, reject) => {
     const image = new Image();
     const objectUrl = URL.createObjectURL(file);
@@ -53,18 +54,32 @@ function createWatermarkedImage(file: File, watermarkLines: string[]) {
         const context = canvas.getContext("2d");
         if (!context) throw new Error("当前浏览器不支持水印绘制");
         context.drawImage(image, 0, 0);
-        const fontSize = Math.max(16, Math.round(Math.min(canvas.width, canvas.height) / 30));
-        const lineHeight = Math.round(fontSize * 1.42);
-        const padding = Math.round(fontSize * 0.7);
-        const visibleLines = watermarkLines.filter(Boolean).slice(0, 5);
+        const fontSize = Math.max(15, Math.round(Math.min(canvas.width, canvas.height) / 34));
+        const lineHeight = Math.round(fontSize * 1.46);
+        const padding = Math.round(fontSize * 0.72);
+        const visibleLines = watermarkLines.filter(Boolean).slice(0, 8);
         context.font = `600 ${fontSize}px sans-serif`;
-        const textWidth = Math.min(canvas.width - padding * 2, Math.max(...visibleLines.map(line => context.measureText(line).width), 120));
-        const boxHeight = visibleLines.length * lineHeight + padding * 2;
-        context.fillStyle = "rgba(20, 16, 13, .62)";
-        context.fillRect(padding, canvas.height - boxHeight - padding, textWidth + padding * 2, boxHeight);
-        context.fillStyle = "#fff7ea";
+        const textWidth = Math.min(canvas.width - padding * 2, Math.max(...visibleLines.map(line => context.measureText(line).width), canvas.width * 0.42));
+        const headerHeight = Math.round(lineHeight * 1.35);
+        const footerHeight = Math.round(lineHeight * 1.1);
+        const boxHeight = headerHeight + visibleLines.length * lineHeight + footerHeight + padding * 2;
+        const boxY = canvas.height - boxHeight - padding;
+        context.fillStyle = "rgba(255, 255, 255, .88)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, boxHeight);
+        context.fillStyle = "rgba(33, 119, 211, .9)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, headerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `700 ${Math.round(fontSize * 1.08)}px sans-serif`;
+        context.fillText(template.title, padding * 2, boxY + Math.round(padding * .55));
+        context.fillStyle = "#26333d";
+        context.font = `600 ${fontSize}px sans-serif`;
         context.textBaseline = "top";
-        visibleLines.forEach((line, index) => context.fillText(line, padding * 2, canvas.height - boxHeight + padding + index * lineHeight));
+        visibleLines.forEach((line, index) => context.fillText(line, padding * 2, boxY + headerHeight + padding + index * lineHeight));
+        context.fillStyle = "rgba(33, 119, 211, .92)";
+        context.fillRect(padding, boxY + boxHeight - footerHeight - padding, textWidth + padding * 2, footerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `600 ${Math.round(fontSize * .78)}px sans-serif`;
+        context.fillText(template.footerLabel, padding * 2, boxY + boxHeight - footerHeight - Math.round(padding * .1));
         canvas.toBlob(blob => {
           URL.revokeObjectURL(objectUrl);
           if (!blob) return reject(new Error("水印影像生成失败"));
@@ -112,6 +127,7 @@ export default function MobileEvidencePage() {
   const cameraEnabled = captureConfig.data?.camera.enabled ?? true;
   const locationEnabled = captureConfig.data?.location.enabled ?? true;
   const locationRequired = captureConfig.data?.location.required ?? false;
+  const watermarkTemplate = captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
 
   /** 首次获得授权项目时选中首项，用户仍能手动切换其权限范围内项目。 */
   useEffect(() => {
@@ -177,17 +193,22 @@ export default function MobileEvidencePage() {
     try {
       const capturedAt = new Date();
       const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? `项目 #${selectedProjectId}`;
-      const watermarkLines = [
-        `管理员：${user?.name || "当前管理员"}`,
-        `项目：${projectName}`,
-        `时间：${capturedAt.toLocaleString("zh-CN")}`,
-        coordinates ? `定位：${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : "定位：未取得",
-        captureWeather ? `天气：${captureWeather}` : "",
-      ];
+      const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const watermarkValues: Record<string, string> = {
+        capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
+        principal: `施工负责人：${user?.name || "当前管理员"}`,
+        weather: `天气：${captureWeather || "未获取"}`,
+        location: `地点：${coordinates ? "现场定位已获取" : "未取得定位"}`,
+        coordinates: `经纬度：${coordinates ? `${coordinates.longitude.toFixed(6)}°E，${coordinates.latitude.toFixed(6)}°N` : "未取得"}`,
+        organization: `施工单位：${watermarkTemplate.organizationLabel}`,
+        project: `项目名称：${projectName}`,
+        antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
+      };
+      const watermarkLines = watermarkTemplate.fields.map(field => watermarkValues[field]).filter(Boolean);
       const auditedDescription = `${description.trim()}｜${watermarkLines.filter(Boolean).join("；")}`.slice(0, 500);
       const results = [] as Array<{ id: number | null }>;
       for (const file of files) {
-        const watermarkedFile = await createWatermarkedImage(file, watermarkLines);
+        const watermarkedFile = await createWatermarkedImage(file, watermarkLines, watermarkTemplate);
         const base64Data = await readImageAsBase64(watermarkedFile);
         results.push(await upload.mutateAsync({ projectId: selectedProjectId, sourceType, sourceId: sourceId.trim() || null, description: auditedDescription, capturedAt: capturedAt.toISOString(), longitude: coordinates?.longitude ?? null, latitude: coordinates?.latitude ?? null, fileName: watermarkedFile.name, mimeType: "image/jpeg", base64Data }));
       }
@@ -219,7 +240,7 @@ export default function MobileEvidencePage() {
               <div><Label>归属项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="mt-2 border-[#ead9c8] bg-[#fffaf5]"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-3"><div><Label>取证类型</Label><Select value={sourceType} onValueChange={value => setSourceType(value as typeof sourceType)}><SelectTrigger className="mt-2 border-[#ead9c8] bg-[#fffaf5]"><SelectValue /></SelectTrigger><SelectContent>{SOURCE_OPTIONS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div><Label>关联业务编号</Label><Input className="mt-2 border-[#ead9c8] bg-[#fffaf5]" value={sourceId} maxLength={128} placeholder="可选" onChange={event => setSourceId(event.target.value)} /></div></div>
               <div><Label>现场说明</Label><Textarea className="mt-2 min-h-20 border-[#ead9c8] bg-[#fffaf5]" value={description} maxLength={500} placeholder="例如：K12+500 路基压实作业完成情况" onChange={event => setDescription(event.target.value)} /></div>
-              <div className="flex items-center justify-between rounded-xl bg-[#f9eddf] px-3 py-2.5"><span className="inline-flex items-center gap-1.5 text-xs text-[#80543d]"><MapPin className="h-3.5 w-3.5" />{coordinates ? `${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : locationEnabled ? (locationRequired ? "需读取定位后上传" : "尚未读取定位") : "定位连接器已停用"}</span><button className="inline-flex items-center gap-1 text-xs font-semibold text-[#9a5128] disabled:cursor-not-allowed disabled:opacity-50" disabled={!locationEnabled} onClick={requestCoordinates}><LocateFixed className="h-3.5 w-3.5" />读取定位</button></div>
+              <div className="rounded-xl border border-[#c7d7e8] bg-[#f6fbff] p-3"><div className="flex items-center justify-between gap-3"><span className="inline-flex items-center gap-1.5 text-xs text-[#366c9e]"><MapPin className="h-3.5 w-3.5" />{coordinates ? `${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : locationEnabled ? (locationRequired ? "需读取定位后上传" : "尚未读取定位") : "定位连接器已停用"}</span><button className="inline-flex items-center gap-1 text-xs font-semibold text-[#276da7] disabled:cursor-not-allowed disabled:opacity-50" disabled={!locationEnabled} onClick={requestCoordinates}><LocateFixed className="h-3.5 w-3.5" />读取定位</button></div><div className="mt-3 overflow-hidden rounded-lg border border-[#cfe0ef]"><div className="bg-[#2177d3] px-3 py-1.5 text-xs font-bold text-white">{watermarkTemplate.title}</div><div className="space-y-1 bg-white/90 px-3 py-2 text-[11px] leading-4 text-[#2b3b48]">{watermarkTemplate.fields.slice(0, 4).map(field => <p key={field}>{({ capturedAt: `拍摄时间：${new Date().toLocaleString("zh-CN")}`, principal: `施工负责人：${user?.name || "当前管理员"}`, weather: `天气：${captureWeather || "待获取"}`, location: `地点：${coordinates ? "现场定位已获取" : "待获取"}`, coordinates: "经纬度：待获取", organization: `施工单位：${watermarkTemplate.organizationLabel}`, project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`, antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1 text-[10px] font-medium text-white">{watermarkTemplate.footerLabel}</div></div></div>
             </CardContent></Card>
             <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><div className="flex items-end justify-between gap-3"><div><Label>现场影像</Label><p className="mt-1 text-[11px] text-[#80685b]">可连续添加多张；每张将固化管理员、项目、定位、日期、时间与天气水印。</p></div>{files.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {files.length}/12 张</span> : null}</div><label className={`mt-3 flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3 text-center ${cameraEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"}`}><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" disabled={!cameraEnabled} onChange={handleFileChange} /><ImagePlus className="h-7 w-7 text-[#ad6335]" /><span className="mt-2 text-xs font-medium text-[#80543d]">{cameraEnabled ? (files.length ? "继续拍摄或添加照片" : "拍摄或选择 JPG、PNG 影像") : "影像采集连接器已停用"}</span><span className="mt-1 text-[11px] text-[#765544]">单张不超过 8MB，单次最多 12 张</span></label>{previewUrls.length ? <div className="mt-3 grid grid-cols-3 gap-2">{previewUrls.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待归档现场影像 ${index + 1}`} className="aspect-square w-full rounded-xl object-cover" />)}</div> : null}<Button className="mt-4 w-full bg-[#9a5128] text-white hover:bg-[#7e3d1c]" disabled={upload.isPending || captureConfig.isError || !cameraEnabled || !files.length || (locationRequired && !coordinates)} onClick={submitEvidence}>{upload.isPending ? "正在逐张安全归档…" : `归档 ${files.length || ""} 张现场影像`}</Button></CardContent></Card>
             <section>

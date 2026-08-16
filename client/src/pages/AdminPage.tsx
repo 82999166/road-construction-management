@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
   BarChart3,
@@ -23,6 +24,7 @@ import {
   LayoutDashboard,
   Megaphone,
   Printer,
+  Camera,
   ScrollText,
   Settings2,
   ShieldCheck,
@@ -385,6 +387,7 @@ export default function AdminPage() {
   const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, { enabled: canQuery && isPermission });
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
+  const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && isSettings });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
@@ -408,12 +411,16 @@ export default function AdminPage() {
   const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [financeClosingDate, setFinanceClosingDate] = useState(() => toLocalDateInput());
   const [dieselDate, setDieselDate] = useState(() => toLocalDateInput());
+  const [watermarkTemplateForm, setWatermarkTemplateForm] = useState<EvidenceWatermarkTemplate>({ ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] });
   const [broadcastForm, setBroadcastForm] = useState<BroadcastForm>(EMPTY_BROADCAST_FORM);
   const [selectedBroadcastId, setSelectedBroadcastId] = useState<number>();
   const [payrollPaymentTarget, setPayrollPaymentTarget] = useState<PayrollPaymentTarget | null>(null);
   const [paymentReference, setPaymentReference] = useState("");
   const [constructionReportEditor, setConstructionReportEditor] = useState<ConstructionReportEditor | null>(null);
   const [desktopRecordDetail, setDesktopRecordDetail] = useState<DesktopRecordDetail | null>(null);
+  useEffect(() => {
+    if (evidenceWatermarkTemplate.data?.template) setWatermarkTemplateForm({ ...evidenceWatermarkTemplate.data.template, fields: [...evidenceWatermarkTemplate.data.template.fields] });
+  }, [evidenceWatermarkTemplate.data?.template]);
   const businessStatisticsInput = useMemo(() => ({
     projectId: businessFilter.projectId === "all" ? undefined : Number(businessFilter.projectId),
     period: businessFilter.period || undefined,
@@ -855,6 +862,13 @@ export default function AdminPage() {
       setOfficialAccountConfigurationValidation({ success: false, message: error.message });
       toast.error(error.message);
     },
+  });
+  const saveEvidenceWatermarkTemplate = trpc.admin.settings.saveEvidenceWatermarkTemplate.useMutation({
+    onSuccess: async result => {
+      toast.success(`工程水印模板已发布为 v${result.version}，后续现场取证将使用新样式`);
+      await Promise.all([evidenceWatermarkTemplate.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const publishSetting = trpc.admin.settings.publish.useMutation({
     onSuccess: async () => {
@@ -1564,6 +1578,26 @@ export default function AdminPage() {
             <div className="flex flex-wrap gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveDailyDigest.isPending} onClick={() => saveDailyDigest.mutate({ enabled: dailyDigestForm.enabled, deliveryHour: Number(dailyDigestForm.deliveryHour), deliveryMinute: Number(dailyDigestForm.deliveryMinute), includeEmptyProjects: dailyDigestForm.includeEmptyProjects })}>{dailyDigestForm.enabled ? "保存并启用站内汇总" : "保存并停用站内汇总"}</Button><Button variant="outline" disabled={!dailyDigestSettings.data?.enabled || runDailyDigestNow.isPending} onClick={() => runDailyDigestNow.mutate({ businessDate: dailyDigestPreviewDate || undefined })}>立即生成所选日期站内汇总</Button></div>
             <div className="grid gap-3 rounded-xl border border-slate-100 p-3 lg:grid-cols-[1fr_180px_auto]"><div><Label>预览项目</Label><Select value={dailyDigestPreviewProjectId || "UNASSIGNED"} onValueChange={value => setDailyDigestPreviewProjectId(value === "UNASSIGNED" ? "" : value)}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{(projects.data ?? []).filter(project => project.status === "active").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div><div><Label>业务日期</Label><Input className="mt-1" type="date" value={dailyDigestPreviewDate} onChange={event => setDailyDigestPreviewDate(event.target.value)} /></div><Button className="self-end" variant="outline" disabled={!dailyDigestPreviewProjectId || dailyDigestPreview.isFetching} onClick={() => dailyDigestPreview.refetch()}>刷新预览</Button></div>
             {dailyDigestPreview.data ? <div className="grid gap-2 rounded-xl bg-[#f7faf9] p-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4"><div><b>施工日报</b><p className="mt-1">{dailyDigestPreview.data.construction.reportCount} 份 · 进度 {dailyDigestPreview.data.construction.averageProgressPercent}%</p></div><div><b>收入 / 开支</b><p className="mt-1">¥{displayMoney(dailyDigestPreview.data.finance.incomeAmount)} / ¥{displayMoney(dailyDigestPreview.data.finance.expenseAmount)}</p></div><div><b>计量申报</b><p className="mt-1">{dailyDigestPreview.data.measurement.claimCount} 笔 · ¥{displayMoney(dailyDigestPreview.data.measurement.declaredAmount)}</p></div><div><b>运输闭环</b><p className="mt-1">{dailyDigestPreview.data.transport.tripCount} 趟 · 装/卸 {dailyDigestPreview.data.transport.loadConfirmedCount}/{dailyDigestPreview.data.transport.unloadConfirmedCount} · 异常 {dailyDigestPreview.data.transport.exceptionTripCount}</p></div></div> : dailyDigestPreviewProjectId && !dailyDigestPreview.isLoading ? <p className="text-xs text-slate-500">选择项目和业务日期后可查看真实聚合结果；预览不会发送通知。</p> : null}
+          </CardContent>
+        </Card>
+        <Card className="border-[#cbddea] bg-[#f8fbff]">
+          <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2 text-base"><Camera className="h-4 w-4 text-[#2177d3]" />工程水印信息模板</CardTitle><CardDescription className="mt-1">按参考图以工程信息卡覆盖在现场照片左下角。此处仅维护字段、顺序和文案；拍摄时间、负责人、项目、定位与天气均由现场采集生成并受审计。</CardDescription></div><Badge variant="outline" className="border-[#b8d3eb] bg-white text-[#276da7]">{evidenceWatermarkTemplate.data?.status === "published" ? `已发布 v${evidenceWatermarkTemplate.data.version}` : "默认模板"}</Badge></div></CardHeader>
+          <CardContent className="grid gap-5 lg:grid-cols-[1.08fr_.92fr]">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2"><div><Label>水印标题</Label><Input className="mt-1 bg-white" value={watermarkTemplateForm.title} maxLength={24} onChange={event => setWatermarkTemplateForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>施工单位</Label><Input className="mt-1 bg-white" value={watermarkTemplateForm.organizationLabel} maxLength={48} onChange={event => setWatermarkTemplateForm(current => ({ ...current, organizationLabel: event.target.value }))} /></div></div>
+              <div><Label>底部防伪文案</Label><Input className="mt-1 bg-white" value={watermarkTemplateForm.footerLabel} maxLength={48} onChange={event => setWatermarkTemplateForm(current => ({ ...current, footerLabel: event.target.value }))} /></div>
+              <div><Label>显示字段与顺序</Label><p className="mt-1 text-xs leading-5 text-slate-500">勾选决定是否显示；使用“上移 / 下移”控制卡片内顺序。至少保留两项。</p><div className="mt-2 space-y-2">{WATERMARK_FIELD_OPTIONS.map(option => {
+                const index = watermarkTemplateForm.fields.indexOf(option.id);
+                const selected = index >= 0;
+                return <div key={option.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-[#d9e6ef] bg-white px-3 py-2"><Checkbox checked={selected} onCheckedChange={checked => setWatermarkTemplateForm(current => {
+                  if (checked) return { ...current, fields: [...current.fields, option.id] };
+                  if (current.fields.length <= 2) { toast.error("工程水印至少保留两项信息"); return current; }
+                  return { ...current, fields: current.fields.filter(field => field !== option.id) };
+                })} /><span className="min-w-24 flex-1 text-sm font-medium text-slate-700">{option.label}</span>{selected ? <><Badge variant="outline" className="border-slate-200">第 {index + 1} 项</Badge><Button size="sm" variant="outline" disabled={index === 0} onClick={() => setWatermarkTemplateForm(current => { const fields = [...current.fields]; [fields[index - 1], fields[index]] = [fields[index], fields[index - 1]]; return { ...current, fields }; })}>上移</Button><Button size="sm" variant="outline" disabled={index === watermarkTemplateForm.fields.length - 1} onClick={() => setWatermarkTemplateForm(current => { const fields = [...current.fields]; [fields[index + 1], fields[index]] = [fields[index], fields[index + 1]]; return { ...current, fields }; })}>下移</Button></> : <span className="text-xs text-slate-400">不显示</span>}</div>;
+              })}</div></div>
+              <Button className="bg-[#2177d3] hover:bg-[#185fae]" disabled={saveEvidenceWatermarkTemplate.isPending || watermarkTemplateForm.fields.length < 2 || !watermarkTemplateForm.title.trim() || !watermarkTemplateForm.organizationLabel.trim() || !watermarkTemplateForm.footerLabel.trim()} onClick={() => saveEvidenceWatermarkTemplate.mutate({ title: watermarkTemplateForm.title, organizationLabel: watermarkTemplateForm.organizationLabel, footerLabel: watermarkTemplateForm.footerLabel, fields: watermarkTemplateForm.fields })}>{saveEvidenceWatermarkTemplate.isPending ? "正在发布水印模板…" : "保存并发布水印模板"}</Button>
+            </div>
+            <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "地点：现场定位已获取", coordinates: "经纬度：113.035345°E，28.162564°N", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "工程云管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和定位信息逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
         </Card>
         <Card>
