@@ -17,6 +17,7 @@ import {
   rfidCardWriteJobs,
   rfidWriterDevices,
   transportCardEvents,
+  transportSites,
   transportTrips,
   transportVehicleLeaseRules,
   transportVehicleRfidCards,
@@ -186,6 +187,8 @@ const tripInput = z.object({
   vehicleId: z.number().int().positive(),
   projectId: z.number().int().positive(),
   freightRuleId: z.number().int().positive(),
+  loadSiteId: z.number().int().positive().nullable().optional(),
+  unloadSiteId: z.number().int().positive().nullable().optional(),
   startAt: isoDateTimeSchema,
   endAt: isoDateTimeSchema.nullable().optional(),
   actualDistanceKm: z.number().min(0).max(9999),
@@ -205,10 +208,26 @@ const tripInput = z.object({
 const transportCardEventInput = z.object({
   tripId: z.number().int().positive(),
   projectId: z.number().int().positive(),
+  siteId: z.number().int().positive().nullable().optional(),
   idempotencyKey: z.string().trim().min(8).max(160),
   deviceId: z.string().trim().min(1).max(128).optional(),
   cardFingerprint: z.string().regex(/^[a-fA-F0-9]{64}$/, "卡片标识必须是 SHA-256 指纹").optional(),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
   occurredAt: isoDateTimeSchema,
+});
+
+/** 装土点、卸土点及现场刷卡管理员由运输负责人或项目负责人维护。 */
+const transportSiteInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  siteType: z.enum(["load", "unload"]),
+  name: z.string().trim().min(2, "请填写地点名称").max(128),
+  address: z.string().trim().max(500).nullable().optional(),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
+  administratorUserId: z.number().int().positive().nullable().optional(),
+  status: z.enum(["active", "disabled"]).default("active"),
 });
 
 /** 写卡器型号先以台账方式预留，未接入硬件协议时仅允许生成并人工确认受控写卡任务。 */
@@ -375,8 +394,8 @@ function didConditionalWriteApply(result: unknown) {
   return !(header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0);
 }
 
-function createCardEventPayloadFingerprint(input: { tripId: number; projectId: number; idempotencyKey: string; deviceId?: string; cardFingerprint?: string; occurredAt: string }, eventType: "load" | "unload") {
-  return createHash("sha256").update(JSON.stringify({ eventType, tripId: input.tripId, projectId: input.projectId, idempotencyKey: input.idempotencyKey, deviceId: input.deviceId ?? null, cardFingerprint: input.cardFingerprint ?? null, occurredAt: new Date(input.occurredAt).toISOString() })).digest("hex");
+function createCardEventPayloadFingerprint(input: { tripId: number; projectId: number; siteId?: number | null; idempotencyKey: string; deviceId?: string; cardFingerprint?: string; latitude?: number | null; longitude?: number | null; occurredAt: string }, eventType: "load" | "unload") {
+  return createHash("sha256").update(JSON.stringify({ eventType, tripId: input.tripId, projectId: input.projectId, siteId: input.siteId ?? null, idempotencyKey: input.idempotencyKey, deviceId: input.deviceId ?? null, cardFingerprint: input.cardFingerprint ?? null, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: new Date(input.occurredAt).toISOString() })).digest("hex");
 }
 
 /** 卡 UID 只用于本次绑定并立即派生不可逆指纹，避免原始设备标识进入数据库或审计记录。 */
@@ -412,6 +431,20 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   const { vehicle } = await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
   const occurredAt = new Date(input.occurredAt);
   const payloadFingerprint = createCardEventPayloadFingerprint(input, eventType);
+  const expectedSiteId = eventType === "load" ? trip.loadSiteId : trip.unloadSiteId;
+  let siteName: string | null = null;
+  if (expectedSiteId || input.siteId) {
+    if (!expectedSiteId || input.siteId !== expectedSiteId) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `${eventType === "load" ? "装土" : "卸土"}刷卡地点与运输票据不一致` });
+    }
+    const [site] = await db.select().from(transportSites).where(eq(transportSites.id, expectedSiteId)).limit(1);
+    if (!site || site.projectId !== input.projectId || site.siteType !== eventType || site.status !== "active") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "现场地点不存在、已停用或地点类型不匹配" });
+    }
+    if (!site.administratorUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "该现场尚未配置刷卡管理员，请由项目管理员先完成配置" });
+    if (site.administratorUserId !== user.id && !roleCodes.includes("ALL")) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号不是该现场指定的刷卡管理员" });
+    siteName = site.name;
+  }
   const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
   if (existing) {
     if (existing.tripId !== input.tripId || existing.eventType !== eventType || existing.payloadFingerprint !== payloadFingerprint) {
@@ -425,9 +458,13 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       vehicleId: trip.vehicleId,
       projectId: input.projectId,
       eventType,
+      siteId: expectedSiteId ?? null,
+      operatorUserId: user.id,
       source: "card_reader",
       idempotencyKey: input.idempotencyKey,
       deviceId: input.deviceId ?? null,
+      latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude),
+      longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude),
       cardFingerprint: input.cardFingerprint ?? null,
       payloadFingerprint,
       occurredAt,
@@ -463,13 +500,13 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   if (eventType === "unload" && trip.unloadConfirmedAt) return markNeedsReview("该趟次已存在卸土确认，疑似重复刷卡事件");
 
   const updateResult = eventType === "load"
-    ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
-    : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+    ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id, loadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
+    : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id, unloadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
   if (!didConditionalWriteApply(updateResult)) return markNeedsReview("趟次已被其他刷卡事件更新，请人工核验事件顺序");
 
-  await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功` });
+  await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功${siteName ? `：${siteName}` : ""}` });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
-  const tripFinancialSummary = `车辆 ${vehicle.plateNo}，${eventLabel}刷卡已确认；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
+  const tripFinancialSummary = `车辆 ${vehicle.plateNo}${siteName ? `，${siteName}` : ""}，${eventLabel}刷卡已确认；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按调度前往卸土点。" : "运输闭环已记录，等待后续核验。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   if (vehicle.driverUserId) {
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
@@ -1333,6 +1370,54 @@ export const transportRouter = router({
     return { success: true };
   }),
 
+  /** 返回当前项目已配置的装土点、卸土点及其现场刷卡管理员。 */
+  listSites: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const rows = await db.select().from(transportSites).where(eq(transportSites.projectId, input.projectId)).orderBy(transportSites.siteType, transportSites.name);
+    const administratorIds = Array.from(new Set(rows.map(item => item.administratorUserId).filter((id): id is number => Boolean(id))));
+    const administrators = administratorIds.length
+      ? await Promise.all(administratorIds.map(async id => (await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, id)).limit(1))[0]))
+      : [];
+    const nameById = new Map(administrators.filter(Boolean).map(item => [item!.id, item!.name]));
+    return rows.map(site => ({ ...site, administratorName: site.administratorUserId ? nameById.get(site.administratorUserId) ?? "未找到用户" : "未配置" }));
+  }),
+
+  /** 现场地点和刷卡管理员只允许运输负责人、项目负责人或系统管理员维护。 */
+  saveSite: protectedProcedure.input(transportSiteInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    if (input.administratorUserId) {
+      const [administrator] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.administratorUserId)).limit(1);
+      if (!administrator) throw new TRPCError({ code: "BAD_REQUEST", message: "指定的现场管理员账号不存在" });
+    }
+    const values = {
+      projectId: input.projectId,
+      siteType: input.siteType,
+      name: input.name,
+      address: input.address?.trim() || null,
+      latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude),
+      longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude),
+      administratorUserId: input.administratorUserId ?? null,
+      status: input.status,
+    };
+    if (input.id) {
+      const [existing] = await db.select().from(transportSites).where(eq(transportSites.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输现场地点不存在或不属于当前项目" });
+      await db.update(transportSites).set(values).where(eq(transportSites.id, input.id));
+    } else {
+      await db.insert(transportSites).values({ ...values, createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_transport_site" : "create_transport_site", targetType: "transport_site", targetId: String(input.id ?? input.name), summary: `${input.id ? "维护" : "配置"}${input.siteType === "load" ? "装土" : "卸土"}点：${input.name}` });
+    return { success: true };
+  }),
+
   listTrips: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema.optional() })).query(async ({ ctx, input }) => {
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -1362,6 +1447,18 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
     if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态" });
+    if (Boolean(input.loadSiteId) !== Boolean(input.unloadSiteId)) throw new TRPCError({ code: "BAD_REQUEST", message: "运输票据必须同时选择装土点和卸土点" });
+    let loadSite: typeof transportSites.$inferSelect | null = null;
+    let unloadSite: typeof transportSites.$inferSelect | null = null;
+    if (input.loadSiteId && input.unloadSiteId) {
+      [loadSite, unloadSite] = await Promise.all([
+        db.select().from(transportSites).where(eq(transportSites.id, input.loadSiteId)).limit(1).then(rows => rows[0] ?? null),
+        db.select().from(transportSites).where(eq(transportSites.id, input.unloadSiteId)).limit(1).then(rows => rows[0] ?? null),
+      ]);
+      if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "装土点不存在、已停用或不属于当前项目" });
+      if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土点不存在、已停用或不属于当前项目" });
+      if (!loadSite.administratorUserId || !unloadSite.administratorUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "装土点和卸土点均须先配置现场刷卡管理员" });
+    }
     if (input.evidenceId) {
       const [evidence] = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
       if (!evidence || evidence.projectId !== input.projectId) {
@@ -1387,12 +1484,14 @@ export const transportRouter = router({
       price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
     } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
-    const routeSnapshot = { source: "mobile", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
+    const routeSnapshot = { source: "mobile", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
     await db.insert(transportTrips).values({
       tripNo,
       vehicleId: input.vehicleId,
       projectId: input.projectId,
       freightRuleId: input.freightRuleId,
+      loadSiteId: input.loadSiteId ?? null,
+      unloadSiteId: input.unloadSiteId ?? null,
       startAt: tripStart,
       endAt: input.endAt ? new Date(input.endAt) : null,
       actualDistanceKm: String(input.actualDistanceKm),

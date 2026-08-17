@@ -281,6 +281,13 @@
       "when": 1786976696581,
       "tag": "0039_romantic_morgan_stark",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1786979437580,
+      "tag": "0040_vengeful_kitty_pryde",
+      "breakpoints": true
     }
   ]
 }

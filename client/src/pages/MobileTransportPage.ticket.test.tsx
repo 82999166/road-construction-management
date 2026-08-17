@@ -16,5 +16,11 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("recordUnloadEvent.mutate");
     expect(source).toContain("openTripDialog(true)");
     expect(source).toContain("装土票据 → 卸土票据");
+    expect(source).toContain("选择装土点");
+    expect(source).toContain("选择卸土点");
+    expect(source).toContain("本次刷卡地点：");
+    expect(source).toContain("现场管理员：");
+    expect(source).toContain("siteId: selectedTicketSiteId ?? null");
+    expect(source).toContain("现场地点");
   });
 });

@@ -377,6 +377,34 @@ describe("机械与运输 tRPC 路由", () => {
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 
+  it("新建运输票据必须同时配置装土点和卸土点，避免无法闭环的单地点票据", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
+      { id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" },
+    ]) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({
+      tripNo: "TR-SITE-PARTIAL", vehicleId: 11, projectId: 10, freightRuleId: 12, loadSiteId: 71, startAt: "2026-07-25T08:00:00.000Z", endAt: null,
+      actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: null, startLongitude: null, endLatitude: null, endLongitude: null,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("同时选择装土点和卸土点") });
+  });
+
+  it("现场刷卡必须由票据指定地点的现场管理员办理", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insert = vi.fn(() => ({ values: vi.fn(async () => undefined) }));
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 60, projectId: 10, vehicleId: 11, status: "draft", loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [{ id: 71, projectId: 10, siteType: "load", status: "active", name: "K12 装土区", administratorUserId: 2 }],
+      ),
+      insert,
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 60, projectId: 10, siteId: 71, idempotencyKey: "reader-site-admin-0001", occurredAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("指定的刷卡管理员") });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
@@ -406,7 +434,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const input = { tripId: 50, projectId: 10, idempotencyKey: "reader-load-0002", occurredAt: "2026-07-25T08:00:00.000Z" };
-    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ eventType: "load", tripId: 50, projectId: 10, idempotencyKey: "reader-load-0002", deviceId: null, cardFingerprint: null, occurredAt: "2026-07-25T08:00:00.000Z" })).digest("hex");
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ eventType: "load", tripId: 50, projectId: 10, siteId: null, idempotencyKey: "reader-load-0002", deviceId: null, cardFingerprint: null, latitude: null, longitude: null, occurredAt: "2026-07-25T08:00:00.000Z" })).digest("hex");
     const insertValues = vi.fn(async () => undefined);
     const db = {
       ...createSelectDbSequence(

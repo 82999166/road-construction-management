@@ -1202,6 +1202,30 @@ export const freightRateRules = mysqlTable(
   table => ({ projectIndex: index("freight_rate_rules_project_index").on(table.projectId, table.status) }),
 );
 
+/** 装土点和卸土点由项目运输管理员维护；每个现场可指定一名负责刷卡确认的管理员。 */
+export const transportSites = mysqlTable(
+  "transport_sites",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    siteType: mysqlEnum("siteType", ["load", "unload"]).notNull(),
+    name: varchar("name", { length: 128 }).notNull(),
+    address: varchar("address", { length: 500 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    administratorUserId: int("administratorUserId"),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectTypeStatusIndex: index("transport_sites_project_type_status_index").on(table.projectId, table.siteType, table.status),
+    projectNameUnique: uniqueIndex("transport_sites_project_type_name_unique").on(table.projectId, table.siteType, table.name),
+    administratorIndex: index("transport_sites_administrator_index").on(table.administratorUserId, table.status),
+  }),
+);
+
 /** 运输趟次及其由规则快照计算出的金额。 */
 export const transportTrips = mysqlTable(
  "transport_trips",
@@ -1211,6 +1235,8 @@ export const transportTrips = mysqlTable(
    vehicleId: int("vehicleId").notNull(),
    projectId: int("projectId").notNull(),
    freightRuleId: int("freightRuleId").notNull(),
+   loadSiteId: int("loadSiteId"),
+   unloadSiteId: int("unloadSiteId"),
    startAt: datetime("startAt").notNull(),
    endAt: datetime("endAt"),
    actualDistanceKm: decimal("actualDistanceKm", { precision: 10, scale: 3 }),
@@ -1229,6 +1255,8 @@ export const transportTrips = mysqlTable(
    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
    loadConfirmedAt: datetime("loadConfirmedAt"),
    unloadConfirmedAt: datetime("unloadConfirmedAt"),
+   loadConfirmedBy: int("loadConfirmedBy"),
+   unloadConfirmedBy: int("unloadConfirmedBy"),
    loadEventId: bigint("loadEventId", { mode: "number" }),
    unloadEventId: bigint("unloadEventId", { mode: "number" }),
    exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"]).default("none").notNull(),
@@ -1236,6 +1264,8 @@ export const transportTrips = mysqlTable(
  table => ({
    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
+   projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
+   projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
  }),
 );
 
@@ -1248,9 +1278,13 @@ export const transportCardEvents = mysqlTable(
     vehicleId: int("vehicleId").notNull(),
     projectId: int("projectId").notNull(),
     eventType: mysqlEnum("eventType", ["load", "unload"]).notNull(),
+    siteId: int("siteId"),
+    operatorUserId: int("operatorUserId"),
     source: mysqlEnum("source", ["card_reader", "manual_review", "offline_replay"]).default("card_reader").notNull(),
     idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull(),
     deviceId: varchar("deviceId", { length: 128 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
     cardFingerprint: varchar("cardFingerprint", { length: 64 }),
     payloadFingerprint: varchar("payloadFingerprint", { length: 64 }),
     occurredAt: datetime("occurredAt").notNull(),
@@ -1265,6 +1299,7 @@ export const transportCardEvents = mysqlTable(
     idempotencyUnique: uniqueIndex("transport_card_events_idempotency_unique").on(table.idempotencyKey),
     tripIndex: index("transport_card_events_trip_index").on(table.tripId, table.occurredAt),
     vehicleIndex: index("transport_card_events_vehicle_index").on(table.vehicleId, table.occurredAt),
+    siteEventIndex: index("transport_card_events_site_event_index").on(table.siteId, table.eventType, table.occurredAt),
   }),
 );
 
