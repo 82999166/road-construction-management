@@ -4,7 +4,6 @@ import { useLocation } from "wouter";
 const SOURCE_BY_PATH: Record<string, string> = {
   "/mobile/construction": "construction",
   "/mobile/labor": "labor",
-  "/mobile/machinery": "machinery",
   "/mobile/transport": "transport",
   "/mobile/purchasing": "purchasing",
   "/mobile/measurement": "measurement",
