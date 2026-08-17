@@ -114,6 +114,18 @@ describe("机械与运输 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("会计机械月度明细只读取当前项目与期间的审计快照，并在读取前校验项目范围", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([
+      { id: 91, projectId: 10, machineId: 7, period: "2026-08", status: "draft", totalOutput: "6800", driverTotalWage: "2400", machineShareAmount: "1800" },
+    ]) as never);
+
+    await expect(machineryRouter.createCaller(createAuthContext()).listMonthlyStatements({ projectId: 10, period: "2026-08" })).resolves.toEqual([
+      expect.objectContaining({ id: 91, projectId: 10, machineId: 7, period: "2026-08", status: "draft" }),
+    ]);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
   it("用户专属运输查看权限可在已有项目范围内读取项目选项，不再受旧岗位白名单误拦截", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValueOnce(true);
@@ -208,6 +220,21 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(tripDb as never);
 
     await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("会计机械月度明细按草稿、提交、审核、结算状态机流转，已结算快照不可回退", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const updateValues = vi.fn();
+    const monthlyStatementDb = {
+      ...createSelectDb([{ id: 92, projectId: 10, status: "draft", machineId: 7, period: "2026-08" }]),
+      update: vi.fn(() => ({ set: vi.fn((values: unknown) => { updateValues(values); return { where: vi.fn(async () => undefined) }; }) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(monthlyStatementDb as never);
+
+    await expect(machineryRouter.createCaller(createAuthContext()).transitionMonthlyStatement({ id: 92, projectId: 10, nextStatus: "submitted" })).resolves.toEqual({ success: true });
+    expect(updateValues).toHaveBeenCalledWith(expect.objectContaining({ status: "submitted" }));
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
   it("运输结算将已核准的项目供油从总运费扣除，固化净结算快照并锁定柴油记录", async () => {

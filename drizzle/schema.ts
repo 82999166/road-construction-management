@@ -767,6 +767,59 @@ export const machineCostRecords = mysqlTable(
   }),
 );
 
+/**
+ * 会计机械月度明细结算快照。
+ * 以会计模板的“机械产值、司机工资、维修费、油耗、机械分成、签字、备注”为准；
+ * 录入端只保存出勤、司机固定工资、加班小时和签字等原始口径，所有金额均由服务端以
+ * 当前有效租赁规则与已审核业务成本生成，防止客户端篡改结算金额。
+ */
+export const machineMonthlyStatements = mysqlTable(
+  "machine_monthly_statements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    machineId: int("machineId").notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    driverUserId: int("driverUserId"),
+    /** 与会计表的司机姓名、车主姓名、型号字段对应；生成快照后不随档案改名而覆写历史。 */
+    driverNameSnapshot: varchar("driverNameSnapshot", { length: 128 }),
+    ownerNameSnapshot: varchar("ownerNameSnapshot", { length: 200 }),
+    machineModelSnapshot: varchar("machineModelSnapshot", { length: 128 }),
+    leaseBillingType: varchar("leaseBillingType", { length: 16 }).notNull(),
+    leaseRate: decimal("leaseRate", { precision: 16, scale: 2 }).default("0").notNull(),
+    machineOvertimeRate: decimal("machineOvertimeRate", { precision: 16, scale: 2 }).default("0").notNull(),
+    /** 机械产值原始口径。出勤天数按模板采用 30 天月、10 小时工作日折算。 */
+    machineWorkDays: decimal("machineWorkDays", { precision: 8, scale: 2 }).default("0").notNull(),
+    machineOvertimeHours: decimal("machineOvertimeHours", { precision: 10, scale: 2 }).default("0").notNull(),
+    driverMonthlyWage: decimal("driverMonthlyWage", { precision: 16, scale: 2 }).default("0").notNull(),
+    driverWorkDays: decimal("driverWorkDays", { precision: 8, scale: 2 }).default("0").notNull(),
+    driverOvertimeHours: decimal("driverOvertimeHours", { precision: 10, scale: 2 }).default("0").notNull(),
+    /** 服务端快照计算结果。 */
+    machineBaseOutput: decimal("machineBaseOutput", { precision: 16, scale: 2 }).default("0").notNull(),
+    machineOvertimeOutput: decimal("machineOvertimeOutput", { precision: 16, scale: 2 }).default("0").notNull(),
+    totalOutput: decimal("totalOutput", { precision: 16, scale: 2 }).default("0").notNull(),
+    driverOvertimeWage: decimal("driverOvertimeWage", { precision: 16, scale: 2 }).default("0").notNull(),
+    driverTotalWage: decimal("driverTotalWage", { precision: 16, scale: 2 }).default("0").notNull(),
+    repairAmount: decimal("repairAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    fuelLiters: decimal("fuelLiters", { precision: 14, scale: 3 }).default("0").notNull(),
+    fuelAmount: decimal("fuelAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    shareBaseAmount: decimal("shareBaseAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    machineShareAmount: decimal("machineShareAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    signatureName: varchar("signatureName", { length: 128 }),
+    signedAt: datetime("signedAt"),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "settled", "void"]).default("draft").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectPeriodIndex: index("machine_monthly_statements_project_period_index").on(table.projectId, table.period, table.status),
+    machinePeriodUnique: uniqueIndex("machine_monthly_statements_machine_period_unique").on(table.machineId, table.projectId, table.period),
+  }),
+);
+
 /** 车辆与机械共用的维修、保养费用台账；不替代既有机械油料/租赁成本明细。 */
 export const assetMaintenanceRecords = mysqlTable(
   "asset_maintenance_records",

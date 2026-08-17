@@ -3,12 +3,14 @@ import { createHash } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  assetMaintenanceRecords,
   auditLogs,
   dieselRefuelRecords,
   evidenceRecords,
   freightRateRules,
   machineCostRecords,
   machineLeaseRules,
+  machineMonthlyStatements,
   machines,
   projects,
   rfidCardWriteJobs,
@@ -93,6 +95,30 @@ const machineCostInput = z.object({
   unitPrice: z.number().min(0).max(999999999999.99),
   occurredAt: isoDateTimeSchema,
   evidenceId: z.number().int().positive().nullable().optional(),
+});
+
+/**
+ * 会计机械月度明细只接收模板中的原始考勤、工资和签字数据；产值、油耗、维修、总额和分成均由服务端生成快照。
+ * 机械与司机出勤按会计模板使用 30 天月；加班工资按固定工资或固定月租 ÷ 30 ÷ 10 小时计算。
+ */
+const machineMonthlyStatementInput = z.object({
+  machineId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  period: settlementPeriodSchema,
+  driverUserId: z.number().int().positive().nullable().optional(),
+  machineWorkDays: z.number().min(0).max(31),
+  machineOvertimeHours: z.number().min(0).max(744),
+  driverMonthlyWage: z.number().min(0).max(999999999999.99),
+  driverWorkDays: z.number().min(0).max(31),
+  driverOvertimeHours: z.number().min(0).max(744),
+  signatureName: z.string().trim().max(128).nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+});
+
+const machineMonthlyStatementTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  nextStatus: z.enum(["submitted", "approved", "settled", "void"]),
 });
 
 /** 运输车辆档案以货厢尺寸和装载系数为权威输入，理论方量由服务端计算。 */
@@ -217,6 +243,38 @@ function getMonthRange(period: string) {
 /** 金额一律保留两位小数，避免浮点误差进入结算与审计记录。 */
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/** 会计模板使用固定 30 天月、每天 10 小时的换算口径；所有派生金额均在服务端取两位小数。 */
+function calculateMonthlyMachineStatement(input: {
+  billingType: "monthly" | "daily" | "hourly" | "shift";
+  rate: number;
+  overtimeHourlyRate: number;
+  machineWorkDays: number;
+  machineOvertimeHours: number;
+  driverMonthlyWage: number;
+  driverWorkDays: number;
+  driverOvertimeHours: number;
+  repairAmount: number;
+  fuelLiters: number;
+  fuelAmount: number;
+}) {
+  const machineBaseOutput = input.billingType === "monthly"
+    ? roundMoney((input.rate / 30) * input.machineWorkDays)
+    : roundMoney(input.rate * input.machineWorkDays);
+  const machineOvertimeRate = input.overtimeHourlyRate > 0
+    ? input.overtimeHourlyRate
+    : input.billingType === "monthly" ? input.rate / 30 / 10 : 0;
+  const machineOvertimeOutput = roundMoney(machineOvertimeRate * input.machineOvertimeHours);
+  const totalOutput = roundMoney(machineBaseOutput + machineOvertimeOutput);
+  const driverBaseWage = roundMoney((input.driverMonthlyWage / 30) * input.driverWorkDays);
+  const driverOvertimeWage = roundMoney((input.driverMonthlyWage / 30 / 10) * input.driverOvertimeHours);
+  const driverTotalWage = roundMoney(driverBaseWage + driverOvertimeWage);
+  /** 会计模板的“机械分成”口径不扣油费： (总产值 - 司机总工资 - 维修费) ÷ 2。油耗和油费单列审计。 */
+  const shareBaseAmount = roundMoney(totalOutput - driverTotalWage - input.repairAmount);
+  const machineShareAmount = roundMoney(shareBaseAmount / 2);
+  const deductionAmount = roundMoney(driverTotalWage + input.repairAmount + input.fuelAmount);
+  return { machineBaseOutput, machineOvertimeOutput, totalOutput, driverOvertimeWage, driverTotalWage, repairAmount: roundMoney(input.repairAmount), fuelLiters: roundMoney(input.fuelLiters), fuelAmount: roundMoney(input.fuelAmount), deductionAmount, shareBaseAmount, machineShareAmount };
 }
 
 /** 自动生成带日期与随机后缀的趟次编号，避免并发录入仅依赖毫秒时间戳发生冲突。 */
@@ -452,6 +510,27 @@ async function getScopedMachine(ctx: Parameters<typeof requireAuthenticatedUser>
   return { db, machine };
 }
 
+/** 复用会计模板的月度明细预览，避免保存接口通过路由自身调用而产生循环类型依赖。 */
+async function buildMachineMonthlyStatementPreview(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof machineMonthlyStatementInput>) {
+  const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
+  const range = getMonthRange(input.period);
+  const rules = await db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, input.machineId), eq(machineLeaseRules.projectId, input.projectId), eq(machineLeaseRules.status, "active"))).orderBy(desc(machineLeaseRules.effectiveFrom));
+  const rule = rules.find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
+  if (!rule) throw new TRPCError({ code: "BAD_REQUEST", message: "当前结算期间未找到生效的机械租赁/计价规则" });
+  const [costRows, maintenanceRows] = await Promise.all([
+    db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+    db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "machine"), eq(assetMaintenanceRecords.assetId, input.machineId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+  ]);
+  const repairAmount = costRows.filter(item => item.costType === "repair").reduce((sum, item) => sum + Number(item.amount), 0) + maintenanceRows.filter(item => item.costCategory === "repair").reduce((sum, item) => sum + Number(item.amount), 0);
+  const fuelRows = costRows.filter(item => item.costType === "fuel");
+  const fuelLiters = fuelRows.reduce((sum, item) => sum + Number(item.quantity), 0);
+  const fuelAmount = fuelRows.reduce((sum, item) => sum + Number(item.amount), 0);
+  const statement = calculateMonthlyMachineStatement({ billingType: rule.billingType, rate: Number(rule.rate), overtimeHourlyRate: Number(rule.overtimeHourlyRate), machineWorkDays: input.machineWorkDays, machineOvertimeHours: input.machineOvertimeHours, driverMonthlyWage: input.driverMonthlyWage, driverWorkDays: input.driverWorkDays, driverOvertimeHours: input.driverOvertimeHours, repairAmount, fuelLiters, fuelAmount });
+  const driverUserId = input.driverUserId ?? machine.operatorUserId;
+  const [driver] = driverUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, driverUserId)).limit(1) : [];
+  return { machine: { id: machine.id, code: machine.code, name: machine.name, model: machine.model, ownerName: machine.ownership === "leased" ? machine.supplierName ?? "未登记出租方" : "公司自有", driverUserId, driverName: driver?.name ?? "未分配" }, rule: { billingType: rule.billingType, rate: Number(rule.rate), overtimeHourlyRate: Number(rule.overtimeHourlyRate), effectiveFrom: rule.effectiveFrom, effectiveTo: rule.effectiveTo }, statement, source: { costRecordCount: costRows.length, maintenanceRecordCount: maintenanceRows.length } };
+}
+
 /** 读取并校验车辆归属项目，司机还需满足本人被绑定到该车辆的最小权限要求。 */
 async function getScopedVehicle(ctx: Parameters<typeof requireAuthenticatedUser>[0], vehicleId: number, projectId: number, roleCodes: readonly string[]) {
   await assertProjectInCurrentScope(ctx, projectId);
@@ -483,7 +562,7 @@ export const machineryRouter = router({
     if (!db) return [];
     const rows = await db.select().from(machines).where(eq(machines.projectId, input.projectId)).orderBy(desc(machines.updatedAt));
     return Promise.all(rows.map(async machine => {
-      const rules = machine.ownership === "leased" ? await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machine.id)).orderBy(desc(machineLeaseRules.createdAt)) : [];
+      const rules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machine.id)).orderBy(desc(machineLeaseRules.createdAt));
       const activeRule = rules.find(rule => rule.projectId === input.projectId && rule.status === "active");
       return {
         ...machine,
@@ -526,7 +605,7 @@ export const machineryRouter = router({
 
     const existingRules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machineId)).orderBy(desc(machineLeaseRules.createdAt));
     const activeRule = existingRules.find(rule => rule.projectId === input.projectId && rule.status === "active");
-    if (input.ownership === "leased" && input.leaseTerms) {
+    if (input.leaseTerms) {
       const leaseValues = {
         machineId,
         projectId: input.projectId,
@@ -542,7 +621,7 @@ export const machineryRouter = router({
     } else if (activeRule) {
       await db.update(machineLeaseRules).set({ status: "disabled" }).where(eq(machineLeaseRules.id, activeRule.id));
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(machineId), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}${input.ownership === "leased" ? "，已维护外租租金与租期" : ""}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(machineId), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}${input.leaseTerms ? `，已维护${input.ownership === "leased" ? "外租" : "会计产值"}计价规则` : ""}` });
     return { success: true };
   }),
 
@@ -607,6 +686,79 @@ export const machineryRouter = router({
       summaries.set(row.machineId, current);
     });
     return Array.from(summaries.values());
+  }),
+
+  /** 按会计模板读取当前项目、期间的已保存月度明细快照；不返回其他项目或作废以外的隐藏数据。 */
+  listMonthlyStatements: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: settlementPeriodSchema })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.projectId, input.projectId), eq(machineMonthlyStatements.period, input.period))).orderBy(desc(machineMonthlyStatements.updatedAt));
+  }),
+
+  /** 实时预览一行机械会计明细；只读取当前已授权项目的租赁规则、成本和维修记录，不创建或改变状态。 */
+  previewMonthlyStatement: protectedProcedure.input(machineMonthlyStatementInput).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const range = getMonthRange(input.period);
+    const rules = await db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, input.machineId), eq(machineLeaseRules.projectId, input.projectId), eq(machineLeaseRules.status, "active"))).orderBy(desc(machineLeaseRules.effectiveFrom));
+    const rule = rules.find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
+    if (!rule) throw new TRPCError({ code: "BAD_REQUEST", message: "当前结算期间未找到生效的机械租赁/计价规则" });
+    const [costRows, maintenanceRows] = await Promise.all([
+      db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+      db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "machine"), eq(assetMaintenanceRecords.assetId, input.machineId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+    ]);
+    const repairAmount = costRows.filter(item => item.costType === "repair").reduce((sum, item) => sum + Number(item.amount), 0) + maintenanceRows.filter(item => item.costCategory === "repair").reduce((sum, item) => sum + Number(item.amount), 0);
+    const fuelRows = costRows.filter(item => item.costType === "fuel");
+    const fuelLiters = fuelRows.reduce((sum, item) => sum + Number(item.quantity), 0);
+    const fuelAmount = fuelRows.reduce((sum, item) => sum + Number(item.amount), 0);
+    const statement = calculateMonthlyMachineStatement({ billingType: rule.billingType, rate: Number(rule.rate), overtimeHourlyRate: Number(rule.overtimeHourlyRate), machineWorkDays: input.machineWorkDays, machineOvertimeHours: input.machineOvertimeHours, driverMonthlyWage: input.driverMonthlyWage, driverWorkDays: input.driverWorkDays, driverOvertimeHours: input.driverOvertimeHours, repairAmount, fuelLiters, fuelAmount });
+    const driverUserId = input.driverUserId ?? machine.operatorUserId;
+    const [driver] = driverUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, driverUserId)).limit(1) : [];
+    return { machine: { id: machine.id, code: machine.code, name: machine.name, model: machine.model, ownerName: machine.ownership === "leased" ? machine.supplierName ?? "未登记出租方" : "公司自有", driverUserId, driverName: driver?.name ?? "未分配" }, rule: { billingType: rule.billingType, rate: Number(rule.rate), overtimeHourlyRate: Number(rule.overtimeHourlyRate), effectiveFrom: rule.effectiveFrom, effectiveTo: rule.effectiveTo }, statement, source: { costRecordCount: costRows.length, maintenanceRecordCount: maintenanceRows.length } };
+  }),
+
+  /** 保存或更新单台机械当期会计明细快照；非草稿快照必须经状态流转处理，避免改写已审核或已结算数据。 */
+  saveMonthlyStatement: protectedProcedure.input(machineMonthlyStatementInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMachineryAccess(ctx);
+    const preview = await buildMachineMonthlyStatementPreview(ctx, input);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [existing] = await db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.machineId, input.machineId), eq(machineMonthlyStatements.projectId, input.projectId), eq(machineMonthlyStatements.period, input.period))).limit(1);
+    if (existing && existing.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "已提交、已审核或已结算的月度机械明细不得直接修改；请按状态流转或作废后重新建立" });
+    const values = {
+      projectId: input.projectId, machineId: input.machineId, period: input.period, driverUserId: preview.machine.driverUserId ?? null,
+      driverNameSnapshot: preview.machine.driverName, ownerNameSnapshot: preview.machine.ownerName, machineModelSnapshot: preview.machine.model ?? null,
+      leaseBillingType: preview.rule.billingType, leaseRate: String(roundMoney(preview.rule.rate)), machineOvertimeRate: String(roundMoney(preview.rule.overtimeHourlyRate > 0 ? preview.rule.overtimeHourlyRate : preview.rule.billingType === "monthly" ? preview.rule.rate / 30 / 10 : 0)),
+      machineWorkDays: String(input.machineWorkDays), machineOvertimeHours: String(input.machineOvertimeHours), driverMonthlyWage: String(roundMoney(input.driverMonthlyWage)), driverWorkDays: String(input.driverWorkDays), driverOvertimeHours: String(input.driverOvertimeHours),
+      machineBaseOutput: String(preview.statement.machineBaseOutput), machineOvertimeOutput: String(preview.statement.machineOvertimeOutput), totalOutput: String(preview.statement.totalOutput), driverOvertimeWage: String(preview.statement.driverOvertimeWage), driverTotalWage: String(preview.statement.driverTotalWage), repairAmount: String(preview.statement.repairAmount), fuelLiters: String(preview.statement.fuelLiters), fuelAmount: String(preview.statement.fuelAmount), deductionAmount: String(preview.statement.deductionAmount), shareBaseAmount: String(preview.statement.shareBaseAmount), machineShareAmount: String(preview.statement.machineShareAmount), signatureName: input.signatureName?.trim() || null, signedAt: input.signatureName?.trim() ? new Date() : null, remarks: input.remarks?.trim() || null,
+    };
+    if (existing) await db.update(machineMonthlyStatements).set(values).where(eq(machineMonthlyStatements.id, existing.id));
+    else await db.insert(machineMonthlyStatements).values({ ...values, status: "draft", createdBy: user.id });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "update_monthly_statement" : "create_monthly_statement", targetType: "machine_monthly_statement", targetId: `${input.machineId}:${input.period}`, summary: `${existing ? "更新" : "生成"}会计机械月度明细：${preview.machine.name} ${input.period}，总产值 ¥${preview.statement.totalOutput}` });
+    return { success: true, preview };
+  }),
+
+  /** 月度机械明细按草稿、提交、审核、结算、作废顺序流转；财务岗位才可审核或结算。 */
+  transitionMonthlyStatement: protectedProcedure.input(machineMonthlyStatementTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(machineMonthlyStatements).where(eq(machineMonthlyStatements.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械月度明细不存在或不属于当前项目" });
+    const allowed: Record<typeof record.status, readonly string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["settled", "void"], settled: [], void: [] };
+    if (!allowed[record.status].includes(input.nextStatus)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前月度机械明细状态不允许执行该操作" });
+    if (["approved", "settled"].includes(input.nextStatus) && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可审核、结算机械月度明细" });
+    if (!["approved", "settled"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械月度明细" });
+    const result = await db.update(machineMonthlyStatements).set({ status: input.nextStatus }).where(and(eq(machineMonthlyStatements.id, input.id), eq(machineMonthlyStatements.status, record.status)));
+    assertConditionalStatusWrite(result, "机械月度明细");
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_monthly_statement", targetType: "machine_monthly_statement", targetId: String(input.id), summary: `机械月度明细状态变更为：${input.nextStatus}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "machinery", eventCode: `machine_monthly_statement_${input.nextStatus}`, targetType: "machine_monthly_statement", targetId: String(input.id), title: `机械月度明细已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
+    return { success: true };
   }),
 
   /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */

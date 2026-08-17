@@ -36,11 +36,11 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("管理人员角色授权");
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("RFID 写卡");
-    expect(source).toContain("机械资源、维修与租赁台账");
+    expect(source).toContain("机械资源、维修与会计计价台账");
     expect(source).toContain("新建机械档案");
     expect(source).toContain("机械业务详情");
     expect(source).toContain("录入成本");
-    expect(source).toContain("外租合同与租金");
+    expect(source).toContain("会计产值计价规则");
     expect(source).toContain("外租车辆");
     expect(source).toContain("起租日期");
     expect(source).toContain("截止日期");
@@ -103,7 +103,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("施工日报、现场影像与审核台账");
     expect(source).toContain("工资条详细台账");
-    expect(source).toContain("机械资源、维修与租赁台账");
+    expect(source).toContain("机械资源、维修与会计计价台账");
     expect(source).toContain("车辆趟次、异常与结算台账");
     expect(source).toContain("发票、成本与审计台账");
     expect(source).toContain("站内通知、投递与确认台账");
@@ -124,14 +124,20 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
   });
 
-  it("将机械档案、维修保养、成本与外租规则合并为全宽综合台账，并提供单机详情", () => {
+  it("将机械档案、维修保养、成本、会计计价规则与月度明细合并为全宽综合台账，并提供单机详情", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("trpc.machinery.listCostSummaries.useQuery");
+    expect(source).toContain("trpc.machinery.listMonthlyStatements.useQuery");
+    expect(source).toContain("trpc.machinery.previewMonthlyStatement.useQuery");
     expect(source).toContain("机械资源 · 综合台账");
-    expect(source).toContain("机械资源、维修与租赁台账");
+    expect(source).toContain("机械资源、维修与会计计价台账");
     expect(source).toContain("维修成本");
-    expect(source).toContain("租金 / 租赁日期");
+    expect(source).toContain("产值计价 / 有效日期");
+    expect(source).toContain("会计机械明细 · 月度结算快照");
+    expect(source).toContain("机械产值、司机工资、油耗、维修与分成");
+    expect(source).toContain("导出会计 CSV");
+    expect(source).toContain("生成会计明细草稿");
     expect(source).toContain("机械业务详情");
     expect(source).not.toContain('activeSection === "machinery" ? <LedgerTable');
   });
