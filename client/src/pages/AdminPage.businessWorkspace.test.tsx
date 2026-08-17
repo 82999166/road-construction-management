@@ -151,6 +151,21 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain('activeSection === "machinery" ? <LedgerTable');
   });
 
+  it("提供独立柴油管理入口，并按每次加油的升数与当天单价自动形成油费快照", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('label: "柴油管理"');
+    expect(source).toContain('path: "/admin/diesel"');
+    expect(source).toContain('const isDiesel = activeSection === "diesel"');
+    expect(source).toContain('activeSection === "finance" || activeSection === "diesel"');
+    expect(source).toContain("适用单价");
+    expect(source).toContain("柴油管理与加油台账");
+    expect(source).toContain("项目部供油（当天指导价）");
+    expect(source).toContain("加油站现金加油（当天实际价）");
+    expect(source).toContain("当天现金单价（元/升）");
+    expect(source).toContain("现金油费预览");
+  });
+
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
