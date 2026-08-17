@@ -15,6 +15,7 @@ import { machineryRouter, transportRouter } from "./routers/operations";
 import { officialAccountRouter } from "./routers/officialAccount";
 import { dailyDigestRouter } from "./routers/dailyDigest";
 import { broadcastRouter } from "./routers/broadcast";
+import { projectRiskRouter } from "./routers/projectRisk";
 import { z } from "zod";
 
 /**
@@ -81,6 +82,7 @@ export const appRouter = router({
   purchasing: purchasingRouter,
   measurement: measurementRouter,
   finance: financeRouter,
+  projectRisk: projectRiskRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -64,6 +64,7 @@ const machineInput = z.object({
   ownership: z.enum(["owned", "leased"]),
   supplierName: z.string().trim().max(200).nullable().optional(),
   plateOrAssetNo: z.string().trim().max(64).nullable().optional(),
+  fuelTankCapacityLiters: z.number().gt(0).max(99999).nullable().optional(),
   status: z.enum(["idle", "working", "repairing", "offsite", "retired"]),
   leaseTerms: assetLeaseTermsInput.nullable().optional(),
 }).superRefine((value, ctx) => {
@@ -609,6 +610,7 @@ export const machineryRouter = router({
       ownership: input.ownership,
       supplierName: input.supplierName ?? null,
       plateOrAssetNo: input.plateOrAssetNo ?? null,
+      fuelTankCapacityLiters: input.fuelTankCapacityLiters === null || input.fuelTankCapacityLiters === undefined ? null : String(input.fuelTankCapacityLiters),
       status: input.status,
     };
     let machineId = input.id;

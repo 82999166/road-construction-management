@@ -331,6 +331,21 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("保存该用户权限");
     expect(source).toContain("留空则沿用角色权限");
   });
+
+  it("提供可解释的 AI 项目风险扫描、处置与财务分类分析，并要求维护设备核定油箱容量", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('label: "AI 项目风控", path: "/admin/risk"');
+    expect(source).toContain('const isRisk = activeSection === "risk"');
+    expect(source).toContain("AI 项目风险预警中心");
+    expect(source).toContain("立即扫描并提醒");
+    expect(source).toContain("风险预警台账与管理提醒");
+    expect(source).toContain("生成 AI 管理摘要");
+    expect(source).toContain("按成本类别分析汇总");
+    expect(source).toContain("生活开支、柴油、工资、机械、车辆运输、采购及其他开支");
+    expect(source).toContain("核定油箱容量（L）");
+    expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
+  });
 });
 
 

@@ -361,6 +361,79 @@ export const notificationRecords = mysqlTable(
   table => ({ idempotencyUnique: uniqueIndex("notification_idempotency_unique").on(table.idempotencyKey) }),
 );
 
+/** 项目级风险规则；阈值由超级管理员维护，扫描结果始终保存实际计算口径。 */
+export const projectRiskRules = mysqlTable(
+  "project_risk_rules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    /** 单次加油量超过核定油箱容量的比例即预警，例如 1.10 表示超过 110%。 */
+    maxFuelFillRatio: decimal("maxFuelFillRatio", { precision: 6, scale: 3 }).default("1.100").notNull(),
+    /** 运输完成的平均速度超过该阈值即提示核验，避免只根据主观时长判断。 */
+    maxTransportSpeedKmh: decimal("maxTransportSpeedKmh", { precision: 8, scale: 2 }).default("80.00").notNull(),
+    /** 实际距离不小于 2 km 且运输耗时高于该值，标记为异常滞留待核验。 */
+    maxTransportDurationMinutes: int("maxTransportDurationMinutes").default(360).notNull(),
+    /** 已上班但超过该小时数未下班打卡，标记为考勤闭环异常。 */
+    maxOpenCheckInHours: int("maxOpenCheckInHours").default(14).notNull(),
+    /** 施工日报草稿、退回或逾期未审核超过该小时数，标记为施工管理待办。 */
+    maxPendingReportHours: int("maxPendingReportHours").default(24).notNull(),
+    createdBy: int("createdBy"),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ projectUnique: uniqueIndex("project_risk_rules_project_unique").on(table.projectId) }),
+);
+
+/** 确定性风险检测结果；仅保存业务编号、数值口径与处置，不复制敏感原始资料。 */
+export const projectRiskAlerts = mysqlTable(
+  "project_risk_alerts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    businessDate: date("businessDate").notNull(),
+    category: mysqlEnum("category", ["construction", "attendance", "fuel", "transport"]).notNull(),
+    severity: mysqlEnum("severity", ["notice", "warning", "critical"]).default("warning").notNull(),
+    ruleCode: varchar("ruleCode", { length: 64 }).notNull(),
+    sourceType: varchar("sourceType", { length: 64 }).notNull(),
+    sourceId: varchar("sourceId", { length: 128 }).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    summary: varchar("summary", { length: 1000 }).notNull(),
+    /** 仅保存数值、状态与业务编号，不保存姓名、手机号、身份证或设备指纹。 */
+    evidenceJson: text("evidenceJson"),
+    status: mysqlEnum("status", ["open", "acknowledged", "resolved", "ignored"]).default("open").notNull(),
+    notifiedAt: datetime("notifiedAt"),
+    acknowledgedBy: int("acknowledgedBy"),
+    acknowledgedAt: datetime("acknowledgedAt"),
+    resolvedBy: int("resolvedBy"),
+    resolvedAt: datetime("resolvedAt"),
+    resolutionNote: varchar("resolutionNote", { length: 1000 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectRuleSourceDateUnique: uniqueIndex("project_risk_alerts_unique").on(table.projectId, table.ruleCode, table.sourceId, table.businessDate),
+    projectStatusDateIndex: index("project_risk_alerts_project_status_date_index").on(table.projectId, table.status, table.businessDate),
+  }),
+);
+
+/** AI 仅使用脱敏的风险数量、类型与计算口径生成管理摘要，保留模型与输入快照供人工复核。 */
+export const projectRiskBriefings = mysqlTable(
+  "project_risk_briefings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    model: varchar("model", { length: 128 }).notNull(),
+    summaryJson: text("summaryJson").notNull(),
+    alertSnapshotJson: text("alertSnapshotJson").notNull(),
+    generatedBy: int("generatedBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({ projectPeriodIndex: index("project_risk_briefings_project_period_index").on(table.projectId, table.period, table.createdAt) }),
+);
+
 /**
  * 项目每日经营汇总的唯一调度配置。任务 UID 由平台 Heartbeat 返回并持久化，
  * 回调只能按该 UID 查找配置，不能信任请求体中的任意业务标识。
@@ -718,6 +791,8 @@ export const machines = mysqlTable(
     ownership: mysqlEnum("ownership", ["owned", "leased"]).notNull(),
     supplierName: varchar("supplierName", { length: 200 }),
     plateOrAssetNo: varchar("plateOrAssetNo", { length: 64 }),
+    /** 核定油箱容量仅用于柴油领用合理性检测，不替代油表读数。 */
+    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", { precision: 10, scale: 2 }),
     status: mysqlEnum("status", ["idle", "working", "repairing", "offsite", "retired"]).default("idle").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -889,6 +964,8 @@ export const transportVehicles = mysqlTable(
     boxHeightMeters: decimal("boxHeightMeters", { precision: 8, scale: 3 }).notNull(),
     loadFactor: decimal("loadFactor", { precision: 5, scale: 3 }).default("1").notNull(),
     payloadTons: decimal("payloadTons", { precision: 10, scale: 3 }),
+    /** 核定油箱容量仅用于柴油领用合理性检测，不替代油表读数。 */
+    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", { precision: 10, scale: 2 }),
     status: mysqlEnum("status", ["active", "suspended", "disabled"]).default("active").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

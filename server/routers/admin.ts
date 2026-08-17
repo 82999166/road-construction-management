@@ -86,6 +86,7 @@ const vehicleManagementInput = z.object({
   boxHeightMeters: z.number().gt(0).max(20),
   loadFactor: z.number().gt(0).max(1.5).default(1),
   payloadTons: z.number().gt(0).max(9999).nullable().optional(),
+  fuelTankCapacityLiters: z.number().gt(0).max(99999).nullable().optional(),
   status: z.enum(["active", "suspended", "disabled"]),
   leaseTerms: z.object({
     billingType: z.enum(["monthly", "daily", "hourly", "shift"]),
@@ -986,6 +987,7 @@ export const adminRouter = router({
         boxHeightMeters: String(input.boxHeightMeters),
         loadFactor: String(input.loadFactor),
         payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons),
+        fuelTankCapacityLiters: input.fuelTankCapacityLiters === null || input.fuelTankCapacityLiters === undefined ? null : String(input.fuelTankCapacityLiters),
         status: input.status,
       };
       let vehicleId = input.id;
