@@ -20,6 +20,16 @@ describe("统一后台业务工作区范围保护", () => {
     });
   });
 
+  it("按后台侧栏分类显示施工、车辆、机械、运输和权限管理名称，且不改变业务路由", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('label: "施工管理", path: "/admin/construction"');
+    expect(source).toContain('label: "车辆管理", path: "/admin/vehicles"');
+    expect(source).toContain('label: "机械管理", path: "/admin/machinery"');
+    expect(source).toContain('label: "运输管理", path: "/admin/transport"');
+    expect(source).toContain('label: "权限管理", path: "/admin/permission"');
+  });
+
   it("禁止 PC 台账的查看、编辑和维护操作直接跳转到移动端", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
