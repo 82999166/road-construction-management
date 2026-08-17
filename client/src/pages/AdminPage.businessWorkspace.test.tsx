@@ -124,21 +124,25 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
   });
 
-  it("将机械档案、维修保养、成本、会计计价规则与月度明细合并为全宽综合台账，并提供单机详情", () => {
+  it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("trpc.machinery.listCostSummaries.useQuery");
     expect(source).toContain("trpc.machinery.listMonthlyStatements.useQuery");
     expect(source).toContain("trpc.machinery.previewMonthlyStatement.useQuery");
+    expect(source).toContain("trpc.machinery.getMachineAnalysis.useQuery");
     expect(source).toContain("机械资源 · 综合台账");
     expect(source).toContain("机械资源、维修与会计计价台账");
-    expect(source).toContain("维修成本");
+    expect(source).toContain("本月收益 / 净收益");
+    expect(source).toContain("本月支出");
+    expect(source).toContain("油耗 / 维修");
     expect(source).toContain("产值计价 / 有效日期");
-    expect(source).toContain("会计机械明细 · 月度结算快照");
-    expect(source).toContain("机械产值、司机工资、油耗、维修与分成");
-    expect(source).toContain("导出会计 CSV");
+    expect(source).toContain("单机收益与成本分析");
+    expect(source).toContain("日收益");
+    expect(source).toContain("仅有费用凭证");
     expect(source).toContain("生成会计明细草稿");
     expect(source).toContain("机械业务详情");
+    expect(source).not.toContain("会计机械明细 · 月度结算快照");
     expect(source).not.toContain('activeSection === "machinery" ? <LedgerTable');
   });
 

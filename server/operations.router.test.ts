@@ -126,6 +126,36 @@ describe("机械与运输 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("单机分析仅汇总当前项目的日作业、维修和柴油凭证，并以柴油台账优先避免油料重复计入", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [{ id: 7, projectId: 10, name: "挖掘机", code: "EX-007", model: "375" }],
+      [{ id: 81, machineId: 7, projectId: 10, period: "2026-08", totalOutput: "10000", driverTotalWage: "2500", repairAmount: "600", fuelAmount: "800", fuelLiters: "100", status: "draft" }],
+      [{ id: 91, machineId: 7, projectId: 10, occurredOn: new Date("2026-08-16T00:00:00.000Z"), workHours: "10", overtimeHours: "2", outputAmount: "1200", driverWageAmount: "300", status: "draft", remarks: null }],
+      [{ id: 101, machineId: 7, projectId: 10, occurredAt: new Date("2026-08-16T03:00:00.000Z"), costType: "fuel", quantity: "80", amount: "620", status: "approved" }],
+      [{ id: 102, assetId: 7, projectId: 10, assetType: "machine", occurredAt: new Date("2026-08-16T04:00:00.000Z"), costCategory: "repair", amount: "200", status: "approved" }],
+      [{ id: 103, machineId: 7, projectId: 10, assetType: "machine", refueledAt: new Date("2026-08-16T05:00:00.000Z"), liters: "90", amount: "720", status: "approved" }],
+    ) as never);
+
+    const result = await machineryRouter.createCaller(createAuthContext()).getMachineAnalysis({ machineId: 7, projectId: 10, period: "2026-08" });
+
+    expect(result.machine).toMatchObject({ id: 7, code: "EX-007" });
+    expect(result.monthly[0]).toMatchObject({ totalOutput: 10000, netIncome: 6100 });
+    expect(result.daily[0]).toMatchObject({ outputAmount: 1200, driverWageAmount: 300, repairAmount: 200, fuelLiters: 90, fuelAmount: 720, netIncome: -20 });
+  });
+
+  it("已结算机械日作业不可回退，且状态流转仍校验项目范围", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 93, projectId: 10, machineId: 7, status: "settled" }]),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    } as never);
+
+    await expect(machineryRouter.createCaller(createAuthContext()).transitionDailyOperation({ id: 93, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
   it("用户专属运输查看权限可在已有项目范围内读取项目选项，不再受旧岗位白名单误拦截", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValueOnce(true);

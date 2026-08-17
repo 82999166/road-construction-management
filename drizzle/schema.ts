@@ -820,6 +820,33 @@ export const machineMonthlyStatements = mysqlTable(
   }),
 );
 
+/**
+ * 单台机械每日作业与收益记录。日度收益、司机工资与工时在此受控留痕；
+ * 维修、保养、油料仍分别读取原始成本及柴油台账，避免用前端汇总替代审计凭据。
+ */
+export const machineDailyOperations = mysqlTable(
+  "machine_daily_operations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    machineId: int("machineId").notNull(),
+    occurredOn: date("occurredOn").notNull(),
+    operatorUserId: int("operatorUserId"),
+    workHours: decimal("workHours", { precision: 8, scale: 2 }).default("0").notNull(),
+    overtimeHours: decimal("overtimeHours", { precision: 8, scale: 2 }).default("0").notNull(),
+    outputAmount: decimal("outputAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    driverWageAmount: decimal("driverWageAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "settled", "void"]).default("draft").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    machineProjectDayUnique: uniqueIndex("machine_daily_operations_machine_project_day_unique").on(table.machineId, table.projectId, table.occurredOn),
+    projectDateIndex: index("machine_daily_operations_project_date_index").on(table.projectId, table.occurredOn, table.status),
+  }),
+);
 /** 车辆与机械共用的维修、保养费用台账；不替代既有机械油料/租赁成本明细。 */
 export const assetMaintenanceRecords = mysqlTable(
   "asset_maintenance_records",

@@ -9,6 +9,7 @@ import {
   evidenceRecords,
   freightRateRules,
   machineCostRecords,
+  machineDailyOperations,
   machineLeaseRules,
   machineMonthlyStatements,
   machines,
@@ -116,6 +117,26 @@ const machineMonthlyStatementInput = z.object({
 });
 
 const machineMonthlyStatementTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  nextStatus: z.enum(["submitted", "approved", "settled", "void"]),
+});
+
+/** 单台机械日作业只保存原始产值、司机工资与工时，费用仍引用独立原始台账。 */
+const machineDailyOperationInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  machineId: z.number().int().positive(),
+  occurredOn: businessDateSchema,
+  operatorUserId: z.number().int().positive().nullable().optional(),
+  workHours: z.number().min(0).max(24),
+  overtimeHours: z.number().min(0).max(24),
+  outputAmount: z.number().min(0).max(999999999999.99),
+  driverWageAmount: z.number().min(0).max(999999999999.99),
+  remarks: z.string().trim().max(500).nullable().optional(),
+});
+
+const machineDailyOperationTransitionInput = z.object({
   id: z.number().int().positive(),
   projectId: z.number().int().positive(),
   nextStatus: z.enum(["submitted", "approved", "settled", "void"]),
@@ -695,6 +716,98 @@ export const machineryRouter = router({
     const db = await getDb();
     if (!db) return [];
     return db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.projectId, input.projectId), eq(machineMonthlyStatements.period, input.period))).orderBy(desc(machineMonthlyStatements.updatedAt));
+  }),
+
+  /** 单台机械详情的月度快照和当期逐日收支分析；仅以原始日作业、成本、维保和柴油凭证聚合。 */
+  getMachineAnalysis: protectedProcedure.input(z.object({ machineId: z.number().int().positive(), projectId: z.number().int().positive(), period: settlementPeriodSchema })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const range = getMonthRange(input.period);
+    const [monthlyStatements, dailyOperations, costRows, maintenanceRows, refuelRows] = await Promise.all([
+      db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.machineId, input.machineId), eq(machineMonthlyStatements.projectId, input.projectId))).orderBy(desc(machineMonthlyStatements.period)),
+      db.select().from(machineDailyOperations).where(and(eq(machineDailyOperations.machineId, input.machineId), eq(machineDailyOperations.projectId, input.projectId), gte(machineDailyOperations.occurredOn, range.start), lt(machineDailyOperations.occurredOn, range.endExclusive))).orderBy(desc(machineDailyOperations.occurredOn)),
+      db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+      db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "machine"), eq(assetMaintenanceRecords.assetId, input.machineId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+      db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.assetType, "machine"), eq(dieselRefuelRecords.machineId, input.machineId), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
+    ]);
+    const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
+    type DailyAggregate = { date: string; operation: (typeof dailyOperations)[number] | null; repairAmount: number; maintenanceAmount: number; fuelLiters: number; fuelAmount: number; otherExpenseAmount: number; sourceCounts: { cost: number; maintenance: number; refuel: number } };
+    const days = new Map<string, DailyAggregate>();
+    const ensureDay = (date: string) => {
+      const existing = days.get(date);
+      if (existing) return existing;
+      const created: DailyAggregate = { date, operation: null, repairAmount: 0, maintenanceAmount: 0, fuelLiters: 0, fuelAmount: 0, otherExpenseAmount: 0, sourceCounts: { cost: 0, maintenance: 0, refuel: 0 } };
+      days.set(date, created);
+      return created;
+    };
+    dailyOperations.forEach(row => { const target = ensureDay(dayKey(row.occurredOn)); target.operation = row; });
+    costRows.forEach(row => {
+      const target = ensureDay(dayKey(row.occurredAt));
+      target.sourceCounts.cost += 1;
+      if (row.costType === "repair") target.repairAmount += Number(row.amount);
+      else if (row.costType !== "fuel") target.otherExpenseAmount += Number(row.amount);
+      else {
+        target.fuelLiters += Number(row.quantity);
+        target.fuelAmount += Number(row.amount);
+      }
+    });
+    maintenanceRows.forEach(row => {
+      const target = ensureDay(dayKey(row.occurredAt));
+      target.sourceCounts.maintenance += 1;
+      if (row.costCategory === "repair") target.repairAmount += Number(row.amount);
+      else target.maintenanceAmount += Number(row.amount);
+    });
+    refuelRows.forEach(row => {
+      const target = ensureDay(dayKey(row.refueledAt));
+      target.sourceCounts.refuel += 1;
+      /** 柴油领用台账为当日油耗的优先来源，避免与历史 fuel 成本行重复累计。 */
+      target.fuelLiters = Number(row.liters);
+      target.fuelAmount = Number(row.amount);
+    });
+    const daily = Array.from(days.values()).map(item => {
+      const activeOperation = item.operation && item.operation.status !== "void" ? item.operation : null;
+      const outputAmount = activeOperation ? Number(activeOperation.outputAmount) : 0;
+      const driverWageAmount = activeOperation ? Number(activeOperation.driverWageAmount) : 0;
+      const totalExpense = roundMoney(driverWageAmount + item.repairAmount + item.maintenanceAmount + item.fuelAmount + item.otherExpenseAmount);
+      return { ...item, outputAmount, driverWageAmount, totalExpense, netIncome: roundMoney(outputAmount - totalExpense), workHours: activeOperation ? Number(activeOperation.workHours) : 0, overtimeHours: activeOperation ? Number(activeOperation.overtimeHours) : 0, operationStatus: item.operation?.status ?? null, remarks: item.operation?.remarks ?? null };
+    }).sort((left, right) => right.date.localeCompare(left.date));
+    return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), daily };
+  }),
+
+  /** 保存单机日作业；已提交、审核或结算记录禁止直接修改。 */
+  saveDailyOperation: protectedProcedure.input(machineDailyOperationInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertMachineryAccess(ctx);
+    const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    const [existing] = input.id
+      ? await db.select().from(machineDailyOperations).where(eq(machineDailyOperations.id, input.id)).limit(1)
+      : await db.select().from(machineDailyOperations).where(and(eq(machineDailyOperations.machineId, input.machineId), eq(machineDailyOperations.projectId, input.projectId), eq(machineDailyOperations.occurredOn, toBusinessDate(input.occurredOn)))).limit(1);
+    if (existing && (existing.machineId !== input.machineId || existing.projectId !== input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "机械日作业记录不存在或不属于当前项目" });
+    if (existing && existing.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "已提交、审核或结算的机械日作业不得直接修改" });
+    const values = { projectId: input.projectId, machineId: input.machineId, occurredOn: toBusinessDate(input.occurredOn), operatorUserId: input.operatorUserId ?? machine.operatorUserId ?? null, workHours: String(roundMoney(input.workHours)), overtimeHours: String(roundMoney(input.overtimeHours)), outputAmount: String(roundMoney(input.outputAmount)), driverWageAmount: String(roundMoney(input.driverWageAmount)), remarks: input.remarks?.trim() || null };
+    if (existing) await db.update(machineDailyOperations).set(values).where(eq(machineDailyOperations.id, existing.id));
+    else await db.insert(machineDailyOperations).values({ ...values, status: "draft", createdBy: user.id });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "update_daily_operation" : "create_daily_operation", targetType: "machine_daily_operation", targetId: `${input.machineId}:${input.occurredOn}`, summary: `${existing ? "更新" : "录入"}机械日作业：${machine.name} ${input.occurredOn}，产值 ¥${roundMoney(input.outputAmount)}` });
+    return { success: true };
+  }),
+
+  /** 日作业沿用机械会计状态机，审核和结算仍只允许会计或财务负责人办理。 */
+  transitionDailyOperation: protectedProcedure.input(machineDailyOperationTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [record] = await db.select().from(machineDailyOperations).where(eq(machineDailyOperations.id, input.id)).limit(1);
+    if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械日作业不存在或不属于当前项目" });
+    const allowed: Record<typeof record.status, readonly string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["settled", "void"], settled: [], void: [] };
+    if (!allowed[record.status].includes(input.nextStatus)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前机械日作业状态不允许执行该操作" });
+    if (["approved", "settled"].includes(input.nextStatus) && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可审核、结算机械日作业" });
+    if (!["approved", "settled"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械日作业" });
+    const result = await db.update(machineDailyOperations).set({ status: input.nextStatus }).where(and(eq(machineDailyOperations.id, input.id), eq(machineDailyOperations.status, record.status)));
+    assertConditionalStatusWrite(result, "机械日作业");
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_daily_operation", targetType: "machine_daily_operation", targetId: String(input.id), summary: `机械日作业状态变更为：${input.nextStatus}` });
+    return { success: true };
   }),
 
   /** 实时预览一行机械会计明细；只读取当前已授权项目的租赁规则、成本和维修记录，不创建或改变状态。 */

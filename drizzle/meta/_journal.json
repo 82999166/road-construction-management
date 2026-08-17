@@ -232,6 +232,13 @@
       "when": 1786944174098,
       "tag": "0032_black_jetstream",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1786945821599,
+      "tag": "0033_parched_shatterstar",
+      "breakpoints": true
     }
   ]
 }
