@@ -142,6 +142,11 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("仅有费用凭证");
     expect(source).toContain("生成会计明细草稿");
     expect(source).toContain("机械业务详情");
+    const machineMetricIndex = source.indexOf('title="机械总数"');
+    const machineProjectFilterIndex = source.indexOf('renderWorkspaceProjectFilter("机械项目范围"');
+    expect(machineMetricIndex).toBeGreaterThan(-1);
+    expect(machineMetricIndex).toBeLessThan(machineProjectFilterIndex);
+    expect(source.match(/title="机械总数"/g)).toHaveLength(1);
     expect(source).not.toContain("会计机械明细 · 月度结算快照");
     expect(source).not.toContain('activeSection === "machinery" ? <LedgerTable');
   });
