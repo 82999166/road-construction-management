@@ -24,9 +24,14 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("机械月度结算预览表");
     expect(source).toContain("openCostDialog(machine.id)");
     expect(source).toContain(">费用录入</Button>");
+    expect(source).toContain(">成本记录</Button>");
+    expect(source).not.toContain('<TabsTrigger value="costs"');
     expect(source).toContain("createWatermarkedCostImage");
     expect(source).toContain("trpc.evidence.upload.useMutation");
     expect(source).toContain("费用水印照片");
+    expect(source).toContain('capture="environment"');
+    expect(source).toContain("现场拍照并上传");
+    expect(source).toContain("操作员（责任人）");
     expect(source).toContain("费用说明");
     expect(source).toContain("evidenceId, remarks:");
     expect(source).toContain("operatorName");
