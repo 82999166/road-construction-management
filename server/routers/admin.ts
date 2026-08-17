@@ -10,6 +10,7 @@ import {
   constructionDailyReports,
   departmentBusinessScopes,
   dieselGuidelinePrices,
+  dieselPriceAlertRules,
   dieselRefuelRecords,
   employeeInsurancePolicies,
   employeeProfiles,
@@ -53,6 +54,7 @@ import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTe
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
+import { storageGetSignedUrl } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -133,6 +135,32 @@ const dieselRefuelInput = z.object({
   if (value.deductFromFreight && !value.transportTripId) ctx.addIssue({ code: "custom", path: ["transportTripId"], message: "扣减运费必须关联具体运输趟次" });
   if (value.supplyMethod === "external_station" && !value.actualUnitPrice) ctx.addIssue({ code: "custom", path: ["actualUnitPrice"], message: "加油站加油必须填写实际单价" });
 });
+
+const dieselPriceAlertRuleInput = z.object({
+  projectId: z.number().int().positive(),
+  thresholdPercent: z.number().gt(0, "预警阈值必须大于 0").max(1000, "预警阈值不能超过 1000%").default(10),
+  enabled: z.boolean().default(true),
+});
+
+type DieselRefuelRow = typeof dieselRefuelRecords.$inferSelect;
+
+/**
+ * 现金加油以同项目、同供应商上一笔有效价格作为比较基准。该函数只计算展示/审计标记，
+ * 不会改写已保存的油价或金额快照，避免历史口径被后续阈值调整影响。
+ */
+function calculateDieselPriceAlert(row: DieselRefuelRow, allRows: DieselRefuelRow[], rule?: { thresholdPercent: number | string; enabled: boolean } | null) {
+  const thresholdPercent = rule ? Number(rule.thresholdPercent) : null;
+  const base = { isAlert: false, referenceUnitPrice: null as number | null, deviationPercent: null as number | null, thresholdPercent };
+  if (row.supplyMethod !== "external_station" || !rule?.enabled || !row.stationOrSupplierName || row.status === "void") return base;
+  const rowTime = new Date(row.refueledAt).getTime();
+  const previous = allRows
+    .filter(item => item.id !== row.id && item.projectId === row.projectId && item.supplyMethod === "external_station" && item.status !== "void" && item.stationOrSupplierName === row.stationOrSupplierName && new Date(item.refueledAt).getTime() < rowTime)
+    .sort((a, b) => new Date(b.refueledAt).getTime() - new Date(a.refueledAt).getTime())[0];
+  if (!previous || Number(previous.appliedUnitPrice) <= 0 || !thresholdPercent) return base;
+  const referenceUnitPrice = Number(previous.appliedUnitPrice);
+  const deviationPercent = Number((Math.abs((Number(row.appliedUnitPrice) - referenceUnitPrice) / referenceUnitPrice) * 100).toFixed(2));
+  return { isAlert: deviationPercent >= thresholdPercent, referenceUnitPrice, deviationPercent, thresholdPercent };
+}
 
 const employeeProfileInput = z.object({
   id: z.number().int().positive().optional(),
@@ -716,6 +744,49 @@ export const adminRouter = router({
       await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_guideline_price" : "create_guideline_price", targetType: "diesel_guideline_price", targetId: String(input.id ?? input.projectId), summary: `${input.id ? "维护" : "新增"}柴油指导价：¥${input.pricePerLiter}/L` });
       return { success: true };
     }),
+    getPriceAlertRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { thresholdPercent: 10, enabled: true, configured: false };
+      const [rule] = await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1);
+      return rule ? { id: rule.id, thresholdPercent: Number(rule.thresholdPercent), enabled: rule.enabled, configured: true } : { thresholdPercent: 10, enabled: true, configured: false };
+    }),
+    savePriceAlertRule: protectedProcedure.input(dieselPriceAlertRuleInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油预警规则必须归属有效项目" });
+      const [existing] = await db.select({ id: dieselPriceAlertRules.id }).from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1);
+      const values = { projectId: input.projectId, thresholdPercent: String(input.thresholdPercent), enabled: input.enabled, createdBy: admin.id };
+      if (existing) await db.update(dieselPriceAlertRules).set(values).where(eq(dieselPriceAlertRules.id, existing.id));
+      else await db.insert(dieselPriceAlertRules).values(values);
+      await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "save_price_alert_rule", targetType: "diesel_price_alert_rule", targetId: String(input.projectId), summary: `柴油现金油价预警阈值：${input.enabled ? `${input.thresholdPercent}%` : "已停用"}` });
+      return { success: true };
+    }),
+    supplierReconciliation: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM") })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const [rule] = await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1);
+      const allRows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
+      const rows = allRows.filter(row => row.projectId === input.projectId && row.supplyMethod === "external_station" && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 7) === input.period);
+      const groups = new Map<string, { supplierName: string; recordCount: number; liters: number; amount: number; receiptCount: number; alertCount: number; minUnitPrice: number; maxUnitPrice: number }>();
+      rows.forEach(row => {
+        const supplierName = row.stationOrSupplierName?.trim() || "未登记供应商";
+        const group = groups.get(supplierName) ?? { supplierName, recordCount: 0, liters: 0, amount: 0, receiptCount: 0, alertCount: 0, minUnitPrice: Number(row.appliedUnitPrice), maxUnitPrice: Number(row.appliedUnitPrice) };
+        const unitPrice = Number(row.appliedUnitPrice);
+        group.recordCount += 1;
+        group.liters += Number(row.liters);
+        group.amount += Number(row.amount);
+        group.receiptCount += row.receiptNo || row.evidenceId ? 1 : 0;
+        group.alertCount += calculateDieselPriceAlert(row, allRows, rule).isAlert ? 1 : 0;
+        group.minUnitPrice = Math.min(group.minUnitPrice, unitPrice);
+        group.maxUnitPrice = Math.max(group.maxUnitPrice, unitPrice);
+        groups.set(supplierName, group);
+      });
+      return Array.from(groups.values()).map(group => ({ ...group, averageUnitPrice: group.liters ? Number((group.amount / group.liters).toFixed(2)) : 0, priceSpread: Number((group.maxUnitPrice - group.minUnitPrice).toFixed(2)) })).sort((a, b) => b.amount - a.amount);
+    }),
     listRefuelRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), assetType: z.enum(["vehicle", "machine"]).optional(), assetId: z.number().int().positive().optional(), status: z.enum(["draft", "approved", "settled", "void"]).optional(), date: z.string().date().optional() }).optional()).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);
       const db = await getDb();
@@ -723,10 +794,13 @@ export const adminRouter = router({
       const rows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
       const date = input?.date;
       const filtered = rows.filter(row => (!input?.projectId || row.projectId === input.projectId) && (!input?.assetType || row.assetType === input.assetType) && (!input?.status || row.status === input.status) && (!input?.assetId || (row.assetType === "vehicle" ? row.vehicleId === input.assetId : row.machineId === input.assetId)) && (!date || new Date(row.refueledAt).toISOString().slice(0, 10) === date));
+      const [alertRule] = input?.projectId ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
       return Promise.all(filtered.map(async row => {
         const [asset] = row.assetType === "vehicle" && row.vehicleId ? await db.select({ name: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, row.vehicleId)).limit(1) : row.assetType === "machine" && row.machineId ? await db.select({ name: machines.name, code: machines.code }).from(machines).where(eq(machines.id, row.machineId)).limit(1) : [];
         const [trip] = row.transportTripId ? await db.select({ tripNo: transportTrips.tripNo, calculatedAmount: transportTrips.calculatedAmount }).from(transportTrips).where(eq(transportTrips.id, row.transportTripId)).limit(1) : [];
-        return { ...row, assetName: asset ? ("code" in asset && asset.code ? `${asset.name} · ${asset.code}` : asset.name) : "未关联资源", tripNo: trip?.tripNo ?? null, grossFreightAmount: trip?.calculatedAmount ?? null };
+        const [evidence] = row.evidenceId ? await db.select({ fileName: evidenceRecords.fileName, fileKey: evidenceRecords.fileKey, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(eq(evidenceRecords.id, row.evidenceId)).limit(1) : [];
+        const receiptImageUrl = evidence ? await storageGetSignedUrl(evidence.fileKey) : null;
+        return { ...row, assetName: asset ? ("code" in asset && asset.code ? `${asset.name} · ${asset.code}` : asset.name) : "未关联资源", tripNo: trip?.tripNo ?? null, grossFreightAmount: trip?.calculatedAmount ?? null, receiptEvidence: evidence ? { ...evidence, url: receiptImageUrl } : null, priceAlert: calculateDieselPriceAlert(row, rows, alertRule) };
       }));
     }),
     dailySummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: z.string().date() })).query(async ({ ctx, input }) => {
@@ -760,6 +834,10 @@ export const adminRouter = router({
       }
       const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
       if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油记录必须归属有效项目" });
+      if (input.evidenceId) {
+        const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+        if (!evidence || evidence.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "现金小票影像必须归属所选项目" });
+      }
       if (input.assetType === "vehicle") {
         const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId!)).limit(1);
         if (!vehicle || vehicle.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆必须归属所选项目" });
@@ -781,6 +859,8 @@ export const adminRouter = router({
         appliedUnitPrice = Number(activePrice.pricePerLiter);
       }
       const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
+      const allRefuelRows = input.supplyMethod === "external_station" ? await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt)) : [];
+      const [alertRule] = input.supplyMethod === "external_station" ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
       const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: input.status, createdBy: admin.id, approvedBy: input.status === "approved" ? admin.id : null, approvedAt: input.status === "approved" ? new Date() : null };
       let recordId = input.id;
       if (input.id) {
@@ -795,6 +875,8 @@ export const adminRouter = router({
         recordId = created?.id;
       }
       if (!recordId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "柴油记录保存后无法确认编号" });
+      const alertCandidate: DieselRefuelRow = { ...values, id: recordId, recordNo: `DS${recordId}`, createdAt: new Date(), updatedAt: new Date() };
+      const priceAlert = input.supplyMethod === "external_station" ? calculateDieselPriceAlert(alertCandidate, allRefuelRows, alertRule) : calculateDieselPriceAlert(alertCandidate, [], null);
       if (input.assetType === "machine") {
         const [existingCost] = await db.select({ id: machineCostRecords.id }).from(machineCostRecords).where(eq(machineCostRecords.dieselRefuelRecordId, recordId)).limit(1);
         const costValues = { machineId: input.machineId!, projectId: input.projectId, costType: "fuel" as const, quantity: String(input.liters), unitPrice: String(appliedUnitPrice), amount: String(amount), dieselRefuelRecordId: recordId, occurredAt: new Date(input.refueledAt), evidenceId: input.evidenceId ?? null, status: input.status === "void" ? "void" as const : input.status === "approved" ? "approved" as const : "draft" as const };
@@ -802,7 +884,10 @@ export const adminRouter = router({
         else if (input.status !== "void") await db.insert(machineCostRecords).values(costValues);
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${input.deductFromFreight ? "，结算扣油" : ""}` });
-      return { success: true, id: recordId, amount, appliedUnitPrice };
+      if (priceAlert.isAlert) {
+        await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "price_alert", targetType: "diesel_refuel", targetId: String(recordId), summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）` });
+      }
+      return { success: true, id: recordId, amount, appliedUnitPrice, priceAlert };
     }),
   }),
 

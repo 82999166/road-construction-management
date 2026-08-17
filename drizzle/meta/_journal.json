@@ -239,6 +239,13 @@
       "when": 1786945821599,
       "tag": "0033_parched_shatterstar",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1786954826993,
+      "tag": "0034_fuzzy_plazm",
+      "breakpoints": true
     }
   ]
 }

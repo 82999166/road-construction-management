@@ -166,6 +166,19 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("现金油费预览");
   });
 
+  it("将现金小票、油价异常预警和供应商采购对账纳入柴油审计闭环", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("sourceType: \"diesel_receipt\"");
+    expect(source).toContain("现金小票照片（JPG/PNG）");
+    expect(source).toContain("查看受控小票影像");
+    expect(source).toContain("现金油价异常预警");
+    expect(source).toContain("trpc.admin.diesel.getPriceAlertRule.useQuery");
+    expect(source).toContain("供应商柴油采购对账");
+    expect(source).toContain("trpc.admin.diesel.supplierReconciliation.useQuery");
+    expect(source).toContain("柴油供应商对账-");
+  });
+
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

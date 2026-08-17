@@ -933,6 +933,24 @@ export const dieselGuidelinePrices = mysqlTable(
 );
 
 /**
+ * 项目柴油价格异常预警规则。实际现金单价相对同一项目同一供应商的上一笔有效现金单价
+ * 超过阈值时，服务端在柴油审计中留痕并向对账台账返回异常标识；历史油价快照不被修改。
+ */
+export const dieselPriceAlertRules = mysqlTable(
+  "diesel_price_alert_rules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    thresholdPercent: decimal("thresholdPercent", { precision: 8, scale: 2 }).default("10.00").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ projectUnique: uniqueIndex("diesel_price_alert_rules_project_unique").on(table.projectId) }),
+);
+
+/**
  * 柴油领用/加油台账。车辆项目部供油可在运输结算中扣减，机械供油自动计入机械油料成本；
  * 所有金额均由服务端按升数和价格快照计算，避免前端修改金额。
  */

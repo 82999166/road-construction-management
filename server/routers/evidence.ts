@@ -11,7 +11,7 @@ import { storageGetSignedUrl, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
-const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "other"]);
+const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "diesel_receipt", "other"]);
 const CAPTURE_CONNECTOR_SETTING_KEYS = ["EVIDENCE_CAMERA_PROVIDER", "EVIDENCE_LOCATION_PROVIDER", "EVIDENCE_LOCATION_REQUIRED", WATERMARK_TEMPLATE_SETTING_KEY] as const;
 type CaptureConnectorConfig = {
   camera: { provider: "browser" | "disabled"; enabled: boolean };
@@ -186,7 +186,7 @@ export const evidenceRouter = router({
     if (!captureConfig.camera.enabled) {
       throw new TRPCError({ code: "FORBIDDEN", message: "现场影像采集连接器已被管理员停用" });
     }
-    if (captureConfig.location.required && (input.longitude === null || input.longitude === undefined || input.latitude === null || input.latitude === undefined)) {
+    if (captureConfig.location.required && input.sourceType !== "diesel_receipt" && (input.longitude === null || input.longitude === undefined || input.latitude === null || input.latitude === undefined)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "当前项目要求上传现场影像时附带有效定位" });
     }
     const capturedAt = new Date(input.capturedAt);
