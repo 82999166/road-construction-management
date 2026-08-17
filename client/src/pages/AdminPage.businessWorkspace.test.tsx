@@ -299,6 +299,22 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
   });
 
+  it("在系统设置提供外部 AI API 的受控配置、连接校验与摘要降级说明", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("AI 模型 API 接入");
+    expect(source).toContain("AI API 基础地址");
+    expect(source).toContain("AI API Key");
+    expect(source).toContain("启用外部 AI 摘要");
+    expect(source).toContain("保存 AI API 配置");
+    expect(source).toContain("校验 API 连接");
+    expect(source).toContain("trpc.admin.settings.getExternalAiConfiguration.useQuery");
+    expect(source).toContain("trpc.admin.settings.saveExternalAiConfiguration.useMutation");
+    expect(source).toContain("trpc.admin.settings.testExternalAiConfiguration.useMutation");
+    expect(source).toContain("外部 AI 辅助摘要");
+    expect(source).toContain("系统内置 AI 辅助摘要");
+  });
+
   it("允许私有模板按业务模块绑定并自动映射字段，不再要求用户手填内部占位符", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

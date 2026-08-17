@@ -51,6 +51,7 @@ import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessMod
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
@@ -260,6 +261,14 @@ const officialAccountConfigurationInput = z.object({
   appUrl: z.string().trim().min(1, "请填写公众号业务跳转地址").max(1024),
   egressUrl: z.string().trim().min(1, "请填写微信 API 固定出口网关地址").max(1024),
   egressSigningSecret: z.string().max(2048),
+});
+
+/** 兼容 OpenAI Chat Completions 的外部 AI 配置；密钥后续修订留空表示保留既有密文。 */
+const externalAiApiConfigurationInput = z.object({
+  baseUrl: z.string().trim().min(1, "请填写 AI API 基础地址").max(1024),
+  apiKey: z.string().max(4096),
+  model: z.string().trim().min(1, "请填写模型名称").max(128),
+  enabled: z.boolean().default(false),
 });
 
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
@@ -1685,6 +1694,61 @@ export const adminRouter = router({
       });
       const validation = await testPublishedOfficialAccountConfiguration();
       return { success: validation.success, message: validation.message };
+    }),
+    getExternalAiConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { configured: false, enabled: false, baseUrl: "", model: "", apiKeyConfigured: false, apiKeyPreview: null };
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status }).from(systemSettings).where(inArray(systemSettings.settingKey, Object.values(EXTERNAL_AI_SETTING_KEYS)));
+      const byKey = new Map(rows.map(item => [item.settingKey, item]));
+      const baseUrl = byKey.get(EXTERNAL_AI_SETTING_KEYS.baseUrl)?.valueJson ?? "";
+      const model = byKey.get(EXTERNAL_AI_SETTING_KEYS.model)?.valueJson ?? "";
+      const apiKey = byKey.get(EXTERNAL_AI_SETTING_KEYS.apiKey);
+      return { configured: Boolean(baseUrl && model && apiKey?.secretEncrypted), enabled: byKey.get(EXTERNAL_AI_SETTING_KEYS.enabled)?.valueJson === "true", baseUrl, model, apiKeyConfigured: Boolean(apiKey?.secretEncrypted), apiKeyPreview: apiKey?.valuePreview ?? null };
+    }),
+    saveExternalAiConfiguration: protectedProcedure.input(externalAiApiConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const baseUrl = normalizeExternalAiBaseUrl(input.baseUrl);
+      const model = normalizeExternalAiModel(input.model);
+      const definitions = [
+        { settingKey: EXTERNAL_AI_SETTING_KEYS.baseUrl, displayName: "外部 AI API 基础地址", value: baseUrl, isSensitive: false, remarks: "兼容 OpenAI Chat Completions 的公开 HTTPS API 基础地址。" },
+        { settingKey: EXTERNAL_AI_SETTING_KEYS.apiKey, displayName: "外部 AI API Key", value: input.apiKey.trim(), isSensitive: true, remarks: "外部 AI API Key；仅服务端 AES-GCM 加密托管。" },
+        { settingKey: EXTERNAL_AI_SETTING_KEYS.model, displayName: "外部 AI 模型名称", value: model, isSensitive: false, remarks: "风险管理摘要使用的兼容 OpenAI 模型名称。" },
+        { settingKey: EXTERNAL_AI_SETTING_KEYS.enabled, displayName: "启用外部 AI", value: input.enabled ? "true" : "false", isSensitive: false, remarks: "启用时风险管理摘要优先调用外部 AI；失败自动回退。" },
+      ] as const;
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, definitions.map(item => item.settingKey)));
+      const existingByKey = new Map(existingRows.map(item => [item.settingKey, item]));
+      const existingSecret = existingByKey.get(EXTERNAL_AI_SETTING_KEYS.apiKey)?.secretEncrypted;
+      if (!input.apiKey.trim() && !existingSecret) throw new TRPCError({ code: "BAD_REQUEST", message: "首次配置必须填写外部 AI API Key" });
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.settingKey);
+          const preserveExistingSecret = definition.isSensitive && !definition.value;
+          const secretEncrypted = definition.isSensitive ? (preserveExistingSecret ? existing?.secretEncrypted : encryptSecret(definition.value)) : null;
+          if (definition.isSensitive && !secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "AI API Key 配置不完整" });
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const writeResult = await tx.update(systemSettings).set({ category: "AI 服务", displayName: definition.displayName, valueJson: definition.isSensitive ? null : definition.value, secretEncrypted, valuePreview: definition.isSensitive ? (preserveExistingSecret ? existing.valuePreview : maskSecret(definition.value)) : definition.value.slice(0, 256), isSensitive: definition.isSensitive, status: "published", version: nextVersion, publishedAt: new Date(), remarks: definition.remarks, updatedBy: admin.id }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(writeResult);
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify({ category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks }) });
+          } else {
+            await tx.insert(systemSettings).values({ category: "AI 服务", settingKey: definition.settingKey, displayName: definition.displayName, valueJson: definition.isSensitive ? null : definition.value, secretEncrypted, valuePreview: definition.isSensitive ? maskSecret(definition.value) : definition.value.slice(0, 256), isSensitive: definition.isSensitive, status: "published", publishedAt: new Date(), remarks: definition.remarks, updatedBy: admin.id });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_external_ai_configuration", targetType: "external_ai", targetId: "configuration_bundle", summary: `外部 AI API 配置已保存：${input.enabled ? "启用" : "停用"}，模型 ${model}` });
+      });
+      return { success: true };
+    }),
+    testExternalAiConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const configuration = await getPublishedExternalAiConfiguration();
+      if (!configuration) throw new TRPCError({ code: "BAD_REQUEST", message: "请先完整保存外部 AI API 地址、密钥和模型" });
+      await testExternalAiConnection(configuration);
+      const db = await getDb();
+      if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "test_external_ai_configuration", targetType: "external_ai", targetId: "configuration_bundle", summary: `外部 AI API 连接校验通过：${configuration.baseUrl}，模型 ${configuration.model}` });
+      return { success: true, message: "已成功连接 AI API 的模型目录端点；未发送任何项目业务数据。" };
     }),
     saveDraft: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))

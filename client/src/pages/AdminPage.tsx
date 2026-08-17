@@ -29,6 +29,7 @@ import {
   ScrollText,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Truck,
   UsersRound,
   type LucideIcon,
@@ -103,6 +104,7 @@ type AssignmentForm = { id?: number; userId: string; roleId: string; organizatio
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
+type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type BroadcastAudienceType = "project" | "organization" | "role";
@@ -134,6 +136,7 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
+const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
 const CONSTRUCTION_WEATHER_LABELS: Record<ConstructionWeather, string> = { sunny: "晴", cloudy: "多云", rainy: "雨", snowy: "雪", windy: "大风", other: "其他" };
@@ -501,6 +504,7 @@ export default function AdminPage() {
   const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, { enabled: canQuery && isPermission });
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
+  const externalAiConfiguration = trpc.admin.settings.getExternalAiConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
   const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && (isSettings || isDiesel) });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
@@ -528,7 +532,7 @@ export default function AdminPage() {
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
   const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
-  const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "llm" | "fallback"; model: string } | null>(null);
+  const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string } | null>(null);
   const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [vehicleAnalysisTarget, setVehicleAnalysisTarget] = useState<{ vehicleId: number; projectId: number; plateNo: string } | null>(null);
@@ -838,6 +842,8 @@ export default function AdminPage() {
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
   const [officialAccountConfigurationForm, setOfficialAccountConfigurationForm] = useState<OfficialAccountConfigurationForm>(EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM);
   const [officialAccountConfigurationValidation, setOfficialAccountConfigurationValidation] = useState<{ success: boolean; message: string; statusCode?: number } | null>(null);
+  const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
+  const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
   const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
@@ -893,6 +899,15 @@ export default function AdminPage() {
       egressUrl: current.egressUrl === EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM.egressUrl ? (publishedValue("WECHAT_OFFICIAL_EGRESS_URL") || current.egressUrl) : current.egressUrl,
     }));
   }, [allSettings, isSettings]);
+  useEffect(() => {
+    if (!isSettings || !externalAiConfiguration.data) return;
+    setExternalAiApiConfigurationForm(current => ({
+      ...current,
+      baseUrl: current.baseUrl || externalAiConfiguration.data.baseUrl,
+      model: current.model || externalAiConfiguration.data.model,
+      enabled: externalAiConfiguration.data.enabled,
+    }));
+  }, [externalAiConfiguration.data, isSettings]);
   useEffect(() => {
     if (!isBusinessWorkspace || businessWorkspaceProjectId || !projects.data?.length) return;
     const firstAvailableProject = projects.data.find(project => project.status !== "archived");
@@ -1088,7 +1103,7 @@ export default function AdminPage() {
   const generateRiskBriefing = trpc.projectRisk.generateBriefing.useMutation({
     onSuccess: result => {
       setRiskBriefing({ ...result.briefing, source: result.source, model: result.model });
-      toast.success(result.source === "llm" ? "AI 管理摘要已生成" : "AI 服务暂不可用，已生成规则汇总摘要");
+      toast.success(result.source === "fallback" ? "AI 服务暂不可用，已生成规则汇总摘要" : result.source === "external" ? "外部 AI 管理摘要已生成" : "系统内置 AI 管理摘要已生成");
     },
     onError: error => toast.error(error.message),
   });
@@ -1266,6 +1281,29 @@ export default function AdminPage() {
     },
     onError: error => {
       setOfficialAccountConfigurationValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
+  });
+  const saveExternalAiConfiguration = trpc.admin.settings.saveExternalAiConfiguration.useMutation({
+    onSuccess: async () => {
+      toast.success("外部 AI API 配置已加密保存；启用后新的 AI 管理摘要将优先使用该模型");
+      setExternalAiApiConfigurationForm(current => ({ ...current, apiKey: "" }));
+      setExternalAiApiValidation(null);
+      await Promise.all([externalAiConfiguration.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => {
+      setExternalAiApiValidation(error.message);
+      toast.error(error.message);
+    },
+  });
+  const testExternalAiConfiguration = trpc.admin.settings.testExternalAiConfiguration.useMutation({
+    onSuccess: async result => {
+      setExternalAiApiValidation(result.message);
+      toast.success("外部 AI API 连接校验通过");
+      await audits.refetch();
+    },
+    onError: error => {
+      setExternalAiApiValidation(error.message);
       toast.error(error.message);
     },
   });
@@ -2109,6 +2147,20 @@ export default function AdminPage() {
             </form>
           </CardContent>
         </Card>
+        <Card className="border-[#d4ddeb] bg-[#f8faff]">
+          <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-[#445dd1]" />AI 模型 API 接入</CardTitle><CardDescription className="mt-1">用于 AI 项目风控的管理摘要。支持兼容 OpenAI Chat Completions 的公开 HTTPS API；风险扫描、通知和整改不依赖该接口，调用失败会自动回退。</CardDescription></div><Badge variant="outline" className={externalAiConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : externalAiConfiguration.data?.configured ? "border-amber-300 bg-amber-50 text-amber-700" : "border-slate-300 bg-white text-slate-600"}>{externalAiConfiguration.data?.enabled ? "已启用外部 AI" : externalAiConfiguration.data?.configured ? "已配置，未启用" : "待配置"}</Badge></div></CardHeader>
+          <CardContent>
+            <form className="space-y-3" onSubmit={event => { event.preventDefault(); setExternalAiApiValidation(null); saveExternalAiConfiguration.mutate(externalAiApiConfigurationForm); }}>
+              <Field label="AI API 基础地址"><Input type="url" value={externalAiApiConfigurationForm.baseUrl} placeholder="https://api.example.com/v1" autoComplete="off" onChange={event => setExternalAiApiConfigurationForm(current => ({ ...current, baseUrl: event.target.value }))} /><p className="mt-1 text-xs text-slate-500">填写兼容 OpenAI 的 v1 根地址；系统会调用其 <code>/models</code> 和 <code>/chat/completions</code> 端点。</p></Field>
+              <Field label="模型名称"><Input value={externalAiApiConfigurationForm.model} placeholder="例如：gpt-4o-mini 或您的模型 ID" autoComplete="off" onChange={event => setExternalAiApiConfigurationForm(current => ({ ...current, model: event.target.value }))} /></Field>
+              <Field label="AI API Key"><Input type="password" value={externalAiApiConfigurationForm.apiKey} placeholder={externalAiConfiguration.data?.apiKeyConfigured ? `已安全托管（${externalAiConfiguration.data.apiKeyPreview ?? "已配置"}）；留空保持不变` : "首次配置必须填写 API Key"} autoComplete="new-password" onChange={event => setExternalAiApiConfigurationForm(current => ({ ...current, apiKey: event.target.value }))} /></Field>
+              <label className="flex items-start gap-2 rounded-lg border border-[#d9e3f6] bg-white/80 px-3 py-2 text-sm text-slate-700"><Checkbox className="mt-0.5" checked={externalAiApiConfigurationForm.enabled} onCheckedChange={checked => setExternalAiApiConfigurationForm(current => ({ ...current, enabled: checked === true }))} /><span><b>启用外部 AI 摘要</b><span className="mt-1 block text-xs leading-5 text-slate-500">启用后，AI 风控仅发送脱敏风险计数和费用分类金额；连接失败时会改用系统内置 AI，再降级为规则摘要。</span></span></label>
+              <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">API Key 采用服务端 AES-GCM 加密保存，不会回显、写入前端代码、导出文件或审计明文。连接校验仅请求模型目录，不发送任何项目业务数据。</p>
+              <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit" className="min-h-11 flex-1 bg-[#445dd1] hover:bg-[#364bb2]" disabled={saveExternalAiConfiguration.isPending || !externalAiApiConfigurationForm.baseUrl.trim() || !externalAiApiConfigurationForm.model.trim() || (!externalAiApiConfigurationForm.apiKey.trim() && !externalAiConfiguration.data?.apiKeyConfigured)}>{saveExternalAiConfiguration.isPending ? "正在加密保存…" : "保存 AI API 配置"}</Button><Button type="button" variant="outline" className="min-h-11 sm:w-auto" disabled={testExternalAiConfiguration.isPending || !externalAiConfiguration.data?.configured} onClick={() => { setExternalAiApiValidation(null); testExternalAiConfiguration.mutate(); }}>{testExternalAiConfiguration.isPending ? "正在校验…" : "校验 API 连接"}</Button></div>
+              {externalAiApiValidation ? <div className="rounded-lg border border-[#c9d9f5] bg-[#edf3ff] px-3 py-2 text-xs leading-5 text-[#294b89]">{externalAiApiValidation}</div> : null}
+            </form>
+          </CardContent>
+        </Card>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
           <CardHeader><CardTitle className="text-base">企业身份账号恢复</CardTitle><CardDescription>仅配置身份提供方公开 HTTPS 恢复页面。系统不保存企业密码，登录页和个人中心将通过受控端点跳转至该地址。</CardDescription></CardHeader>
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份平台账号恢复地址", value: "", isSensitive: false, remarks: "仅限企业统一身份提供方的账号找回或密码重置页面；保存草稿后需发布才会对用户生效。" })}>填入身份恢复地址模板</Button></CardContent>
@@ -2558,7 +2610,7 @@ export default function AdminPage() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]"><Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">风险检测阈值</CardTitle><CardDescription>阈值按项目独立保存。未维护核定油箱容量的车辆/机械不会产生“加油超量”结论，需先补全档案。</CardDescription></div><div className="flex items-center gap-2 text-sm"><Checkbox id="risk-enabled" checked={riskRuleForm.enabled} onCheckedChange={checked => setRiskRuleForm(current => ({ ...current, enabled: checked === true }))} /><Label htmlFor="risk-enabled">启用扫描</Label></div></CardHeader><CardContent className="space-y-3"><div className="grid gap-3 sm:grid-cols-2"><Field label="单次加油最大容量比例"><Input type="number" min="1" max="3" step="0.01" value={riskRuleForm.maxFuelFillRatio} onChange={event => setRiskRuleForm(current => ({ ...current, maxFuelFillRatio: event.target.value }))} /></Field><Field label="运输最大平均速度（km/h）"><Input type="number" min="20" max="180" step="1" value={riskRuleForm.maxTransportSpeedKmh} onChange={event => setRiskRuleForm(current => ({ ...current, maxTransportSpeedKmh: event.target.value }))} /></Field><Field label="运输最长合理耗时（分钟）"><Input type="number" min="15" max="1440" step="1" value={riskRuleForm.maxTransportDurationMinutes} onChange={event => setRiskRuleForm(current => ({ ...current, maxTransportDurationMinutes: event.target.value }))} /></Field><Field label="上班未下班打卡阈值（小时）"><Input type="number" min="2" max="72" step="1" value={riskRuleForm.maxOpenCheckInHours} onChange={event => setRiskRuleForm(current => ({ ...current, maxOpenCheckInHours: event.target.value }))} /></Field><Field label="日报待办阈值（小时）"><Input type="number" min="1" max="720" step="1" value={riskRuleForm.maxPendingReportHours} onChange={event => setRiskRuleForm(current => ({ ...current, maxPendingReportHours: event.target.value }))} /></Field></div><div className="flex justify-end"><Button disabled={saveRiskRule.isPending} onClick={validateRule}>{saveRiskRule.isPending ? "正在保存…" : "保存项目风险阈值"}</Button></div></CardContent></Card>
           <Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">财务分类成本</CardTitle><CardDescription>以已登记的财务流水、柴油、工资、机械成本和维修保养为准，避免用 AI 推测成本。</CardDescription></div><Button size="sm" variant="outline" disabled={!riskFinanceAnalysis.data?.categories.length} onClick={() => downloadCsvFile(`项目成本分类-${financePeriod}.csv`, ["类别", "金额", "占比", "笔数", "来源"], (riskFinanceAnalysis.data?.categories ?? []).map(item => [item.label, item.amount, `${item.percentage}%`, item.recordCount, item.sources.join("、")]))}>导出</Button></CardHeader><CardContent>{riskFinanceAnalysis.data?.categories.length ? <div className="space-y-2">{riskFinanceAnalysis.data.categories.map(item => <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2" key={item.code}><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{item.label}</p><p className="text-sm font-semibold text-[#203c48]">¥{displayMoney(item.amount)}</p></div><div className="mt-1 flex justify-between text-xs text-slate-500"><span>{item.percentage}% · {item.recordCount} 笔</span><span>{item.sources.join("、")}</span></div></div>)}<div className="flex justify-between border-t pt-3 text-sm font-semibold"><span>本期分类成本</span><span>¥{displayMoney(riskFinanceAnalysis.data.expenseAmount)}</span></div></div> : <p className="text-sm text-slate-500">当前期间暂无可分类的真实成本记录。</p>}</CardContent></Card></div>
         <Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between"><div><CardTitle className="text-base">风险预警台账与管理提醒</CardTitle><CardDescription>新发现的预警会按项目范围向有效项目主管、财务、施工、运输和安全管理人员发送幂等站内提醒；同一单据同一规则同一日期不会重复创建。</CardDescription></div><div className="flex flex-wrap gap-2"><Select value={riskAlertStatus} onValueChange={value => setRiskAlertStatus(value as typeof riskAlertStatus)}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="open">待处置</SelectItem><SelectItem value="acknowledged">已确认</SelectItem><SelectItem value="resolved">已解决</SelectItem><SelectItem value="ignored">已忽略</SelectItem></SelectContent></Select><Button size="sm" variant="outline" onClick={() => riskAlerts.refetch()}>刷新</Button><Button size="sm" variant="outline" disabled={!alerts.length} onClick={() => downloadCsvFile(`项目风险预警-${financePeriod}.csv`, ["日期", "类别", "等级", "规则", "预警内容", "状态"], alerts.map(item => [toBusinessDateInput(item.businessDate), categoryLabel[item.category], severityLabel[item.severity], item.ruleCode, item.summary, item.status]))}>导出</Button></div></CardHeader><CardContent>{riskAlerts.isLoading ? <EmptyState text="正在读取风险预警…" /> : alerts.length ? <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1040px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>业务日期</TableHead><TableHead>类别 / 等级</TableHead><TableHead>预警内容</TableHead><TableHead>计算规则</TableHead><TableHead>状态</TableHead><TableHead className="text-right">处置</TableHead></TableRow></TableHeader><TableBody>{alerts.map(item => <TableRow key={item.id}><TableCell>{toBusinessDateInput(item.businessDate)}</TableCell><TableCell><p>{categoryLabel[item.category]}</p><p className={item.severity === "critical" ? "mt-1 font-medium text-rose-700" : item.severity === "warning" ? "mt-1 font-medium text-amber-700" : "mt-1 text-slate-500"}>{severityLabel[item.severity]}</p></TableCell><TableCell className="max-w-xl whitespace-normal"><p className="font-medium text-slate-800">{item.title}</p><p className="mt-1 text-slate-600">{item.summary}</p></TableCell><TableCell>{item.ruleCode}</TableCell><TableCell><Badge variant="outline">{item.status === "open" ? "待处置" : item.status === "acknowledged" ? "已确认" : item.status === "resolved" ? "已解决" : "已忽略"}</Badge></TableCell><TableCell className="text-right">{["open", "acknowledged"].includes(item.status) ? <div className="flex justify-end gap-2"><Button size="sm" variant="outline" disabled={updateRiskAlertStatus.isPending} onClick={() => updateRiskAlertStatus.mutate({ id: Number(item.id), projectId: Number(financeProjectId), status: "acknowledged", resolutionNote: null })}>确认</Button><Button size="sm" disabled={updateRiskAlertStatus.isPending} onClick={() => updateRiskAlertStatus.mutate({ id: Number(item.id), projectId: Number(financeProjectId), status: "resolved", resolutionNote: "已由管理人员核验处理" })}>解决</Button><Button size="sm" variant="ghost" disabled={updateRiskAlertStatus.isPending} onClick={() => updateRiskAlertStatus.mutate({ id: Number(item.id), projectId: Number(financeProjectId), status: "ignored", resolutionNote: "经管理人员核验不构成异常" })}>忽略</Button></div> : <span className="text-slate-500">已完成处置</span>}</TableCell></TableRow>)}</TableBody></Table></div> : <EmptyState text="当前期间暂无风险预警。请点击“立即扫描并提醒”对选定日期的真实业务记录执行检测。" />}</CardContent></Card>
-        <Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">AI 管理摘要</CardTitle><CardDescription>AI 仅读取本期风险类别/等级/状态的计数与财务分类金额，不读取姓名、手机号、定位、车牌、影像或凭证内容。摘要仅作辅助管理判断。</CardDescription></div><Button disabled={generateRiskBriefing.isPending} onClick={() => generateRiskBriefing.mutate({ projectId: Number(financeProjectId), period: financePeriod })}>{generateRiskBriefing.isPending ? "正在分析…" : "生成 AI 管理摘要"}</Button></CardHeader><CardContent>{riskBriefing ? <div className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-indigo-950">{riskBriefing.source === "llm" ? "AI 辅助摘要" : "规则汇总摘要（AI 服务降级）"}</p><Badge variant="outline">{riskBriefing.model}</Badge></div><p className="text-sm leading-6 text-slate-700">{riskBriefing.executiveSummary}</p><div className="grid gap-3 sm:grid-cols-2"><div><p className="text-xs font-semibold text-slate-600">优先处理</p><ul className="mt-1 space-y-1 text-sm text-slate-700">{riskBriefing.priorityActions.map(item => <li key={item}>· {item}</li>)}</ul></div><div><p className="text-xs font-semibold text-slate-600">持续关注</p><ul className="mt-1 space-y-1 text-sm text-slate-700">{riskBriefing.watchItems.map(item => <li key={item}>· {item}</li>)}</ul></div></div><p className="text-xs text-slate-500">{riskBriefing.disclaimer}</p></div> : <p className="text-sm text-slate-500">生成后将展示本期风险与成本结构的脱敏管理摘要。系统不会让 AI 替代现场核验、财务审核或责任认定。</p>}</CardContent></Card>
+        <Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">AI 管理摘要</CardTitle><CardDescription>AI 仅读取本期风险类别/等级/状态的计数与财务分类金额，不读取姓名、手机号、定位、车牌、影像或凭证内容。摘要仅作辅助管理判断。</CardDescription></div><Button disabled={generateRiskBriefing.isPending} onClick={() => generateRiskBriefing.mutate({ projectId: Number(financeProjectId), period: financePeriod })}>{generateRiskBriefing.isPending ? "正在分析…" : "生成 AI 管理摘要"}</Button></CardHeader><CardContent>{riskBriefing ? <div className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-indigo-950">{riskBriefing.source === "external" ? "外部 AI 辅助摘要" : riskBriefing.source === "builtin" ? "系统内置 AI 辅助摘要" : "规则汇总摘要（AI 服务降级）"}</p><Badge variant="outline">{riskBriefing.model}</Badge></div><p className="text-sm leading-6 text-slate-700">{riskBriefing.executiveSummary}</p><div className="grid gap-3 sm:grid-cols-2"><div><p className="text-xs font-semibold text-slate-600">优先处理</p><ul className="mt-1 space-y-1 text-sm text-slate-700">{riskBriefing.priorityActions.map(item => <li key={item}>· {item}</li>)}</ul></div><div><p className="text-xs font-semibold text-slate-600">持续关注</p><ul className="mt-1 space-y-1 text-sm text-slate-700">{riskBriefing.watchItems.map(item => <li key={item}>· {item}</li>)}</ul></div></div><p className="text-xs text-slate-500">{riskBriefing.disclaimer}</p></div> : <p className="text-sm text-slate-500">生成后将展示本期风险与成本结构的脱敏管理摘要。系统不会让 AI 替代现场核验、财务审核或责任认定。</p>}</CardContent></Card>
       </>}
     </div>;
   };

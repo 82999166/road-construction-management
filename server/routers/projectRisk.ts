@@ -27,6 +27,7 @@ import { getDb } from "../db";
 import { createHeartbeatJob, updateHeartbeatJob } from "../_core/heartbeat";
 import { invokeLLM } from "../_core/llm";
 import { protectedProcedure, router } from "../_core/trpc";
+import { getPublishedExternalAiConfiguration, invokeExternalAiJson } from "../services/externalAiApi";
 
 const periodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM");
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
@@ -353,6 +354,19 @@ function safeParseBriefing(value: string | null | undefined) {
   return { executiveSummary: record.executiveSummary.slice(0, 600), priorityActions: toLines(record.priorityActions), watchItems: toLines(record.watchItems), disclaimer: typeof record.disclaimer === "string" ? record.disclaimer.slice(0, 240) : "该摘要仅辅助管理判断，必须以原始业务单据和现场核验为准。" };
 }
 
+const projectRiskBriefingOutputSchema = {
+  type: "object",
+  properties: {
+    executiveSummary: { type: "string" },
+    priorityActions: { type: "array", items: { type: "string" } },
+    watchItems: { type: "array", items: { type: "string" } },
+    disclaimer: { type: "string" },
+  },
+  required: ["executiveSummary", "priorityActions", "watchItems", "disclaimer"],
+  additionalProperties: false,
+} as const;
+const projectRiskBriefingSystemPrompt = "你是工程项目风险管理辅助系统。只根据给出的脱敏汇总生成审慎、可执行的中文管理摘要；不得虚构事实、不得给出法律或财务结论、不得包含任何个人信息。";
+
 export const projectRiskRouter = router({
   getRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
@@ -479,14 +493,30 @@ export const projectRiskRouter = router({
     const fallback = { executiveSummary: `本期共识别 ${alerts.length} 条项目风险记录，当前支出 ${finance.expenseAmount} 元。请优先核验未关闭的高等级运输、柴油和考勤异常。`, priorityActions: ["按风险清单核对原始单据、现场记录和责任人处理情况。", "对未维护核定油箱容量的车辆与机械补齐主档案后再复核柴油异常。"], watchItems: ["财务分类基于已登记流水和业务成本，人工补录流水需选择准确类别。"], disclaimer: "该摘要仅辅助管理判断，必须以原始业务单据和现场核验为准。" };
     let briefing = fallback;
     let model = "rule-based-fallback";
+    let source: "external" | "builtin" | "fallback" = "fallback";
+    const prompt = `项目：${project.name}；期间：${input.period}。脱敏风险与费用汇总：${JSON.stringify(snapshot)}。请输出 JSON。`;
     try {
-      const result = await invokeLLM({ model: "gpt-5-mini", maxTokens: 1200, messages: [{ role: "system", content: "你是工程项目风险管理辅助系统。只根据给出的脱敏汇总生成审慎、可执行的中文管理摘要；不得虚构事实、不得给出法律或财务结论、不得包含任何个人信息。" }, { role: "user", content: `项目：${project.name}；期间：${input.period}。脱敏风险与费用汇总：${JSON.stringify(snapshot)}。请输出 JSON。` }], outputSchema: { name: "project_risk_briefing", strict: true, schema: { type: "object", properties: { executiveSummary: { type: "string" }, priorityActions: { type: "array", items: { type: "string" } }, watchItems: { type: "array", items: { type: "string" } }, disclaimer: { type: "string" } }, required: ["executiveSummary", "priorityActions", "watchItems", "disclaimer"], additionalProperties: false } } });
-      briefing = safeParseBriefing(typeof result.choices[0]?.message.content === "string" ? result.choices[0].message.content : null);
-      model = result.model || "gpt-5-mini";
+      const externalConfiguration = await getPublishedExternalAiConfiguration();
+      if (externalConfiguration?.enabled) {
+        try {
+          const result = await invokeExternalAiJson({ configuration: externalConfiguration, system: projectRiskBriefingSystemPrompt, prompt, schemaName: "project_risk_briefing", schema: projectRiskBriefingOutputSchema, maxTokens: 1200 });
+          briefing = safeParseBriefing(result.content);
+          model = result.model;
+          source = "external";
+        } catch {
+          // 外部 API 失败时继续使用项目内置 AI；不得影响风险扫描或处置。
+        }
+      }
+      if (source === "fallback") {
+        const result = await invokeLLM({ model: "gpt-5-mini", maxTokens: 1200, messages: [{ role: "system", content: projectRiskBriefingSystemPrompt }, { role: "user", content: prompt }], outputSchema: { name: "project_risk_briefing", strict: true, schema: projectRiskBriefingOutputSchema } });
+        briefing = safeParseBriefing(typeof result.choices[0]?.message.content === "string" ? result.choices[0].message.content : null);
+        model = result.model || "gpt-5-mini";
+        source = "builtin";
+      }
     } catch {
       // AI 服务失败时保留可读的规则摘要，不阻断风险检测与财务查看。
     }
     await db.insert(projectRiskBriefings).values({ projectId: input.projectId, period: input.period, model, summaryJson: JSON.stringify(briefing), alertSnapshotJson: JSON.stringify(snapshot), generatedBy: user.id });
-    return { source: model === "rule-based-fallback" ? "fallback" as const : "llm" as const, model, briefing };
+    return { source, model, briefing };
   }),
 });
