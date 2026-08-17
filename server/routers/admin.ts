@@ -77,7 +77,7 @@ const vehicleManagementInput = z.object({
   projectId: z.number().int().positive(),
   organizationId: z.number().int().positive().nullable().optional(),
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
-  vehicleType: z.enum(["dump_truck", "tractor", "mixer", "flatbed", "other"]),
+  vehicleType: z.enum(["dump_truck", "tractor", "mixer", "flatbed", "pickup", "suv", "other"]),
   ownership: z.enum(["owned", "leased"]).default("owned"),
   ownerName: z.string().trim().max(128).nullable().optional(),
   driverUserId: z.number().int().positive().nullable().optional(),
@@ -787,13 +787,42 @@ export const adminRouter = router({
       });
       return Array.from(groups.values()).map(group => ({ ...group, averageUnitPrice: group.liters ? Number((group.amount / group.liters).toFixed(2)) : 0, priceSpread: Number((group.maxUnitPrice - group.minUnitPrice).toFixed(2)) })).sort((a, b) => b.amount - a.amount);
     }),
-    listRefuelRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), assetType: z.enum(["vehicle", "machine"]).optional(), assetId: z.number().int().positive().optional(), status: z.enum(["draft", "approved", "settled", "void"]).optional(), date: z.string().date().optional() }).optional()).query(async ({ ctx, input }) => {
+    listRefuelRecords: protectedProcedure.input(z.object({
+      projectId: z.number().int().positive().optional(),
+      assetType: z.enum(["vehicle", "machine"]).optional(),
+      assetId: z.number().int().positive().optional(),
+      status: z.enum(["draft", "approved", "settled", "void"]).optional(),
+      /** 保留单日参数以兼容既有调用；新界面优先使用日期区间。 */
+      date: z.string().date().optional(),
+      dateFrom: z.string().date().optional(),
+      dateTo: z.string().date().optional(),
+      month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "月份格式应为 YYYY-MM").optional(),
+      supplyMethod: z.enum(["project_supply", "external_station"]).optional(),
+      plateNo: z.string().trim().max(32).optional(),
+      supplierName: z.string().trim().max(160).optional(),
+    }).refine(input => !input.dateFrom || !input.dateTo || input.dateFrom <= input.dateTo, { message: "加油结束日期不得早于开始日期", path: ["dateTo"] }).optional()).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
       const rows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
-      const date = input?.date;
-      const filtered = rows.filter(row => (!input?.projectId || row.projectId === input.projectId) && (!input?.assetType || row.assetType === input.assetType) && (!input?.status || row.status === input.status) && (!input?.assetId || (row.assetType === "vehicle" ? row.vehicleId === input.assetId : row.machineId === input.assetId)) && (!date || new Date(row.refueledAt).toISOString().slice(0, 10) === date));
+      const dateFrom = input?.dateFrom ?? input?.date;
+      const dateTo = input?.dateTo ?? input?.date;
+      const plateKeyword = input?.plateNo?.trim().toUpperCase();
+      const matchingVehicleIds = new Set(plateKeyword ? (await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles)).filter(vehicle => vehicle.plateNo.toUpperCase().includes(plateKeyword)).map(vehicle => vehicle.id) : []);
+      const supplierKeyword = input?.supplierName?.trim().toLowerCase();
+      const filtered = rows.filter(row => {
+        const refueledDate = new Date(row.refueledAt).toISOString().slice(0, 10);
+        return (!input?.projectId || row.projectId === input.projectId)
+          && (!input?.assetType || row.assetType === input.assetType)
+          && (!input?.status || row.status === input.status)
+          && (!input?.assetId || (row.assetType === "vehicle" ? row.vehicleId === input.assetId : row.machineId === input.assetId))
+          && (!dateFrom || refueledDate >= dateFrom)
+          && (!dateTo || refueledDate <= dateTo)
+          && (!input?.month || refueledDate.slice(0, 7) === input.month)
+          && (!input?.supplyMethod || row.supplyMethod === input.supplyMethod)
+          && (!plateKeyword || (row.assetType === "vehicle" && Boolean(row.vehicleId) && matchingVehicleIds.has(Number(row.vehicleId))))
+          && (!supplierKeyword || (row.stationOrSupplierName ?? "").toLowerCase().includes(supplierKeyword));
+      });
       const [alertRule] = input?.projectId ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
       return Promise.all(filtered.map(async row => {
         const [asset] = row.assetType === "vehicle" && row.vehicleId ? await db.select({ name: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, row.vehicleId)).limit(1) : row.assetType === "machine" && row.machineId ? await db.select({ name: machines.name, code: machines.code }).from(machines).where(eq(machines.id, row.machineId)).limit(1) : [];

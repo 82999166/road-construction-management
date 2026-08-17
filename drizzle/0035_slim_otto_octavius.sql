@@ -1,0 +1,1 @@
+ALTER TABLE `transport_vehicles` MODIFY COLUMN `vehicleType` enum('dump_truck','tractor','mixer','flatbed','pickup','suv','other') NOT NULL DEFAULT 'dump_truck';

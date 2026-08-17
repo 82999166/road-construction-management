@@ -152,6 +152,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
   });
 
+  it("在车辆档案中提供皮卡车和越野车类型，并在统一台账中保留中文标签", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('value="pickup">皮卡车');
+    expect(source).toContain('value="suv">越野车');
+    expect(source).toContain('pickup: "皮卡车"');
+    expect(source).toContain('suv: "越野车"');
+  });
+
   it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
@@ -206,11 +215,22 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("现金油费预览");
   });
 
-  it("将现金小票、油价异常预警和供应商采购对账纳入柴油审计闭环", () => {
+  it("将加油表工程水印、组合筛选、油价异常预警和供应商采购对账纳入柴油审计闭环", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("sourceType: \"diesel_receipt\"");
-    expect(source).toContain("现金小票照片（JPG/PNG）");
+    expect(source).toContain("加油表照片（JPG/PNG）");
+    expect(source).toContain("自动写入项目、加油时间、定位、操作人和防伪编号");
+    expect(source).toContain("captureWatermarkLocation");
+    expect(source).toContain("createWatermarkedImage");
+    expect(source).toContain("柴油组合筛选");
+    expect(source).toContain("柴油筛选车牌");
+    expect(source).toContain("柴油加油开始日期");
+    expect(source).toContain("柴油加油结束日期");
+    expect(source).toContain("柴油加油月份");
+    expect(source).toContain("柴油筛选供应商");
+    expect(source).toContain("导出当前筛选明细");
+    expect(source).toContain("dieselRefuelRecordsInput");
     expect(source).toContain("查看受控小票影像");
     expect(source).toContain("现金油价异常预警");
     expect(source).toContain("trpc.admin.diesel.getPriceAlertRule.useQuery");

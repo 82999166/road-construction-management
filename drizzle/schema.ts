@@ -879,7 +879,7 @@ export const transportVehicles = mysqlTable(
     organizationId: int("organizationId"),
     plateNo: varchar("plateNo", { length: 32 }).notNull(),
     /** 车辆类型仅描述车辆资源属性，不参与运费计算；默认渣土车兼容既有运输台账。 */
-    vehicleType: mysqlEnum("vehicleType", ["dump_truck", "tractor", "mixer", "flatbed", "other"]).default("dump_truck").notNull(),
+    vehicleType: mysqlEnum("vehicleType", ["dump_truck", "tractor", "mixer", "flatbed", "pickup", "suv", "other"]).default("dump_truck").notNull(),
     /** 自有或外租；既有车辆默认自有，外租车辆的租金和租期保存于独立租赁规则表。 */
     ownership: mysqlEnum("ownership", ["owned", "leased"]).default("owned").notNull(),
     ownerName: varchar("ownerName", { length: 128 }),

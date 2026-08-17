@@ -246,6 +246,13 @@
       "when": 1786954826993,
       "tag": "0034_fuzzy_plazm",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1786961673626,
+      "tag": "0035_slim_otto_octavius",
+      "breakpoints": true
     }
   ]
 }

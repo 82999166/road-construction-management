@@ -75,7 +75,7 @@ type ProjectStatus = "planning" | "active" | "suspended" | "completed" | "archiv
 type OrganizationForm = { id?: number; parentId: string; code: string; name: string; type: OrganizationType; managerUserId: string; costCenterCode: string; sortOrder: string; status: OrganizationStatus };
 type ProjectForm = { id?: number; parentId: string; organizationId: string; code: string; name: string; nodeType: string; projectType: ProjectType; status: ProjectStatus; startDate: string; endDate: string; costCenterCode: string; sortOrder: string };
 type PositionForm = { id?: number; code: string; name: string; category: string; description: string; status: OrganizationStatus };
-type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "other";
+type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "pickup" | "suv" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type LeaseBillingType = "monthly" | "daily" | "hourly" | "shift";
 type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownership: "owned" | "leased"; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; status: VehicleStatus; leaseBillingType: LeaseBillingType; leaseRate: string; leaseStartDate: string; leaseEndDate: string };
@@ -183,6 +183,73 @@ function readImageAsBase64(file: File) {
     reader.onerror = () => reject(new Error("现金小票读取失败"));
     reader.onload = () => resolve(String(reader.result).replace(/^data:[^;]+;base64,/, ""));
     reader.readAsDataURL(file);
+  });
+}
+
+/** 将浏览器定位转换为可写入工程水印的最小现场坐标；拒绝定位时不归档无定位的加油表照片。 */
+function captureWatermarkLocation() {
+  return new Promise<{ longitude: number; latitude: number; accuracyMeters: number }>((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error("当前浏览器不支持定位，无法生成含定位的加油表工程水印"));
+    navigator.geolocation.getCurrentPosition(
+      position => resolve({ longitude: position.coords.longitude, latitude: position.coords.latitude, accuracyMeters: position.coords.accuracy }),
+      () => reject(new Error("请允许浏览器获取现场定位后，再保存加油表工程水印照片")),
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 },
+    );
+  });
+}
+
+/** 后台柴油影像与移动端现场取证使用同一像素级工程水印样式。 */
+function createWatermarkedImage(file: File, watermarkLines: string[], template: EvidenceWatermarkTemplate) {
+  return new Promise<File>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("加油表工程水印生成失败")); };
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("当前浏览器不支持工程水印绘制");
+        context.drawImage(image, 0, 0);
+        const fontSize = Math.max(15, Math.round(Math.min(canvas.width, canvas.height) / 34));
+        const lineHeight = Math.round(fontSize * 1.46);
+        const padding = Math.round(fontSize * 0.72);
+        const visibleLines = watermarkLines.filter(Boolean).slice(0, 8);
+        context.font = `600 ${fontSize}px sans-serif`;
+        const textWidth = Math.min(canvas.width - padding * 2, Math.max(...visibleLines.map(line => context.measureText(line).width), canvas.width * 0.42));
+        const headerHeight = Math.round(lineHeight * 1.35);
+        const footerHeight = Math.round(lineHeight * 1.1);
+        const boxHeight = headerHeight + visibleLines.length * lineHeight + footerHeight + padding * 2;
+        const boxY = Math.max(padding, canvas.height - boxHeight - padding);
+        context.fillStyle = "rgba(255, 255, 255, .88)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, boxHeight);
+        context.fillStyle = "rgba(33, 119, 211, .9)";
+        context.fillRect(padding, boxY, textWidth + padding * 2, headerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `700 ${Math.round(fontSize * 1.08)}px sans-serif`;
+        context.fillText(template.title, padding * 2, boxY + Math.round(padding * .55));
+        context.fillStyle = "#26333d";
+        context.font = `600 ${fontSize}px sans-serif`;
+        context.textBaseline = "top";
+        visibleLines.forEach((line, index) => context.fillText(line, padding * 2, boxY + headerHeight + padding + index * lineHeight));
+        context.fillStyle = "rgba(33, 119, 211, .92)";
+        context.fillRect(padding, boxY + boxHeight - footerHeight - padding, textWidth + padding * 2, footerHeight + padding);
+        context.fillStyle = "#ffffff";
+        context.font = `600 ${Math.round(fontSize * .78)}px sans-serif`;
+        context.fillText(template.footerLabel, padding * 2, boxY + boxHeight - footerHeight - Math.round(padding * .1));
+        canvas.toBlob(blob => {
+          URL.revokeObjectURL(objectUrl);
+          if (!blob) return reject(new Error("加油表工程水印生成失败"));
+          const name = file.name.replace(/\.(jpe?g|png)$/i, "") || "diesel-meter";
+          resolve(new File([blob], `${name}-watermark.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
+        }, "image/jpeg", 0.9);
+      } catch (error) {
+        URL.revokeObjectURL(objectUrl);
+        reject(error instanceof Error ? error : new Error("加油表工程水印生成失败"));
+      }
+    };
+    image.src = objectUrl;
   });
 }
 
@@ -389,7 +456,7 @@ export function getDepartmentScopePickerState(isLoading: boolean, nodeCount: num
 }
 
 export default function AdminPage() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
   const activeSection = location.split("/")[2] || "overview";
 
@@ -430,7 +497,7 @@ export default function AdminPage() {
   const departmentScopes = trpc.admin.department.listScopes.useQuery(undefined, { enabled: canQuery && isPermission });
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
-  const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && isSettings });
+  const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && (isSettings || isDiesel) });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
@@ -460,6 +527,7 @@ export default function AdminPage() {
   const [machineStatementDialogOpen, setMachineStatementDialogOpen] = useState(false);
   const [financeClosingDate, setFinanceClosingDate] = useState(() => toLocalDateInput());
   const [dieselDate, setDieselDate] = useState(() => toLocalDateInput());
+  const [dieselLedgerFilter, setDieselLedgerFilter] = useState({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" });
   const [watermarkTemplateForm, setWatermarkTemplateForm] = useState<EvidenceWatermarkTemplate>({ ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] });
   const [broadcastForm, setBroadcastForm] = useState<BroadcastForm>(EMPTY_BROADCAST_FORM);
   const [selectedBroadcastId, setSelectedBroadcastId] = useState<number>();
@@ -492,6 +560,16 @@ export default function AdminPage() {
   const vehicleAnalysisInput = useMemo(() => ({ vehicleId: vehicleAnalysisTarget?.vehicleId ?? 0, projectId: vehicleAnalysisTarget?.projectId ?? 0, period: vehicleAnalysisPeriod }), [vehicleAnalysisPeriod, vehicleAnalysisTarget]);
   const transportWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, date: transportDate || undefined }), [transportDate, workspaceProjectId]);
   const financeProjectInput = useMemo(() => ({ projectId: Number(financeProjectId || 0), period: financePeriod || undefined }), [financePeriod, financeProjectId]);
+  const dieselRefuelRecordsInput = useMemo(() => ({
+    projectId: Number(financeProjectId || 0),
+    plateNo: dieselLedgerFilter.plateNo.trim() || undefined,
+    dateFrom: dieselLedgerFilter.dateFrom || undefined,
+    dateTo: dieselLedgerFilter.dateTo || undefined,
+    month: dieselLedgerFilter.month || undefined,
+    supplyMethod: dieselLedgerFilter.supplyMethod === "all" ? undefined : dieselLedgerFilter.supplyMethod as "project_supply" | "external_station",
+    assetType: dieselLedgerFilter.assetType === "all" ? undefined : dieselLedgerFilter.assetType as "vehicle" | "machine",
+    supplierName: dieselLedgerFilter.supplierName.trim() || undefined,
+  }), [dieselLedgerFilter, financeProjectId]);
   const broadcastAudienceInput = useMemo(() => getBroadcastAudienceInput(broadcastForm), [broadcastForm]);
   const validBroadcastScope = broadcastForm.audienceType === "role" ? Boolean(broadcastForm.scopeValue.trim()) : Number.isInteger(Number(broadcastForm.scopeValue)) && Number(broadcastForm.scopeValue) > 0;
   const broadcastAudiencePreview = trpc.broadcast.previewAudience.useQuery(broadcastAudienceInput, { enabled: canQuery && isBroadcast && validBroadcastScope, retry: false });
@@ -526,7 +604,7 @@ export default function AdminPage() {
   const financeInvoices = trpc.finance.listInvoices.useQuery(financeProjectInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dailyAccountingReport = trpc.finance.getDailyPrintableReport.useQuery({ projectId: Number(financeProjectId || 0), closingDate: financeClosingDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financeClosingDate) });
   const dieselGuidelinePrices = trpc.admin.diesel.listGuidelinePrices.useQuery({ projectId: Number(financeProjectId || 0) }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
-  const dieselRefuelRecords = trpc.admin.diesel.listRefuelRecords.useQuery({ projectId: Number(financeProjectId || 0), date: dieselDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(dieselDate) });
+  const dieselRefuelRecords = trpc.admin.diesel.listRefuelRecords.useQuery(dieselRefuelRecordsInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselDailySummary = trpc.admin.diesel.dailySummary.useQuery({ projectId: Number(financeProjectId || 0), date: dieselDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(dieselDate) });
   const dieselPriceAlertRule = trpc.admin.diesel.getPriceAlertRule.useQuery({ projectId: Number(financeProjectId || 0) }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselSupplierReconciliation = trpc.admin.diesel.supplierReconciliation.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && /^\d{4}-(0[1-9]|1[0-2])$/.test(financePeriod) });
@@ -595,20 +673,37 @@ export default function AdminPage() {
       let evidenceId: number | null = null;
       if (dieselReceiptFile) {
         if (!["image/jpeg", "image/png"].includes(dieselReceiptFile.type)) {
-          toast.error("现金小票仅支持 JPG 或 PNG 图片");
+          toast.error("加油表照片仅支持 JPG 或 PNG 图片");
           return;
         }
-        const base64Data = await readImageAsBase64(dieselReceiptFile);
+        const capturedLocation = await captureWatermarkLocation();
+        const capturedAt = new Date(dieselRefuelForm.refueledAt);
+        if (Number.isNaN(capturedAt.getTime())) throw new Error("请填写有效加油时间后再生成工程水印");
+        const projectName = projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? `项目 #${dieselRefuelForm.projectId}`;
+        const antiCounterfeitNo = `DIESEL-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+        const watermarkValues: Record<string, string> = {
+          capturedAt: `加油时间：${capturedAt.toLocaleString("zh-CN", { hour12: false })}`,
+          principal: `操作人：${user?.name || "超级管理员"}`,
+          location: `现场定位：${capturedLocation.latitude.toFixed(6)}, ${capturedLocation.longitude.toFixed(6)}（精度±${Math.round(capturedLocation.accuracyMeters)}m）`,
+          coordinates: `经纬度：${capturedLocation.longitude.toFixed(6)}°E，${capturedLocation.latitude.toFixed(6)}°N`,
+          organization: `施工单位：${watermarkTemplateForm.organizationLabel}`,
+          project: `项目名称：${projectName}`,
+          antiCounterfeit: `防伪编号：${antiCounterfeitNo}`,
+        };
+        const requiredWatermarkFields = ["capturedAt", "principal", "location", "coordinates", "project", "antiCounterfeit"];
+        const watermarkLines = Array.from(new Set([...watermarkTemplateForm.fields, ...requiredWatermarkFields])).map(field => watermarkValues[field]).filter(Boolean);
+        const watermarkedFile = await createWatermarkedImage(dieselReceiptFile, watermarkLines, watermarkTemplateForm);
+        const base64Data = await readImageAsBase64(watermarkedFile);
         const uploaded = await uploadDieselReceipt.mutateAsync({
           projectId: Number(dieselRefuelForm.projectId),
           sourceType: "diesel_receipt",
-          sourceId: `diesel-cash-receipt-${Date.now()}`,
-          description: `柴油现金小票 · ${dieselRefuelForm.stationOrSupplierName.trim() || "未登记供应商"} · ${dieselRefuelForm.liters || "0"}L`,
-          capturedAt: new Date(dieselRefuelForm.refueledAt).toISOString(),
-          longitude: null,
-          latitude: null,
-          fileName: dieselReceiptFile.name,
-          mimeType: dieselReceiptFile.type as "image/jpeg" | "image/png",
+          sourceId: `diesel-meter-${antiCounterfeitNo}`,
+          description: `柴油加油表工程水印 · ${dieselRefuelForm.stationOrSupplierName.trim() || "未登记供油点"} · ${dieselRefuelForm.liters || "0"}L · ${antiCounterfeitNo}`,
+          capturedAt: capturedAt.toISOString(),
+          longitude: capturedLocation.longitude,
+          latitude: capturedLocation.latitude,
+          fileName: watermarkedFile.name,
+          mimeType: "image/jpeg",
           base64Data,
         });
         if (!uploaded.id) throw new Error("现金小票归档失败，未返回凭证编号");
@@ -844,9 +939,14 @@ export default function AdminPage() {
         module: "柴油管理台账",
         filters: [
           ["项目", financeProjectLabel],
-          ["柴油日期", dieselDate],
-          ["会计期间", financePeriod],
-          ["供油范围", "项目部供油与加油站现金加油"],
+          ["车牌", dieselLedgerFilter.plateNo || "全部"],
+          ["加油日期起", dieselLedgerFilter.dateFrom || "未设置"],
+          ["加油日期止", dieselLedgerFilter.dateTo || "未设置"],
+          ["月份", dieselLedgerFilter.month || "全部"],
+          ["供油方式", dieselLedgerFilter.supplyMethod === "all" ? "全部" : dieselLedgerFilter.supplyMethod === "project_supply" ? "项目部供油" : "加油站现金加油"],
+          ["车辆/机械", dieselLedgerFilter.assetType === "all" ? "全部" : dieselLedgerFilter.assetType === "vehicle" ? "车辆" : "机械"],
+          ["供应商", dieselLedgerFilter.supplierName || "全部"],
+          ["每日汇总日期", dieselDate],
         ],
       };
     }
@@ -863,7 +963,7 @@ export default function AdminPage() {
       };
     }
     return { module: "后台台账", filters: [["项目范围", workspaceProjectLabel], ["数据范围", "当前管理员已授权数据"]] };
-  }, [activeSection, dieselDate, employeeLedgerFilter, financePeriod, financeProjectId, laborAttendanceDate, laborPayrollSearch, laborPeriod, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
+  }, [activeSection, dieselDate, dieselLedgerFilter, employeeLedgerFilter, financePeriod, financeProjectId, laborAttendanceDate, laborPayrollSearch, laborPeriod, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
   useEffect(() => {
     const exportWindow = window as ExportScopeWindow;
     exportWindow.__roadConstructionExportScope = activeCsvExportScope;
@@ -1551,7 +1651,7 @@ export default function AdminPage() {
   };
 
   const renderVehicles = () => {
-    const vehicleTypeLabel: Record<VehicleType, string> = { dump_truck: "渣土车", tractor: "牵引车", mixer: "搅拌车", flatbed: "平板车", other: "其他" };
+    const vehicleTypeLabel: Record<VehicleType, string> = { dump_truck: "渣土车", tractor: "牵引车", mixer: "搅拌车", flatbed: "平板车", pickup: "皮卡车", suv: "越野车", other: "其他" };
     const vehicleStatusLabel: Record<VehicleStatus, string> = { active: "可调度", suspended: "暂停", disabled: "停用" };
     const vehicleStatusClass: Record<VehicleStatus, string> = { active: "bg-emerald-50 text-emerald-700", suspended: "bg-amber-50 text-amber-700", disabled: "bg-slate-100 text-slate-600" };
     const rows = vehicles.data ?? [];
@@ -1642,7 +1742,7 @@ export default function AdminPage() {
           {vehicleEditorOpen ? <Card className="order-1 w-full border-[#d8e3e0] shadow-sm">
             <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">车辆资源 · 档案维护</p><CardTitle className="mt-1 text-base">{vehicleForm.id ? "维护车辆档案" : "新增车辆档案"}</CardTitle><CardDescription className="mt-1">车牌全局唯一，理论方量由服务端计算；车辆、司机、项目、调度状态与 RFID 卡均在 PC 后台关联维护。</CardDescription></div><div className="flex flex-wrap gap-2">{vehicleForm.id ? <><Button size="sm" variant="outline" onClick={() => { setBusinessWorkspaceProjectId(vehicleForm.projectId); setLocation("/admin/transport"); }}>运输调度</Button><Button size="sm" variant="outline" onClick={() => { setBusinessWorkspaceProjectId(vehicleForm.projectId); setLocation("/admin/transport"); }}>RFID 写卡</Button></> : null}<Button size="sm" variant="ghost" onClick={() => { setVehicleEditorOpen(false); setVehicleForm(EMPTY_VEHICLE_FORM); }}>收起</Button></div></CardHeader>
             <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-3"><div><Label>车牌号</Label><Input value={vehicleForm.plateNo} placeholder="例如 粤A12345" onChange={event => setVehicleForm({ ...vehicleForm, plateNo: event.target.value.toUpperCase() })} /></div><div><Label>车辆类型</Label><Select value={vehicleForm.vehicleType} onValueChange={(value: VehicleType) => setVehicleForm({ ...vehicleForm, vehicleType: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="dump_truck">渣土车</SelectItem><SelectItem value="tractor">牵引车</SelectItem><SelectItem value="mixer">搅拌车</SelectItem><SelectItem value="flatbed">平板车</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div></div>
+              <div className="grid grid-cols-2 gap-3"><div><Label>车牌号</Label><Input value={vehicleForm.plateNo} placeholder="例如 粤A12345" onChange={event => setVehicleForm({ ...vehicleForm, plateNo: event.target.value.toUpperCase() })} /></div><div><Label>车辆类型</Label><Select value={vehicleForm.vehicleType} onValueChange={(value: VehicleType) => setVehicleForm({ ...vehicleForm, vehicleType: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="dump_truck">渣土车</SelectItem><SelectItem value="tractor">牵引车</SelectItem><SelectItem value="mixer">搅拌车</SelectItem><SelectItem value="flatbed">平板车</SelectItem><SelectItem value="pickup">皮卡车</SelectItem><SelectItem value="suv">越野车</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div></div>
               <div><Label>归属项目</Label><Select value={vehicleForm.projectId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, projectId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue placeholder="选择有效项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
               <div><Label>所属单位</Label><Select value={vehicleForm.organizationId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, organizationId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不设置</SelectItem>{organizations.data?.filter(item => item.status === "active").map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid gap-3 sm:grid-cols-3"><div><Label>资源性质</Label><Select value={vehicleForm.ownership} onValueChange={value => setVehicleForm({ ...vehicleForm, ownership: value as "owned" | "leased" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="owned">公司自有</SelectItem><SelectItem value="leased">外租车辆</SelectItem></SelectContent></Select></div><div><Label>{vehicleForm.ownership === "leased" ? "出租方" : "产权/所属人"}</Label><Input value={vehicleForm.ownerName} placeholder={vehicleForm.ownership === "leased" ? "外租必填" : "可选"} onChange={event => setVehicleForm({ ...vehicleForm, ownerName: event.target.value })} /></div><div><Label>绑定司机</Label><Select value={vehicleForm.driverUserId || "UNASSIGNED"} onValueChange={value => setVehicleForm({ ...vehicleForm, driverUserId: value === "UNASSIGNED" ? "" : value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不分配</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></div></div>
@@ -2344,7 +2444,8 @@ export default function AdminPage() {
             <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]"><Input type="date" value={dieselDate} aria-label="柴油汇总日期" onChange={event => setDieselDate(event.target.value)} /><Button variant="outline" onClick={() => { void dieselRefuelRecords.refetch(); void dieselDailySummary.refetch(); void dieselGuidelinePrices.refetch(); }}>刷新柴油台账</Button><Button variant="outline" disabled={!dieselRefuelRecords.data?.length} onClick={() => downloadCsvFile(`柴油领用明细-${dieselDate}.csv`, ["单号", "资源", "供油方式", "升数", "适用单价", "金额", "是否扣运费", "加油时间", "状态"], (dieselRefuelRecords.data ?? []).map(item => [item.recordNo, item.assetName, item.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油", Number(item.liters), Number(item.appliedUnitPrice), Number(item.amount), item.deductFromFreight ? "是" : "否", displayDate(item.refueledAt), item.status]))}>导出每日明细</Button></div>
+            <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">可同时按车牌、加油日期区间、月份、供油方式、车辆/机械和供应商筛选；导出内容与当前明细完全一致。</p></div><Button size="sm" variant="ghost" onClick={() => setDieselLedgerFilter({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" })}>清除筛选</Button></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Input value={dieselLedgerFilter.plateNo} aria-label="柴油筛选车牌" placeholder="车牌（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, plateNo: event.target.value.toUpperCase() }))} /><Input type="date" max={dieselLedgerFilter.dateTo || undefined} value={dieselLedgerFilter.dateFrom} aria-label="柴油加油开始日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateFrom: event.target.value }))} /><Input type="date" min={dieselLedgerFilter.dateFrom || undefined} value={dieselLedgerFilter.dateTo} aria-label="柴油加油结束日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateTo: event.target.value }))} /><Input type="month" value={dieselLedgerFilter.month} aria-label="柴油加油月份" onChange={event => setDieselLedgerFilter(current => ({ ...current, month: event.target.value }))} /><Select value={dieselLedgerFilter.supplyMethod} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, supplyMethod: value }))}><SelectTrigger aria-label="柴油供油方式"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部供油方式</SelectItem><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select><Select value={dieselLedgerFilter.assetType} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, assetType: value }))}><SelectTrigger aria-label="柴油车辆机械"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部车辆 / 机械</SelectItem><SelectItem value="vehicle">仅车辆</SelectItem><SelectItem value="machine">仅机械</SelectItem></SelectContent></Select><Input value={dieselLedgerFilter.supplierName} aria-label="柴油筛选供应商" placeholder="供应商 / 加油站（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, supplierName: event.target.value }))} /></div></div>
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]"><Input type="date" value={dieselDate} aria-label="柴油每日汇总日期" onChange={event => setDieselDate(event.target.value)} /><Button variant="outline" onClick={() => { void dieselRefuelRecords.refetch(); void dieselDailySummary.refetch(); void dieselGuidelinePrices.refetch(); }}>刷新柴油台账</Button><Button variant="outline" disabled={!dieselRefuelRecords.data?.length} onClick={() => downloadCsvFile(`柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || dieselDate}.csv`, ["单号", "资源", "资源类型", "供油方式", "供应商/供油点", "升数", "适用单价", "金额", "是否扣运费", "加油时间", "状态"], (dieselRefuelRecords.data ?? []).map(item => [item.recordNo, item.assetName, item.assetType === "vehicle" ? "车辆" : "机械", item.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油", item.stationOrSupplierName ?? "", Number(item.liters), Number(item.appliedUnitPrice), Number(item.amount), item.deductFromFreight ? "是" : "否", displayDate(item.refueledAt), item.status]))}>导出当前筛选明细</Button></div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><MetricCard title="当日供油量" value={`${Number(dieselDailySummary.data?.totalLiters ?? 0).toFixed(2)} L`} description={`项目部 ${Number(dieselDailySummary.data?.projectSupplyLiters ?? 0).toFixed(2)} L · 加油站 ${Number(dieselDailySummary.data?.stationLiters ?? 0).toFixed(2)} L`} icon={Truck} /><MetricCard title="当日柴油金额" value={dieselDailySummary.data?.totalAmount} description="作废记录不计入" icon={BarChart3} /><MetricCard title="车辆 / 机械领用" value={`${Number(dieselDailySummary.data?.vehicleLiters ?? 0).toFixed(2)} / ${Number(dieselDailySummary.data?.machineLiters ?? 0).toFixed(2)} L`} description="车辆油料可关联趟次；机械油料自动进入成本台账" icon={Settings2} /><MetricCard title="待扣运费油款" value={dieselDailySummary.data?.deductibleAmount} description="结算运输趟次时从总运费扣减" icon={ScrollText} /></div>
             <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]"><p><span className="font-medium">项目部供油：</span>{dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）` : "尚未维护有效指导价；项目部供油登记前请先维护。"}</p><p className="mt-1"><span className="font-medium">加油站现金加油：</span>每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。</p><Button className="mt-2 print:hidden" size="sm" variant="outline" disabled={!dieselDailySummary.data} onClick={() => window.print()}>打印每日供油单</Button></div>
             <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
@@ -2487,7 +2588,7 @@ export default function AdminPage() {
           <DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；关联车辆趟次并勾选扣油后，结算时从总运费扣减并锁定该记录。</DialogDescription></DialogHeader>
             <form className="space-y-4" onSubmit={event => { event.preventDefault(); void submitDieselRefuel(); }}>
               <div className="grid gap-3 sm:grid-cols-2"><Field label="项目"><Input disabled value={projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? "未选择项目"} /></Field><Field label="加油时间"><Input type="datetime-local" value={dieselRefuelForm.refueledAt} onChange={event => setDieselRefuelForm(current => ({ ...current, refueledAt: event.target.value }))} /></Field><Field label="领用对象"><Select value={dieselRefuelForm.assetType} onValueChange={value => setDieselRefuelForm(current => ({ ...current, assetType: value as DieselRefuelForm["assetType"], vehicleId: "", machineId: "", transportTripId: "", deductFromFreight: false }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vehicle">渣土车 / 车辆</SelectItem><SelectItem value="machine">工程机械</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.assetType === "vehicle" ? "车辆" : "机械"}><Select value={(dieselRefuelForm.assetType === "vehicle" ? dieselRefuelForm.vehicleId : dieselRefuelForm.machineId) || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => current.assetType === "vehicle" ? ({ ...current, vehicleId: value === "UNASSIGNED" ? "" : value, transportTripId: "" }) : ({ ...current, machineId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder={dieselRefuelForm.assetType === "vehicle" ? "选择车辆" : "选择机械"} /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择资源</SelectItem>{dieselRefuelForm.assetType === "vehicle" ? (dieselVehicleOptions.data ?? []).filter(vehicle => String(vehicle.projectId) === dieselRefuelForm.projectId).map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>) : (dieselMachineOptions.data ?? []).map(machine => <SelectItem key={machine.id} value={String(machine.id)}>{machine.name} · {machine.code}</SelectItem>)}</SelectContent></Select></Field></div>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="现金小票照片（JPG/PNG）"><Input type="file" accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile(event.target.files?.[0] ?? null)} /><p className="mt-1 text-xs text-slate-500">{dieselReceiptFile ? `已选择：${dieselReceiptFile.name}` : "保存时先受控归档小票影像，再关联柴油凭证；可选但建议上传。"}</p></Field> : null}</div>
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field><Field label="加油表照片（JPG/PNG）"><Input type="file" accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile(event.target.files?.[0] ?? null)} /><p className="mt-1 text-xs text-slate-500">{dieselReceiptFile ? `已选择：${dieselReceiptFile.name}。保存时将先获取现场定位并自动添加工程水印。` : "可选但建议上传；保存时会自动写入项目、加油时间、定位、操作人和防伪编号后再受控归档。"}</p></Field></div>
               {dieselRefuelForm.supplyMethod === "external_station" ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950"><span className="font-medium">现金油费预览：</span>{dieselRefuelForm.liters && dieselRefuelForm.actualUnitPrice ? `${Number(dieselRefuelForm.liters).toFixed(3)} L × ¥${displayMoney(Number(dieselRefuelForm.actualUnitPrice))}/L = ¥${displayMoney(Number(dieselRefuelForm.liters) * Number(dieselRefuelForm.actualUnitPrice))}` : "请填写当天现金单价和加油升数；最终金额以服务端保存的油价快照为准。"}</div> : null}
               {dieselRefuelForm.assetType === "vehicle" ? <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3"><div className="flex items-center gap-2"><Checkbox id="diesel-deduct-freight" checked={dieselRefuelForm.deductFromFreight} onCheckedChange={checked => setDieselRefuelForm(current => ({ ...current, deductFromFreight: Boolean(checked), transportTripId: checked ? current.transportTripId : "" }))} /><Label htmlFor="diesel-deduct-freight" className="cursor-pointer font-medium text-amber-950">本次油款在渣土车运费结算时扣除</Label></div>{dieselRefuelForm.deductFromFreight ? <Field label="关联运输趟次"><Select value={dieselRefuelForm.transportTripId || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => ({ ...current, transportTripId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择未结算趟次" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择运输趟次</SelectItem>{(dieselTripOptions.data ?? []).filter(trip => String(trip.vehicleId) === dieselRefuelForm.vehicleId && !["settled", "void"].includes(trip.status)).map(trip => <SelectItem key={trip.id} value={String(trip.id)}>{trip.tripNo} · 总运费 ¥{displayMoney(trip.calculatedAmount)}</SelectItem>)}</SelectContent></Select></Field> : null}</section> : null}
               <div className="grid gap-3 sm:grid-cols-2"><Field label="记录状态"><Select value={dieselRefuelForm.status} onValueChange={value => setDieselRefuelForm(current => ({ ...current, status: value as DieselRefuelForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="approved">已核准，纳入成本/待结算</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="void">作废</SelectItem></SelectContent></Select></Field></div><Field label="说明"><Textarea value={dieselRefuelForm.remarks} placeholder="领用用途、油品说明或异常说明；不得填写不必要个人敏感信息" onChange={event => setDieselRefuelForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselRefuelDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselRefuelRecord.isPending || uploadDieselReceipt.isPending || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt || !dieselRefuelForm.liters || (dieselRefuelForm.assetType === "vehicle" && !dieselRefuelForm.vehicleId) || (dieselRefuelForm.assetType === "machine" && !dieselRefuelForm.machineId) || (dieselRefuelForm.supplyMethod === "external_station" && !dieselRefuelForm.actualUnitPrice) || (dieselRefuelForm.deductFromFreight && !dieselRefuelForm.transportTripId)}>{uploadDieselReceipt.isPending ? "正在归档小票…" : saveDieselRefuelRecord.isPending ? "正在保存…" : "保存柴油领用"}</Button></DialogFooter>

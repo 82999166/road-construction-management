@@ -228,6 +228,12 @@ describe("超级管理主数据约束", () => {
     await expect(caller.diesel.saveRefuelRecord({ ...base, actualUnitPrice: 7.2, deductFromFreight: true })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("拒绝柴油组合筛选中结束日期早于开始日期，避免导出范围与台账范围不一致", async () => {
+    const caller = adminRouter.createCaller(createAdminContext());
+
+    await expect(caller.diesel.listRefuelRecords({ projectId: 1, dateFrom: "2026-08-16", dateTo: "2026-08-15", plateNo: "粤A", supplyMethod: "external_station", assetType: "vehicle", supplierName: "测试加油站" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("结束日期") });
+  });
+
   it("拒绝直接停用存在未结算趟次的车辆", async () => {
     const db = createSequentialLimitDb(
       [{ id: 20, status: "active" }],
@@ -252,6 +258,21 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
     expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", ownership: "owned", projectId: 20 }));
     expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
+  });
+
+  it("允许皮卡车与越野车写入受控车辆台账", async () => {
+    for (const vehicleType of ["pickup", "suv"] as const) {
+      const db = createSequentialLimitDb(
+        [{ id: 20, status: "active" }],
+        [],
+        [{ id: vehicleType === "pickup" ? 89 : 90 }],
+        [],
+      );
+      vi.mocked(getDb).mockResolvedValue(db as never);
+
+      await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, plateNo: vehicleType === "pickup" ? "粤A皮卡01" : "粤A越野01", vehicleType })).resolves.toMatchObject({ success: true });
+      expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ vehicleType }));
+    }
   });
 
   it("仅删除未被人员档案引用的岗位，并记录最小化审计", async () => {
