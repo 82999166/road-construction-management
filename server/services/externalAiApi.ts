@@ -84,23 +84,54 @@ export async function testExternalAiConnection(configuration: Pick<ExternalAiCon
   return { success: true as const };
 }
 
-/** 通过兼容 OpenAI 的 Chat Completions API 请求严格 JSON 管理摘要；调用全程仅在服务端完成。 */
+type ExternalAiResponseMode = "json_schema" | "json_object" | "prompt_json";
+type ExternalAiMessageContent = string | Array<{ type?: string; text?: string }> | null | undefined;
+type ExternalAiCompletionPayload = { model?: string; choices?: Array<{ message?: { content?: ExternalAiMessageContent } }> };
+
+function normalizeExternalAiContent(content: ExternalAiMessageContent) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) return content.map(part => typeof part.text === "string" ? part.text : "").join("").trim();
+  return "";
+}
+
+function shouldTryNextResponseMode(status: number) {
+  return status === 400 || status === 404 || status === 415 || status === 422;
+}
+
+/**
+ * 通过兼容 OpenAI 的 Chat Completions API 请求 JSON 管理摘要。
+ * 不同供应商对 response_format 的支持不一致，因此按 JSON Schema、JSON Object、提示词 JSON 逐级回退；
+ * 这三种尝试均只传入脱敏摘要，错误信息不会包含 API Key、请求正文或模型原始响应。
+ */
 export async function invokeExternalAiJson(input: { configuration: ExternalAiConfiguration; system: string; prompt: string; schemaName: string; schema: Record<string, unknown>; maxTokens: number }) {
-  const response = await fetch(appendPath(input.configuration.baseUrl, "chat/completions"), {
-    method: "POST",
-    headers: { Authorization: `Bearer ${input.configuration.apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-    signal: AbortSignal.timeout(25_000),
-    body: JSON.stringify({
-      model: input.configuration.model,
-      temperature: 0.1,
-      max_tokens: input.maxTokens,
-      response_format: { type: "json_schema", json_schema: { name: input.schemaName, strict: true, schema: input.schema } },
-      messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
-    }),
-  });
-  if (!response.ok) throw new Error(`external_ai_http_${response.status}`);
-  const payload = await response.json() as { model?: string; choices?: Array<{ message?: { content?: string | null } }> };
-  const content = payload.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw new Error("external_ai_empty_response");
-  return { model: payload.model || input.configuration.model, content };
+  const attempts: Array<{ mode: ExternalAiResponseMode; responseFormat?: Record<string, unknown>; systemSuffix?: string }> = [
+    { mode: "json_schema", responseFormat: { type: "json_schema", json_schema: { name: input.schemaName, strict: true, schema: input.schema } } },
+    { mode: "json_object", responseFormat: { type: "json_object" } },
+    { mode: "prompt_json", systemSuffix: "必须仅输出一个合法 JSON 对象，不要使用 Markdown 代码块或解释文字。" },
+  ];
+  let lastFailure = "external_ai_request_failed";
+  for (const attempt of attempts) {
+    const response = await fetch(appendPath(input.configuration.baseUrl, "chat/completions"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${input.configuration.apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
+      signal: AbortSignal.timeout(25_000),
+      body: JSON.stringify({
+        model: input.configuration.model,
+        temperature: 0.1,
+        max_tokens: input.maxTokens,
+        ...(attempt.responseFormat ? { response_format: attempt.responseFormat } : {}),
+        messages: [{ role: "system", content: `${input.system}${attempt.systemSuffix ? `\n${attempt.systemSuffix}` : ""}` }, { role: "user", content: input.prompt }],
+      }),
+    });
+    if (!response.ok) {
+      lastFailure = `external_ai_http_${response.status}`;
+      if (shouldTryNextResponseMode(response.status)) continue;
+      throw new Error(lastFailure);
+    }
+    const payload = await response.json() as ExternalAiCompletionPayload;
+    const content = normalizeExternalAiContent(payload.choices?.[0]?.message?.content);
+    if (content) return { model: payload.model || input.configuration.model, content, mode: attempt.mode };
+    lastFailure = "external_ai_empty_response";
+  }
+  throw new Error(lastFailure);
 }

@@ -532,7 +532,7 @@ export default function AdminPage() {
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
   const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
-  const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string } | null>(null);
+  const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string; externalFallback?: string | null } | null>(null);
   const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [vehicleAnalysisTarget, setVehicleAnalysisTarget] = useState<{ vehicleId: number; projectId: number; plateNo: string } | null>(null);
@@ -1102,8 +1102,9 @@ export default function AdminPage() {
   });
   const generateRiskBriefing = trpc.projectRisk.generateBriefing.useMutation({
     onSuccess: result => {
-      setRiskBriefing({ ...result.briefing, source: result.source, model: result.model });
-      toast.success(result.source === "fallback" ? "AI 服务暂不可用，已生成规则汇总摘要" : result.source === "external" ? "外部 AI 管理摘要已生成" : "系统内置 AI 管理摘要已生成");
+      setRiskBriefing({ ...result.briefing, source: result.source, model: result.model, externalFallback: result.externalFallback });
+      if (result.externalFallback) toast.warning(`外部 AI 已降级（${result.externalFallback}）；系统已继续生成可用摘要`);
+      else toast.success(result.source === "fallback" ? "AI 服务暂不可用，已生成规则汇总摘要" : result.source === "external" ? "外部 AI 管理摘要已生成" : "系统内置 AI 管理摘要已生成");
     },
     onError: error => toast.error(error.message),
   });

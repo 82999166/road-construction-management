@@ -367,6 +367,13 @@ const projectRiskBriefingOutputSchema = {
 } as const;
 const projectRiskBriefingSystemPrompt = "你是工程项目风险管理辅助系统。只根据给出的脱敏汇总生成审慎、可执行的中文管理摘要；不得虚构事实、不得给出法律或财务结论、不得包含任何个人信息。";
 
+function externalAiFallbackReason(error: unknown) {
+  const message = error instanceof Error ? error.message : "external_ai_unknown_failure";
+  if (/^external_ai_http_(400|401|403|404|408|415|422|429|5\d\d)$/.test(message)) return message;
+  if (["external_ai_empty_response", "external_ai_request_failed", "ai_empty_response", "ai_invalid_response"].includes(message)) return message;
+  return "external_ai_request_failed";
+}
+
 export const projectRiskRouter = router({
   getRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
@@ -494,6 +501,7 @@ export const projectRiskRouter = router({
     let briefing = fallback;
     let model = "rule-based-fallback";
     let source: "external" | "builtin" | "fallback" = "fallback";
+    let externalFallback: string | null = null;
     const prompt = `项目：${project.name}；期间：${input.period}。脱敏风险与费用汇总：${JSON.stringify(snapshot)}。请输出 JSON。`;
     try {
       const externalConfiguration = await getPublishedExternalAiConfiguration();
@@ -503,8 +511,10 @@ export const projectRiskRouter = router({
           briefing = safeParseBriefing(result.content);
           model = result.model;
           source = "external";
-        } catch {
-          // 外部 API 失败时继续使用项目内置 AI；不得影响风险扫描或处置。
+        } catch (error) {
+          // 仅记录状态/兼容性错误码；不得写入 API Key、提示词、业务快照或模型原始响应。
+          externalFallback = externalAiFallbackReason(error);
+          await db.insert(auditLogs).values({ userId: user.id, module: "risk", action: "external_ai_briefing_fallback", targetType: "project_risk_briefing", targetId: `${input.projectId}:${input.period}`, summary: `外部 AI 摘要调用已降级，安全错误码：${externalFallback}` });
         }
       }
       if (source === "fallback") {
@@ -517,6 +527,6 @@ export const projectRiskRouter = router({
       // AI 服务失败时保留可读的规则摘要，不阻断风险检测与财务查看。
     }
     await db.insert(projectRiskBriefings).values({ projectId: input.projectId, period: input.period, model, summaryJson: JSON.stringify(briefing), alertSnapshotJson: JSON.stringify(snapshot), generatedBy: user.id });
-    return { source, model, briefing };
+    return { source, model, briefing, externalFallback };
   }),
 });
