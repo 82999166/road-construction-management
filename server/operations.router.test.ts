@@ -194,6 +194,30 @@ describe("机械与运输 tRPC 路由", () => {
     expect(result[0]).toMatchObject({ id: 11, driverUserId: 1, theoreticalVolumeCubicMeters: 14.904 });
   });
 
+  it("单车分析只汇总当前项目的运输、柴油和维修记录，并按柴油金额计算占运输收入比例", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [{ id: 11, projectId: 10, plateNo: "粤A12345", vehicleType: "dump_truck", ownership: "owned", ownerName: null, status: "active", driverUserId: 1 }],
+      [
+        { id: 71, vehicleId: 11, projectId: 10, tripNo: "TR-001", startAt: new Date("2026-08-16T08:00:00.000Z"), actualDistanceKm: "35", calculatedAmount: "1000", netSettlementAmount: "880", status: "settled" },
+        { id: 72, vehicleId: 11, projectId: 10, tripNo: "TR-VOID", startAt: new Date("2026-08-16T09:00:00.000Z"), actualDistanceKm: "20", calculatedAmount: "500", netSettlementAmount: "500", status: "void" },
+      ],
+      [{ id: 81, vehicleId: 11, projectId: 10, assetType: "vehicle", refueledAt: new Date("2026-08-16T10:00:00.000Z"), liters: "20", amount: "160", status: "approved" }],
+      [
+        { id: 91, assetId: 11, projectId: 10, assetType: "vehicle", occurredAt: new Date("2026-08-16T11:00:00.000Z"), costCategory: "repair", amount: "100", status: "approved" },
+        { id: 92, assetId: 11, projectId: 10, assetType: "vehicle", occurredAt: new Date("2026-08-16T12:00:00.000Z"), costCategory: "maintenance", amount: "40", status: "approved" },
+      ],
+      [],
+    ) as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).getVehicleAnalysis({ vehicleId: 11, projectId: 10, period: "2026-08" });
+
+    expect(result.vehicle).toMatchObject({ id: 11, plateNo: "粤A12345" });
+    expect(result.summary).toMatchObject({ tripCount: 1, grossIncome: 1000, settlementIncome: 880, fuelLiters: 20, fuelAmount: 160, repairAmount: 100, maintenanceAmount: 40, fuelCostRatio: 16, netIncome: 700 });
+    expect(result.daily[0]).toMatchObject({ date: "2026-08-16", tripCount: 1, fuelAmount: 160, netIncome: 700 });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
   it("运输趟次将 GPS 与影像关联固化为快照，并由服务端返回缺失证据预警", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const values = vi.fn(async () => undefined);

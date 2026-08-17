@@ -18,6 +18,7 @@ import {
   rfidWriterDevices,
   transportCardEvents,
   transportTrips,
+  transportVehicleLeaseRules,
   transportVehicleRfidCards,
   transportVehicles,
   users,
@@ -979,6 +980,112 @@ export const transportRouter = router({
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     const scopedRows = isDriverOnly ? rows.filter(vehicle => vehicle.driverUserId === user.id) : rows;
     return scopedRows.map(vehicle => ({ ...vehicle, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)) }));
+  }),
+
+  /** 车辆统一台账按项目与期间返回真实运输、柴油、维修及租赁汇总；收入始终以运输毛收入计算，避免与柴油扣运费快照重复扣减。 */
+  listVehicleSummaries: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), period: settlementPeriodSchema })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    const db = await getDb();
+    if (!db) return [];
+    const user = requireAuthenticatedUser(ctx);
+    const allowedProjects = input.projectId
+      ? (await assertProjectInCurrentScope(ctx, input.projectId), [{ id: input.projectId }])
+      : await listScopedProjects(ctx);
+    const projectIds = allowedProjects.map(project => project.id);
+    if (!projectIds.length) return [];
+    const range = getMonthRange(input.period);
+    const [allVehicles, allTrips, allRefuels, allMaintenance, allLeaseRules] = await Promise.all([
+      db.select().from(transportVehicles),
+      db.select().from(transportTrips),
+      db.select().from(dieselRefuelRecords),
+      db.select().from(assetMaintenanceRecords),
+      db.select().from(transportVehicleLeaseRules),
+    ]);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    const vehicles = allVehicles.filter(vehicle => projectIds.includes(vehicle.projectId) && (!isDriverOnly || vehicle.driverUserId === user.id));
+    const activeTrips = allTrips.filter(item => item.status !== "void" && item.startAt >= range.start && item.startAt < range.endExclusive);
+    const activeRefuels = allRefuels.filter(item => item.status !== "void" && item.assetType === "vehicle" && item.refueledAt >= range.start && item.refueledAt < range.endExclusive);
+    const activeMaintenance = allMaintenance.filter(item => item.status !== "void" && item.assetType === "vehicle" && item.occurredAt >= range.start && item.occurredAt < range.endExclusive);
+    const daysInPeriod = Math.max(1, Math.round((range.endExclusive.getTime() - range.start.getTime()) / 86_400_000));
+    return vehicles.map(vehicle => {
+      const trips = activeTrips.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId);
+      const refuels = activeRefuels.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId);
+      const maintenance = activeMaintenance.filter(item => item.assetId === vehicle.id && item.projectId === vehicle.projectId);
+      const rule = allLeaseRules.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId && item.status === "active").sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
+      const grossIncome = roundMoney(trips.reduce((sum, item) => sum + Number(item.calculatedAmount ?? 0), 0));
+      const settlementIncome = roundMoney(trips.reduce((sum, item) => sum + Number(item.netSettlementAmount ?? item.calculatedAmount ?? 0), 0));
+      const fuelLiters = roundMoney(refuels.reduce((sum, item) => sum + Number(item.liters), 0));
+      const fuelAmount = roundMoney(refuels.reduce((sum, item) => sum + Number(item.amount), 0));
+      const repairAmount = roundMoney(maintenance.filter(item => item.costCategory === "repair").reduce((sum, item) => sum + Number(item.amount), 0));
+      const maintenanceAmount = roundMoney(maintenance.filter(item => item.costCategory === "maintenance").reduce((sum, item) => sum + Number(item.amount), 0));
+      const leaseEstimatedAmount = rule?.billingType === "monthly" ? roundMoney(Number(rule.rate) * daysInPeriod / 30) : rule?.billingType === "daily" ? roundMoney(Number(rule.rate) * daysInPeriod) : 0;
+      const totalExpense = roundMoney(fuelAmount + repairAmount + maintenanceAmount + leaseEstimatedAmount);
+      return {
+        vehicleId: vehicle.id,
+        projectId: vehicle.projectId,
+        period: input.period,
+        tripCount: trips.length,
+        grossIncome,
+        settlementIncome,
+        fuelLiters,
+        fuelAmount,
+        repairAmount,
+        maintenanceAmount,
+        leaseEstimatedAmount,
+        leaseBillingType: rule?.billingType ?? null,
+        leaseRate: rule ? Number(rule.rate) : null,
+        leaseEstimatePending: Boolean(rule && ["hourly", "shift"].includes(rule.billingType)),
+        totalExpense,
+        netIncome: roundMoney(grossIncome - totalExpense),
+        fuelCostRatio: grossIncome > 0 ? roundMoney(fuelAmount / grossIncome * 100) : null,
+      };
+    });
+  }),
+
+  /** 单车详情按日及按月分析真实趟次、柴油和维修凭证，不接受客户端提交的金额或比例。 */
+  getVehicleAnalysis: protectedProcedure.input(z.object({ vehicleId: z.number().int().positive(), projectId: z.number().int().positive(), period: settlementPeriodSchema })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const user = requireAuthenticatedUser(ctx);
+    const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+    if (!vehicle || vehicle.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或不属于当前项目" });
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly && vehicle.driverUserId !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "司机仅可查看本人车辆分析" });
+    const range = getMonthRange(input.period);
+    const [tripRows, refuelRows, maintenanceRows, leaseRules] = await Promise.all([
+      db.select().from(transportTrips).where(and(eq(transportTrips.vehicleId, input.vehicleId), eq(transportTrips.projectId, input.projectId))),
+      db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.assetType, "vehicle"), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"))),
+      db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "vehicle"), eq(assetMaintenanceRecords.assetId, input.vehicleId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"))),
+      db.select().from(transportVehicleLeaseRules).where(and(eq(transportVehicleLeaseRules.vehicleId, input.vehicleId), eq(transportVehicleLeaseRules.projectId, input.projectId), eq(transportVehicleLeaseRules.status, "active"))),
+    ]);
+    const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
+    type Aggregate = { date: string; tripCount: number; tripNos: string[]; distanceKm: number; grossIncome: number; settlementIncome: number; fuelLiters: number; fuelAmount: number; repairAmount: number; maintenanceAmount: number; sourceCounts: { trips: number; refuels: number; maintenance: number } };
+    const dailyMap = new Map<string, Aggregate>();
+    const ensure = (date: string) => {
+      const current = dailyMap.get(date);
+      if (current) return current;
+      const next: Aggregate = { date, tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } };
+      dailyMap.set(date, next);
+      return next;
+    };
+    tripRows.filter(item => item.status !== "void").forEach(item => { const row = ensure(dayKey(item.startAt)); row.tripCount += 1; row.tripNos.push(item.tripNo); row.distanceKm += Number(item.actualDistanceKm ?? 0); row.grossIncome += Number(item.calculatedAmount ?? 0); row.settlementIncome += Number(item.netSettlementAmount ?? item.calculatedAmount ?? 0); row.sourceCounts.trips += 1; });
+    refuelRows.forEach(item => { const row = ensure(dayKey(item.refueledAt)); row.fuelLiters += Number(item.liters); row.fuelAmount += Number(item.amount); row.sourceCounts.refuels += 1; });
+    maintenanceRows.forEach(item => { const row = ensure(dayKey(item.occurredAt)); if (item.costCategory === "repair") row.repairAmount += Number(item.amount); else row.maintenanceAmount += Number(item.amount); row.sourceCounts.maintenance += 1; });
+    const decorate = (item: Aggregate) => {
+      const totalExpense = roundMoney(item.fuelAmount + item.repairAmount + item.maintenanceAmount);
+      return { ...item, distanceKm: roundMoney(item.distanceKm), grossIncome: roundMoney(item.grossIncome), settlementIncome: roundMoney(item.settlementIncome), fuelLiters: roundMoney(item.fuelLiters), fuelAmount: roundMoney(item.fuelAmount), repairAmount: roundMoney(item.repairAmount), maintenanceAmount: roundMoney(item.maintenanceAmount), totalExpense, netIncome: roundMoney(item.grossIncome - totalExpense), fuelCostRatio: item.grossIncome > 0 ? roundMoney(item.fuelAmount / item.grossIncome * 100) : null };
+    };
+    const daily = Array.from(dailyMap.values()).filter(item => item.date >= input.period && item.date < `${input.period}-32`).map(decorate).sort((left, right) => right.date.localeCompare(left.date));
+    const monthlyMap = new Map<string, Aggregate>();
+    Array.from(dailyMap.values()).forEach(item => { const period = item.date.slice(0, 7); const current = monthlyMap.get(period) ?? { ...item, date: period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } }; if (!monthlyMap.has(period)) { monthlyMap.set(period, current); return; } current.tripCount += item.tripCount; current.distanceKm += item.distanceKm; current.grossIncome += item.grossIncome; current.settlementIncome += item.settlementIncome; current.fuelLiters += item.fuelLiters; current.fuelAmount += item.fuelAmount; current.repairAmount += item.repairAmount; current.maintenanceAmount += item.maintenanceAmount; current.sourceCounts.trips += item.sourceCounts.trips; current.sourceCounts.refuels += item.sourceCounts.refuels; current.sourceCounts.maintenance += item.sourceCounts.maintenance; });
+    const currentSummary = daily.reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount }), { tripCount: 0, distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0 });
+    const leaseRule = leaseRules.sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
+    const daysInPeriod = Math.max(1, Math.round((range.endExclusive.getTime() - range.start.getTime()) / 86_400_000));
+    const leaseEstimatedAmount = leaseRule?.billingType === "monthly" ? roundMoney(Number(leaseRule.rate) * daysInPeriod / 30) : leaseRule?.billingType === "daily" ? roundMoney(Number(leaseRule.rate) * daysInPeriod) : 0;
+    const summary = { ...currentSummary, distanceKm: roundMoney(currentSummary.distanceKm), grossIncome: roundMoney(currentSummary.grossIncome), settlementIncome: roundMoney(currentSummary.settlementIncome), fuelLiters: roundMoney(currentSummary.fuelLiters), fuelAmount: roundMoney(currentSummary.fuelAmount), repairAmount: roundMoney(currentSummary.repairAmount), maintenanceAmount: roundMoney(currentSummary.maintenanceAmount), leaseEstimatedAmount, totalExpense: roundMoney(currentSummary.fuelAmount + currentSummary.repairAmount + currentSummary.maintenanceAmount + leaseEstimatedAmount), netIncome: roundMoney(currentSummary.grossIncome - currentSummary.fuelAmount - currentSummary.repairAmount - currentSummary.maintenanceAmount - leaseEstimatedAmount), fuelCostRatio: currentSummary.grossIncome > 0 ? roundMoney(currentSummary.fuelAmount / currentSummary.grossIncome * 100) : null };
+    return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, ownerName: vehicle.ownerName, status: vehicle.status }, period: input.period, leaseRule: leaseRule ? { billingType: leaseRule.billingType, rate: Number(leaseRule.rate), effectiveFrom: leaseRule.effectiveFrom, effectiveTo: leaseRule.effectiveTo, estimatePending: ["hourly", "shift"].includes(leaseRule.billingType) } : null, summary, monthly: Array.from(monthlyMap.values()).map(decorate).sort((left, right) => right.date.localeCompare(left.date)), daily };
   }),
 
   /** 新建或维护运输车辆档案；司机角色不得修改车辆主数据。 */

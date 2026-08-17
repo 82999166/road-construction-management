@@ -124,6 +124,18 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain("请使用右侧表单录入已授权项目的真实车辆资料");
   });
 
+  it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("加油升数 / 金额");
+    expect(source).toContain("本月收益 / 净收益");
+    expect(source).toContain("导出详细 CSV");
+    expect(source).toContain("单车收益支出分析");
+    expect(source).toContain("录入车辆档案");
+    expect(source).toContain("单车柴油分析");
+    expect(source).toContain("车辆分析期间");
+  });
+
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
