@@ -27,6 +27,8 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("operatorName");
     expect(source).toContain("驾驶员手机");
     expect(source).toContain("openMachineContactDialog(machine)");
+    expect(source.match(/驾驶员姓名/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(source).toContain('placeholder="加密保存"');
     expect(source).not.toContain('fixed bottom-[4.65rem]');
     expect(source).not.toContain('fixed bottom-[9.6rem]');
   });
