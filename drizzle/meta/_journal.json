@@ -260,6 +260,13 @@
       "when": 1786962522460,
       "tag": "0036_curved_earthquake",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1786963729628,
+      "tag": "0037_fast_hulk",
+      "breakpoints": true
     }
   ]
 }

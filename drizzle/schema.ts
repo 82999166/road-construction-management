@@ -378,12 +378,18 @@ export const projectRiskRules = mysqlTable(
     maxOpenCheckInHours: int("maxOpenCheckInHours").default(14).notNull(),
     /** 施工日报草稿、退回或逾期未审核超过该小时数，标记为施工管理待办。 */
     maxPendingReportHours: int("maxPendingReportHours").default(24).notNull(),
+    /** 是否启用每日整改逾期升级；由平台 Heartbeat 调用，禁止以进程内定时器实现。 */
+    overdueEscalationEnabled: boolean("overdueEscalationEnabled").default(false).notNull(),
+    /** 中国标准时间的每日升级检查小时（0-23），转换为 Heartbeat UTC cron 后持久化运行。 */
+    overdueEscalationHourChina: int("overdueEscalationHourChina").default(9).notNull(),
+    /** Heartbeat 平台任务 UID，仅由受认证的调度创建/更新流程写入。 */
+    overdueEscalationCronTaskUid: varchar("overdueEscalationCronTaskUid", { length: 65 }),
     createdBy: int("createdBy"),
     updatedBy: int("updatedBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectUnique: uniqueIndex("project_risk_rules_project_unique").on(table.projectId) }),
+  table => ({ projectUnique: uniqueIndex("project_risk_rules_project_unique").on(table.projectId), overdueCronTaskIndex: index("project_risk_rules_overdue_cron_task_index").on(table.overdueEscalationCronTaskUid) }),
 );
 
 /** 确定性风险检测结果；仅保存业务编号、数值口径与处置，不复制敏感原始资料。 */
@@ -402,8 +408,19 @@ export const projectRiskAlerts = mysqlTable(
     summary: varchar("summary", { length: 1000 }).notNull(),
     /** 仅保存数值、状态与业务编号，不保存姓名、手机号、身份证或设备指纹。 */
     evidenceJson: text("evidenceJson"),
-    status: mysqlEnum("status", ["open", "acknowledged", "resolved", "ignored"]).default("open").notNull(),
+    status: mysqlEnum("status", ["open", "acknowledged", "in_rectification", "resolved", "ignored"]).default("open").notNull(),
     notifiedAt: datetime("notifiedAt"),
+    /** 整改责任人必须处于本项目有效管理范围内；其姓名不复制到预警记录。 */
+    assigneeUserId: int("assigneeUserId"),
+    assignedBy: int("assignedBy"),
+    assignedAt: datetime("assignedAt"),
+    dueAt: datetime("dueAt"),
+    rectificationNote: varchar("rectificationNote", { length: 1000 }),
+    rectifiedBy: int("rectifiedBy"),
+    rectifiedAt: datetime("rectifiedAt"),
+    /** 每日逾期升级提醒的最后时间与次数；结合通知幂等键避免同日重复升级。 */
+    lastEscalatedAt: datetime("lastEscalatedAt"),
+    escalationCount: int("escalationCount").default(0).notNull(),
     acknowledgedBy: int("acknowledgedBy"),
     acknowledgedAt: datetime("acknowledgedAt"),
     resolvedBy: int("resolvedBy"),
@@ -415,6 +432,7 @@ export const projectRiskAlerts = mysqlTable(
   table => ({
     projectRuleSourceDateUnique: uniqueIndex("project_risk_alerts_unique").on(table.projectId, table.ruleCode, table.sourceId, table.businessDate),
     projectStatusDateIndex: index("project_risk_alerts_project_status_date_index").on(table.projectId, table.status, table.businessDate),
+    projectDueStatusIndex: index("project_risk_alerts_project_due_status_index").on(table.projectId, table.dueAt, table.status),
   }),
 );
 

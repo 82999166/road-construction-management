@@ -92,7 +92,7 @@ type EmployeeInsuranceForm = { id?: number; employeeProfileId: string; insurance
 type AssetMaintenanceForm = { id?: number; assetType: "vehicle" | "machine"; assetId: string; projectId: string; costCategory: "maintenance" | "repair"; amount: string; occurredAt: string; serviceProvider: string; meterReading: string; nextDueAt: string; remarks: string; status: "draft" | "approved" | "settled" | "void" };
 type DieselPriceForm = { id?: number; projectId: string; pricePerLiter: string; effectiveFrom: string; effectiveTo: string; status: "draft" | "active" | "disabled"; remarks: string };
 type DieselRefuelForm = { id?: number; projectId: string; assetType: "vehicle" | "machine"; vehicleId: string; machineId: string; transportTripId: string; supplyMethod: "project_supply" | "external_station"; stationOrSupplierName: string; liters: string; actualUnitPrice: string; deductFromFreight: boolean; refueledAt: string; meterReading: string; receiptNo: string; remarks: string; status: "draft" | "approved" | "void" };
-type RiskRuleForm = { enabled: boolean; maxFuelFillRatio: string; maxTransportSpeedKmh: string; maxTransportDurationMinutes: string; maxOpenCheckInHours: string; maxPendingReportHours: string };
+type RiskRuleForm = { enabled: boolean; maxFuelFillRatio: string; maxTransportSpeedKmh: string; maxTransportDurationMinutes: string; maxOpenCheckInHours: string; maxPendingReportHours: string; overdueEscalationEnabled: boolean; overdueEscalationHourChina: string };
 type RfidWriterDeviceForm = { id?: number; deviceCode: string; displayName: string; model: string; connectionMode: "manual_placeholder" | "usb" | "serial" | "network"; status: "active" | "disabled" | "maintenance"; remarks: string };
 type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked" };
 type LocalAccountStatus = "active" | "disabled";
@@ -120,7 +120,7 @@ const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownership: "owned", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", fuelTankCapacityLiters: "", status: "active", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
 const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", code: "", name: "", model: "", ownership: "owned", supplierName: "", plateOrAssetNo: "", fuelTankCapacityLiters: "", status: "idle", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
-const EMPTY_RISK_RULE_FORM: RiskRuleForm = { enabled: true, maxFuelFillRatio: "1.1", maxTransportSpeedKmh: "80", maxTransportDurationMinutes: "360", maxOpenCheckInHours: "14", maxPendingReportHours: "24" };
+const EMPTY_RISK_RULE_FORM: RiskRuleForm = { enabled: true, maxFuelFillRatio: "1.1", maxTransportSpeedKmh: "80", maxTransportDurationMinutes: "360", maxOpenCheckInHours: "14", maxPendingReportHours: "24", overdueEscalationEnabled: false, overdueEscalationHourChina: "9" };
 const EMPTY_MACHINE_COST_FORM: MachineCostForm = { machineId: "", projectId: "", costType: "fuel", quantity: "", unitPrice: "", occurredAt: "" };
 const EMPTY_MACHINE_MONTHLY_STATEMENT_FORM: MachineMonthlyStatementForm = { machineId: "", projectId: "", period: "", driverUserId: "", machineWorkDays: "0", machineOvertimeHours: "0", driverMonthlyWage: "0", driverWorkDays: "0", driverOvertimeHours: "0", signatureName: "", remarks: "" };
 const EMPTY_EMPLOYEE_PROFILE_FORM: EmployeeProfileForm = { userId: "", laborWorkerId: "", projectId: "", employeeType: "management", teamName: "", employmentStatus: "active", joinedAt: "", leftAt: "", salaryBasis: "monthly", baseSalary: "", remarks: "" };
@@ -525,8 +525,9 @@ export default function AdminPage() {
   const [financeProjectId, setFinanceProjectId] = useState("");
   const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
-  const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "resolved" | "ignored">("all");
+  const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
+  const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
   const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "llm" | "fallback"; model: string } | null>(null);
   const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => new Date().toISOString().slice(0, 7));
@@ -622,6 +623,8 @@ export default function AdminPage() {
   const dieselMachineOptions = trpc.machinery.listMachines.useQuery({ projectId: Number(financeProjectId || 0) }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselTripOptions = trpc.transport.listTrips.useQuery({ projectId: Number(financeProjectId || 0), date: undefined }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const riskRule = trpc.projectRisk.getRule.useQuery(riskProjectInput, { enabled: canQuery && isRisk && Number(financeProjectId) > 0 });
+  const riskCapacityReadiness = trpc.projectRisk.capacityReadiness.useQuery(riskProjectInput, { enabled: canQuery && isRisk && Number(financeProjectId) > 0 });
+  const riskAssignees = trpc.projectRisk.listAssignees.useQuery(riskProjectInput, { enabled: canQuery && isRisk && Number(financeProjectId) > 0 });
   const riskAlerts = trpc.projectRisk.listAlerts.useQuery(riskAlertsInput, { enabled: canQuery && isRisk && Number(financeProjectId) > 0 && Boolean(financePeriod) });
   const riskFinanceAnalysis = trpc.projectRisk.financeCategoryAnalysis.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && (isRisk || isFinance) && Number(financeProjectId) > 0 && Boolean(financePeriod) });
   useEffect(() => {
@@ -648,7 +651,7 @@ export default function AdminPage() {
   }, [dieselPriceAlertRule.data]);
   useEffect(() => {
     if (!riskRule.data) return;
-    setRiskRuleForm({ enabled: riskRule.data.enabled, maxFuelFillRatio: String(riskRule.data.maxFuelFillRatio), maxTransportSpeedKmh: String(riskRule.data.maxTransportSpeedKmh), maxTransportDurationMinutes: String(riskRule.data.maxTransportDurationMinutes), maxOpenCheckInHours: String(riskRule.data.maxOpenCheckInHours), maxPendingReportHours: String(riskRule.data.maxPendingReportHours) });
+    setRiskRuleForm({ enabled: riskRule.data.enabled, maxFuelFillRatio: String(riskRule.data.maxFuelFillRatio), maxTransportSpeedKmh: String(riskRule.data.maxTransportSpeedKmh), maxTransportDurationMinutes: String(riskRule.data.maxTransportDurationMinutes), maxOpenCheckInHours: String(riskRule.data.maxOpenCheckInHours), maxPendingReportHours: String(riskRule.data.maxPendingReportHours), overdueEscalationEnabled: riskRule.data.overdueEscalationEnabled, overdueEscalationHourChina: String(riskRule.data.overdueEscalationHourChina) });
   }, [riskRule.data]);
   const closeDailyAccount = trpc.finance.closeDailyAccount.useMutation({
     onSuccess: async result => {
@@ -896,6 +899,11 @@ export default function AdminPage() {
     if (firstAvailableProject) setBusinessWorkspaceProjectId(String(firstAvailableProject.id));
   }, [businessWorkspaceProjectId, isBusinessWorkspace, projects.data]);
   useEffect(() => {
+    if (!(isFinance || isRisk) || financeProjectId || !projects.data?.length) return;
+    const firstAvailableProject = projects.data.find(project => project.status !== "archived");
+    if (firstAvailableProject) setFinanceProjectId(String(firstAvailableProject.id));
+  }, [financeProjectId, isFinance, isRisk, projects.data]);
+  useEffect(() => {
     setSelectedMachineId("");
   }, [businessWorkspaceProjectId]);
   useEffect(() => {
@@ -1042,21 +1050,37 @@ export default function AdminPage() {
   });
   const saveRiskRule = trpc.projectRisk.saveRule.useMutation({
     onSuccess: async () => {
-      toast.success("AI 项目风控阈值已保存");
-      await riskRule.refetch();
+      toast.success("AI 项目风控阈值与逾期升级计划已保存");
+      await Promise.all([riskRule.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
   const scanProjectRisks = trpc.projectRisk.scan.useMutation({
     onSuccess: async result => {
-      toast.success(result.enabled ? `风险扫描完成：发现 ${result.detectedCount} 条，新增 ${result.createdCount} 条，已向管理人员投递 ${result.notifiedCount} 条站内提醒` : "当前项目风险扫描已停用");
-      await Promise.all([riskAlerts.refetch(), riskFinanceAnalysis.refetch(), audits.refetch()]);
+      const scanned = result.scanned ?? { pendingConstructionReports: 0, openAttendanceCheckIns: 0, dieselRefuelRecords: 0, transportTrips: 0 };
+      toast.success(result.enabled ? `真实数据扫描完成：日报 ${scanned.pendingConstructionReports}、考勤 ${scanned.openAttendanceCheckIns}、柴油 ${scanned.dieselRefuelRecords}、运输 ${scanned.transportTrips}；发现 ${result.detectedCount} 条，新增 ${result.createdCount} 条，已投递 ${result.notifiedCount} 条提醒` : "当前项目风险扫描已停用");
+      await Promise.all([riskAlerts.refetch(), riskFinanceAnalysis.refetch(), riskCapacityReadiness.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
   const updateRiskAlertStatus = trpc.projectRisk.updateAlertStatus.useMutation({
     onSuccess: async () => {
       toast.success("风险预警处置状态已更新");
+      await Promise.all([riskAlerts.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const assignRiskRectification = trpc.projectRisk.assignRectification.useMutation({
+    onSuccess: async () => {
+      toast.success("已分配整改责任人并发送站内待办");
+      setRiskRectificationTarget(null);
+      await Promise.all([riskAlerts.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const runOverdueRiskEscalation = trpc.projectRisk.runOverdueEscalation.useMutation({
+    onSuccess: async result => {
+      toast.success(`逾期升级验收完成：升级 ${result.escalatedCount} 条，投递 ${result.notifiedCount} 条站内提醒`);
       await Promise.all([riskAlerts.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
@@ -2517,13 +2541,17 @@ export default function AdminPage() {
     const criticalCount = alerts.filter(item => item.severity === "critical" && ["open", "acknowledged"].includes(item.status)).length;
     const validateRule = () => {
       const values = [riskRuleForm.maxFuelFillRatio, riskRuleForm.maxTransportSpeedKmh, riskRuleForm.maxTransportDurationMinutes, riskRuleForm.maxOpenCheckInHours, riskRuleForm.maxPendingReportHours].map(Number);
+      const escalationHour = Number(riskRuleForm.overdueEscalationHourChina);
       if (values.some(value => !Number.isFinite(value) || value <= 0)) return toast.error("请填写有效的正数风险阈值");
+      if (!Number.isInteger(escalationHour) || escalationHour < 0 || escalationHour > 23) return toast.error("逾期升级检查时间必须为 0—23 点（中国标准时间）");
       if (!financeProjectId) return toast.error("请先选择项目");
-      saveRiskRule.mutate({ projectId: Number(financeProjectId), enabled: riskRuleForm.enabled, maxFuelFillRatio: values[0], maxTransportSpeedKmh: values[1], maxTransportDurationMinutes: Math.round(values[2]), maxOpenCheckInHours: Math.round(values[3]), maxPendingReportHours: Math.round(values[4]) });
+      saveRiskRule.mutate({ projectId: Number(financeProjectId), enabled: riskRuleForm.enabled, maxFuelFillRatio: values[0], maxTransportSpeedKmh: values[1], maxTransportDurationMinutes: Math.round(values[2]), maxOpenCheckInHours: Math.round(values[3]), maxPendingReportHours: Math.round(values[4]), overdueEscalationEnabled: riskRuleForm.overdueEscalationEnabled, overdueEscalationHourChina: escalationHour });
     };
     const severityLabel: Record<string, string> = { notice: "提示", warning: "预警", critical: "严重" };
     const categoryLabel: Record<string, string> = { construction: "施工日报", attendance: "考勤", fuel: "柴油", transport: "运输" };
+    const pendingRectifications = alerts.filter(item => ["open", "acknowledged", "in_rectification"].includes(item.status));
     return <div className="space-y-5">
+      {financeProjectId ? <Card className="border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">真实配置与整改治理</p><CardTitle className="mt-1 text-base">设备容量、整改期限与逾期升级</CardTitle><CardDescription className="mt-1">请维护现场核定油箱容量。未配置容量的车辆或机械不会触发加油超量规则；逾期升级启用后会在每日指定中国标准时间检查未解决整改并向责任人与项目管理岗位发送站内提醒。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setLocation("/admin/vehicles"); }}>维护车辆容量</Button><Button size="sm" variant="outline" onClick={() => { setLocation("/admin/machinery"); }}>维护机械容量</Button><Button size="sm" disabled={runOverdueRiskEscalation.isPending} onClick={() => runOverdueRiskEscalation.mutate({ projectId: Number(financeProjectId) })}>{runOverdueRiskEscalation.isPending ? "正在验收…" : "执行逾期升级验收"}</Button></div></CardHeader><CardContent className="space-y-4"><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="车辆容量已配置" value={`${riskCapacityReadiness.data?.vehicleConfigured ?? 0} / ${riskCapacityReadiness.data?.vehicleTotal ?? 0}`} description="加油超量检测前置条件" icon={Truck} /><MetricCard title="机械容量已配置" value={`${riskCapacityReadiness.data?.machineConfigured ?? 0} / ${riskCapacityReadiness.data?.machineTotal ?? 0}`} description="加油超量检测前置条件" icon={Settings2} /><MetricCard title="待整改风险" value={pendingRectifications.length} description="可分配责任人与期限" icon={ShieldCheck} /><MetricCard title="逾期升级" value={riskRuleForm.overdueEscalationEnabled ? `每日 ${riskRuleForm.overdueEscalationHourChina.padStart(2, "0")}:00` : "未启用"} description="中国标准时间" icon={ScrollText} /></div><div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3"><div className="grid gap-3 md:grid-cols-[1fr_160px_auto]"><div className="flex items-center gap-2"><Checkbox id="risk-overdue-escalation" checked={riskRuleForm.overdueEscalationEnabled} onCheckedChange={checked => setRiskRuleForm(current => ({ ...current, overdueEscalationEnabled: checked === true }))} /><Label htmlFor="risk-overdue-escalation">启用每日整改逾期升级</Label></div><Field label="检查时间（中国标准时间）"><Input type="number" min="0" max="23" step="1" value={riskRuleForm.overdueEscalationHourChina} onChange={event => setRiskRuleForm(current => ({ ...current, overdueEscalationHourChina: event.target.value }))} /></Field><div className="flex items-end"><Button className="w-full" variant="outline" disabled={saveRiskRule.isPending} onClick={validateRule}>保存升级计划</Button></div></div><p className="mt-2 text-xs text-amber-900">任务由平台 Heartbeat 运行，支持重试与同日去重；停用后会暂停该项目调度，不会删除历史整改和升级审计。</p></div>{riskCapacityReadiness.data?.unconfiguredAssets.length ? <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-3"><p className="text-sm font-semibold text-rose-900">以下资源尚未维护核定油箱容量，柴油超量检测会跳过：</p><p className="mt-1 text-sm text-rose-800">{riskCapacityReadiness.data.unconfiguredAssets.map(item => `${item.assetType === "vehicle" ? "车辆" : "机械"}·${item.label}`).join("；")}</p></div> : <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-sm text-emerald-800">车辆与机械核定油箱容量均已配置，可参与柴油加油量合理性检测。</div>}<div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-slate-800">整改派单</p><p className="mt-1 text-xs text-slate-500">仅可选择当前项目范围内的有效管理人员；到期未解决将按已保存的升级计划提醒责任人与管理岗位。</p></div></div>{pendingRectifications.length ? <div className="mt-3 grid gap-2 lg:grid-cols-2">{pendingRectifications.map(item => <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3" key={item.id}><div className="min-w-0"><p className="truncate text-sm font-medium text-slate-800">{item.title}</p><p className="mt-1 text-xs text-slate-500">状态：{item.status === "in_rectification" ? "整改中" : item.status === "acknowledged" ? "已确认" : "待处置"}{item.dueAt ? ` · 期限 ${displayDate(item.dueAt)}` : " · 尚未设置期限"}</p></div><Button size="sm" variant="outline" onClick={() => setRiskRectificationTarget({ id: Number(item.id), title: item.title, assigneeUserId: item.assigneeUserId ? String(item.assigneeUserId) : "", dueAt: item.dueAt ? new Date(item.dueAt).toISOString().slice(0, 16) : "", rectificationNote: item.rectificationNote ?? "" })}>分配整改</Button></div>)}</div> : <p className="mt-3 text-sm text-slate-500">当前没有待派单风险。先执行真实数据扫描后再分配整改责任。</p>}</div>{riskRectificationTarget ? <div className="rounded-xl border border-[#c9dbd6] bg-[#f5f9f8] p-4"><div className="mb-3 flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[#203c48]">分配整改：{riskRectificationTarget.title}</p><p className="mt-1 text-xs text-slate-500">责任人、期限和整改说明均会写入审计；期限必须晚于当前时间。</p></div><Button size="sm" variant="ghost" onClick={() => setRiskRectificationTarget(null)}>取消</Button></div><div className="grid gap-3 md:grid-cols-3"><Field label="整改责任人"><Select value={riskRectificationTarget.assigneeUserId || "UNASSIGNED"} onValueChange={value => setRiskRectificationTarget(current => current ? { ...current, assigneeUserId: value === "UNASSIGNED" ? "" : value } : current)}><SelectTrigger><SelectValue placeholder="选择项目管理人员" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择责任人</SelectItem>{riskAssignees.data?.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name || `管理人员 #${item.id}`}</SelectItem>)}</SelectContent></Select></Field><Field label="整改期限"><Input type="datetime-local" value={riskRectificationTarget.dueAt} onChange={event => setRiskRectificationTarget(current => current ? { ...current, dueAt: event.target.value } : current)} /></Field><Field label="整改说明"><Input value={riskRectificationTarget.rectificationNote} placeholder="例如：核对原始记录并补齐影像" onChange={event => setRiskRectificationTarget(current => current ? { ...current, rectificationNote: event.target.value } : current)} /></Field></div><div className="mt-3 flex justify-end"><Button disabled={!riskRectificationTarget.assigneeUserId || !riskRectificationTarget.dueAt || assignRiskRectification.isPending} onClick={() => { if (!riskRectificationTarget) return; assignRiskRectification.mutate({ id: riskRectificationTarget.id, projectId: Number(financeProjectId), assigneeUserId: Number(riskRectificationTarget.assigneeUserId), dueAt: new Date(riskRectificationTarget.dueAt).toISOString(), rectificationNote: riskRectificationTarget.rectificationNote.trim() || null }); }}>{assignRiskRectification.isPending ? "正在派单…" : "保存责任人与整改期限"}</Button></div></div> : null}</CardContent></Card> : null}
       <Card className="border-[#d8e3e0] shadow-sm"><CardHeader><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">AI 辅助 · 规则可解释 · 人工可处置</p><CardTitle className="mt-1 text-base">AI 项目风险预警中心</CardTitle><CardDescription className="mt-1">系统先以真实业务记录执行确定性规则：施工日报待办、上下班考勤缺口、加油量与核定油箱容量不符、运输里程与时长/速度不匹配。仅将脱敏的风险计数和费用分类提交给 AI 生成管理摘要；所有预警均可回到原始单据核验。</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-[1fr_180px_180px_auto]"><Select value={financeProjectId} onValueChange={setFinanceProjectId}><SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select><Input type="month" value={financePeriod} aria-label="风险统计期间" onChange={event => setFinancePeriod(event.target.value)} /><Input type="date" value={riskScanDate} aria-label="风险扫描日期" onChange={event => setRiskScanDate(event.target.value)} /><Button disabled={!financeProjectId || scanProjectRisks.isPending} onClick={() => scanProjectRisks.mutate({ projectId: Number(financeProjectId), businessDate: riskScanDate })}>{scanProjectRisks.isPending ? "正在扫描…" : "立即扫描并提醒"}</Button></CardContent></Card>
       {!financeProjectId ? <EmptyState text="请选择项目后配置风险阈值、扫描真实施工/考勤/柴油/运输记录，并查看本期财务分类。" /> : <>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="本期未处置预警" value={openCount} description="可确认、解决或忽略" icon={ShieldCheck} /><MetricCard title="严重风险" value={criticalCount} description="请优先回到原始单据核验" icon={ShieldCheck} /><MetricCard title="本期成本" value={riskFinanceAnalysis.data?.expenseAmount} description="分类汇总的真实业务成本" icon={BarChart3} /><MetricCard title="风险扫描日期" value={riskScanDate} description="点击立即扫描生成/刷新风险清单" icon={ScrollText} /></div>

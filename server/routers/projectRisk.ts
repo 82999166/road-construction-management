@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gt, gte, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
 import { z } from "zod";
 import {
   assetMaintenanceRecords,
+  auditLogs,
   attendanceCheckIns,
   constructionDailyReports,
   dieselRefuelRecords,
@@ -19,9 +20,11 @@ import {
   transportTrips,
   transportVehicles,
   userRoleAssignments,
+  users,
 } from "../../drizzle/schema";
 import { assertSuperAdmin, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
+import { createHeartbeatJob, updateHeartbeatJob } from "../_core/heartbeat";
 import { invokeLLM } from "../_core/llm";
 import { protectedProcedure, router } from "../_core/trpc";
 
@@ -39,6 +42,9 @@ type RiskRule = {
   maxTransportDurationMinutes: number;
   maxOpenCheckInHours: number;
   maxPendingReportHours: number;
+  overdueEscalationEnabled: boolean;
+  overdueEscalationHourChina: number;
+  overdueEscalationCronTaskUid: string | null;
 };
 type CandidateRisk = {
   category: RiskCategory;
@@ -58,6 +64,9 @@ const DEFAULT_RISK_RULE: RiskRule = {
   maxTransportDurationMinutes: 360,
   maxOpenCheckInHours: 14,
   maxPendingReportHours: 24,
+  overdueEscalationEnabled: false,
+  overdueEscalationHourChina: 9,
+  overdueEscalationCronTaskUid: null,
 };
 
 const FINANCE_CATEGORY_LABELS: Record<string, string> = {
@@ -101,7 +110,16 @@ function asRule(row: typeof projectRiskRules.$inferSelect | undefined): RiskRule
     maxTransportDurationMinutes: row.maxTransportDurationMinutes,
     maxOpenCheckInHours: row.maxOpenCheckInHours,
     maxPendingReportHours: row.maxPendingReportHours,
+    overdueEscalationEnabled: row.overdueEscalationEnabled,
+    overdueEscalationHourChina: row.overdueEscalationHourChina,
+    overdueEscalationCronTaskUid: row.overdueEscalationCronTaskUid,
   };
+}
+
+/** 中国标准时间每天整点转换为 Heartbeat 所需的 UTC 六段 cron 表达式。 */
+export function buildRiskOverdueEscalationCron(hourChina: number) {
+  if (!Number.isInteger(hourChina) || hourChina < 0 || hourChina > 23) throw new TRPCError({ code: "BAD_REQUEST", message: "逾期升级检查时间必须为 0—23 点（中国标准时间）" });
+  return `0 0 ${(hourChina + 16) % 24} * * *`;
 }
 
 /** 费用分类只依据已登记业务类别与来源标识，未知类别保留在“其他”，绝不凭 AI 猜测会计科目。 */
@@ -141,6 +159,15 @@ async function resolveRiskRecipients(project: { id: number; organizationId: numb
       or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
     ));
   return Array.from(new Set(rows.filter(row => row.projectId === project.id || (project.organizationId !== null && row.organizationId === project.organizationId)).map(row => row.userId)));
+}
+
+/** 责任人仅能从当前项目有效管理岗位中选择，防止跨项目派单或向已失效账号分配整改。 */
+async function resolveRiskAssignees(project: { id: number; organizationId: number | null }) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ id: number; name: string | null }>;
+  const recipientIds = await resolveRiskRecipients(project);
+  if (!recipientIds.length) return [];
+  return db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, recipientIds));
 }
 
 export function detectTransportRisk(trip: typeof transportTrips.$inferSelect, rule: RiskRule): CandidateRisk[] {
@@ -197,7 +224,7 @@ async function buildRiskCandidates(projectId: number, businessDate: string, rule
     if (ratio > rule.maxFuelFillRatio) candidates.push({ category: "fuel", severity: ratio > rule.maxFuelFillRatio * 1.25 ? "critical" : "warning", ruleCode: "FUEL_FILL_OVER_CAPACITY", sourceType: "diesel_refuel", sourceId: String(row.id), title: "加油量超过设备核定油箱容量", summary: `本次加油 ${round(liters, 2)} L，占核定油箱 ${round(capacity, 2)} L 的 ${round(ratio * 100, 1)}%，超过项目阈值 ${round(rule.maxFuelFillRatio * 100, 1)}%，请核对设备、油表和加油单。`, evidence: { refuelId: Number(row.id), liters: round(liters, 2), tankCapacityLiters: round(capacity, 2), fillRatio: round(ratio, 3), thresholdRatio: rule.maxFuelFillRatio } });
   }
   for (const trip of trips) candidates.push(...detectTransportRisk(trip, rule));
-  return candidates;
+  return { candidates, scanned: { pendingConstructionReports: reports.length, openAttendanceCheckIns: checkIns.length, dieselRefuelRecords: dieselRows.filter(item => item.status !== "void").length, transportTrips: trips.filter(item => item.status !== "void").length } };
 }
 
 async function persistRiskCandidate(projectId: number, businessDate: string, candidate: CandidateRisk) {
@@ -237,6 +264,56 @@ async function notifyRiskRecipients(project: { id: number; name: string; organiz
   }).onDuplicateKeyUpdate({ set: { title: `项目风险提醒｜${project.name}`.slice(0, 200), content: `${alert.title}：${alert.summary}`.slice(0, 1000), deepLink: "/admin/risk", status: "sent", sentAt: new Date(), channel: "in_app" } })));
   if (recipients.length) await db.update(projectRiskAlerts).set({ notifiedAt: new Date() }).where(eq(projectRiskAlerts.id, alert.id));
   return recipients.length;
+}
+
+/** 向整改责任人与项目管理岗位发送逾期升级提醒；按预警、日期、收件人幂等，重试不产生重复消息。 */
+async function notifyOverdueRiskEscalation(project: { id: number; name: string; organizationId: number | null }, alert: typeof projectRiskAlerts.$inferSelect, now = new Date()) {
+  const db = await getDb();
+  if (!db) return 0;
+  const escalationDay = dateKey(now);
+  const recipientIds = new Set(await resolveRiskRecipients(project));
+  if (alert.assigneeUserId) recipientIds.add(alert.assigneeUserId);
+  const deadline = alert.dueAt ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "short", hour12: false }).format(alert.dueAt) : "未设置";
+  for (const recipientUserId of Array.from(recipientIds)) {
+    const isAssignee = recipientUserId === alert.assigneeUserId;
+    await db.insert(notificationRecords).values({
+      eventCode: isAssignee ? "project_risk_overdue_owner" : "project_risk_overdue_escalation",
+      idempotencyKey: `inapp:risk-overdue:${alert.id}:${escalationDay}:${recipientUserId}`,
+      recipientUserId,
+      title: `${isAssignee ? "整改已逾期" : "项目风险整改升级"}｜${project.name}`.slice(0, 200),
+      content: `${alert.title}：整改期限 ${deadline}，当前仍未解决。请及时核验、更新整改说明或完成处置。`.slice(0, 1000),
+      deepLink: "/admin/risk",
+      status: "sent",
+      sentAt: now,
+      channel: "in_app",
+    }).onDuplicateKeyUpdate({ set: { title: `${isAssignee ? "整改已逾期" : "项目风险整改升级"}｜${project.name}`.slice(0, 200), content: `${alert.title}：整改期限 ${deadline}，当前仍未解决。请及时核验、更新整改说明或完成处置。`.slice(0, 1000), deepLink: "/admin/risk", status: "sent", sentAt: now, channel: "in_app" } });
+  }
+  return recipientIds.size;
+}
+
+/** 供手动验收与 Heartbeat 共用；仅升级到期未解决预警，并用当日通知幂等键抵抗任务重试。 */
+export async function runOverdueRiskEscalationForProject(projectId: number, now = new Date()) {
+  const { db, project } = await getProjectOrThrow(projectId);
+  const alerts = await db.select().from(projectRiskAlerts).where(and(eq(projectRiskAlerts.projectId, projectId), inArray(projectRiskAlerts.status, ["open", "acknowledged", "in_rectification"]), isNotNull(projectRiskAlerts.dueAt), lte(projectRiskAlerts.dueAt, now)));
+  let notifiedCount = 0;
+  let escalatedCount = 0;
+  const today = dateKey(now);
+  for (const alert of alerts) {
+    if (alert.lastEscalatedAt && dateKey(alert.lastEscalatedAt) === today) continue;
+    notifiedCount += await notifyOverdueRiskEscalation(project, alert, now);
+    await db.update(projectRiskAlerts).set({ lastEscalatedAt: now, escalationCount: (alert.escalationCount ?? 0) + 1 }).where(eq(projectRiskAlerts.id, alert.id));
+    escalatedCount += 1;
+  }
+  return { projectId, escalatedCount, notifiedCount };
+}
+
+/** 仅接受平台认证的 task UID 查询调度配置，绝不信任回调请求体内的项目编号。 */
+export async function runOverdueRiskEscalationForHeartbeatTask(taskUid: string) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const [rule] = await db.select().from(projectRiskRules).where(eq(projectRiskRules.overdueEscalationCronTaskUid, taskUid)).limit(1);
+  if (!rule || !rule.overdueEscalationEnabled) return { status: "skipped" as const, reason: "orphan_or_disabled" };
+  return { status: "completed" as const, ...(await runOverdueRiskEscalationForProject(rule.projectId)) };
 }
 
 async function getFinanceCategoryAnalysis(projectId: number, period: string) {
@@ -284,14 +361,43 @@ export const projectRiskRouter = router({
     return { ...asRule(stored), configured: Boolean(stored) };
   }),
 
-  saveRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), enabled: z.boolean(), maxFuelFillRatio: z.number().min(1).max(3), maxTransportSpeedKmh: z.number().min(20).max(180), maxTransportDurationMinutes: z.number().int().min(15).max(1440), maxOpenCheckInHours: z.number().int().min(2).max(72), maxPendingReportHours: z.number().int().min(1).max(720) })).mutation(async ({ ctx, input }) => {
+  capacityReadiness: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertSuperAdmin(ctx);
+    const { db } = await getProjectOrThrow(input.projectId);
+    const [vehicleRows, machineRows] = await Promise.all([
+      db.select({ id: transportVehicles.id, label: transportVehicles.plateNo, fuelTankCapacityLiters: transportVehicles.fuelTankCapacityLiters }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      db.select({ id: machines.id, label: machines.name, code: machines.code, fuelTankCapacityLiters: machines.fuelTankCapacityLiters }).from(machines).where(eq(machines.projectId, input.projectId)),
+    ]);
+    const unconfiguredVehicles = vehicleRows.filter(row => !row.fuelTankCapacityLiters || Number(row.fuelTankCapacityLiters) <= 0).map(row => ({ id: row.id, label: row.label, assetType: "vehicle" as const }));
+    const unconfiguredMachines = machineRows.filter(row => !row.fuelTankCapacityLiters || Number(row.fuelTankCapacityLiters) <= 0).map(row => ({ id: row.id, label: `${row.label}（${row.code}）`, assetType: "machine" as const }));
+    return { vehicleTotal: vehicleRows.length, vehicleConfigured: vehicleRows.length - unconfiguredVehicles.length, machineTotal: machineRows.length, machineConfigured: machineRows.length - unconfiguredMachines.length, unconfiguredAssets: [...unconfiguredVehicles, ...unconfiguredMachines] };
+  }),
+
+  listAssignees: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertSuperAdmin(ctx);
+    const { project } = await getProjectOrThrow(input.projectId);
+    return resolveRiskAssignees(project);
+  }),
+
+  saveRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), enabled: z.boolean(), maxFuelFillRatio: z.number().min(1).max(3), maxTransportSpeedKmh: z.number().min(20).max(180), maxTransportDurationMinutes: z.number().int().min(15).max(1440), maxOpenCheckInHours: z.number().int().min(2).max(72), maxPendingReportHours: z.number().int().min(1).max(720), overdueEscalationEnabled: z.boolean().default(false), overdueEscalationHourChina: z.number().int().min(0).max(23).default(9) })).mutation(async ({ ctx, input }) => {
     const user = await assertSuperAdmin(ctx);
     const { db } = await getProjectOrThrow(input.projectId);
-    const values = { ...input, maxFuelFillRatio: String(input.maxFuelFillRatio), maxTransportSpeedKmh: String(input.maxTransportSpeedKmh), createdBy: user.id, updatedBy: user.id };
-    const [existing] = await db.select({ id: projectRiskRules.id }).from(projectRiskRules).where(eq(projectRiskRules.projectId, input.projectId)).limit(1);
+    const [existing] = await db.select().from(projectRiskRules).where(eq(projectRiskRules.projectId, input.projectId)).limit(1);
+    let taskUid = existing?.overdueEscalationCronTaskUid ?? null;
+    if (input.overdueEscalationEnabled) {
+      if (process.env.NODE_ENV !== "production") throw new TRPCError({ code: "BAD_REQUEST", message: "请先保存并发布本版本，再在正式站点启用整改逾期升级任务" });
+      const cron = buildRiskOverdueEscalationCron(input.overdueEscalationHourChina);
+      if (taskUid) await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/project-risk-overdue-escalation", method: "POST", payload: {}, description: `项目风险整改逾期升级｜项目 ${input.projectId}`, enable: true }, "");
+      else {
+        const task = await createHeartbeatJob({ name: `project-risk-overdue-${input.projectId}`, cron, path: "/api/scheduled/project-risk-overdue-escalation", method: "POST", payload: {}, description: `项目风险整改逾期升级｜项目 ${input.projectId}` }, "");
+        taskUid = task.taskUid;
+      }
+    } else if (taskUid) await updateHeartbeatJob(taskUid, { enable: false }, "");
+    const values = { ...input, overdueEscalationCronTaskUid: taskUid, maxFuelFillRatio: String(input.maxFuelFillRatio), maxTransportSpeedKmh: String(input.maxTransportSpeedKmh), createdBy: user.id, updatedBy: user.id };
     if (existing) await db.update(projectRiskRules).set({ ...values, createdBy: undefined }).where(eq(projectRiskRules.id, existing.id));
     else await db.insert(projectRiskRules).values(values);
-    return { success: true };
+    await db.insert(auditLogs).values({ userId: user.id, module: "risk", action: "save_project_risk_rule", targetType: "project_risk_rule", targetId: String(input.projectId), summary: `项目风险阈值已保存；逾期升级${input.overdueEscalationEnabled ? `已启用，每日 ${String(input.overdueEscalationHourChina).padStart(2, "0")}:00（中国标准时间）` : "已停用"}` });
+    return { success: true, taskUid };
   }),
 
   scan: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), businessDate: businessDateSchema })).mutation(async ({ ctx, input }) => {
@@ -300,7 +406,7 @@ export const projectRiskRouter = router({
     const [storedRule] = await db.select().from(projectRiskRules).where(eq(projectRiskRules.projectId, input.projectId)).limit(1);
     const rule = asRule(storedRule);
     if (!rule.enabled) return { enabled: false, detectedCount: 0, createdCount: 0, notifiedCount: 0, alerts: [] };
-    const candidates = await buildRiskCandidates(input.projectId, input.businessDate, rule);
+    const { candidates, scanned } = await buildRiskCandidates(input.projectId, input.businessDate, rule);
     let createdCount = 0;
     let notifiedCount = 0;
     const alerts = [] as Array<typeof projectRiskAlerts.$inferSelect>;
@@ -312,10 +418,10 @@ export const projectRiskRouter = router({
         notifiedCount += await notifyRiskRecipients(project, persisted.alert);
       }
     }
-    return { enabled: true, detectedCount: candidates.length, createdCount, notifiedCount, alerts };
+    return { enabled: true, scanned, detectedCount: candidates.length, createdCount, notifiedCount, alerts };
   }),
 
-  listAlerts: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema, status: z.enum(["all", "open", "acknowledged", "resolved", "ignored"]).default("all") })).query(async ({ ctx, input }) => {
+  listAlerts: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema, status: z.enum(["all", "open", "acknowledged", "in_rectification", "resolved", "ignored"]).default("all") })).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
     const { db } = await getProjectOrThrow(input.projectId);
     const range = monthRange(input.period);
@@ -324,13 +430,35 @@ export const projectRiskRouter = router({
     return db.select().from(projectRiskAlerts).where(and(...predicates)).orderBy(desc(projectRiskAlerts.businessDate), desc(projectRiskAlerts.createdAt));
   }),
 
+  assignRectification: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), assigneeUserId: z.number().int().positive(), dueAt: z.string().datetime(), rectificationNote: z.string().trim().max(1000).nullable().optional() })).mutation(async ({ ctx, input }) => {
+    const user = await assertSuperAdmin(ctx);
+    const { db, project } = await getProjectOrThrow(input.projectId);
+    const dueAt = new Date(input.dueAt);
+    if (dueAt.getTime() <= Date.now()) throw new TRPCError({ code: "BAD_REQUEST", message: "整改期限必须晚于当前时间" });
+    const [alert] = await db.select().from(projectRiskAlerts).where(and(eq(projectRiskAlerts.id, input.id), eq(projectRiskAlerts.projectId, input.projectId))).limit(1);
+    if (!alert) throw new TRPCError({ code: "NOT_FOUND", message: "风险预警不存在" });
+    if (["resolved", "ignored"].includes(alert.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "已完成处置的预警不能再分配整改" });
+    const assignees = await resolveRiskAssignees(project);
+    if (!assignees.some(item => item.id === input.assigneeUserId)) throw new TRPCError({ code: "FORBIDDEN", message: "责任人必须是当前项目范围内的有效管理人员" });
+    const now = new Date();
+    await db.update(projectRiskAlerts).set({ status: "in_rectification", assigneeUserId: input.assigneeUserId, assignedBy: user.id, assignedAt: now, dueAt, rectificationNote: input.rectificationNote ?? null }).where(eq(projectRiskAlerts.id, alert.id));
+    await db.insert(notificationRecords).values({ eventCode: "project_risk_rectification_assigned", idempotencyKey: `inapp:risk-assigned:${alert.id}:${input.assigneeUserId}:${dueAt.toISOString()}`, recipientUserId: input.assigneeUserId, title: `风险整改待办｜${project.name}`.slice(0, 200), content: `${alert.title}：请在 ${new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "short", hour12: false }).format(dueAt)} 前完成整改并更新处置结果。`.slice(0, 1000), deepLink: "/admin/risk", status: "sent", sentAt: now, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: now } });
+    await db.insert(auditLogs).values({ userId: user.id, module: "risk", action: "assign_risk_rectification", targetType: "project_risk_alert", targetId: String(alert.id), summary: `已分配风险整改责任人 #${input.assigneeUserId}，期限 ${dueAt.toISOString()}` });
+    return { success: true };
+  }),
+
+  runOverdueEscalation: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    await assertSuperAdmin(ctx);
+    return runOverdueRiskEscalationForProject(input.projectId);
+  }),
+
   updateAlertStatus: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), status: z.enum(["acknowledged", "resolved", "ignored"]), resolutionNote: z.string().trim().max(1000).nullable().optional() })).mutation(async ({ ctx, input }) => {
     const user = await assertSuperAdmin(ctx);
     const { db } = await getProjectOrThrow(input.projectId);
     const [alert] = await db.select().from(projectRiskAlerts).where(and(eq(projectRiskAlerts.id, input.id), eq(projectRiskAlerts.projectId, input.projectId))).limit(1);
     if (!alert) throw new TRPCError({ code: "NOT_FOUND", message: "风险预警不存在" });
     const now = new Date();
-    const values = input.status === "acknowledged" ? { status: input.status, acknowledgedBy: user.id, acknowledgedAt: now, resolutionNote: input.resolutionNote ?? null } : { status: input.status, resolvedBy: user.id, resolvedAt: now, resolutionNote: input.resolutionNote ?? null };
+    const values = input.status === "acknowledged" ? { status: input.status, acknowledgedBy: user.id, acknowledgedAt: now, resolutionNote: input.resolutionNote ?? null } : { status: input.status, resolvedBy: user.id, resolvedAt: now, rectifiedBy: input.status === "resolved" ? user.id : null, rectifiedAt: input.status === "resolved" ? now : null, resolutionNote: input.resolutionNote ?? null };
     await db.update(projectRiskAlerts).set(values).where(eq(projectRiskAlerts.id, alert.id));
     return { success: true };
   }),

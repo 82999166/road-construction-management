@@ -346,6 +346,24 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("核定油箱容量（L）");
     expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
   });
+
+  it("提供项目容量完备度、整改责任人期限和逾期升级验收闭环", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("设备容量、整改期限与逾期升级");
+    expect(source).toContain("车辆容量已配置");
+    expect(source).toContain("机械容量已配置");
+    expect(source).toContain("启用每日整改逾期升级");
+    expect(source).toContain("检查时间（中国标准时间）");
+    expect(source).toContain("执行逾期升级验收");
+    expect(source).toContain("整改派单");
+    expect(source).toContain("整改责任人");
+    expect(source).toContain("整改期限");
+    expect(source).toContain("trpc.projectRisk.capacityReadiness.useQuery");
+    expect(source).toContain("trpc.projectRisk.listAssignees.useQuery");
+    expect(source).toContain("trpc.projectRisk.assignRectification.useMutation");
+    expect(source).toContain("trpc.projectRisk.runOverdueEscalation.useMutation");
+  });
 });
 
 
