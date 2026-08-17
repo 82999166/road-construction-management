@@ -54,6 +54,10 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("外租车辆");
     expect(source).toContain("起租日期");
     expect(source).toContain("截止日期");
+    expect(source).toContain('Field label="驾驶员姓名"');
+    expect(source).toContain('Field label="驾驶员手机"');
+    expect(source).toContain("driverName: machineForm.driverName.trim() || null");
+    expect(source).toContain("driverPhone: machineForm.driverPhone.trim() || null");
     expect(source).toContain("saveMachine.mutate");
     expect(source).toContain("saveMachineCost.mutate");
   });
