@@ -855,6 +855,8 @@ export const machineCostRecords = mysqlTable(
     dieselRefuelRecordId: bigint("dieselRefuelRecordId", { mode: "number" }),
     occurredAt: datetime("occurredAt").notNull(),
     evidenceId: bigint("evidenceId", { mode: "number" }),
+    /** 机械费用的现场说明、维修内容或票据备注；影像文件仍统一保存于证据表。 */
+    remarks: varchar("remarks", { length: 500 }),
     status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

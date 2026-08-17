@@ -1,0 +1,1 @@
+ALTER TABLE `machine_cost_records` ADD `remarks` varchar(500);

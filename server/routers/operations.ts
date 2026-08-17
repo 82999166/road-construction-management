@@ -100,6 +100,7 @@ const machineCostInput = z.object({
   unitPrice: z.number().min(0).max(999999999999.99),
   occurredAt: isoDateTimeSchema,
   evidenceId: z.number().int().positive().nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
 });
 
 /**
@@ -895,8 +896,12 @@ export const machineryRouter = router({
     const user = requireAuthenticatedUser(ctx);
     await assertMachineryAccess(ctx);
     const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+    if (input.evidenceId) {
+      const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+      if (!evidence || evidence.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "费用水印照片不存在或不属于当前项目" });
+    }
     const amount = roundMoney(input.quantity * input.unitPrice);
-    await db.insert(machineCostRecords).values({
+    const result = await db.insert(machineCostRecords).values({
       machineId: input.machineId,
       projectId: input.projectId,
       costType: input.costType,
@@ -905,10 +910,13 @@ export const machineryRouter = router({
       amount: String(amount),
       occurredAt: new Date(input.occurredAt),
       evidenceId: input.evidenceId ?? null,
+      remarks: input.remarks?.trim() || null,
       status: "draft",
     });
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: `${input.machineId}:${input.occurredAt}`, summary: `录入机械${input.costType}成本，金额由系统核算` });
-    return { success: true, amount };
+    const costId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+    if (input.evidenceId && costId) await db.update(evidenceRecords).set({ sourceId: `machine-cost-${costId}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: String(costId || `${input.machineId}:${input.occurredAt}`), summary: `录入机械${input.costType}成本，金额由系统核算${input.evidenceId ? "，已关联水印照片" : ""}` });
+    return { success: true, id: costId || null, amount };
   }),
 
   /** 审批、结算或作废机械成本；已结算记录不可回退，结算操作限定财务岗位。 */

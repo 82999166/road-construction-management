@@ -17,13 +17,18 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("提交会计审核");
   });
 
-  it("提供移动月结打印页、成本录入弹窗与真实设备联系人摘要", () => {
+  it("提供移动月结打印页、完整费用录入与真实设备联系人摘要", () => {
     const source = readFileSync(new URL("./MobileMachineryPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("printMonthlySettlement");
     expect(source).toContain("机械月度结算预览表");
-    expect(source).toContain("setCostDialogOpen(true)");
-    expect(source).toContain("添加成本");
+    expect(source).toContain("openCostDialog(machine.id)");
+    expect(source).toContain(">费用录入</Button>");
+    expect(source).toContain("createWatermarkedCostImage");
+    expect(source).toContain("trpc.evidence.upload.useMutation");
+    expect(source).toContain("费用水印照片");
+    expect(source).toContain("费用说明");
+    expect(source).toContain("evidenceId, remarks:");
     expect(source).toContain("operatorName");
     expect(source).toContain("驾驶员手机");
     expect(source).toContain("openMachineContactDialog(machine)");
