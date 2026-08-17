@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRiskOverdueEscalationCron, classifyFinanceCategory, detectTransportRisk } from "./routers/projectRisk";
+import { buildRiskOverdueEscalationCron, classifyFinanceCategory, detectTransportRisk, safeParseBriefing } from "./routers/projectRisk";
 
 describe("AI 项目风险规则", () => {
   it("按权威业务类别归集生活、柴油、工资、机械、车辆运输与采购成本", () => {
@@ -24,5 +24,14 @@ describe("AI 项目风险规则", () => {
     expect(buildRiskOverdueEscalationCron(9)).toBe("0 0 1 * * *");
     expect(buildRiskOverdueEscalationCron(0)).toBe("0 0 16 * * *");
     expect(() => buildRiskOverdueEscalationCron(24)).toThrow("逾期升级检查时间");
+  });
+
+  it("兼容外部模型以 Markdown JSON、摘要别名和文本清单返回的管理摘要", () => {
+    const briefing = safeParseBriefing("```json\n{\"summary\":\"本期风险需复核\",\"actions\":\"核验日报；核验油量\",\"concerns\":[\"运输时长\"],\"notice\":\"仅供辅助\"}\n```");
+
+    expect(briefing.executiveSummary).toBe("本期风险需复核");
+    expect(briefing.priorityActions).toEqual(["核验日报", "核验油量"]);
+    expect(briefing.watchItems).toEqual(["运输时长"]);
+    expect(briefing.disclaimer).toBe("仅供辅助");
   });
 });

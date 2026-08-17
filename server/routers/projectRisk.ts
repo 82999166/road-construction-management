@@ -344,14 +344,36 @@ async function getFinanceCategoryAnalysis(projectId: number, period: string) {
   return { period, projectId, expenseAmount, categories: categories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })) };
 }
 
-function safeParseBriefing(value: string | null | undefined) {
+export function safeParseBriefing(value: string | null | undefined) {
   if (!value) throw new Error("ai_empty_response");
-  const parsed = JSON.parse(value) as unknown;
+  const raw = value.trim();
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1]?.trim();
+  const objectCandidate = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+  let parsed: unknown;
+  for (const candidate of [raw, fenced, objectCandidate]) {
+    if (!candidate) continue;
+    try {
+      parsed = JSON.parse(candidate) as unknown;
+      break;
+    } catch {
+      // 兼容供应商可能在 JSON 前后附加说明文字；仍仅接受最终可解析对象。
+    }
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("ai_invalid_response");
   const record = parsed as Record<string, unknown>;
-  const toLines = (input: unknown) => Array.isArray(input) ? input.filter((item): item is string => typeof item === "string").map(item => item.slice(0, 240)).slice(0, 5) : [];
-  if (typeof record.executiveSummary !== "string") throw new Error("ai_invalid_response");
-  return { executiveSummary: record.executiveSummary.slice(0, 600), priorityActions: toLines(record.priorityActions), watchItems: toLines(record.watchItems), disclaimer: typeof record.disclaimer === "string" ? record.disclaimer.slice(0, 240) : "该摘要仅辅助管理判断，必须以原始业务单据和现场核验为准。" };
+  const firstString = (...keys: string[]) => keys.map(key => record[key]).find((item): item is string => typeof item === "string" && Boolean(item.trim()))?.trim();
+  const toLines = (input: unknown) => {
+    const values = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[\n；;]+/) : [];
+    return values.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map(item => item.trim().replace(/^[•·\-\d.、\s]+/, "").slice(0, 240)).filter(Boolean).slice(0, 5);
+  };
+  const executiveSummary = firstString("executiveSummary", "summary", "managementSummary", "摘要", "管理摘要");
+  if (!executiveSummary) throw new Error("ai_invalid_response");
+  return {
+    executiveSummary: executiveSummary.slice(0, 600),
+    priorityActions: toLines(record.priorityActions ?? record.priority_actions ?? record.actions ?? record["优先处理"]),
+    watchItems: toLines(record.watchItems ?? record.watch_items ?? record.concerns ?? record["持续关注"]),
+    disclaimer: (firstString("disclaimer", "notice", "提示") ?? "该摘要仅辅助管理判断，必须以原始业务单据和现场核验为准。").slice(0, 240),
+  };
 }
 
 const projectRiskBriefingOutputSchema = {
