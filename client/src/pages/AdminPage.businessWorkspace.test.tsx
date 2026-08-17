@@ -39,6 +39,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("运输趟次明细");
   });
 
+  it("将受控表单字段包装组件定义在模块作用域，避免状态更新重挂载输入框并导致失焦", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const fieldDefinition = source.indexOf("function Field({ label, children }");
+    const pageDefinition = source.indexOf("export default function AdminPage()");
+
+    expect(fieldDefinition).toBeGreaterThan(-1);
+    expect(pageDefinition).toBeGreaterThan(fieldDefinition);
+    expect(source).not.toContain("const Field = ({ label, children }");
+  });
+
   it("在 PC 超级管理后台承载员工、车辆与机械的关键维护闭环", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

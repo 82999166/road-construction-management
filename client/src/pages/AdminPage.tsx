@@ -122,6 +122,10 @@ const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
 const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownership: "owned", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", fuelTankCapacityLiters: "", status: "active", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
 const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", code: "", name: "", model: "", ownership: "owned", supplierName: "", plateOrAssetNo: "", driverName: "", driverPhone: "", fuelTankCapacityLiters: "", status: "idle", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
+/** 稳定的模块级字段包装组件，禁止在页面渲染函数内定义，避免受控输入在每次状态更新时失焦。 */
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
+}
 const EMPTY_RISK_RULE_FORM: RiskRuleForm = { enabled: true, maxFuelFillRatio: "1.1", maxTransportSpeedKmh: "80", maxTransportDurationMinutes: "360", maxOpenCheckInHours: "14", maxPendingReportHours: "24", overdueEscalationEnabled: false, overdueEscalationHourChina: "9" };
 const EMPTY_MACHINE_COST_FORM: MachineCostForm = { machineId: "", projectId: "", costType: "fuel", quantity: "", unitPrice: "", occurredAt: "" };
 const EMPTY_MACHINE_MONTHLY_STATEMENT_FORM: MachineMonthlyStatementForm = { machineId: "", projectId: "", period: "", driverUserId: "", machineWorkDays: "0", machineOvertimeHours: "0", driverMonthlyWage: "0", driverWorkDays: "0", driverOvertimeHours: "0", signatureName: "", remarks: "" };
@@ -849,9 +853,6 @@ export default function AdminPage() {
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
   const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
   const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
-
-  /** 管理后台对话框统一使用的紧凑字段包装，避免设备与车辆卡表单出现无标签输入。 */
-  const Field = ({ label, children }: { label: string; children: ReactNode }) => <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
 
   // 首次加载后默认选中第一个角色；角色切换后以服务端真实权限回显编辑矩阵。
   useEffect(() => {
