@@ -58,6 +58,8 @@ const machineInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   operatorUserId: z.number().int().positive().nullable().optional(),
+  driverName: z.string().trim().max(128).nullable().optional(),
+  driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效驾驶员联系电话").nullable().optional(),
   code: z.string().trim().min(2, "请填写机械编号").max(64),
   name: z.string().trim().min(2, "请填写机械名称").max(128),
   model: z.string().trim().max(128).nullable().optional(),
@@ -587,8 +589,12 @@ export const machineryRouter = router({
     return Promise.all(rows.map(async machine => {
       const rules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machine.id)).orderBy(desc(machineLeaseRules.createdAt));
       const activeRule = rules.find(rule => rule.projectId === input.projectId && rule.status === "active");
+      const [operator] = machine.operatorUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, machine.operatorUserId)).limit(1) : [];
+      const { driverPhoneEncrypted, ...machineSafe } = machine;
       return {
-        ...machine,
+        ...machineSafe,
+        operatorName: operator?.name ?? null,
+        driverPhone: driverPhoneEncrypted ? decryptSecret(driverPhoneEncrypted) : null,
         leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
       };
     }));
@@ -601,9 +607,19 @@ export const machineryRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    let existing: typeof machines.$inferSelect | undefined;
+    if (input.id) {
+      const [row] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1);
+      if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "机械台账不存在" });
+      if (row.projectId) await assertProjectInCurrentScope(ctx, row.projectId);
+      existing = row;
+    }
     const values = {
       projectId: input.projectId,
       operatorUserId: input.operatorUserId ?? null,
+      driverName: input.driverName ?? null,
+      driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null,
+      driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null,
       code: input.code,
       name: input.name,
       model: input.model ?? null,
@@ -615,9 +631,6 @@ export const machineryRouter = router({
     };
     let machineId = input.id;
     if (input.id) {
-      const [existing] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1);
-      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "机械台账不存在" });
-      if (existing.projectId) await assertProjectInCurrentScope(ctx, existing.projectId);
       await db.update(machines).set(values).where(eq(machines.id, input.id));
     } else {
       await db.insert(machines).values(values);

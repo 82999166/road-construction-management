@@ -267,6 +267,13 @@
       "when": 1786963729628,
       "tag": "0037_fast_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1786971215542,
+      "tag": "0038_cool_wild_pack",
+      "breakpoints": true
     }
   ]
 }

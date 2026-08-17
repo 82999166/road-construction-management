@@ -803,6 +803,10 @@ export const machines = mysqlTable(
     projectId: int("projectId"),
     /** 机械操作员/司机的登录用户标识；允许为空以兼容外租机械暂未绑定人员的场景。 */
     operatorUserId: int("operatorUserId"),
+    /** 机械实际驾驶员可与系统操作员不同；姓名用于项目台账展示，手机号加密存储。 */
+    driverName: varchar("driverName", { length: 128 }),
+    driverPhoneEncrypted: text("driverPhoneEncrypted"),
+    driverPhoneMasked: varchar("driverPhoneMasked", { length: 32 }),
     code: varchar("code", { length: 64 }).notNull(),
     name: varchar("name", { length: 128 }).notNull(),
     model: varchar("model", { length: 128 }),
