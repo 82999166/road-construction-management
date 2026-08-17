@@ -61,24 +61,22 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
-  it("将新建员工档案固定放在实际员工台账标题栏，并复用既有员工档案弹窗", () => {
+  it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
-    const ledgerStart = source.indexOf('title="员工档案、薪资与保险"');
-    const tableActionStart = source.indexOf("titleActions={<Button", ledgerStart);
+    const personnelStart = source.indexOf("人员与授权");
     const filterHeader = source.slice(source.indexOf("人员主数据 · 人事与用工台账"), source.indexOf("employeeProfiles.isLoading"));
 
     expect(source).toContain("titleActions?: ReactNode");
-    expect(ledgerStart).toBeGreaterThan(-1);
-    expect(tableActionStart).toBeGreaterThan(ledgerStart);
-    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("新建员工档案");
-    expect(source.slice(tableActionStart, tableActionStart + 260)).toContain("setEmployeeProfileDialogOpen(true)");
+    expect(personnelStart).toBeGreaterThan(-1);
+    expect(source.slice(personnelStart, personnelStart + 900)).toContain("新建员工档案");
+    expect(source.slice(personnelStart, personnelStart + 900)).toContain("setEmployeeProfileDialogOpen(true)");
     expect(filterHeader).not.toContain(">新建员工档案</Button>");
   });
 
   it("在手机宽度将新增台账的动作区与筛选控件分区换行，保留完整文案和足够触控高度", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("min-h-10 bg-[#203c48] text-white hover:bg-[#17313b]");
+    expect(source).toContain("min-h-10 w-full bg-[#203c48] text-white hover:bg-[#17313b] sm:w-auto");
     expect(source).toContain("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4");
     expect(source).toContain("min-h-11 w-full text-sm sm:min-h-8 sm:w-auto");
     expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
@@ -103,12 +101,12 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("手机端可左右滑动查看完整字段");
     expect(source).toContain("员工档案、薪资与保险");
     expect(source).toContain("车辆统一台账");
-    expect(source).toContain("施工日报台账");
-    expect(source).toContain("工资条与结算台账");
+    expect(source).toContain("施工日报、现场影像与审核台账");
+    expect(source).toContain("工资条详细台账");
     expect(source).toContain("机械资源、维修与租赁台账");
-    expect(source).toContain("运输趟次台账");
-    expect(source).toContain("发票与成本审计台账");
-    expect(source).toContain("范围通知与确认台账");
+    expect(source).toContain("车辆趟次、异常与结算台账");
+    expect(source).toContain("发票、成本与审计台账");
+    expect(source).toContain("站内通知、投递与确认台账");
   });
 
   it("将车辆资源改为全宽表格台账，并把新增车辆档案放在台账上方的受控档案区", () => {
@@ -143,17 +141,31 @@ describe("统一后台业务工作区范围保护", () => {
 
     expect(source).toContain("trpc.construction.reportEvidence.useQuery");
     expect(source).toContain("constructionEvidenceByReport");
-    expect(source).toContain("关联照片 {constructionEvidenceByReport");
-    expect(source).toContain("查看照片");
+    expect(source).toContain("照片 {constructionEvidenceByReport");
+    expect(source).toContain("施工日报、现场影像与审核台账");
     expect(source).toContain("施工日报关联影像");
+  });
+
+  it("移除各业务页顶部重复台账，仅保留工作区中的统一主表格和行内详情流程", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toContain('activeSection === "labor" ? <LedgerTable');
+    expect(source).not.toContain('activeSection === "transport" ? <LedgerTable');
+    expect(source).not.toContain('activeSection === "finance" ? <LedgerTable');
+    expect(source).not.toContain('activeSection === "broadcast" ? <LedgerTable');
+    expect(source).not.toContain('activeSection === "permission" ? <LedgerTable');
+    expect(source).toContain("投递明细与确认状态");
+    expect(source).toContain("机械业务详情");
+    expect(source).toContain("施工日报查看与编辑");
   });
 
   it("仅保留统计卡下方的一套施工日报工作区，避免同一日报在页面顶部和底部重复展示", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).not.toContain('activeSection === "construction" ? <LedgerTable');
-    expect(source).toContain("日报统一在项目筛选与统计卡下方展示，避免重复列表");
-    expect((source.match(/<CardTitle className="text-base">施工日报台账<\/CardTitle>/g) ?? []).length).toBe(1);
+    expect(source).toContain("施工日报、现场影像与审核台账");
+    expect(source).toContain("每份日报行内汇总作业面、天气、累计进度、影像数量、安全问题和审核状态");
+    expect((source.match(/施工日报、现场影像与审核台账/g) ?? []).length).toBe(1);
   });
 
   it("对可维护主数据提供行内编辑与受控批量处理，同时不将历史业务单据误作物理删除", () => {
