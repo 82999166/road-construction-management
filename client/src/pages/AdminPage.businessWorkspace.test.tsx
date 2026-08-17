@@ -61,6 +61,24 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
+  it("将所有 CSV 导出统一写入当前筛选范围、导出记录数和生成时间", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("__roadConstructionExportScope");
+    expect(source).toContain('["导出模块", scope.module]');
+    expect(source).toContain('`筛选条件 · ${label}`');
+    expect(source).toContain('["导出记录数", rows.length]');
+    expect(source).toContain('["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })]');
+    expect(source).toContain("车辆资源台账");
+    expect(source).toContain("机械综合台账");
+    expect(source).toContain("劳务考勤与工资台账");
+    expect(source).toContain("柴油管理台账");
+    expect(source).toContain("员工档案台账");
+    expect(source).toContain("filteredRows.map");
+    expect(source).toContain("const machines = allMachines.filter");
+    expect(source).toContain("visiblePayrolls.map");
+  });
+
   it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     const personnelStart = source.indexOf("人员与授权");

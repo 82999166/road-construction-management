@@ -186,10 +186,30 @@ function readImageAsBase64(file: File) {
   });
 }
 
-/** 浏览器端导出当前已授权且已筛选的台账数据；CSV 可直接由 Excel 打开，不额外暴露下载接口。 */
-function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+/** 导出范围由每个业务工作区显式传入，避免浏览器端下载误把“当前筛选结果”写成全量数据。 */
+type CsvExportScope = {
+  module: string;
+  filters: Array<[label: string, value: string | number | null | undefined]>;
+};
+
+type ExportScopeWindow = Window & { __roadConstructionExportScope?: CsvExportScope };
+
+function getActiveCsvExportScope(): CsvExportScope {
+  if (typeof window === "undefined") return { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
+  return (window as ExportScopeWindow).__roadConstructionExportScope ?? { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
+}
+
+/** 浏览器端仅导出当前已授权且已筛选的台账数据；CSV 可直接由 Excel 打开，不额外暴露下载接口。 */
+function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>, scope = getActiveCsvExportScope()) {
   const escapeCell = (value: string | number | null | undefined) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-  const content = `\uFEFF${[headers, ...rows].map(row => row.map(escapeCell).join(",")).join("\n")}`;
+  const scopeRows: Array<Array<string | number | null | undefined>> = [
+    ["导出模块", scope.module],
+    ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]),
+    ["导出记录数", rows.length],
+    ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })],
+    [],
+  ];
+  const content = `\uFEFF${[...scopeRows, headers, ...rows].map(row => row.map(escapeCell).join(",")).join("\n")}`;
   const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -781,6 +801,76 @@ export default function AdminPage() {
     const matchesSearch = !keyword || [profile.displayName, profile.localUsername, profile.teamName, profile.laborTeamName].some(value => value?.toLowerCase().includes(keyword));
     return matchesSearch && (employeeLedgerFilter.type === "all" || profile.employeeType === employeeLedgerFilter.type) && (employeeLedgerFilter.status === "all" || profile.employmentStatus === employeeLedgerFilter.status) && (employeeLedgerFilter.insurance === "all" || profile.insuranceStatus === employeeLedgerFilter.insurance);
   }), [employeeLedgerFilter, employeeProfiles.data]);
+  const activeCsvExportScope = useMemo<CsvExportScope>(() => {
+    const workspaceProjectLabel = selectedWorkspaceProject?.name ?? "当前已授权项目范围";
+    const financeProjectLabel = projects.data?.find(project => String(project.id) === financeProjectId)?.name ?? workspaceProjectLabel;
+    if (activeSection === "vehicles") {
+      return {
+        module: "车辆资源台账",
+        filters: [
+          ["项目", vehicleLedgerFilter.projectId === "all" ? "全部已授权项目" : projects.data?.find(project => String(project.id) === vehicleLedgerFilter.projectId)?.name ?? vehicleLedgerFilter.projectId],
+          ["检索", vehicleLedgerFilter.search || "未设置"],
+          ["资源性质", vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : "外租车辆"],
+          ["调度状态", vehicleLedgerFilter.status === "all" ? "全部" : vehicleLedgerFilter.status === "active" ? "可调度" : vehicleLedgerFilter.status === "suspended" ? "暂停" : "停用"],
+          ["分析期间", vehicleAnalysisPeriod],
+        ],
+      };
+    }
+    if (activeSection === "machinery") {
+      return {
+        module: "机械综合台账",
+        filters: [
+          ["项目", workspaceProjectLabel],
+          ["检索", machineLedgerFilter.search || "未设置"],
+          ["资源性质", machineLedgerFilter.ownership === "all" ? "全部" : machineLedgerFilter.ownership === "owned" ? "公司自有" : "外租机械"],
+          ["机械状态", machineLedgerFilter.status === "all" ? "全部" : machineLedgerFilter.status],
+          ["分析期间", machineStatementPeriod],
+        ],
+      };
+    }
+    if (activeSection === "labor") {
+      return {
+        module: "劳务考勤与工资台账",
+        filters: [
+          ["项目范围", workspaceProjectLabel],
+          ["考勤日期", laborAttendanceDate || "全部日期"],
+          ["工资期间", laborPeriod || "全部期间"],
+          ["工资检索", laborPayrollSearch || "未设置"],
+        ],
+      };
+    }
+    if (activeSection === "diesel") {
+      return {
+        module: "柴油管理台账",
+        filters: [
+          ["项目", financeProjectLabel],
+          ["柴油日期", dieselDate],
+          ["会计期间", financePeriod],
+          ["供油范围", "项目部供油与加油站现金加油"],
+        ],
+      };
+    }
+    if (activeSection === "permission") {
+      return {
+        module: "员工档案台账",
+        filters: [
+          ["检索", employeeLedgerFilter.search || "未设置"],
+          ["人员类型", employeeLedgerFilter.type === "all" ? "全部" : employeeLedgerFilter.type],
+          ["在职状态", employeeLedgerFilter.status === "all" ? "全部" : employeeLedgerFilter.status],
+          ["保险状态", employeeLedgerFilter.insurance === "all" ? "全部" : employeeLedgerFilter.insurance],
+          ["数据范围", "当前管理员已授权人员范围"],
+        ],
+      };
+    }
+    return { module: "后台台账", filters: [["项目范围", workspaceProjectLabel], ["数据范围", "当前管理员已授权数据"]] };
+  }, [activeSection, dieselDate, employeeLedgerFilter, financePeriod, financeProjectId, laborAttendanceDate, laborPayrollSearch, laborPeriod, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
+  useEffect(() => {
+    const exportWindow = window as ExportScopeWindow;
+    exportWindow.__roadConstructionExportScope = activeCsvExportScope;
+    return () => {
+      if (exportWindow.__roadConstructionExportScope === activeCsvExportScope) delete exportWindow.__roadConstructionExportScope;
+    };
+  }, [activeCsvExportScope]);
   const businessFilterLabel = `${selectedBusinessProject?.name ?? "全部项目"}${businessFilter.period ? ` · ${businessFilter.period}` : " · 全部期间"}`;
   const dailyDigestPreviewInput = useMemo(() => ({ projectId: Number(dailyDigestPreviewProjectId || 0), businessDate: dailyDigestPreviewDate }), [dailyDigestPreviewDate, dailyDigestPreviewProjectId]);
   const dailyDigestPreview = trpc.dailyDigest.preview.useQuery(dailyDigestPreviewInput, { enabled: canQuery && isSettings && Number(dailyDigestPreviewProjectId) > 0 && Boolean(dailyDigestPreviewDate) });
