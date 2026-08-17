@@ -11,7 +11,7 @@ vi.mock("./storage", () => ({ storagePut: vi.fn(), storageGetSignedUrl: vi.fn() 
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
-import { adminRouter } from "./routers/admin";
+import { adminRouter, normalizeDieselRefuelStatus } from "./routers/admin";
 import { storagePut } from "./storage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -334,5 +334,11 @@ describe("超级管理主数据约束", () => {
     expect(snapshot).toContain("road-construction-management-logical-backup");
     expect(snapshot).not.toContain("localPasswordHash");
     expect(values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "backup", action: "create", targetType: "business_data_backup" }));
+  });
+
+  it("柴油领用无需上级审核：草稿或已核准输入均直接记账，作废仍作为受控纠错状态", () => {
+    expect(normalizeDieselRefuelStatus("draft")).toBe("approved");
+    expect(normalizeDieselRefuelStatus("approved")).toBe("approved");
+    expect(normalizeDieselRefuelStatus("void")).toBe("void");
   });
 });

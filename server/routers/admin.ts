@@ -146,6 +146,11 @@ const dieselPriceAlertRuleInput = z.object({
 
 type DieselRefuelRow = typeof dieselRefuelRecords.$inferSelect;
 
+/** 柴油领用不走上级审批：除受控作废外，任何保存都立即作为有效成本和结算依据。 */
+export function normalizeDieselRefuelStatus(status: "draft" | "approved" | "void") {
+  return status === "void" ? "void" as const : "approved" as const;
+}
+
 /**
  * 现金加油以同项目、同供应商上一笔有效价格作为比较基准。该函数只计算展示/审计标记，
  * 不会改写已保存的油价或金额快照，避免历史口径被后续阈值调整影响。
@@ -900,7 +905,8 @@ export const adminRouter = router({
       const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
       const allRefuelRows = input.supplyMethod === "external_station" ? await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt)) : [];
       const [alertRule] = input.supplyMethod === "external_station" ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
-      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: input.status, createdBy: admin.id, approvedBy: input.status === "approved" ? admin.id : null, approvedAt: input.status === "approved" ? new Date() : null };
+      const effectiveStatus = normalizeDieselRefuelStatus(input.status);
+      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: effectiveStatus, createdBy: admin.id, approvedBy: effectiveStatus === "approved" ? admin.id : null, approvedAt: effectiveStatus === "approved" ? new Date() : null };
       let recordId = input.id;
       if (input.id) {
         const [existing] = await db.select({ id: dieselRefuelRecords.id, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.id, input.id)).limit(1);
@@ -918,11 +924,11 @@ export const adminRouter = router({
       const priceAlert = input.supplyMethod === "external_station" ? calculateDieselPriceAlert(alertCandidate, allRefuelRows, alertRule) : calculateDieselPriceAlert(alertCandidate, [], null);
       if (input.assetType === "machine") {
         const [existingCost] = await db.select({ id: machineCostRecords.id }).from(machineCostRecords).where(eq(machineCostRecords.dieselRefuelRecordId, recordId)).limit(1);
-        const costValues = { machineId: input.machineId!, projectId: input.projectId, costType: "fuel" as const, quantity: String(input.liters), unitPrice: String(appliedUnitPrice), amount: String(amount), dieselRefuelRecordId: recordId, occurredAt: new Date(input.refueledAt), evidenceId: input.evidenceId ?? null, status: input.status === "void" ? "void" as const : input.status === "approved" ? "approved" as const : "draft" as const };
+        const costValues = { machineId: input.machineId!, projectId: input.projectId, costType: "fuel" as const, quantity: String(input.liters), unitPrice: String(appliedUnitPrice), amount: String(amount), dieselRefuelRecordId: recordId, occurredAt: new Date(input.refueledAt), evidenceId: input.evidenceId ?? null, status: effectiveStatus === "void" ? "void" as const : "approved" as const };
         if (existingCost) await db.update(machineCostRecords).set(costValues).where(eq(machineCostRecords.id, existingCost.id));
         else if (input.status !== "void") await db.insert(machineCostRecords).values(costValues);
       }
-      await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${input.deductFromFreight ? "，结算扣油" : ""}` });
+      await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}` });
       if (priceAlert.isAlert) {
         await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "price_alert", targetType: "diesel_refuel", targetId: String(recordId), summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）` });
       }
