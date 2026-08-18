@@ -588,6 +588,36 @@ export const laborRouter = router({
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: existing ? "update_daily_wage" : "create_daily_wage", targetType: "temporary_daily_wage", targetId: String(existing?.id ?? `${input.workerId}-${input.settlementDate}`), summary: `${input.settlementDate} 临时日结${existing ? "更新" : "录入"}` });
       return { success: true, actualAmount: money.actualAmount };
     }),
+    submit: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
+      if (!roleCodes.includes("ALL") && !roleCodes.includes("LABOR_MANAGER") && !roleCodes.includes("PROJECT_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结提交仅限劳资负责人或项目经理" });
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const settlement = (await db.select().from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.id, input.id)).limit(1))[0];
+      if (!settlement) throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" }); await assertProjectInCurrentScope(ctx, settlement.projectId);
+      if (settlement.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "仅草稿可提交审核" });
+      await db.update(temporaryDailyWageSettlements).set({ status: "reviewing", submittedBy: user.id, submittedAt: new Date(), reviewedBy: null, reviewedAt: null }).where(and(eq(temporaryDailyWageSettlements.id, settlement.id), eq(temporaryDailyWageSettlements.status, "draft")));
+      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "submit_daily_wage", targetType: "temporary_daily_wage", targetId: String(settlement.id), summary: `${settlement.settlementDate} 临时日结提交审核` }); return { success: true };
+    }),
+    review: protectedProcedure.input(z.object({ id: z.number().int().positive(), decision: z.enum(["approved", "returned"]) })).mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
+      if (!roleCodes.includes("ALL") && !roleCodes.includes("ACCOUNTANT") && !roleCodes.includes("FINANCE_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结审核仅限会计或财务负责人" });
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const settlement = (await db.select().from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.id, input.id)).limit(1))[0];
+      if (!settlement) throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" }); await assertProjectInCurrentScope(ctx, settlement.projectId);
+      if (settlement.status !== "reviewing") throw new TRPCError({ code: "CONFLICT", message: "仅审核中的临时日结可以办理审核" });
+      const approved = input.decision === "approved"; await db.update(temporaryDailyWageSettlements).set({ status: approved ? "approved" : "draft", reviewedBy: user.id, reviewedAt: new Date() }).where(and(eq(temporaryDailyWageSettlements.id, settlement.id), eq(temporaryDailyWageSettlements.status, "reviewing")));
+      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: approved ? "approve_daily_wage" : "return_daily_wage", targetType: "temporary_daily_wage", targetId: String(settlement.id), summary: `${settlement.settlementDate} 临时日结${approved ? "审核通过" : "退回草稿"}` }); return { success: true, status: approved ? "approved" as const : "draft" as const };
+    }),
+    pay: protectedProcedure.input(z.object({ id: z.number().int().positive(), paidAt: z.coerce.date(), paymentReference: z.string().trim().max(64).optional().nullable() })).mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
+      if (!roleCodes.includes("ALL") && !roleCodes.includes("ACCOUNTANT") && !roleCodes.includes("FINANCE_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结付款登记仅限会计或财务负责人" });
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const settlement = (await db.select().from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.id, input.id)).limit(1))[0];
+      if (!settlement) throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" }); await assertProjectInCurrentScope(ctx, settlement.projectId);
+      if (settlement.status !== "approved") throw new TRPCError({ code: "CONFLICT", message: "仅审核通过的临时日结可登记付款" });
+      await db.update(temporaryDailyWageSettlements).set({ status: "paid", paidBy: user.id, paidAt: input.paidAt, paymentReference: input.paymentReference || null }).where(and(eq(temporaryDailyWageSettlements.id, settlement.id), eq(temporaryDailyWageSettlements.status, "approved")));
+      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "pay_daily_wage", targetType: "temporary_daily_wage", targetId: String(settlement.id), summary: `${settlement.settlementDate} 临时日结登记付款` }); return { success: true, status: "paid" as const };
+    }),
   }),
 
   payroll: router({
