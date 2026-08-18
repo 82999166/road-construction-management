@@ -389,6 +389,50 @@ describe("机械与运输 tRPC 路由", () => {
     })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("同时选择装土点和卸土点") });
   });
 
+  it("车牌直拍票据必须关联现场影像、直接进入待核验并向主管投递核验提醒", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const inserted: unknown[] = [];
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
+        [{ id: 71, projectId: 10, siteType: "load", status: "active", name: "K12 装土区", administratorUserId: 1 }],
+        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1 }],
+        [{ id: 301, projectId: 10, sourceType: "transport" }],
+        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+      ),
+      insert: vi.fn(() => ({ values: vi.fn(async (value: unknown) => { inserted.push(value); }) })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-PLATE-001", vehicleId: 11, projectId: 10, freightRuleId: 12, invoiceMode: "plate_photo", loadSiteId: 71, unloadSiteId: 72, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: 301, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null })).resolves.toMatchObject({ success: true, tripNo: "TR-PLATE-001" });
+
+    expect(inserted).toEqual(expect.arrayContaining([expect.objectContaining({ tripNo: "TR-PLATE-001", invoiceMode: "plate_photo", evidenceId: 301, status: "submitted", routeSnapshot: expect.objectContaining({ invoiceMode: "plate_photo", platePhotoEvidenceId: 301 }) })]));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_plate_photo_ticket_submitted", targetId: "TR-PLATE-001" }));
+  });
+
+  it("车牌直拍票据不能被误送入 NFC 装卸刷卡状态机", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
+      { id: 62, projectId: 10, vehicleId: 11, invoiceMode: "plate_photo", status: "submitted", loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: null, unloadConfirmedAt: null },
+    ]) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 62, projectId: 10, siteId: 71, idempotencyKey: "reader-photo-block-0001", occurredAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不进入 NFC 刷卡流程") });
+  });
+
+  it("运输日汇总按车辆拆分 NFC 与直拍票据数量，并保留运费与待核验数量", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [
+        { id: 81, projectId: 10, vehicleId: 11, invoiceMode: "nfc_card", status: "verified", startAt: new Date("2026-07-25T08:00:00.000Z"), volumeCubicMeters: "3", weightTons: "0", calculatedAmount: "150", routeSnapshot: {}, evidenceId: 1 },
+        { id: 82, projectId: 10, vehicleId: 11, invoiceMode: "plate_photo", status: "submitted", startAt: new Date("2026-07-25T09:00:00.000Z"), volumeCubicMeters: "2", weightTons: "0", calculatedAmount: "100", routeSnapshot: {}, evidenceId: 2 },
+      ],
+      [{ id: 11, plateNo: "湘A12345" }],
+    ) as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).dailySummary({ projectId: 10, date: "2026-07-25" });
+    expect(result).toMatchObject({ tripCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, vehicleSummaries: [expect.objectContaining({ plateNo: "湘A12345", ticketCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, pendingReviewCount: 1 })] });
+  });
+
   it("现场刷卡必须由票据指定地点的现场管理员办理", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insert = vi.fn(() => ({ values: vi.fn(async () => undefined) }));

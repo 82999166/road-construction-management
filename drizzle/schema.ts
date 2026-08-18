@@ -1235,6 +1235,8 @@ export const transportTrips = mysqlTable(
    vehicleId: int("vehicleId").notNull(),
    projectId: int("projectId").notNull(),
    freightRuleId: int("freightRuleId").notNull(),
+   /** 票据来源：默认 NFC 车辆卡闭环；车牌直拍为卡片缺失时的有影像备用票据，须人工核验。 */
+   invoiceMode: mysqlEnum("invoiceMode", ["nfc_card", "plate_photo"]).default("nfc_card").notNull(),
    loadSiteId: int("loadSiteId"),
    unloadSiteId: int("unloadSiteId"),
    startAt: datetime("startAt").notNull(),

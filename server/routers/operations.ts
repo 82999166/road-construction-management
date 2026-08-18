@@ -187,6 +187,7 @@ const tripInput = z.object({
   vehicleId: z.number().int().positive(),
   projectId: z.number().int().positive(),
   freightRuleId: z.number().int().positive(),
+  invoiceMode: z.enum(["nfc_card", "plate_photo"]).default("nfc_card"),
   loadSiteId: z.number().int().positive().nullable().optional(),
   unloadSiteId: z.number().int().positive().nullable().optional(),
   startAt: isoDateTimeSchema,
@@ -428,6 +429,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
   const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.tripId)).limit(1);
   if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输趟次不存在或不属于当前项目" });
+  if ((trip.invoiceMode ?? "nfc_card") !== "nfc_card") throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票不进入 NFC 刷卡流程，请由主管按影像和车辆信息核验" });
   const { vehicle } = await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
   const occurredAt = new Date(input.occurredAt);
   const payloadFingerprint = createCardEventPayloadFingerprint(input, eventType);
@@ -1438,7 +1440,9 @@ export const transportRouter = router({
       const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
       rows = rows.filter(trip => vehicleIds.has(trip.vehicleId));
     }
-    return rows.map(trip => ({ ...trip, anomalies: calculateTransportAnomalies(trip) }));
+    const vehicleRows = await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId));
+    const vehiclePlates = new Map(vehicleRows.map(vehicle => [vehicle.id, vehicle.plateNo]));
+    return rows.map(trip => ({ ...trip, vehiclePlateNo: vehiclePlates.get(trip.vehicleId) ?? `车辆 #${trip.vehicleId}`, anomalies: calculateTransportAnomalies(trip) }));
   }),
 
   /** 录入运输趟次并把当时运价和原始载货参数写入快照，后续修改价格规则不影响历史金额。 */
@@ -1484,12 +1488,14 @@ export const transportRouter = router({
       price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
     } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
-    const routeSnapshot = { source: "mobile", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
+    if (input.invoiceMode === "plate_photo" && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票必须关联现场直拍的车牌水印照片" });
+    const routeSnapshot = { source: "mobile", invoiceMode: input.invoiceMode, settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, platePhotoEvidenceId: input.invoiceMode === "plate_photo" ? input.evidenceId ?? null : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
     await db.insert(transportTrips).values({
       tripNo,
       vehicleId: input.vehicleId,
       projectId: input.projectId,
       freightRuleId: input.freightRuleId,
+      invoiceMode: input.invoiceMode,
       loadSiteId: input.loadSiteId ?? null,
       unloadSiteId: input.unloadSiteId ?? null,
       startAt: tripStart,
@@ -1501,9 +1507,15 @@ export const transportRouter = router({
       calculatedAmount: String(price.totalAmount),
       routeSnapshot,
       evidenceId: input.evidenceId ?? null,
-      status: "draft",
+      status: input.invoiceMode === "plate_photo" ? "submitted" : "draft",
     });
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_trip", targetType: "transport_trip", targetId: tripNo, summary: "录入运输趟次，运费由合同规则快照计算" });
+    if (input.evidenceId) {
+      await db.update(evidenceRecords).set({ sourceId: `transport-trip-${tripNo}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_trip", targetType: "transport_trip", targetId: tripNo, summary: `录入${input.invoiceMode === "plate_photo" ? "拍照车牌" : "NFC 刷卡"}运输票据，运费由合同规则快照计算${input.invoiceMode === "plate_photo" ? "并进入人工核验" : ""}` });
+    if (input.invoiceMode === "plate_photo") {
+      void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_plate_photo_ticket_submitted", targetType: "transport_trip", targetId: tripNo, title: "拍照车牌运输票据待核验", content: `车辆 ${vehicle.plateNo} 的车牌直拍运输票据已提交，待核验后进入结算流程。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    }
     const anomalies = calculateTransportAnomalies({ evidenceId: input.evidenceId ?? null, startAt: tripStart, endAt: input.endAt ? new Date(input.endAt) : null, actualDistanceKm: String(input.actualDistanceKm), volumeCubicMeters: String(volume), routeSnapshot });
     return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, anomalies };
   }),
@@ -1565,7 +1577,7 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
-    if (!db) return { tripCount: 0, submittedCount: 0, verifiedCount: 0, settledCount: 0, volumeCubicMeters: 0, weightTons: 0, amount: 0, alertTripCount: 0, alertCount: 0 };
+    if (!db) return { tripCount: 0, nfcCardTicketCount: 0, platePhotoTicketCount: 0, submittedCount: 0, verifiedCount: 0, settledCount: 0, volumeCubicMeters: 0, weightTons: 0, amount: 0, alertTripCount: 0, alertCount: 0, vehicleSummaries: [] as { vehicleId: number; plateNo: string; ticketCount: number; nfcCardTicketCount: number; platePhotoTicketCount: number; volumeCubicMeters: number; amount: number; verifiedCount: number; pendingReviewCount: number }[] };
     const start = toBusinessDate(input.date);
     const end = new Date(start);
     end.setUTCDate(end.getUTCDate() + 1);
@@ -1579,8 +1591,23 @@ export const transportRouter = router({
     }
     const activeRows = rows.filter(trip => trip.status !== "void");
     const anomalyMatrix = activeRows.map(trip => calculateTransportAnomalies(trip));
+    const vehicleRows = await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId));
+    const vehiclePlates = new Map(vehicleRows.map(vehicle => [vehicle.id, vehicle.plateNo]));
+    const vehicleSummaryMap = new Map<number, { vehicleId: number; plateNo: string; ticketCount: number; nfcCardTicketCount: number; platePhotoTicketCount: number; volumeCubicMeters: number; amount: number; verifiedCount: number; pendingReviewCount: number }>();
+    activeRows.forEach(trip => {
+      const current = vehicleSummaryMap.get(trip.vehicleId) ?? { vehicleId: trip.vehicleId, plateNo: vehiclePlates.get(trip.vehicleId) ?? `车辆 #${trip.vehicleId}`, ticketCount: 0, nfcCardTicketCount: 0, platePhotoTicketCount: 0, volumeCubicMeters: 0, amount: 0, verifiedCount: 0, pendingReviewCount: 0 };
+      current.ticketCount += 1;
+      if ((trip.invoiceMode ?? "nfc_card") === "plate_photo") current.platePhotoTicketCount += 1; else current.nfcCardTicketCount += 1;
+      current.volumeCubicMeters += Number(trip.volumeCubicMeters ?? 0);
+      current.amount += Number(trip.calculatedAmount ?? 0);
+      if (["verified", "settled"].includes(trip.status)) current.verifiedCount += 1;
+      if (trip.status === "submitted") current.pendingReviewCount += 1;
+      vehicleSummaryMap.set(trip.vehicleId, current);
+    });
     return {
       tripCount: activeRows.length,
+      nfcCardTicketCount: activeRows.filter(trip => (trip.invoiceMode ?? "nfc_card") === "nfc_card").length,
+      platePhotoTicketCount: activeRows.filter(trip => trip.invoiceMode === "plate_photo").length,
       submittedCount: activeRows.filter(trip => trip.status === "submitted").length,
       verifiedCount: activeRows.filter(trip => trip.status === "verified").length,
       settledCount: activeRows.filter(trip => trip.status === "settled").length,
@@ -1589,6 +1616,7 @@ export const transportRouter = router({
       amount: roundMoney(activeRows.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0)),
       alertTripCount: anomalyMatrix.filter(items => items.length > 0).length,
       alertCount: anomalyMatrix.reduce((sum, items) => sum + items.length, 0),
+      vehicleSummaries: Array.from(vehicleSummaryMap.values()).map(item => ({ ...item, volumeCubicMeters: roundMoney(item.volumeCubicMeters), amount: roundMoney(item.amount) })).sort((left, right) => right.ticketCount - left.ticketCount || left.plateNo.localeCompare(right.plateNo, "zh-CN")),
     };
   }),
 });

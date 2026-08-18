@@ -1,0 +1,1 @@
+ALTER TABLE `transport_trips` ADD `invoiceMode` enum('nfc_card','plate_photo') DEFAULT 'nfc_card' NOT NULL;
