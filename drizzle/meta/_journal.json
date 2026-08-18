@@ -316,6 +316,13 @@
       "when": 1787051106560,
       "tag": "0044_breezy_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1787054148694,
+      "tag": "0045_clear_thor_girl",
+      "breakpoints": true
     }
   ]
 }

@@ -634,6 +634,8 @@ export const laborWorkers = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     teamName: varchar("teamName", { length: 128 }),
+    workerCategory: mysqlEnum("workerCategory", ["company_admin", "labor_team", "temporary_daily"]).default("labor_team").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
     realName: varchar("realName", { length: 64 }).notNull(),
     identityNoEncrypted: text("identityNoEncrypted"),
     phoneEncrypted: text("phoneEncrypted"),

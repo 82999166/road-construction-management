@@ -1,0 +1,2 @@
+ALTER TABLE `labor_workers` ADD `workerCategory` enum('company_admin','labor_team','temporary_daily') DEFAULT 'labor_team' NOT NULL;--> statement-breakpoint
+ALTER TABLE `labor_workers` ADD `remarks` varchar(500);

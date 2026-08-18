@@ -170,6 +170,8 @@ export function getMobilePayrollActions(status: "draft" | "reviewing" | "approve
 const emptyWorkerDraft = {
   realName: "",
   teamName: "",
+  workerCategory: "labor_team" as "company_admin" | "labor_team" | "temporary_daily",
+  remarks: "",
   identityNo: "",
   phone: "",
   bankAccount: "",
@@ -329,6 +331,8 @@ export default function MobileLaborPage() {
       ? {
           realName: worker.realName,
           teamName: worker.teamName ?? "",
+          workerCategory: worker.workerCategory,
+          remarks: worker.remarks ?? "",
           identityNo: "",
           phone: "",
           bankAccount: "",
@@ -362,6 +366,8 @@ export default function MobileLaborPage() {
       projectId: selectedProjectId,
       realName: workerDraft.realName.trim(),
       teamName: workerDraft.teamName.trim() || null,
+      workerCategory: workerDraft.workerCategory,
+      remarks: workerDraft.remarks.trim() || null,
       identityNo: workerDraft.identityNo.trim() || undefined,
       phone: workerDraft.phone.trim() || (editingWorkerId ? undefined : null),
       bankAccount: workerDraft.bankAccount.trim() || (editingWorkerId ? undefined : null),
