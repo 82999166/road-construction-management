@@ -29,8 +29,14 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("createWatermarkedCostImage");
     expect(source).toContain("trpc.evidence.upload.useMutation");
     expect(source).toContain("费用水印照片");
-    expect(source).toContain('capture="environment"');
-    expect(source).toContain("现场拍照并上传");
+    expect(source).toContain("startCostCamera");
+    expect(source).toContain("navigator.mediaDevices.getUserMedia");
+    expect(source).toContain("captureCostPhoto");
+    expect(source).toContain("costCameraVideoRef");
+    expect(source).toContain("打开后置相机拍照");
+    expect(source).toContain("仅支持现场直拍，不提供本地相册选择");
+    expect(source).not.toContain('id="machine-cost-camera"');
+    expect(source).not.toContain('capture="environment"');
     expect(source).toContain("操作员（责任人）");
     expect(source).toContain("费用说明");
     expect(source).toContain("evidenceId, remarks:");
