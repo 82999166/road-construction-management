@@ -754,6 +754,32 @@ export const payrollStatements = mysqlTable(
   table => ({ workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period) }),
 );
 
+/** 临时人员按日结算：审核通过不代表付款，只有登记实际付款后才结算完毕。 */
+export const temporaryDailyWageSettlements = mysqlTable(
+  "temporary_daily_wage_settlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    workerId: int("workerId").notNull(),
+    projectId: int("projectId").notNull(),
+    settlementDate: date("settlementDate").notNull(),
+    payableAmount: decimal("payableAmount", { precision: 16, scale: 2 }).notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    actualAmount: decimal("actualAmount", { precision: 16, scale: 2 }).notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "reviewing", "approved", "paid", "void"]).default("draft").notNull(),
+    submittedBy: int("submittedBy"),
+    submittedAt: datetime("submittedAt"),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    paidBy: int("paidBy"),
+    paidAt: datetime("paidAt"),
+    paymentReference: varchar("paymentReference", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ workerDateUnique: uniqueIndex("temporary_daily_wage_worker_date_unique").on(table.workerId, table.settlementDate), projectDateIndex: index("temporary_daily_wage_project_date_index").on(table.projectId, table.settlementDate, table.status) }),
+);
+
 /** 统一员工档案：公司管理人员、机械操作员与施工队工人统一投影，避免将账号与劳务实名档案混为一体。 */
 export const employeeProfiles = mysqlTable(
   "employee_profiles",

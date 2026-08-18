@@ -323,6 +323,13 @@
       "when": 1787054148694,
       "tag": "0045_clear_thor_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1787055403398,
+      "tag": "0046_safe_captain_cross",
+      "breakpoints": true
     }
   ]
 }
