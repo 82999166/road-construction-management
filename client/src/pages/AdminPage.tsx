@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import * as XLSX from "xlsx";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -303,6 +304,22 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
   URL.revokeObjectURL(href);
 }
 
+/** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间，避免分类工资报表脱离项目与期间语境。 */
+function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+  const workbook = XLSX.utils.book_new();
+  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", scope.module], ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...sheets.map(sheet => [sheet.name, sheet.rows.length])];
+  const overview = XLSX.utils.aoa_to_sheet(overviewRows);
+  overview["!cols"] = [{ wch: 22 }, { wch: 48 }];
+  XLSX.utils.book_append_sheet(workbook, overview, "汇总说明");
+  sheets.forEach(sheet => {
+    const worksheet = XLSX.utils.aoa_to_sheet([sheet.headers, ...sheet.rows]);
+    worksheet["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(sheet.rows.length, 1), c: Math.max(sheet.headers.length - 1, 0) } }) };
+    worksheet["!cols"] = sheet.headers.map(header => ({ wch: Math.min(Math.max(header.length + 4, 12), 28) }));
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name.slice(0, 31));
+  });
+  XLSX.writeFile(workbook, filename, { compression: true });
+}
+
 /** 日期字段优先保留接口返回的自然日，避免桌面端编辑日报时发生时区偏移。 */
 function toBusinessDateInput(value: Date | string | null | undefined) {
   if (!value) return toLocalDateInput();
@@ -538,6 +555,8 @@ export default function AdminPage() {
   const [laborPayrollSearch, setLaborPayrollSearch] = useState("");
   const [laborPayrollTeam, setLaborPayrollTeam] = useState("all");
   const [laborPayrollStatus, setLaborPayrollStatus] = useState("all");
+  const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
+  const [dailyWagePaymentForm, setDailyWagePaymentForm] = useState({ paidAt: toLocalDateInput(), paymentReference: "" });
   const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
   const [subcontractStatusFilter, setSubcontractStatusFilter] = useState("all");
   const [subcontractTeamForm, setSubcontractTeamForm] = useState<SubcontractTeamForm>(EMPTY_SUBCONTRACT_TEAM_FORM);
@@ -622,6 +641,9 @@ export default function AdminPage() {
   const laborAttendance = trpc.labor.attendance.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
   const laborCheckIns = trpc.labor.attendance.listCheckIns.useQuery(laborCheckInWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
   const payrollStatements = trpc.labor.payroll.list.useQuery(payrollWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
+  const laborDailyWages = trpc.labor.dailyWage.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
+  const payrollWorkbookExport = trpc.labor.dailyWage.exportWorkbookData.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
+  const payrollPaymentListExport = trpc.labor.dailyWage.exportPaymentList.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
   const machineryLedger = trpc.machinery.listMachines.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
   const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
   const machineCostSummaries = trpc.machinery.listCostSummaries.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
@@ -1582,6 +1604,29 @@ export default function AdminPage() {
       setPayrollPaymentTarget(null);
       setPaymentReference("");
       await payrollStatements.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
+    onSuccess: async () => {
+      toast.success("临时日结已提交会计/财务审核");
+      await laborDailyWages.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const reviewDailyWage = trpc.labor.dailyWage.review.useMutation({
+    onSuccess: async result => {
+      toast.success(result.status === "approved" ? "临时日结已审核通过，待登记付款" : "临时日结已退回草稿，可修改后重新提交");
+      await laborDailyWages.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const payDailyWage = trpc.labor.dailyWage.pay.useMutation({
+    onSuccess: async () => {
+      toast.success("临时日结已登记实际付款并完成结算");
+      setDailyWagePaymentTarget(null);
+      setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" });
+      await Promise.all([laborDailyWages.refetch(), payrollStatements.refetch()]);
     },
     onError: error => toast.error(error.message),
   });

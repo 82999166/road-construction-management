@@ -54,6 +54,9 @@ vi.mock("@/lib/trpc", () => ({
       dailyWage: {
         list: { useQuery: runtime.dailyWages },
         save: { useMutation: runtime.mutation },
+        submit: { useMutation: runtime.mutation },
+        review: { useMutation: runtime.mutation },
+        pay: { useMutation: runtime.mutation },
       },
       certificates: {
         list: { useQuery: runtime.certificates },
