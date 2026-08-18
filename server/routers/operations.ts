@@ -241,6 +241,7 @@ const transportRoutePresetInput = z.object({
   unloadSiteId: z.number().int().positive(),
   freightRuleId: z.number().int().positive(),
   presetDistanceKm: z.number().gt(0).max(9999),
+  isDefault: z.boolean().default(false),
   status: z.enum(["active", "disabled"]),
 }).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
 
@@ -1439,7 +1440,7 @@ export const transportRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
-    return db.select().from(transportRoutePresets).where(eq(transportRoutePresets.projectId, input.projectId)).orderBy(desc(transportRoutePresets.updatedAt));
+    return db.select().from(transportRoutePresets).where(eq(transportRoutePresets.projectId, input.projectId)).orderBy(desc(transportRoutePresets.isDefault), desc(transportRoutePresets.updatedAt));
   }),
 
   /** 运输负责人维护路线的装卸点、预设里程和有效阶梯运价。 */
@@ -1458,7 +1459,8 @@ export const transportRouter = router({
     if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线装土点不存在或未启用" });
     if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或未启用" });
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
-    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), status: input.status };
+    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), isDefault: input.isDefault, status: input.status };
+    if (input.isDefault) await db.update(transportRoutePresets).set({ isDefault: false }).where(eq(transportRoutePresets.projectId, input.projectId));
     if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));
     else await db.insert(transportRoutePresets).values({ ...values, createdBy: user.id });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km` });
@@ -1501,8 +1503,9 @@ export const transportRouter = router({
     let freightRuleId = input.freightRuleId;
     let actualDistanceKm = input.actualDistanceKm;
     let routePreset: typeof transportRoutePresets.$inferSelect | null = null;
-    if (input.routePresetId) {
-      const [preset] = await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, input.routePresetId)).limit(1);
+    const selectedRoutePresetId = input.routePresetId;
+    if (selectedRoutePresetId) {
+      const [preset] = await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, selectedRoutePresetId)).limit(1);
       if (!preset || preset.projectId !== input.projectId || preset.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "选择的运输路线不存在、已停用或不属于当前项目" });
       routePreset = preset;
       loadSiteId = preset.loadSiteId;
@@ -1510,7 +1513,11 @@ export const transportRouter = router({
       freightRuleId = preset.freightRuleId;
       actualDistanceKm = Number(preset.presetDistanceKm);
     }
-    if (!freightRuleId || actualDistanceKm === undefined || actualDistanceKm === null) throw new TRPCError({ code: "BAD_REQUEST", message: "请先配置有效运输路线，或提供有效运价和实际里程" });
+    if (!freightRuleId) {
+      const [legacyRule] = await db.select().from(freightRateRules).where(and(eq(freightRateRules.projectId, input.projectId), eq(freightRateRules.status, "active"))).limit(1);
+      if (!legacyRule) throw new TRPCError({ code: "BAD_REQUEST", message: "请先配置有效运输路线和阶梯运价" });
+      freightRuleId = legacyRule.id;
+    }
     if (Boolean(loadSiteId) !== Boolean(unloadSiteId)) throw new TRPCError({ code: "BAD_REQUEST", message: "运输票据必须同时选择装土点和卸土点" });
     let loadSite: typeof transportSites.$inferSelect | null = null;
     let unloadSite: typeof transportSites.$inferSelect | null = null;
@@ -1531,6 +1538,7 @@ export const transportRouter = router({
     }
     const [rule] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, freightRuleId)).limit(1);
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "未找到当前项目下可用的生效运价规则" });
+    if (actualDistanceKm === undefined || actualDistanceKm === null) actualDistanceKm = Number(rule.startDistanceKm);
     const tripStart = new Date(input.startAt);
     const ruleStart = new Date(rule.effectiveFrom);
     const ruleEnd = rule.effectiveTo ? new Date(rule.effectiveTo) : null;

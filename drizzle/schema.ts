@@ -1236,6 +1236,7 @@ export const transportRoutePresets = mysqlTable(
     unloadSiteId: int("unloadSiteId").notNull(),
     freightRuleId: int("freightRuleId").notNull(),
     presetDistanceKm: decimal("presetDistanceKm", { precision: 10, scale: 3 }).notNull(),
+    isDefault: boolean("isDefault").default(false).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
