@@ -17,7 +17,7 @@ export const publicProcedure = t.procedure;
  * 业务模块的高影响写入不能仅依赖前端隐藏按钮；客户端可直接调用 RPC。
  * 普通管理人员只能在其已授权模块与项目范围内新增、查看，既有记录修改与状态流转由超级管理员负责。
  */
-const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "finance.", "evidence."] as const;
+const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "subcontract.", "finance.", "evidence."] as const;
 const HIGH_IMPACT_MUTATION_SEGMENTS = ["transition", "approve", "pay", "void", "reverse", "ocr", "recordSettlement", "recordPayment"] as const;
 const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   construction: "CONSTRUCTION",
@@ -26,6 +26,8 @@ const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   transport: "TRANSPORT",
   purchasing: "PURCHASING",
   measurement: "MEASUREMENT",
+  /** 分包沿用工程计量部门范围与详细操作权限，金额确认仍由分包路由内的财务岗位状态机二次校验。 */
+  subcontract: "MEASUREMENT",
   finance: "FINANCE",
   evidence: "EVIDENCE",
 };
@@ -38,6 +40,13 @@ const ROLE_GUARDED_LABOR_MUTATIONS = new Set([
   "labor.payroll.approve",
   "labor.payroll.pay",
   "labor.payroll.void",
+]);
+
+/** 分包的编辑、分配、复核、结算与作废均已在分包路由内按岗位、项目范围和旧状态强制校验。 */
+const ROLE_GUARDED_SUBCONTRACT_MUTATIONS = new Set([
+  "subcontract.saveTeam",
+  "subcontract.savePackage",
+  "subcontract.transitionPackage",
 ]);
 
 function isScopedBusinessMutation(path: string) {
@@ -56,7 +65,9 @@ function isHighImpactBusinessMutation(path: string) {
 function inferBusinessOperationAction(path: string, input: unknown): BusinessOperationAction {
   const normalized = path.toLowerCase();
   if (normalized.includes("transition")) {
-    const nextStatus = typeof input === "object" && input !== null && "nextStatus" in input ? String((input as { nextStatus?: unknown }).nextStatus ?? "") : "";
+    const nextStatus = typeof input === "object" && input !== null
+      ? String("nextStatus" in input ? (input as { nextStatus?: unknown }).nextStatus ?? "" : "targetStatus" in input ? (input as { targetStatus?: unknown }).targetStatus ?? "" : "")
+      : "";
     if (["void", "locked", "archived", "cancelled"].includes(nextStatus)) return "void";
     if (["settled", "paid", "issued"].includes(nextStatus)) return "settle";
     if (["approved", "rejected", "verified", "certified"].includes(nextStatus)) return "review";
@@ -113,7 +124,7 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   }
 
   const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
-  const usesDedicatedLaborRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path);
+  const usesDedicatedRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path) || ROLE_GUARDED_SUBCONTRACT_MUTATIONS.has(path);
   const businessModule = getBusinessModuleForPath(path);
   const operation = inferBusinessOperationAction(path, input);
   const detailedPermission = !isSuperAdmin && businessModule
@@ -125,7 +136,7 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
       message: `当前角色未获“${operation}”操作权限，请联系超级管理员在角色详细操作权限中授权`,
     });
   }
-  if (!isSuperAdmin && !usesDedicatedLaborRoleGuard && (hasExistingRecordId(input) || isHighImpactBusinessMutation(path))) {
+  if (!isSuperAdmin && !usesDedicatedRoleGuard && (hasExistingRecordId(input) || isHighImpactBusinessMutation(path))) {
     if (detailedPermission?.hasDetailedPermissions && detailedPermission.allowed) return next({ ctx });
     throw new TRPCError({
       code: "FORBIDDEN",

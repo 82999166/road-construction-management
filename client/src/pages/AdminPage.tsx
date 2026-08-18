@@ -51,6 +51,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源协同" },
   { icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "资源协同" },
   { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财与控制" },
+  { icon: FolderKanban, label: "工程结算与分包", path: "/admin/subcontract", section: "业财与控制" },
   { icon: ShieldCheck, label: "AI 项目风控", path: "/admin/risk", section: "业财与控制" },
   { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "业财与控制" },
   { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "业财与控制" },
@@ -115,6 +116,8 @@ type PayrollPaymentTarget = { id: number; workerName: string; period: string };
 type WechatBindingActionTarget = { userId: number; displayName: string };
 type ConstructionWeather = "sunny" | "cloudy" | "rainy" | "snowy" | "windy" | "other";
 type ConstructionReportEditor = { id?: number; projectId: number; status: "draft" | "submitted" | "approved" | "rejected" | "locked"; reportDate: string; workArea: string; weather: ConstructionWeather; workContent: string; safetyNotes: string; issueNotes: string; progressPercent: string };
+type SubcontractTeamForm = { id?: number; projectId: string; teamName: string; contactName: string; contactPhone: string; status: "active" | "suspended" | "closed"; remarks: string };
+type SubcontractPackageForm = { id?: number; projectId: string; measurementTakeoffId: string; subcontractTeamId: string; workItem: string; workLocation: string; unit: "m3" | "m2" | "m" | "t" | "piece" | "set" | "other"; quantity: string; upstreamUnitPrice: string; subcontractUnitPrice: string; remarks: string };
 type DesktopRecordDetail = { title: string; description: string; fields: Array<{ label: string; value: ReactNode }>; note?: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
@@ -143,6 +146,8 @@ const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationFor
 const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
+const EMPTY_SUBCONTRACT_TEAM_FORM: SubcontractTeamForm = { projectId: "", teamName: "", contactName: "", contactPhone: "", status: "active", remarks: "" };
+const EMPTY_SUBCONTRACT_PACKAGE_FORM: SubcontractPackageForm = { projectId: "", measurementTakeoffId: "", subcontractTeamId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", remarks: "" };
 const CONSTRUCTION_WEATHER_LABELS: Record<ConstructionWeather, string> = { sunny: "晴", cloudy: "多云", rainy: "雨", snowy: "雪", windy: "大风", other: "其他" };
 const OFFICIAL_ACCOUNT_BASE_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
@@ -482,12 +487,13 @@ export default function AdminPage() {
   const isLabor = activeSection === "labor";
   const isMachinery = activeSection === "machinery";
   const isTransport = activeSection === "transport";
+  const isSubcontract = activeSection === "subcontract";
   const isDiesel = activeSection === "diesel";
   const isRisk = activeSection === "risk";
   const isFinance = activeSection === "finance" || isDiesel;
   const isBroadcast = activeSection === "broadcast";
   const isWechatLogin = activeSection === "wechat-login";
-  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport;
+  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport || isSubcontract;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
   const isSettings = activeSection === "settings";
@@ -532,6 +538,12 @@ export default function AdminPage() {
   const [laborPayrollSearch, setLaborPayrollSearch] = useState("");
   const [laborPayrollTeam, setLaborPayrollTeam] = useState("all");
   const [laborPayrollStatus, setLaborPayrollStatus] = useState("all");
+  const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
+  const [subcontractStatusFilter, setSubcontractStatusFilter] = useState("all");
+  const [subcontractTeamForm, setSubcontractTeamForm] = useState<SubcontractTeamForm>(EMPTY_SUBCONTRACT_TEAM_FORM);
+  const [subcontractPackageForm, setSubcontractPackageForm] = useState<SubcontractPackageForm>(EMPTY_SUBCONTRACT_PACKAGE_FORM);
+  const [subcontractTeamDialogOpen, setSubcontractTeamDialogOpen] = useState(false);
+  const [subcontractPackageDialogOpen, setSubcontractPackageDialogOpen] = useState(false);
   const [financeProjectId, setFinanceProjectId] = useState("");
   const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
@@ -578,6 +590,7 @@ export default function AdminPage() {
   const vehicleSummariesInput = useMemo(() => ({ projectId: vehicleLedgerFilter.projectId === "all" ? undefined : Number(vehicleLedgerFilter.projectId), period: vehicleAnalysisPeriod }), [vehicleAnalysisPeriod, vehicleLedgerFilter.projectId]);
   const vehicleAnalysisInput = useMemo(() => ({ vehicleId: vehicleAnalysisTarget?.vehicleId ?? 0, projectId: vehicleAnalysisTarget?.projectId ?? 0, period: vehicleAnalysisPeriod }), [vehicleAnalysisPeriod, vehicleAnalysisTarget]);
   const transportWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, date: transportDate || undefined }), [transportDate, workspaceProjectId]);
+  const subcontractPackagesInput = useMemo(() => ({ projectId: workspaceProjectId, subcontractTeamId: subcontractTeamFilter === "all" ? undefined : Number(subcontractTeamFilter), status: subcontractStatusFilter === "all" ? undefined : subcontractStatusFilter as "draft" | "allocated" | "confirmed" | "settled" | "void" }), [subcontractStatusFilter, subcontractTeamFilter, workspaceProjectId]);
   const financeProjectInput = useMemo(() => ({ projectId: Number(financeProjectId || 0), period: financePeriod || undefined }), [financePeriod, financeProjectId]);
   const riskProjectInput = useMemo(() => ({ projectId: Number(financeProjectId || 0) }), [financeProjectId]);
   const riskAlertsInput = useMemo(() => ({ projectId: Number(financeProjectId || 0), period: financePeriod, status: riskAlertStatus }), [financePeriod, financeProjectId, riskAlertStatus]);
@@ -624,6 +637,11 @@ export default function AdminPage() {
   const transportFreightRules = trpc.transport.listFreightRules.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
   const rfidWriterDevices = trpc.transport.listRfidWriterDevices.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
   const vehicleRfidCards = trpc.transport.listVehicleRfidCards.useQuery(workspaceProjectInput, { enabled: canQuery && isTransport && hasBusinessWorkspaceProject });
+  const subcontractCapabilities = trpc.subcontract.capabilities.useQuery(undefined, { enabled: canQuery && isSubcontract });
+  const subcontractTeams = trpc.subcontract.listTeams.useQuery(workspaceProjectInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
+  const subcontractPackages = trpc.subcontract.listPackages.useQuery(subcontractPackagesInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
+  const subcontractSummary = trpc.subcontract.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
+  const subcontractTakeoffs = trpc.measurement.listTakeoffs.useQuery(workspaceProjectInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
   const financeSummary = trpc.finance.summary.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financePeriod) });
   const financeInvoices = trpc.finance.listInvoices.useQuery(financeProjectInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dailyAccountingReport = trpc.finance.getDailyPrintableReport.useQuery({ projectId: Number(financeProjectId || 0), closingDate: financeClosingDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financeClosingDate) });
@@ -1070,6 +1088,34 @@ export default function AdminPage() {
       setMachineForm(EMPTY_MACHINE_FORM);
       setMachineDialogOpen(false);
       await Promise.all([machineryLedger.refetch(), machineCostSummaries.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const refreshSubcontractWorkspace = async () => {
+    await Promise.all([subcontractTeams.refetch(), subcontractPackages.refetch(), subcontractSummary.refetch(), subcontractTakeoffs.refetch(), audits.refetch()]);
+  };
+  const saveSubcontractTeam = trpc.subcontract.saveTeam.useMutation({
+    onSuccess: async () => {
+      toast.success(subcontractTeamForm.id ? "施工队台账已更新" : "施工队台账已建立");
+      setSubcontractTeamDialogOpen(false);
+      setSubcontractTeamForm(EMPTY_SUBCONTRACT_TEAM_FORM);
+      await refreshSubcontractWorkspace();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveSubcontractPackage = trpc.subcontract.savePackage.useMutation({
+    onSuccess: async result => {
+      toast.success(`分包批次已保存：上游 ¥${displayMoney(result.upstreamAmount)}，分包 ¥${displayMoney(result.subcontractAmount)}，测算差额 ¥${displayMoney(result.marginAmount)}`);
+      setSubcontractPackageDialogOpen(false);
+      setSubcontractPackageForm(EMPTY_SUBCONTRACT_PACKAGE_FORM);
+      await refreshSubcontractWorkspace();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const transitionSubcontractPackage = trpc.subcontract.transitionPackage.useMutation({
+    onSuccess: async () => {
+      toast.success("分包批次状态已更新");
+      await refreshSubcontractWorkspace();
     },
     onError: error => toast.error(error.message),
   });
@@ -2342,6 +2388,53 @@ export default function AdminPage() {
     );
   };
 
+  const renderSubcontract = () => {
+    const teams = subcontractTeams.data ?? [];
+    const packages = subcontractPackages.data ?? [];
+    const summary = subcontractSummary.data;
+    const takeoffs = (subcontractTakeoffs.data ?? []).filter(item => ["approved", "locked"].includes(item.status));
+    const capabilities = subcontractCapabilities.data;
+    const summaryByStatus = new Map((summary?.byStatus ?? []).map(item => [item.status, item]));
+    const linkedTakeoff = subcontractPackageForm.measurementTakeoffId ? takeoffs.find(item => String(item.id) === subcontractPackageForm.measurementTakeoffId) : undefined;
+    const amountPreview = {
+      upstream: Number(subcontractPackageForm.quantity || 0) * Number(subcontractPackageForm.upstreamUnitPrice || 0),
+      subcontract: Number(subcontractPackageForm.quantity || 0) * Number(subcontractPackageForm.subcontractUnitPrice || 0),
+    };
+    const openTeamEditor = (team?: typeof teams[number]) => {
+      setSubcontractTeamForm(team ? { id: Number(team.id), projectId: String(team.projectId), teamName: team.teamName, contactName: team.contactName ?? "", contactPhone: "", status: team.status, remarks: team.remarks ?? "" } : { ...EMPTY_SUBCONTRACT_TEAM_FORM, projectId: String(workspaceProjectId) });
+      setSubcontractTeamDialogOpen(true);
+    };
+    const openPackageEditor = (item?: typeof packages[number]) => {
+      setSubcontractPackageForm(item ? {
+        id: Number(item.id), projectId: String(item.projectId), measurementTakeoffId: item.measurementTakeoffId ? String(item.measurementTakeoffId) : "", subcontractTeamId: String(item.subcontractTeamId), workItem: item.workItem, workLocation: item.workLocation ?? "", unit: item.unit, quantity: String(item.quantity), upstreamUnitPrice: String(item.upstreamUnitPrice), subcontractUnitPrice: String(item.subcontractUnitPrice), remarks: item.remarks ?? "",
+      } : { ...EMPTY_SUBCONTRACT_PACKAGE_FORM, projectId: String(workspaceProjectId) });
+      setSubcontractPackageDialogOpen(true);
+    };
+    const setLinkedTakeoff = (value: string) => {
+      if (value === "UNLINKED") {
+        setSubcontractPackageForm(current => ({ ...current, measurementTakeoffId: "" }));
+        return;
+      }
+      const takeoff = takeoffs.find(item => String(item.id) === value);
+      if (!takeoff) return;
+      setSubcontractPackageForm(current => ({ ...current, measurementTakeoffId: value, workItem: takeoff.workItem, workLocation: takeoff.workLocation ?? "", unit: takeoff.unit, quantity: String(takeoff.quantity), upstreamUnitPrice: String(takeoff.unitPrice) }));
+    };
+    const statusDescription = (status: string) => status === "draft" ? "草稿，尚未向施工队下达" : status === "allocated" ? "已分配，待计量/项目复核" : status === "confirmed" ? "已确认，待财务最终结算" : status === "settled" ? "已结算，金额快照已锁定" : "已作废，不计入有效测算";
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-[#203c48]">工程结算与分包 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">工程量分包与结算测算</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">以项目部已审核或已锁定收方为工程量依据，按施工队拆分批次，并在服务端固化上游金额、分包金额和测算差额。分配、复核和结算由不同岗位办理，已结算批次不可修改。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openTeamEditor()} disabled={!hasBusinessWorkspaceProject || !capabilities?.canMaintainDraft}>维护施工队</Button><Button onClick={() => openPackageEditor()} disabled={!hasBusinessWorkspaceProject || !capabilities?.canMaintainDraft || !teams.some(team => team.status === "active")}>新建分包批次</Button></div></div>
+        {renderWorkspaceProjectFilter("分包项目范围", "选择项目后，读取该项目施工队、已审核工程量收方和分包批次。未选择项目不会加载或展示工程量与金额数据。")}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取施工队、收方工程量和分包结算台账。" /> : subcontractTeams.isLoading || subcontractPackages.isLoading || subcontractSummary.isLoading || subcontractTakeoffs.isLoading ? <EmptyState text="正在读取工程结算与分包台账…" /> : subcontractTeams.isError || subcontractPackages.isError || subcontractSummary.isError || subcontractTakeoffs.isError ? <EmptyState text="暂无法读取工程结算与分包数据，请确认当前账号的计量/财务部门、岗位与项目范围授权。" /> : <>
+          <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="有效上游金额" value={`¥${displayMoney(summary?.upstreamAmount ?? 0)}`} description="不含已作废分包批次" icon={BarChart3} /><MetricCard title="有效分包金额" value={`¥${displayMoney(summary?.subcontractAmount ?? 0)}`} description={`共 ${summary?.packageCount ?? 0} 个有效批次`} icon={UsersRound} /><MetricCard title="测算差额" value={`¥${displayMoney(summary?.marginAmount ?? 0)}`} description="上游金额 − 分包金额" icon={FolderKanban} /><MetricCard title="待财务结算" value={summaryByStatus.get("confirmed")?.packageCount ?? 0} description={`已结算 ${summaryByStatus.get("settled")?.packageCount ?? 0} 个批次`} icon={ShieldCheck} /></section>
+          <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">施工队台账</CardTitle><CardDescription>施工队联系人电话仅以加密和脱敏形式保存；停用或关闭的施工队不可承接新的分包批次，但保留历史结算责任链。</CardDescription></div><Button size="sm" variant="outline" onClick={() => subcontractTeams.refetch()} disabled={subcontractTeams.isFetching}>刷新施工队</Button></CardHeader><CardContent><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[860px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>施工队</TableHead><TableHead>联系人</TableHead><TableHead>联系电话</TableHead><TableHead>状态</TableHead><TableHead>备注</TableHead><TableHead>更新时间</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{teams.length ? teams.map(team => <TableRow key={team.id}><TableCell className="font-medium text-[#203c48]">{team.teamName}</TableCell><TableCell>{team.contactName || "—"}</TableCell><TableCell>{team.contactPhoneMasked || "未登记"}</TableCell><TableCell><BusinessStatusBadge status={team.status} /></TableCell><TableCell className="max-w-[220px] truncate">{team.remarks || "—"}</TableCell><TableCell>{displayDate(team.updatedAt)}</TableCell><TableCell className="text-right"><Button size="sm" variant="outline" onClick={() => openTeamEditor(team)} disabled={!capabilities?.canMaintainDraft}>编辑</Button></TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-24 text-center text-slate-500">当前项目尚无施工队台账。请先建立施工队，再按批次分配工程量。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+          <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">分包批次与金额测算台账</CardTitle><CardDescription>每个批次保存工程量、上游单价、分包单价和测算差额；关联收方后，仅已审核或锁定工程量可分配，且累计分配量不能超过收方工程量。</CardDescription></div><div className="flex flex-wrap gap-2"><Select value={subcontractTeamFilter} onValueChange={setSubcontractTeamFilter}><SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部施工队</SelectItem>{teams.map(team => <SelectItem key={team.id} value={String(team.id)}>{team.teamName}</SelectItem>)}</SelectContent></Select><Select value={subcontractStatusFilter} onValueChange={setSubcontractStatusFilter}><SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="allocated">已分配</SelectItem><SelectItem value="confirmed">已确认</SelectItem><SelectItem value="settled">已结算</SelectItem><SelectItem value="void">已作废</SelectItem></SelectContent></Select><Button size="sm" variant="outline" onClick={() => Promise.all([subcontractPackages.refetch(), subcontractSummary.refetch(), subcontractTakeoffs.refetch()])} disabled={subcontractPackages.isFetching}>刷新台账</Button></div></CardHeader><CardContent><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1380px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>批次 / 施工队</TableHead><TableHead>关联收方</TableHead><TableHead>工作项 / 位置</TableHead><TableHead>工程量</TableHead><TableHead>上游金额</TableHead><TableHead>分包金额</TableHead><TableHead>测算差额</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{packages.length ? packages.map(item => <TableRow key={item.id}><TableCell><p className="font-semibold text-[#203c48]">{item.packageNo}</p><p className="mt-1 text-slate-500">{item.teamName}</p></TableCell><TableCell>{item.takeoffNo ? <><p>{item.takeoffNo}</p><p className="mt-1 text-slate-500">{item.takeoffStatus === "locked" ? "已锁定收方" : "已审核收方"}</p></> : "独立分包测算"}</TableCell><TableCell className="max-w-[240px]"><p className="font-medium">{item.workItem}</p><p className="mt-1 truncate text-slate-500">{item.workLocation || "未登记位置"}</p></TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell><p>¥{displayMoney(item.upstreamAmount)}</p><p className="mt-1 text-slate-500">¥{displayMoney(item.upstreamUnitPrice)}/{item.unit}</p></TableCell><TableCell><p>¥{displayMoney(item.subcontractAmount)}</p><p className="mt-1 text-slate-500">¥{displayMoney(item.subcontractUnitPrice)}/{item.unit}</p></TableCell><TableCell className={Number(item.marginAmount) >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>¥{displayMoney(item.marginAmount)}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell className="text-right"><div className="flex justify-end gap-1"><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `分包批次详情 · ${item.packageNo}`, description: statusDescription(item.status), fields: [{ label: "施工队", value: item.teamName }, { label: "关联收方", value: item.takeoffNo || "未关联" }, { label: "工程量", value: `${displayMoney(item.quantity)} ${item.unit}` }, { label: "上游金额", value: `¥ ${displayMoney(item.upstreamAmount)}` }, { label: "分包金额", value: `¥ ${displayMoney(item.subcontractAmount)}` }, { label: "测算差额", value: `¥ ${displayMoney(item.marginAmount)}` }, { label: "备注", value: item.remarks || "—" }] })}>详情</Button>{item.status === "draft" ? <Button size="sm" variant="outline" onClick={() => openPackageEditor(item)} disabled={!capabilities?.canMaintainDraft}>编辑</Button> : null}{item.status === "draft" && capabilities?.canMaintainDraft ? <Button size="sm" onClick={() => transitionSubcontractPackage.mutate({ id: Number(item.id), projectId: workspaceProjectId, targetStatus: "allocated", remarks: null })} disabled={transitionSubcontractPackage.isPending}>分配</Button> : null}{item.status === "allocated" && capabilities?.canConfirm ? <Button size="sm" onClick={() => transitionSubcontractPackage.mutate({ id: Number(item.id), projectId: workspaceProjectId, targetStatus: "confirmed", remarks: null })} disabled={transitionSubcontractPackage.isPending}>复核确认</Button> : null}{item.status === "confirmed" && capabilities?.canSettle ? <Button size="sm" onClick={() => transitionSubcontractPackage.mutate({ id: Number(item.id), projectId: workspaceProjectId, targetStatus: "settled", remarks: null })} disabled={transitionSubcontractPackage.isPending}>财务结算</Button> : null}{["draft", "allocated", "confirmed"].includes(item.status) ? <Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => transitionSubcontractPackage.mutate({ id: Number(item.id), projectId: workspaceProjectId, targetStatus: "void", remarks: "后台作废" })} disabled={transitionSubcontractPackage.isPending || (item.status === "confirmed" ? !capabilities?.canSettle : !(capabilities?.canMaintainDraft || capabilities?.canConfirm))}>作废</Button> : null}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={9} className="h-24 text-center text-slate-500">当前筛选范围暂无分包批次。请先维护施工队，再关联已审核收方或建立独立分包测算草稿。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+        </>}
+        <Dialog open={subcontractTeamDialogOpen} onOpenChange={open => { setSubcontractTeamDialogOpen(open); if (!open) setSubcontractTeamForm(EMPTY_SUBCONTRACT_TEAM_FORM); }}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>{subcontractTeamForm.id ? "维护施工队台账" : "新建施工队台账"}</DialogTitle><DialogDescription>联系人电话号码在服务端加密保存，后台列表仅显示脱敏号码；停用施工队不会影响历史分包批次。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveSubcontractTeam.mutate({ id: subcontractTeamForm.id, projectId: Number(subcontractTeamForm.projectId), teamName: subcontractTeamForm.teamName.trim(), contactName: subcontractTeamForm.contactName.trim() || null, contactPhone: subcontractTeamForm.contactPhone.trim() || undefined, status: subcontractTeamForm.status, remarks: subcontractTeamForm.remarks.trim() || null }); }}><div className="grid gap-4 sm:grid-cols-2"><Field label="所属项目"><Input value={selectedWorkspaceProject?.name ?? ""} disabled /></Field><Field label="施工队状态"><Select value={subcontractTeamForm.status} onValueChange={value => setSubcontractTeamForm(current => ({ ...current, status: value as SubcontractTeamForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="closed">已关闭</SelectItem></SelectContent></Select></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="施工队名称"><Input value={subcontractTeamForm.teamName} maxLength={200} placeholder="例如：路基一队" onChange={event => setSubcontractTeamForm(current => ({ ...current, teamName: event.target.value }))} /></Field><Field label="联系人姓名"><Input value={subcontractTeamForm.contactName} maxLength={100} placeholder="可选" onChange={event => setSubcontractTeamForm(current => ({ ...current, contactName: event.target.value }))} /></Field></div><Field label={subcontractTeamForm.id ? "联系人电话（留空保持原号码）" : "联系人电话（可选）"}><Input value={subcontractTeamForm.contactPhone} inputMode="tel" maxLength={32} placeholder={subcontractTeamForm.id ? "已加密保存；如需更新请输入新号码" : "例如 13800000000"} onChange={event => setSubcontractTeamForm(current => ({ ...current, contactPhone: event.target.value }))} /></Field><Field label="备注"><Textarea value={subcontractTeamForm.remarks} maxLength={500} placeholder="可填写班组能力、合同或现场协作说明" onChange={event => setSubcontractTeamForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setSubcontractTeamDialogOpen(false)}>取消</Button><Button type="submit" disabled={!subcontractTeamForm.projectId || subcontractTeamForm.teamName.trim().length < 2 || saveSubcontractTeam.isPending}>{saveSubcontractTeam.isPending ? "正在保存…" : "保存施工队"}</Button></DialogFooter></form></DialogContent></Dialog>
+        <Dialog open={subcontractPackageDialogOpen} onOpenChange={open => { setSubcontractPackageDialogOpen(open); if (!open) setSubcontractPackageForm(EMPTY_SUBCONTRACT_PACKAGE_FORM); }}><DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto"><DialogHeader><DialogTitle>{subcontractPackageForm.id ? "维护分包批次草稿" : "新建分包批次"}</DialogTitle><DialogDescription>关联收方时，系统锁定收方的工作项、位置、单位、工程量与上游单价，并校验累计分配量；金额和测算差额均由服务端重新计算。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveSubcontractPackage.mutate({ id: subcontractPackageForm.id, projectId: Number(subcontractPackageForm.projectId), measurementTakeoffId: subcontractPackageForm.measurementTakeoffId ? Number(subcontractPackageForm.measurementTakeoffId) : null, subcontractTeamId: Number(subcontractPackageForm.subcontractTeamId), workItem: subcontractPackageForm.workItem.trim(), workLocation: subcontractPackageForm.workLocation.trim() || null, unit: subcontractPackageForm.unit, quantity: Number(subcontractPackageForm.quantity), upstreamUnitPrice: Number(subcontractPackageForm.upstreamUnitPrice), subcontractUnitPrice: Number(subcontractPackageForm.subcontractUnitPrice), remarks: subcontractPackageForm.remarks.trim() || null }); }}><div className="grid gap-4 md:grid-cols-2"><Field label="承接施工队"><Select value={subcontractPackageForm.subcontractTeamId || "UNASSIGNED"} onValueChange={value => setSubcontractPackageForm(current => ({ ...current, subcontractTeamId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择启用施工队" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择施工队</SelectItem>{teams.filter(team => team.status === "active").map(team => <SelectItem key={team.id} value={String(team.id)}>{team.teamName}</SelectItem>)}</SelectContent></Select></Field><Field label="关联项目收方（可选）"><Select value={subcontractPackageForm.measurementTakeoffId || "UNLINKED"} onValueChange={setLinkedTakeoff}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNLINKED">不关联，独立测算</SelectItem>{takeoffs.map(takeoff => <SelectItem key={takeoff.id} value={String(takeoff.id)}>{takeoff.takeoffNo} · {takeoff.workItem} · 可分配 {displayMoney(takeoff.quantity)} {takeoff.unit}</SelectItem>)}</SelectContent></Select></Field></div><div className="grid gap-4 md:grid-cols-2"><Field label="分包工作项"><Input value={subcontractPackageForm.workItem} disabled={Boolean(linkedTakeoff)} maxLength={200} onChange={event => setSubcontractPackageForm(current => ({ ...current, workItem: event.target.value }))} /></Field><Field label="施工位置"><Input value={subcontractPackageForm.workLocation} disabled={Boolean(linkedTakeoff)} maxLength={200} placeholder="可选" onChange={event => setSubcontractPackageForm(current => ({ ...current, workLocation: event.target.value }))} /></Field></div><div className="grid gap-4 md:grid-cols-4"><Field label="计量单位"><Select value={subcontractPackageForm.unit} disabled={Boolean(linkedTakeoff)} onValueChange={value => setSubcontractPackageForm(current => ({ ...current, unit: value as SubcontractPackageForm["unit"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="m3">m³</SelectItem><SelectItem value="m2">m²</SelectItem><SelectItem value="m">m</SelectItem><SelectItem value="t">t</SelectItem><SelectItem value="piece">件</SelectItem><SelectItem value="set">套</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></Field><Field label="工程量"><Input type="number" min="0.001" step="0.001" value={subcontractPackageForm.quantity} disabled={Boolean(linkedTakeoff)} onChange={event => setSubcontractPackageForm(current => ({ ...current, quantity: event.target.value }))} /></Field><Field label="上游单价（元）"><Input type="number" min="0" step="0.01" value={subcontractPackageForm.upstreamUnitPrice} disabled={Boolean(linkedTakeoff)} onChange={event => setSubcontractPackageForm(current => ({ ...current, upstreamUnitPrice: event.target.value }))} /></Field><Field label="分包单价（元）"><Input type="number" min="0" step="0.01" value={subcontractPackageForm.subcontractUnitPrice} onChange={event => setSubcontractPackageForm(current => ({ ...current, subcontractUnitPrice: event.target.value }))} /></Field></div><div className="grid gap-3 rounded-xl border border-[#d8e3e0] bg-[#f5f9f8] p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">上游金额测算</p><p className="mt-1 text-lg font-semibold text-[#203c48]">¥{displayMoney(amountPreview.upstream)}</p></div><div><p className="text-xs text-slate-500">分包金额测算</p><p className="mt-1 text-lg font-semibold text-[#203c48]">¥{displayMoney(amountPreview.subcontract)}</p></div><div><p className="text-xs text-slate-500">测算差额</p><p className={`mt-1 text-lg font-semibold ${amountPreview.upstream - amountPreview.subcontract >= 0 ? "text-emerald-700" : "text-rose-700"}`}>¥{displayMoney(amountPreview.upstream - amountPreview.subcontract)}</p></div></div><Field label="备注"><Textarea value={subcontractPackageForm.remarks} maxLength={500} placeholder="可填写分包边界、质量要求或结算说明" onChange={event => setSubcontractPackageForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setSubcontractPackageDialogOpen(false)}>取消</Button><Button type="submit" disabled={!subcontractPackageForm.projectId || !subcontractPackageForm.subcontractTeamId || subcontractPackageForm.workItem.trim().length < 2 || !Number.isFinite(Number(subcontractPackageForm.quantity)) || Number(subcontractPackageForm.quantity) <= 0 || !Number.isFinite(Number(subcontractPackageForm.upstreamUnitPrice)) || Number(subcontractPackageForm.upstreamUnitPrice) < 0 || !Number.isFinite(Number(subcontractPackageForm.subcontractUnitPrice)) || Number(subcontractPackageForm.subcontractUnitPrice) < 0 || saveSubcontractPackage.isPending}>{saveSubcontractPackage.isPending ? "正在保存…" : "保存分包草稿"}</Button></DialogFooter></form></DialogContent></Dialog>
+      </div>
+    );
+  };
+
   const renderLabor = () => {
     const workers = laborWorkers.data ?? [];
     const attendance = laborAttendance.data ?? [];
@@ -2668,7 +2761,7 @@ export default function AdminPage() {
     </div>;
   };
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "subcontract" ? renderSubcontract() : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
@@ -2684,6 +2777,7 @@ export default function AdminPage() {
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="transport">运输</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="permission">权限</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="finance">财务</TabsTrigger>
+            <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="subcontract">分包</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="risk">AI 风控</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="broadcast">群发</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="wechat-login">微信登录</TabsTrigger>

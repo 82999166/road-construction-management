@@ -22,6 +22,7 @@ import MobileEvidencePage from "./pages/MobileEvidencePage";
 import MobileFinancePage from "./pages/MobileFinancePage";
 import MobileLaborPage from "./pages/MobileLaborPage";
 import MobileMeasurementPage from "./pages/MobileMeasurementPage";
+import MobileSubcontractPage from "./pages/MobileSubcontractPage";
 import MobileMessagesPage from "./pages/MobileMessagesPage";
 import MobileMachineryPage from "./pages/MobileMachineryPage";
 import MobilePurchasingPage from "./pages/MobilePurchasingPage";
@@ -88,6 +89,7 @@ function Router() {
       <Route path={"/mobile/transport"} component={MobileTransportPage} />
       <Route path={"/mobile/purchasing"} component={MobilePurchasingPage} />
       <Route path={"/mobile/measurement"} component={MobileMeasurementPage} />
+      <Route path={"/mobile/subcontract"} component={MobileSubcontractPage} />
       <Route path={"/mobile/finance"} component={MobileFinancePage} />
       <Route path={"/mobile/messages"} component={MobileMessagesPage} />
       <Route path={"/mobile/evidence"} component={MobileEvidencePage} />
