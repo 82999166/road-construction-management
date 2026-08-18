@@ -1530,6 +1530,62 @@ export const measurementTakeoffEvidences = mysqlTable(
   }),
 );
 
+/** 项目分包施工队台账；与劳务班组不同，专用于工程量分批分包与结算对照。 */
+export const subcontractTeams = mysqlTable(
+  "subcontract_teams",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    teamName: varchar("teamName", { length: 200 }).notNull(),
+    contactName: varchar("contactName", { length: 100 }),
+    contactPhoneEncrypted: text("contactPhoneEncrypted"),
+    contactPhoneMasked: varchar("contactPhoneMasked", { length: 32 }),
+    status: mysqlEnum("status", ["active", "suspended", "closed"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectTeamUnique: uniqueIndex("subcontract_teams_project_name_unique").on(table.projectId, table.teamName),
+    projectStatusIndex: index("subcontract_teams_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
+/** 将已确认的项目部收方工程量分批下达给施工队，并独立记录分包结算快照。 */
+export const subcontractPackages = mysqlTable(
+  "subcontract_packages",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    packageNo: varchar("packageNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    measurementTakeoffId: bigint("measurementTakeoffId", { mode: "number" }),
+    subcontractTeamId: bigint("subcontractTeamId", { mode: "number" }).notNull(),
+    workItem: varchar("workItem", { length: 200 }).notNull(),
+    workLocation: varchar("workLocation", { length: 200 }),
+    unit: mysqlEnum("unit", ["m3", "m2", "m", "t", "piece", "set", "other"]).notNull(),
+    quantity: decimal("quantity", { precision: 16, scale: 3 }).notNull(),
+    upstreamUnitPrice: decimal("upstreamUnitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
+    subcontractUnitPrice: decimal("subcontractUnitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
+    upstreamAmount: decimal("upstreamAmount", { precision: 16, scale: 2 }).notNull(),
+    subcontractAmount: decimal("subcontractAmount", { precision: 16, scale: 2 }).notNull(),
+    marginAmount: decimal("marginAmount", { precision: 16, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["draft", "allocated", "confirmed", "settled", "void"]).default("draft").notNull(),
+    allocatedAt: datetime("allocatedAt"),
+    settledAt: datetime("settledAt"),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    packageNoUnique: uniqueIndex("subcontract_packages_no_unique").on(table.packageNo),
+    projectStatusIndex: index("subcontract_packages_project_status_index").on(table.projectId, table.status),
+    teamIndex: index("subcontract_packages_team_index").on(table.subcontractTeamId),
+    takeoffIndex: index("subcontract_packages_takeoff_index").on(table.measurementTakeoffId),
+  }),
+);
+
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
 export const financialRecords = mysqlTable(
   "financial_records",
