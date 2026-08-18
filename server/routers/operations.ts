@@ -156,6 +156,8 @@ const vehicleInput = z.object({
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
   ownerName: z.string().trim().max(128).nullable().optional(),
   driverUserId: z.number().int().positive().nullable().optional(),
+  driverName: z.string().trim().max(128).nullable().optional(),
+  driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机手机号").nullable().optional(),
   boxLengthMeters: z.number().gt(0).max(100),
   boxWidthMeters: z.number().gt(0).max(20),
   boxHeightMeters: z.number().gt(0).max(20),
@@ -1174,9 +1176,9 @@ export const transportRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: input.driverUserId ?? null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
+    const existing = input.id ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1))[0] : null;
+    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: input.driverUserId ?? null, driverName: input.driverName ?? null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
     if (input.id) {
-      const [existing] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1);
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
       await assertProjectInCurrentScope(ctx, existing.projectId);
       await db.update(transportVehicles).set(values).where(eq(transportVehicles.id, input.id));

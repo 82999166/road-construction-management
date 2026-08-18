@@ -80,7 +80,7 @@ type PositionForm = { id?: number; code: string; name: string; category: string;
 type VehicleType = "dump_truck" | "tractor" | "mixer" | "flatbed" | "pickup" | "suv" | "other";
 type VehicleStatus = "active" | "suspended" | "disabled";
 type LeaseBillingType = "monthly" | "daily" | "hourly" | "shift";
-type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownership: "owned" | "leased"; ownerName: string; driverUserId: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; fuelTankCapacityLiters: string; status: VehicleStatus; leaseBillingType: LeaseBillingType; leaseRate: string; leaseStartDate: string; leaseEndDate: string };
+type VehicleForm = { id?: number; projectId: string; organizationId: string; plateNo: string; vehicleType: VehicleType; ownership: "owned" | "leased"; ownerName: string; driverUserId: string; driverName: string; driverPhone: string; boxLengthMeters: string; boxWidthMeters: string; boxHeightMeters: string; loadFactor: string; payloadTons: string; fuelTankCapacityLiters: string; status: VehicleStatus; leaseBillingType: LeaseBillingType; leaseRate: string; leaseStartDate: string; leaseEndDate: string };
 type MachineOwnership = "owned" | "leased";
 type MachineStatus = "idle" | "working" | "repairing" | "offsite" | "retired";
 type MachineCostType = "fuel" | "repair" | "overtime" | "mobilization" | "other";
@@ -120,7 +120,7 @@ type DesktopRecordDetail = { title: string; description: string; fields: Array<{
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
 const EMPTY_PROJECT_FORM: ProjectForm = { parentId: "", organizationId: "", code: "", name: "", nodeType: "项目", projectType: "highway", status: "planning", startDate: "", endDate: "", costCenterCode: "", sortOrder: "0" };
 const EMPTY_POSITION_FORM: PositionForm = { code: "", name: "", category: "业务岗位", description: "", status: "active" };
-const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownership: "owned", ownerName: "", driverUserId: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", fuelTankCapacityLiters: "", status: "active", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
+const EMPTY_VEHICLE_FORM: VehicleForm = { projectId: "", organizationId: "", plateNo: "", vehicleType: "dump_truck", ownership: "owned", ownerName: "", driverUserId: "", driverName: "", driverPhone: "", boxLengthMeters: "", boxWidthMeters: "", boxHeightMeters: "", loadFactor: "1", payloadTons: "", fuelTankCapacityLiters: "", status: "active", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
 const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", code: "", name: "", model: "", ownership: "owned", supplierName: "", plateOrAssetNo: "", driverName: "", driverPhone: "", fuelTankCapacityLiters: "", status: "idle", leaseBillingType: "monthly", leaseRate: "", leaseStartDate: "", leaseEndDate: "" };
 /** 稳定的模块级字段包装组件，禁止在页面渲染函数内定义，避免受控输入在每次状态更新时失焦。 */
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -1793,7 +1793,7 @@ export default function AdminPage() {
         vehicleType: vehicleForm.vehicleType,
         ownership: vehicleForm.ownership,
         ownerName: vehicleForm.ownerName.trim() || null,
-        driverUserId: vehicleForm.driverUserId ? Number(vehicleForm.driverUserId) : null,
+        driverUserId: vehicleForm.driverUserId ? Number(vehicleForm.driverUserId) : null, driverName: vehicleForm.driverName.trim() || null, driverPhone: vehicleForm.driverPhone.trim() && !vehicleForm.driverPhone.includes("*") ? vehicleForm.driverPhone.trim() : undefined,
         boxLengthMeters: Number(vehicleForm.boxLengthMeters),
         boxWidthMeters: Number(vehicleForm.boxWidthMeters),
         boxHeightMeters: Number(vehicleForm.boxHeightMeters),
@@ -1814,6 +1814,8 @@ export default function AdminPage() {
         ownership: item.ownership,
         ownerName: item.ownerName ?? "",
         driverUserId: item.driverUserId ? String(item.driverUserId) : "",
+        driverName: item.driverName ?? "",
+        driverPhone: item.driverPhoneMasked ?? "",
         boxLengthMeters: String(item.boxLengthMeters),
         boxWidthMeters: String(item.boxWidthMeters),
         boxHeightMeters: String(item.boxHeightMeters),
