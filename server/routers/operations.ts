@@ -459,8 +459,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     if (!site || site.projectId !== input.projectId || site.siteType !== eventType || site.status !== "active") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "现场地点不存在、已停用或地点类型不匹配" });
     }
-    if (!site.administratorUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "该现场尚未配置刷卡管理员，请由项目管理员先完成配置" });
-    if (site.administratorUserId !== user.id && !roleCodes.includes("ALL")) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号不是该现场指定的刷卡管理员" });
+    // 现场管理员仅作可选责任人留档；具备运输模块权限且在项目范围内的用户均可完成刷卡。
     siteName = site.name;
   }
   const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
@@ -1407,7 +1406,6 @@ export const transportRouter = router({
   saveSite: protectedProcedure.input(transportSiteInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertTransportAccess(ctx);
-    assertCanManageTransportResources(roleCodes);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -1433,7 +1431,8 @@ export const transportRouter = router({
       await db.insert(transportSites).values({ ...values, createdBy: user.id });
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_transport_site" : "create_transport_site", targetType: "transport_site", targetId: String(input.id ?? input.name), summary: `${input.id ? "维护" : "配置"}${input.siteType === "load" ? "装土" : "卸土"}点：${input.name}` });
-    return { success: true };
+    const siteId = input.id ?? (await db.select({ id: transportSites.id }).from(transportSites).where(and(eq(transportSites.projectId, input.projectId), eq(transportSites.siteType, input.siteType), eq(transportSites.name, input.name))).limit(1))[0]?.id;
+    return { success: true, id: siteId ?? null };
   }),
 
   /** 读取项目路线预设；票据端仅选择启用路线，不手填公里数或运价。 */
@@ -1530,7 +1529,6 @@ export const transportRouter = router({
       ]);
       if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "装土点不存在、已停用或不属于当前项目" });
       if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土点不存在、已停用或不属于当前项目" });
-      if (!loadSite.administratorUserId || !unloadSite.administratorUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "装土点和卸土点均须先配置现场刷卡管理员" });
     }
     if (input.evidenceId) {
       const [evidence] = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);

@@ -433,20 +433,16 @@ describe("机械与运输 tRPC 路由", () => {
     expect(result).toMatchObject({ tripCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, vehicleSummaries: [expect.objectContaining({ plateNo: "湘A12345", ticketCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, pendingReviewCount: 1 })] });
   });
 
-  it("现场刷卡必须由票据指定地点的现场管理员办理", async () => {
+  it("地点无需配置现场管理员即可由具备运输权限的用户保存", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insert = vi.fn(() => ({ values: vi.fn(async () => undefined) }));
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDbSequence(
-        [{ id: 60, projectId: 10, vehicleId: 11, status: "draft", loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: null, unloadConfirmedAt: null }],
-        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
-        [{ id: 71, projectId: 10, siteType: "load", status: "active", name: "K12 装土区", administratorUserId: 2 }],
-      ),
+      ...createSelectDbSequence([{ id: 71 }]),
       insert,
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 60, projectId: 10, siteId: 71, idempotencyKey: "reader-site-admin-0001", occurredAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("指定的刷卡管理员") });
-    expect(insert).not.toHaveBeenCalled();
+    await expect(transportRouter.createCaller(createAuthContext()).saveSite({ projectId: 10, siteType: "load", name: "K12 装土区", address: null, latitude: null, longitude: null, administratorUserId: null, status: "active" })).resolves.toMatchObject({ success: true, id: 71 });
+    expect(insert).toHaveBeenCalled();
   });
 
   it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
