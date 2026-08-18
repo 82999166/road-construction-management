@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNull, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects, users } from "../../drizzle/schema";
+import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects, temporaryDailyWageSettlements, users } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -68,6 +68,15 @@ const payrollSaveInput = z
     deductionAmount: z.number().min(0, "扣款金额不得为负数").max(999999999999.99).default(0),
   })
   .refine(value => value.deductionAmount <= value.payableAmount, { message: "扣款金额不得大于应发金额", path: ["deductionAmount"] });
+
+const dailyWageSaveInput = z.object({
+  workerId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  settlementDate: z.string().date(),
+  payableAmount: z.number().min(0),
+  deductionAmount: z.number().min(0).default(0),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).refine(value => value.deductionAmount <= value.payableAmount, { message: "扣款金额不得大于应发金额", path: ["deductionAmount"] });
 
 /** 实名制证照仅支持常见图片或 PDF，单文件限制为 5MB，防止移动端误传视频等大文件。 */
 const certificateUploadInput = z.object({
@@ -556,6 +565,28 @@ export const laborRouter = router({
       }
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: existing ? "update_attendance" : "create_attendance", targetType: "attendance_record", targetId: String(existing?.id ?? `${input.workerId}-${input.attendanceDate}`), summary: `${input.attendanceDate} 考勤${existing ? "更新" : "录入"}：${input.workHours} 小时，加班 ${input.overtimeHours} 小时` });
       return { success: true, id: existing?.id ?? null };
+    }),
+  }),
+
+  dailyWage: router({
+    list: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), settlementDate: z.string().date().optional() })).query(async ({ ctx, input }) => {
+      await assertLaborBusinessAccess(ctx); await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb(); if (!db) return [];
+      const filter = input.settlementDate ? and(eq(temporaryDailyWageSettlements.projectId, input.projectId), eq(temporaryDailyWageSettlements.settlementDate, toBusinessDate(input.settlementDate))) : eq(temporaryDailyWageSettlements.projectId, input.projectId);
+      return db.select({ id: temporaryDailyWageSettlements.id, workerId: temporaryDailyWageSettlements.workerId, workerName: laborWorkers.realName, teamName: laborWorkers.teamName, settlementDate: temporaryDailyWageSettlements.settlementDate, payableAmount: temporaryDailyWageSettlements.payableAmount, deductionAmount: temporaryDailyWageSettlements.deductionAmount, actualAmount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status, reviewedAt: temporaryDailyWageSettlements.reviewedAt, paidAt: temporaryDailyWageSettlements.paidAt, remarks: temporaryDailyWageSettlements.remarks }).from(temporaryDailyWageSettlements).innerJoin(laborWorkers, eq(temporaryDailyWageSettlements.workerId, laborWorkers.id)).where(filter).orderBy(desc(temporaryDailyWageSettlements.settlementDate), laborWorkers.realName);
+    }),
+    save: protectedProcedure.input(dailyWageSaveInput).mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
+      if (!roleCodes.includes("ALL") && !roleCodes.includes("LABOR_MANAGER") && !roleCodes.includes("PROJECT_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结录入仅限劳资负责人或项目经理" });
+      const { db, worker } = await getScopedWorker(ctx, input.workerId, input.projectId);
+      if (worker.workerCategory !== "temporary_daily") throw new TRPCError({ code: "BAD_REQUEST", message: "仅临时日结人员可创建日结记录" });
+      const money = calculatePayrollAmounts(input);
+      const existing = (await db.select().from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.workerId, input.workerId), eq(temporaryDailyWageSettlements.settlementDate, toBusinessDate(input.settlementDate)))).limit(1))[0];
+      if (existing && existing.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "已提交、已审核或已付款日结须按流程处理，不能直接修改" });
+      const values = { workerId: input.workerId, projectId: input.projectId, settlementDate: toBusinessDate(input.settlementDate), payableAmount: String(money.payableAmount), deductionAmount: String(money.deductionAmount), actualAmount: String(money.actualAmount), remarks: input.remarks ?? null, status: "draft" as const, submittedBy: null, submittedAt: null, reviewedBy: null, reviewedAt: null, paidBy: null, paidAt: null, paymentReference: null };
+      if (existing) await db.update(temporaryDailyWageSettlements).set(values).where(eq(temporaryDailyWageSettlements.id, existing.id)); else await db.insert(temporaryDailyWageSettlements).values(values);
+      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: existing ? "update_daily_wage" : "create_daily_wage", targetType: "temporary_daily_wage", targetId: String(existing?.id ?? `${input.workerId}-${input.settlementDate}`), summary: `${input.settlementDate} 临时日结${existing ? "更新" : "录入"}` });
+      return { success: true, actualAmount: money.actualAmount };
     }),
   }),
 
