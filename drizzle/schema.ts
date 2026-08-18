@@ -1226,6 +1226,24 @@ export const transportSites = mysqlTable(
   }),
 );
 
+/** 项目装卸路线预设：票据只选择路线，服务端锁定装卸点、里程与生效运价快照。 */
+export const transportRoutePresets = mysqlTable(
+  "transport_route_presets",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    loadSiteId: int("loadSiteId").notNull(),
+    unloadSiteId: int("unloadSiteId").notNull(),
+    freightRuleId: int("freightRuleId").notNull(),
+    presetDistanceKm: decimal("presetDistanceKm", { precision: 10, scale: 3 }).notNull(),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ projectStatusIndex: index("transport_route_presets_project_status_index").on(table.projectId, table.status), projectSitesUnique: uniqueIndex("transport_route_presets_project_sites_unique").on(table.projectId, table.loadSiteId, table.unloadSiteId) }),
+);
+
 /** 运输趟次及其由规则快照计算出的金额。 */
 export const transportTrips = mysqlTable(
  "transport_trips",

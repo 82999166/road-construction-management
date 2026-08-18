@@ -17,6 +17,7 @@ import {
   rfidCardWriteJobs,
   rfidWriterDevices,
   transportCardEvents,
+  transportRoutePresets,
   transportSites,
   transportTrips,
   transportVehicleLeaseRules,
@@ -186,13 +187,14 @@ const tripInput = z.object({
   tripNo: z.string().trim().min(4, "请填写趟次编号").max(64).optional(),
   vehicleId: z.number().int().positive(),
   projectId: z.number().int().positive(),
-  freightRuleId: z.number().int().positive(),
+  freightRuleId: z.number().int().positive().optional(),
+  routePresetId: z.number().int().positive().optional(),
   invoiceMode: z.enum(["nfc_card", "plate_photo"]).default("nfc_card"),
   loadSiteId: z.number().int().positive().nullable().optional(),
   unloadSiteId: z.number().int().positive().nullable().optional(),
   startAt: isoDateTimeSchema,
   endAt: isoDateTimeSchema.nullable().optional(),
-  actualDistanceKm: z.number().min(0).max(9999),
+  actualDistanceKm: z.number().min(0).max(9999).optional(),
   volumeCubicMeters: z.number().gt(0).max(999999).nullable().optional(),
   weightTons: z.number().gt(0).max(999999).nullable().optional(),
   evidenceId: z.number().int().positive().nullable().optional(),
@@ -230,6 +232,17 @@ const transportSiteInput = z.object({
   administratorUserId: z.number().int().positive().nullable().optional(),
   status: z.enum(["active", "disabled"]).default("active"),
 });
+
+/** 项目路线将装卸点、预设公里数与生效的每方阶梯运价绑定，发票端不得手工覆盖。 */
+const transportRoutePresetInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  loadSiteId: z.number().int().positive(),
+  unloadSiteId: z.number().int().positive(),
+  freightRuleId: z.number().int().positive(),
+  presetDistanceKm: z.number().gt(0).max(9999),
+  status: z.enum(["active", "disabled"]),
+}).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
 
 /** 写卡器型号先以台账方式预留，未接入硬件协议时仅允许生成并人工确认受控写卡任务。 */
 const rfidWriterDeviceInput = z.object({
@@ -1420,6 +1433,38 @@ export const transportRouter = router({
     return { success: true };
   }),
 
+  /** 读取项目路线预设；票据端仅选择启用路线，不手填公里数或运价。 */
+  listRoutePresets: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    return db.select().from(transportRoutePresets).where(eq(transportRoutePresets.projectId, input.projectId)).orderBy(desc(transportRoutePresets.updatedAt));
+  }),
+
+  /** 运输负责人维护路线的装卸点、预设里程和有效阶梯运价。 */
+  saveRoutePreset: protectedProcedure.input(transportRoutePresetInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [loadSite, unloadSite, rule] = await Promise.all([
+      db.select().from(transportSites).where(eq(transportSites.id, input.loadSiteId)).limit(1).then(rows => rows[0]),
+      db.select().from(transportSites).where(eq(transportSites.id, input.unloadSiteId)).limit(1).then(rows => rows[0]),
+      db.select().from(freightRateRules).where(eq(freightRateRules.id, input.freightRuleId)).limit(1).then(rows => rows[0]),
+    ]);
+    if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线装土点不存在或未启用" });
+    if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或未启用" });
+    if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
+    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), status: input.status };
+    if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));
+    else await db.insert(transportRoutePresets).values({ ...values, createdBy: user.id });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km` });
+    return { success: true };
+  }),
+
   listTrips: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema.optional() })).query(async ({ ctx, input }) => {
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -1451,13 +1496,28 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
     if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态" });
-    if (Boolean(input.loadSiteId) !== Boolean(input.unloadSiteId)) throw new TRPCError({ code: "BAD_REQUEST", message: "运输票据必须同时选择装土点和卸土点" });
+    let loadSiteId = input.loadSiteId ?? null;
+    let unloadSiteId = input.unloadSiteId ?? null;
+    let freightRuleId = input.freightRuleId;
+    let actualDistanceKm = input.actualDistanceKm;
+    let routePreset: typeof transportRoutePresets.$inferSelect | null = null;
+    if (input.routePresetId) {
+      const [preset] = await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, input.routePresetId)).limit(1);
+      if (!preset || preset.projectId !== input.projectId || preset.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "选择的运输路线不存在、已停用或不属于当前项目" });
+      routePreset = preset;
+      loadSiteId = preset.loadSiteId;
+      unloadSiteId = preset.unloadSiteId;
+      freightRuleId = preset.freightRuleId;
+      actualDistanceKm = Number(preset.presetDistanceKm);
+    }
+    if (!freightRuleId || actualDistanceKm === undefined || actualDistanceKm === null) throw new TRPCError({ code: "BAD_REQUEST", message: "请先配置有效运输路线，或提供有效运价和实际里程" });
+    if (Boolean(loadSiteId) !== Boolean(unloadSiteId)) throw new TRPCError({ code: "BAD_REQUEST", message: "运输票据必须同时选择装土点和卸土点" });
     let loadSite: typeof transportSites.$inferSelect | null = null;
     let unloadSite: typeof transportSites.$inferSelect | null = null;
-    if (input.loadSiteId && input.unloadSiteId) {
+    if (loadSiteId && unloadSiteId) {
       [loadSite, unloadSite] = await Promise.all([
-        db.select().from(transportSites).where(eq(transportSites.id, input.loadSiteId)).limit(1).then(rows => rows[0] ?? null),
-        db.select().from(transportSites).where(eq(transportSites.id, input.unloadSiteId)).limit(1).then(rows => rows[0] ?? null),
+        db.select().from(transportSites).where(eq(transportSites.id, loadSiteId)).limit(1).then(rows => rows[0] ?? null),
+        db.select().from(transportSites).where(eq(transportSites.id, unloadSiteId)).limit(1).then(rows => rows[0] ?? null),
       ]);
       if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "装土点不存在、已停用或不属于当前项目" });
       if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土点不存在、已停用或不属于当前项目" });
@@ -1469,7 +1529,7 @@ export const transportRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "现场影像不存在或不属于当前项目，不能关联到运输趟次" });
       }
     }
-    const [rule] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, input.freightRuleId)).limit(1);
+    const [rule] = await db.select().from(freightRateRules).where(eq(freightRateRules.id, freightRuleId)).limit(1);
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "未找到当前项目下可用的生效运价规则" });
     const tripStart = new Date(input.startAt);
     const ruleStart = new Date(rule.effectiveFrom);
@@ -1479,28 +1539,27 @@ export const transportRouter = router({
     }
     let theoreticalVolume: number;
     try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
-    const volume = input.volumeCubicMeters ?? theoreticalVolume;
-    if (volume > theoreticalVolume * 1.5) throw new TRPCError({ code: "BAD_REQUEST", message: "申报方量超过车辆理论方量上限，请核对货厢尺寸或装载系数" });
+    const volume = theoreticalVolume;
     const settlementQuantity = rule.settlementUnit === "cubic_meter" ? volume : rule.settlementUnit === "ton" ? input.weightTons : 1;
     if (!settlementQuantity || settlementQuantity <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: rule.settlementUnit === "ton" ? "按吨结算必须填写有效载重" : "请填写有效结算数量" });
     let price;
     try {
-      price = calculateTieredFreightAmount({ actualDistanceKm: input.actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
+      price = calculateTieredFreightAmount({ actualDistanceKm, startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity });
     } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
     if (input.invoiceMode === "plate_photo" && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票必须关联现场直拍的车牌水印照片" });
-    const routeSnapshot = { source: "mobile", invoiceMode: input.invoiceMode, settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, platePhotoEvidenceId: input.invoiceMode === "plate_photo" ? input.evidenceId ?? null : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
+    const routeSnapshot = { source: "mobile", routePresetId: routePreset?.id ?? null, invoiceMode: input.invoiceMode, settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, platePhotoEvidenceId: input.invoiceMode === "plate_photo" ? input.evidenceId ?? null : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
     await db.insert(transportTrips).values({
       tripNo,
       vehicleId: input.vehicleId,
       projectId: input.projectId,
-      freightRuleId: input.freightRuleId,
+      freightRuleId,
       invoiceMode: input.invoiceMode,
-      loadSiteId: input.loadSiteId ?? null,
-      unloadSiteId: input.unloadSiteId ?? null,
+      loadSiteId,
+      unloadSiteId,
       startAt: tripStart,
       endAt: input.endAt ? new Date(input.endAt) : null,
-      actualDistanceKm: String(input.actualDistanceKm),
+      actualDistanceKm: String(actualDistanceKm),
       volumeCubicMeters: String(volume),
       weightTons: input.weightTons === null || input.weightTons === undefined ? null : String(input.weightTons),
       calculatedUnitPrice: String(price.unitPrice),
@@ -1516,7 +1575,7 @@ export const transportRouter = router({
     if (input.invoiceMode === "plate_photo") {
       void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_plate_photo_ticket_submitted", targetType: "transport_trip", targetId: tripNo, title: "拍照车牌运输票据待核验", content: `车辆 ${vehicle.plateNo} 的车牌直拍运输票据已提交，待核验后进入结算流程。`, deepLink: "/mobile/transport" }).catch(() => undefined);
     }
-    const anomalies = calculateTransportAnomalies({ evidenceId: input.evidenceId ?? null, startAt: tripStart, endAt: input.endAt ? new Date(input.endAt) : null, actualDistanceKm: String(input.actualDistanceKm), volumeCubicMeters: String(volume), routeSnapshot });
+    const anomalies = calculateTransportAnomalies({ evidenceId: input.evidenceId ?? null, startAt: tripStart, endAt: input.endAt ? new Date(input.endAt) : null, actualDistanceKm: String(actualDistanceKm), volumeCubicMeters: String(volume), routeSnapshot });
     return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, anomalies };
   }),
 
