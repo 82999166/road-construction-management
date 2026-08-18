@@ -330,6 +330,13 @@
       "when": 1787055403398,
       "tag": "0046_safe_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1787063533160,
+      "tag": "0047_cold_angel",
+      "breakpoints": true
     }
   ]
 }

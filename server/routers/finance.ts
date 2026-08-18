@@ -67,12 +67,25 @@ function createBusinessNo(prefix: string) {
 
 const SMALL_DIRECT_PURCHASE_LIMIT_KEY = "PURCHASING_SMALL_DIRECT_LIMIT";
 const DEFAULT_SMALL_DIRECT_PURCHASE_LIMIT = 500;
+const PURCHASE_REQUIRES_SUPERVISOR_APPROVAL_KEY = "PURCHASING_REQUIRES_SUPERVISOR_APPROVAL";
 
 /** 小额免申请阈值仅从已发布后台参数读取；配置缺失时采用明确的审计默认值 500 元。 */
 async function getSmallDirectPurchaseLimit(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
   const [setting] = await db.select({ valueJson: systemSettings.valueJson }).from(systemSettings).where(and(eq(systemSettings.settingKey, SMALL_DIRECT_PURCHASE_LIMIT_KEY), eq(systemSettings.status, "published"))).limit(1);
   const value = Number(setting?.valueJson);
   return Number.isFinite(value) && value > 0 && value <= 100_000 ? roundMoney(value) : DEFAULT_SMALL_DIRECT_PURCHASE_LIMIT;
+}
+
+/** 审核开关只读取已发布后台配置；配置缺失时保持需要主管确认的审计默认值。 */
+async function getPurchaseRequiresSupervisorApproval(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
+  const [setting] = await db.select({ valueJson: systemSettings.valueJson }).from(systemSettings).where(and(eq(systemSettings.settingKey, PURCHASE_REQUIRES_SUPERVISOR_APPROVAL_KEY), eq(systemSettings.status, "published"))).limit(1);
+  if (!setting?.valueJson) return true;
+  try {
+    const parsed = JSON.parse(setting.valueJson) as { enabled?: unknown } | boolean;
+    return typeof parsed === "boolean" ? parsed : parsed.enabled !== false;
+  } catch {
+    return setting.valueJson !== "false";
+  }
 }
 
 /** OCR 始终仅作辅助；落单时保留截断摘要以便复核，不把模型字段视为采购事实。 */
@@ -253,7 +266,10 @@ const smallDirectPurchaseInput = z.object({
   categoryId: z.number().int().positive(),
   itemDescription: z.string().trim().min(2, "请填写小额物资名称或说明").max(500),
   supplierId: z.number().int().positive().nullable().optional(),
-  amount: moneySchema.refine(value => value > 0, "金额必须大于 0"),
+  quantity: z.number().gt(0, "数量必须大于 0").max(999999999.999).optional(),
+  unitPrice: moneySchema.optional(),
+  /** 兼容既有客户端；新清单录入优先使用数量乘单价计算金额。 */
+  amount: moneySchema.refine(value => value > 0, "金额必须大于 0").optional(),
   orderedAt: isoDateTimeSchema,
   evidenceId: z.number().int().positive(),
 });
@@ -544,15 +560,17 @@ export const purchasingRouter = router({
     }));
   }),
 
-  /** 小额物资不走申请单，但必须拍照/OCR 后由人工补全；创建后仍进入主管确认状态。 */
+  /** 小额物资以清单水印影像存档；金额由数量乘单价计算，并可按后台开关直接入账。 */
   createSmallDirectOrder: protectedProcedure.input(smallDirectPurchaseInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     await assertPurchaseAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const amount = input.quantity !== undefined && input.unitPrice !== undefined ? roundMoney(input.quantity * input.unitPrice) : input.amount;
+    if (!amount || amount <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "请填写数量和单价，或提供有效金额" });
     const limit = await getSmallDirectPurchaseLimit(db);
-    if (roundMoney(input.amount) > limit) throw new TRPCError({ code: "BAD_REQUEST", message: `小额免申请采购金额不得超过 ¥${limit.toFixed(2)}，请先提交采购申请` });
+    if (amount > limit) throw new TRPCError({ code: "BAD_REQUEST", message: `小额免申请采购金额不得超过 ¥${limit.toFixed(2)}，请先提交采购申请` });
     const [category] = await db.select({ id: purchaseCategories.id }).from(purchaseCategories).where(and(eq(purchaseCategories.id, input.categoryId), eq(purchaseCategories.status, "active"))).limit(1);
     if (!category) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的固定采购类别" });
     const [evidence] = await db.select({ id: evidenceRecords.id, sourceType: evidenceRecords.sourceType, ocrResultJson: evidenceRecords.ocrResultJson }).from(evidenceRecords).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
@@ -561,11 +579,12 @@ export const purchasingRouter = router({
       const [supplier] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1);
       if (!supplier || supplier.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效供应商" });
     }
-    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, evidenceId: input.evidenceId, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(roundMoney(input.amount)), orderedAt: new Date(input.orderedAt), status: "draft", createdBy: user.id }).$returningId();
+    const requiresSupervisorApproval = await getPurchaseRequiresSupervisorApproval(db);
+    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
     const orderId = Number(created?.id);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_small_direct_order", targetType: "purchase_order", targetId: String(orderId), summary: `创建小额免申请采购订单：¥${roundMoney(input.amount)}，阈值 ¥${limit.toFixed(2)}，已关联影像 #${input.evidenceId}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "小额采购订单待主管确认", content: `金额 ¥${roundMoney(input.amount).toFixed(2)}，已附现场影像与 OCR 辅助信息，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
-    return { success: true, id: orderId, limit };
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_small_direct_order", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "配置关闭后直接入账"}，已关联水印影像 #${input.evidenceId}` });
+    if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}，已附清单水印影像，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
+    return { success: true, id: orderId, limit, requiresSupervisorApproval, amount };
   }),
 
   /** 返回由服务端汇总的采购订单结算明细和余额，禁止移动端自行累计金额。 */

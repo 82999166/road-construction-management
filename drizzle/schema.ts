@@ -1411,6 +1411,9 @@ export const purchaseOrders = mysqlTable(
     procurementMode: mysqlEnum("procurementMode", ["request", "small_direct"]).default("request").notNull(),
     categoryId: int("categoryId"),
     itemDescription: varchar("itemDescription", { length: 500 }),
+    /** 清单采购数量与单价由服务端计算金额快照；历史订单允许为空以兼容。 */
+    quantity: decimal("quantity", { precision: 16, scale: 3 }),
+    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     ocrSummary: varchar("ocrSummary", { length: 500 }),
     supplierId: int("supplierId"),
