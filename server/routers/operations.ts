@@ -1448,7 +1448,6 @@ export const transportRouter = router({
   saveRoutePreset: protectedProcedure.input(transportRoutePresetInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertTransportAccess(ctx);
-    assertCanManageTransportResources(roleCodes);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
