@@ -8,6 +8,7 @@ const runtime = vi.hoisted(() => ({
   attendance: vi.fn(),
   checkInStatus: vi.fn(),
   payroll: vi.fn(),
+  dailyWages: vi.fn(),
   summary: vi.fn(),
   certificates: vi.fn(),
   workbench: vi.fn(),
@@ -49,6 +50,10 @@ vi.mock("@/lib/trpc", () => ({
         approve: { useMutation: runtime.mutation },
         pay: { useMutation: runtime.mutation },
         void: { useMutation: runtime.mutation },
+      },
+      dailyWage: {
+        list: { useQuery: runtime.dailyWages },
+        save: { useMutation: runtime.mutation },
       },
       certificates: {
         list: { useQuery: runtime.certificates },
@@ -108,6 +113,7 @@ function prepareAuthorizedLaborQueries() {
     actualAmount: "8500.00",
     paymentReference: null,
   }] });
+  runtime.dailyWages.mockReturnValue({ ...emptyQuery, data: [] });
   runtime.summary.mockReturnValue({ ...emptyQuery, data: {
     activeWorkers: 1,
     attendanceDays: 3,

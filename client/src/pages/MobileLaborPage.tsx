@@ -200,6 +200,7 @@ export default function MobileLaborPage() {
   const [payrollDialogOpen, setPayrollDialogOpen] = useState(false);
   const [payrollPaymentDialogOpen, setPayrollPaymentDialogOpen] = useState(false);
   const [payrollVoidDialogOpen, setPayrollVoidDialogOpen] = useState(false);
+  const [dailyWageDialogOpen, setDailyWageDialogOpen] = useState(false);
   const [certificateDialogOpen, setCertificateDialogOpen] = useState(false);
   const [helpDialogOpen, setHelpDialogOpen] = useState(false);
   const [editingWorkerId, setEditingWorkerId] = useState<number | null>(null);
@@ -208,6 +209,7 @@ export default function MobileLaborPage() {
   const [payrollDraft, setPayrollDraft] = useState({ workerId: "", payableAmount: "", deductionAmount: "0" });
   const [payrollPaymentDraft, setPayrollPaymentDraft] = useState({ id: 0, paymentReference: "" });
   const [payrollVoidDraft, setPayrollVoidDraft] = useState({ id: 0, reason: "" });
+  const [dailyWageDraft, setDailyWageDraft] = useState({ workerId: "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" });
   const [certificateWorker, setCertificateWorker] = useState<{ id: number; realName: string } | null>(null);
   const [certificateName, setCertificateName] = useState("");
   const [certificateFile, setCertificateFile] = useState<File | null>(null);
@@ -224,12 +226,14 @@ export default function MobileLaborPage() {
   const workersInput = useMemo(() => ({ projectId: selectedProjectId, includeLeft: true }), [selectedProjectId]);
   const attendanceInput = useMemo(() => ({ projectId: selectedProjectId, startDate: `${period}-01`, endDate: getPeriodEndDate(period) }), [period, selectedProjectId]);
   const payrollInput = useMemo(() => ({ projectId: selectedProjectId, period }), [period, selectedProjectId]);
+  const dailyWageInput = useMemo(() => ({ projectId: selectedProjectId, settlementDate: getTodayText() }), [selectedProjectId]);
   const summaryInput = useMemo(() => ({ projectId: selectedProjectId, period }), [period, selectedProjectId]);
   const checkInInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const certificateInput = useMemo(() => ({ projectId: selectedProjectId, workerId: certificateWorker?.id ?? 0 }), [certificateWorker?.id, selectedProjectId]);
   const workers = trpc.labor.listWorkers.useQuery(workersInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const attendance = trpc.labor.attendance.list.useQuery(attendanceInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const payroll = trpc.labor.payroll.list.useQuery(payrollInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+  const dailyWages = trpc.labor.dailyWage.list.useQuery(dailyWageInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.labor.summary.useQuery(summaryInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const certificates = trpc.labor.certificates.list.useQuery(certificateInput, { enabled: isAuthenticated && certificateDialogOpen && Boolean(selectedProjectId) && Boolean(certificateWorker?.id), retry: false });
   const workbench = trpc.mobile.workbench.useQuery(undefined, { enabled: isAuthenticated, retry: false });
@@ -300,6 +304,15 @@ export default function MobileLaborPage() {
       setPayrollVoidDialogOpen(false);
       setPayrollVoidDraft({ id: 0, reason: "" });
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const saveDailyWage = trpc.labor.dailyWage.save.useMutation({
+    onSuccess: async () => {
+      toast.success("临时日结草稿已保存");
+      setDailyWageDialogOpen(false);
+      setDailyWageDraft({ workerId: "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" });
+      await utils.labor.dailyWage.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -432,6 +445,12 @@ export default function MobileLaborPage() {
     });
   }
 
+  function submitDailyWageForm() {
+    if (!selectedProjectId || !dailyWageDraft.workerId) return toast.error("请选择临时日结人员");
+    if (!dailyWageDraft.payableAmount) return toast.error("请填写应发金额");
+    saveDailyWage.mutate({ workerId: Number(dailyWageDraft.workerId), projectId: selectedProjectId, settlementDate: dailyWageDraft.settlementDate, payableAmount: Number(dailyWageDraft.payableAmount), deductionAmount: Number(dailyWageDraft.deductionAmount || 0), remarks: dailyWageDraft.remarks.trim() || null });
+  }
+
   /** 上传前在客户端做文件类型、容量与名称体验校验；服务端仍会执行同等强制校验。 */
   async function submitCertificateForm() {
     if (!selectedProjectId || !certificateWorker) return toast.error("请先选择人员档案");
@@ -531,6 +550,7 @@ export default function MobileLaborPage() {
 
               <TabsContent value="payroll" className="mt-4 space-y-3">
                 <div className="flex items-center justify-between print:hidden"><div><h2 className="text-base font-semibold">{period} 工资条</h2><p className="mt-0.5 text-xs text-[#8f7566]">会计审核后方可进入发放流程</p></div><Button size="sm" className="bg-[#a85f30] text-white hover:bg-[#8e4b22]" onClick={() => { setPayrollDraft({ workerId: workers.data?.find(item => item.attendanceStatus === "active")?.id ? String(workers.data.find(item => item.attendanceStatus === "active")!.id) : "", payableAmount: "", deductionAmount: "0" }); setPayrollDialogOpen(true); }}><Plus className="mr-1 h-4 w-4" />核算工资</Button></div>
+                <Card className="border border-[#ead2b8] bg-[#fff8ef] shadow-none"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[#6d3421]">临时日结</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">劳资负责人或项目经理录入；会计/财务审核并登记实际付款日期后最终结算。</p></div><Button size="sm" className="shrink-0 bg-[#6d3421] hover:bg-[#542516]" onClick={() => { setDailyWageDraft({ workerId: workers.data?.find(item => item.workerCategory === "temporary_daily" && item.attendanceStatus !== "left")?.id ? String(workers.data.find(item => item.workerCategory === "temporary_daily" && item.attendanceStatus !== "left")!.id) : "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" }); setDailyWageDialogOpen(true); }}><Plus className="mr-1 h-4 w-4" />录入日结</Button></div><div className="mt-3 space-y-2">{!dailyWages.data?.length && !dailyWages.isLoading ? <p className="rounded-lg bg-white px-3 py-2 text-xs text-[#8f7566]">今日暂无临时日结记录。</p> : null}{dailyWages.data?.map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-xs"><div><p className="font-medium text-[#5c3422]">{item.workerName}{item.teamName ? ` · ${item.teamName}` : ""}</p><p className="mt-1 text-[#8f7566]">应发 {formatMoney(item.payableAmount)} · 扣款 {formatMoney(item.deductionAmount)}</p></div><span className="rounded-full bg-[#f6eadb] px-2 py-1 text-[#81512e]">{item.status === "draft" ? "草稿" : item.status === "reviewing" ? "待审核" : item.status === "approved" ? "已审核" : "已付款"}</span></div>)}</div></CardContent></Card>
                 {!payroll.data?.length && !payroll.isLoading ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">当前结算期间尚未生成工资条。</div> : null}
                 {payroll.data?.map(statement => {
                   const status = getPayrollStatus(statement.status);
@@ -575,6 +595,10 @@ export default function MobileLaborPage() {
 
       <Dialog open={attendanceDialogOpen} onOpenChange={setAttendanceDialogOpen}>
         <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>录入考勤</DialogTitle><DialogDescription>同一人员同一天的未锁定考勤将被更新，不会产生重复记录。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>劳务人员</Label><Select value={attendanceDraft.workerId} onValueChange={value => setAttendanceDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择在场人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.attendanceStatus === "active").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-3 gap-3"><div className="grid gap-1.5"><Label htmlFor="attendance-date">日期</Label><Input id="attendance-date" type="date" value={attendanceDraft.attendanceDate} onChange={event => setAttendanceDraft(current => ({ ...current, attendanceDate: event.target.value }))} /></div><div className="grid gap-1.5"><Label htmlFor="work-hours">正常工时</Label><Input id="work-hours" type="number" min="0" max="24" step="0.5" value={attendanceDraft.workHours} onChange={event => setAttendanceDraft(current => ({ ...current, workHours: event.target.value }))} /></div><div className="grid gap-1.5"><Label htmlFor="overtime-hours">加班工时</Label><Input id="overtime-hours" type="number" min="0" max="24" step="0.5" value={attendanceDraft.overtimeHours} onChange={event => setAttendanceDraft(current => ({ ...current, overtimeHours: event.target.value }))} /></div></div><div className="grid gap-1.5"><Label htmlFor="attendance-note">备注</Label><Textarea id="attendance-note" maxLength={500} placeholder="如请假、调休、异常工时等补充说明（可选）" value={attendanceDraft.note} onChange={event => setAttendanceDraft(current => ({ ...current, note: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setAttendanceDialogOpen(false)}>取消</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={saveAttendance.isPending} onClick={submitAttendanceForm}>{saveAttendance.isPending ? "保存中…" : "确认考勤"}</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      <Dialog open={dailyWageDialogOpen} onOpenChange={setDailyWageDialogOpen}>
+        <DialogContent className="max-h-[88dvh] overflow-y-auto border-[#ead9c8] bg-[#fffaf2] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:max-w-md"><DialogHeader><DialogTitle>录入临时日结</DialogTitle><DialogDescription>当天录入后提交会计/财务审核；审核通过不等于付款，实际付款日期登记后才完成结算。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>临时日结人员</Label><Select value={dailyWageDraft.workerId} onValueChange={value => setDailyWageDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择已授权项目下临时人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.workerCategory === "temporary_daily" && worker.attendanceStatus !== "left").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-3 gap-3"><div className="grid gap-1.5"><Label>日结日期</Label><Input type="date" value={dailyWageDraft.settlementDate} onChange={event => setDailyWageDraft(current => ({ ...current, settlementDate: event.target.value }))} /></div><div className="grid gap-1.5"><Label>应发金额</Label><Input inputMode="decimal" value={dailyWageDraft.payableAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, payableAmount: event.target.value }))} /></div><div className="grid gap-1.5"><Label>扣款</Label><Input inputMode="decimal" value={dailyWageDraft.deductionAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, deductionAmount: event.target.value }))} /></div></div><div className="grid gap-1.5"><Label>备注（可选）</Label><Textarea maxLength={500} value={dailyWageDraft.remarks} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setDailyWageDialogOpen(false)}>取消</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={saveDailyWage.isPending} onClick={submitDailyWageForm}>{saveDailyWage.isPending ? "保存中…" : "保存日结草稿"}</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={payrollDialogOpen} onOpenChange={setPayrollDialogOpen}>
