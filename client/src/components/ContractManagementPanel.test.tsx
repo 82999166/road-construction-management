@@ -11,5 +11,7 @@ describe("外包合同管理入口与草案", () => {
     expect(source).toContain("渣土车运输合同草案");
     expect(source).toContain("工程机械租赁合同草案");
     expect(source).toContain("签署前请由项目法务或律师");
+    expect(source).toContain("FullContractTemplates");
+    expect(source).toContain("onApply={applyFullTemplate}");
   });
 });
