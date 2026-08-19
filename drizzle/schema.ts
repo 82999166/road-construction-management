@@ -217,7 +217,7 @@ export const departmentBusinessScopes = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     organizationId: int("organizationId").notNull(),
-    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"]).notNull(),
+    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "EVIDENCE"]).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     configuredBy: int("configuredBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, outsourceContracts } from "../../drizzle/schema";
-import { assertProjectInCurrentScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertRoleOperationPermission, getEffectiveRoleCodes, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 
@@ -15,10 +15,14 @@ function createContractNo() {
   return `CT-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
-async function assertContractAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+async function assertContractAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0], action: BusinessOperationAction = "read") {
+  await assertDepartmentBusinessAccess(ctx, "CONTRACT");
+  const detailedPermission = await assertRoleOperationPermission(ctx, "CONTRACT", action);
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "TRANSPORT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+  // 管理员若已为非标准岗位配置了合同详细操作权限，应以该显式授权为准，不能被历史岗位白名单误拦截。
+  const hasExplicitGrantedOperation = detailedPermission.hasDetailedPermissions && detailedPermission.allowed;
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role)) && !hasExplicitGrantedOperation) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获外包合同管理授权" });
   }
   return roleCodes;
@@ -51,12 +55,12 @@ const contractInput = z.object({
 
 export const contractRouter = router({
   capabilities: protectedProcedure.query(async ({ ctx }) => {
-    const roles = await assertContractAccess(ctx);
+    const roles = await assertContractAccess(ctx, "read");
     return { canMaintain: canMaintain(roles), canClose: canClose(roles) };
   }),
 
   list: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), status: contractStatus.optional(), contractType: contractType.optional() })).query(async ({ ctx, input }) => {
-    await assertContractAccess(ctx);
+    await assertContractAccess(ctx, "read");
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
@@ -68,7 +72,7 @@ export const contractRouter = router({
 
   save: protectedProcedure.input(contractInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    const roles = await assertContractAccess(ctx);
+    const roles = await assertContractAccess(ctx, input.id ? "edit" : "create");
     if (!canMaintain(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无外包合同维护权限" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     if (input.startDate && input.endDate && input.endDate < input.startDate) throw new TRPCError({ code: "BAD_REQUEST", message: "合同结束日期不得早于开始日期" });
@@ -94,7 +98,8 @@ export const contractRouter = router({
 
   transition: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), targetStatus: contractStatus })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    const roles = await assertContractAccess(ctx);
+    const transitionAction: BusinessOperationAction = ["closed", "void"].includes(input.targetStatus) ? "void" : input.targetStatus === "active" ? "review" : "edit";
+    const roles = await assertContractAccess(ctx, transitionAction);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });

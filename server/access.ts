@@ -19,6 +19,7 @@ const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule
   TRANSPORT: "transport",
   PURCHASING: "purchase",
   MEASUREMENT: "measurement",
+  CONTRACT: "contract",
   FINANCE: "finance",
   EVIDENCE: "evidence",
 };

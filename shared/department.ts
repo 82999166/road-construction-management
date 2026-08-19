@@ -12,6 +12,7 @@ export const DEPARTMENT_BUSINESS_MODULES = [
   { code: "TRANSPORT", name: "运输管理", description: "车辆、运价、趟次与运输结算" },
   { code: "PURCHASING", name: "采购仓储", description: "采购申请、订单、收货、库存与结算" },
   { code: "MEASUREMENT", name: "计量结算", description: "计量申报、审核、结算与付款" },
+  { code: "CONTRACT", name: "合同管理", description: "外包合同台账、合同草案、预览与签署管理" },
   { code: "FINANCE", name: "财务成本", description: "资金收支、凭证、成本与财务汇总" },
   { code: "EVIDENCE", name: "水印取证", description: "现场影像、水印与 OCR 取证" },
 ] as const;
