@@ -14,6 +14,7 @@ vi.mock("./access", async importOriginal => {
   };
 });
 vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./services/supervisorReview", () => ({ isSupervisorReviewAutoApprove: vi.fn() }));
 vi.mock("./routers/messages", () => ({ createInAppMessage: vi.fn().mockResolvedValue({ created: true }) }));
 vi.mock("./storage", () => ({ storageGetSignedUrl: vi.fn().mockResolvedValue("https://signed.example/evidence-photo.jpg") }));
 
@@ -21,6 +22,7 @@ import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAcces
 import { getDb } from "./db";
 import { constructionRouter } from "./routers/construction";
 import { notifyOfficialAccountBusinessEventSafely } from "./services/businessNotifier";
+import { isSupervisorReviewAutoApprove } from "./services/supervisorReview";
 import { createInAppMessage } from "./routers/messages";
 import { storageGetSignedUrl } from "./storage";
 
@@ -61,6 +63,7 @@ describe("施工日报 tRPC 路由", () => {
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CONSTRUCTION_MANAGER"]);
     vi.mocked(assertExistingBusinessRecordChangeAccess).mockResolvedValue(createAuthContext().user!);
+    vi.mocked(isSupervisorReviewAutoApprove).mockResolvedValue(false);
   });
 
   it("施工日报列表在查询前强制校验施工模块权限与项目范围", async () => {
@@ -174,10 +177,27 @@ describe("施工日报 tRPC 路由", () => {
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 93, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 1 });
+    await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 93, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 1, autoApproved: false });
     expect(createInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 2, eventCode: "construction_daily_report_review_requested" }));
     expect(notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ userId: 2, projectId: 10, eventCode: "construction_daily_report_review_requested" }));
     expect(updateWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it("统一审核开关开启时，日报直接自动归档并记录为自动审核，不查询主管名单", async () => {
+    vi.mocked(isSupervisorReviewAutoApprove).mockResolvedValue(true);
+    const auditValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 95, projectId: 10, status: "draft", createdBy: 1 }]) })) })) })),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 95, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 0, autoApproved: true });
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "locked", reviewedBy: 1 }));
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "auto_approve_daily_report_by_supervisor_setting" }));
+    expect(createInAppMessage).not.toHaveBeenCalled();
   });
 
   it("项目主管填写回复确认后会直接归档并通知填报人", async () => {

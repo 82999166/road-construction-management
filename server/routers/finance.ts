@@ -29,6 +29,7 @@ import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSupe
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
 import { storageGet, storagePut } from "../storage";
 
 /** 期间一律采用 YYYY-MM，防止浏览器时区导致项目月报跨月统计。 */
@@ -538,24 +539,26 @@ export const purchasingRouter = router({
     } catch (error) {
       throwDomainAsBadRequest(error);
     }
-    if (["approved", "rejected", "closed"].includes(input.targetStatus) && !canApprovePurchase(roleCodes)) {
+    const autoApprove = input.targetStatus === "submitted" && await isSupervisorReviewAutoApprove(db);
+    const effectiveTargetStatus = autoApprove ? "approved" : input.targetStatus;
+    if (["approved", "rejected", "closed"].includes(effectiveTargetStatus) && !autoApprove && !canApprovePurchase(roleCodes)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无采购申请审批或关闭权限" });
     }
     if (["stocked", "received"].includes(input.targetStatus) && !canManageInventory(roleCodes)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无收货或入库确认权限" });
     }
     const now = new Date();
-    const patch: Partial<typeof purchaseRequests.$inferInsert> = { status: input.targetStatus };
-    if (input.targetStatus === "approved") { patch.approvedBy = user.id; patch.approvedAt = now; }
-    if (input.targetStatus === "stocked") { patch.stockedBy = user.id; patch.stockedAt = now; }
-    if (input.targetStatus === "closed") patch.closedAt = now;
+    const patch: Partial<typeof purchaseRequests.$inferInsert> = { status: effectiveTargetStatus };
+    if (effectiveTargetStatus === "approved") { patch.approvedBy = user.id; patch.approvedAt = now; }
+    if (effectiveTargetStatus === "stocked") { patch.stockedBy = user.id; patch.stockedAt = now; }
+    if (effectiveTargetStatus === "closed") patch.closedAt = now;
     const updateResult = await db.update(purchaseRequests)
       .set(patch)
       .where(and(eq(purchaseRequests.id, input.id), eq(purchaseRequests.status, request.status)));
     assertConditionalBusinessWrite(updateResult, "采购申请已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: `采购申请状态变更为：${input.targetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${input.targetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: `采购申请已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
-    return { success: true };
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: autoApprove ? "auto_approve_purchase_request_by_supervisor_setting" : "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: autoApprove ? "统一上级主管审核开关已开启：采购申请自动审核通过" : `采购申请状态变更为：${effectiveTargetStatus}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${effectiveTargetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: autoApprove ? "采购申请已自动审核通过" : `采购申请已${effectiveTargetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
+    return { success: true, status: effectiveTargetStatus, autoApproved: autoApprove };
   }),
 
   listOrders: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
@@ -629,10 +632,10 @@ export const purchasingRouter = router({
       const [supplier] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1);
       if (!supplier || supplier.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效供应商" });
     }
-    const requiresSupervisorApproval = await getPurchaseRequiresSupervisorApproval(db);
+    const requiresSupervisorApproval = !(await isSupervisorReviewAutoApprove(db));
     const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
     const orderId = Number(created?.id);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_small_direct_order", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "配置关闭后直接入账"}，已关联单据照片 #${input.evidenceId}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: requiresSupervisorApproval ? "create_small_direct_order" : "auto_approve_small_direct_order_by_supervisor_setting", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}` });
     if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}（${isManualAmount ? "手动录入" : "自动计算"}），已附采购单据照片，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, id: orderId, limit, requiresSupervisorApproval, amount, amountSource: isManualAmount ? "manual" : "auto" };
   }),

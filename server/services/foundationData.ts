@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { PURCHASE_CATEGORY_CATALOG } from "../../shared/domain";
-import { purchaseCategories, rolePermissions, systemPermissions, systemRoles } from "../../drizzle/schema";
+import { purchaseCategories, rolePermissions, systemPermissions, systemRoles, systemSettings } from "../../drizzle/schema";
+import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "./supervisorReview";
 import type { getDb } from "../db";
 
 /**
@@ -131,10 +132,11 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
    * 基础数据会在多个后台路由上被幂等调用。不能在每次请求中按种子逐条查库，否则云数据库往返会把概览请求放大到十余秒。
    * 先并行读取当前字典，再仅批量插入缺失项；不更新已有记录，保留管理员在生产环境的配置。
    */
-  const [existingRoleRows, existingPermissionRows, existingCategories] = await Promise.all([
+  const [existingRoleRows, existingPermissionRows, existingCategories, existingSupervisorReviewSetting] = await Promise.all([
     db.select({ id: systemRoles.id, code: systemRoles.code }).from(systemRoles),
     db.select({ id: systemPermissions.id, code: systemPermissions.code }).from(systemPermissions),
     db.select({ id: purchaseCategories.id }).from(purchaseCategories).limit(1),
+    db.select({ id: systemSettings.id }).from(systemSettings).where(eq(systemSettings.settingKey, SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY)).limit(1),
   ]);
   const existingRoleCodes = new Set(existingRoleRows.map(item => item.code));
   const existingPermissionCodes = new Set(existingPermissionRows.map(item => item.code));
@@ -149,6 +151,9 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
     existingCategories.length === 0
       ? db.insert(purchaseCategories).values(PURCHASE_CATEGORY_CATALOG.map(item => ({ ...item, isFixed: true, status: "active" as const })))
       : Promise.resolve(),
+    existingSupervisorReviewSetting.length
+      ? Promise.resolve()
+      : db.insert(systemSettings).values({ category: "业务审批", settingKey: SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY, displayName: "上级主管审核自动通过", valueJson: "false", valuePreview: "关闭：需上级主管人工审核", isSensitive: false, status: "published", version: 1, publishedAt: new Date(), remarks: "开启后仅自动通过配置为上级主管审核的业务节点；会计审核、付款、收入确认和终态锁定不受影响。" }),
   ]);
 
   // 新安装时需要在插入后读取主键；已有系统则直接复用第一轮查询结果，避免额外往返。

@@ -942,6 +942,8 @@ export default function AdminPage() {
   // 默认选中第一条配置，方便管理员直接查看其发布历史和回滚入口。
   /** 主清单隐藏停用项和当前无可下发模板的手工字段；历史、审计和服务端兼容读取不受影响。 */
   const allSettings = settings.data ?? [];
+  const supervisorReviewAutoApproveSetting = allSettings.find(item => item.settingKey === "SUPERVISOR_REVIEW_AUTO_APPROVE" && item.status === "published");
+  const supervisorReviewAutoApproveEnabled = supervisorReviewAutoApproveSetting?.valueJson === "true";
   const templateSettingKeys = new Set(["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"]);
   const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey) && !OFFICIAL_ACCOUNT_BASE_SETTING_KEYS.has(item.settingKey));
   const publishedOfficialSettingKeys = new Set(allSettings.filter(item => item.status === "published").map(item => item.settingKey));
@@ -1439,6 +1441,13 @@ export default function AdminPage() {
     onSuccess: async result => {
       toast.success(`工程水印模板已发布为 v${result.version}，后续现场取证将使用新样式`);
       await Promise.all([evidenceWatermarkTemplate.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const setSupervisorReviewAutoApprove = trpc.admin.settings.setSupervisorReviewAutoApprove.useMutation({
+    onSuccess: async result => {
+      toast.success(result.enabled ? "已开启：上级主管审核节点将自动通过" : "已关闭：后续上级主管审核需人工办理");
+      await Promise.all([settings.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -2205,6 +2214,13 @@ export default function AdminPage() {
             <div className="flex flex-wrap gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveDailyDigest.isPending} onClick={() => saveDailyDigest.mutate({ enabled: dailyDigestForm.enabled, deliveryHour: Number(dailyDigestForm.deliveryHour), deliveryMinute: Number(dailyDigestForm.deliveryMinute), includeEmptyProjects: dailyDigestForm.includeEmptyProjects })}>{dailyDigestForm.enabled ? "保存并启用站内汇总" : "保存并停用站内汇总"}</Button><Button variant="outline" disabled={!dailyDigestSettings.data?.enabled || runDailyDigestNow.isPending} onClick={() => runDailyDigestNow.mutate({ businessDate: dailyDigestPreviewDate || undefined })}>立即生成所选日期站内汇总</Button></div>
             <div className="grid gap-3 rounded-xl border border-slate-100 p-3 lg:grid-cols-[1fr_180px_auto]"><div><Label>预览项目</Label><Select value={dailyDigestPreviewProjectId || "UNASSIGNED"} onValueChange={value => setDailyDigestPreviewProjectId(value === "UNASSIGNED" ? "" : value)}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{(projects.data ?? []).filter(project => project.status === "active").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div><div><Label>业务日期</Label><Input className="mt-1" type="date" value={dailyDigestPreviewDate} onChange={event => setDailyDigestPreviewDate(event.target.value)} /></div><Button className="self-end" variant="outline" disabled={!dailyDigestPreviewProjectId || dailyDigestPreview.isFetching} onClick={() => dailyDigestPreview.refetch()}>刷新预览</Button></div>
             {dailyDigestPreview.data ? <div className="grid gap-2 rounded-xl bg-[#f7faf9] p-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4"><div><b>施工日报</b><p className="mt-1">{dailyDigestPreview.data.construction.reportCount} 份 · 进度 {dailyDigestPreview.data.construction.averageProgressPercent}%</p></div><div><b>收入 / 开支</b><p className="mt-1">¥{displayMoney(dailyDigestPreview.data.finance.incomeAmount)} / ¥{displayMoney(dailyDigestPreview.data.finance.expenseAmount)}</p></div><div><b>计量申报</b><p className="mt-1">{dailyDigestPreview.data.measurement.claimCount} 笔 · ¥{displayMoney(dailyDigestPreview.data.measurement.declaredAmount)}</p></div><div><b>运输闭环</b><p className="mt-1">{dailyDigestPreview.data.transport.tripCount} 趟 · 装/卸 {dailyDigestPreview.data.transport.loadConfirmedCount}/{dailyDigestPreview.data.transport.unloadConfirmedCount} · 异常 {dailyDigestPreview.data.transport.exceptionTripCount}</p></div></div> : dailyDigestPreviewProjectId && !dailyDigestPreview.isLoading ? <p className="text-xs text-slate-500">选择项目和业务日期后可查看真实聚合结果；预览不会发送通知。</p> : null}
+          </CardContent>
+        </Card>
+        <Card className="border-[#d4e2de] bg-[#f5faf8]">
+          <CardHeader><CardTitle className="text-base">统一上级主管审核</CardTitle><CardDescription>对所有配置为“上级主管审核”的业务统一生效。开启后，施工日报、采购申请和清单采购等主管审核节点会自动通过；关闭后必须由项目上级主管人工审核。会计审核、付款、收入确认、终态锁定和项目权限范围不会被此开关绕过。</CardDescription></CardHeader>
+          <CardContent className="flex flex-wrap items-center justify-between gap-4">
+            <label className="flex items-center gap-3"><Checkbox checked={supervisorReviewAutoApproveEnabled} disabled={setSupervisorReviewAutoApprove.isPending} onCheckedChange={checked => setSupervisorReviewAutoApprove.mutate({ enabled: Boolean(checked) })} /><span><b className="block text-sm text-slate-800">{supervisorReviewAutoApproveEnabled ? "已开启自动通过" : "已关闭，需人工审核"}</b><span className="mt-1 block text-xs text-slate-600">每次切换即时发布，并写入配置版本与审计日志。</span></span></label>
+            <Badge variant="outline" className={supervisorReviewAutoApproveEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{supervisorReviewAutoApproveEnabled ? "自动审核通过" : "人工主管审核"}</Badge>
           </CardContent>
         </Card>
         <Card className="border-[#cbddea] bg-[#f8fbff]">

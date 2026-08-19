@@ -8,6 +8,7 @@ import { getDb } from "../db";
 import { storageGetSignedUrl } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
 import { createInAppMessage } from "./messages";
 
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
@@ -229,13 +230,14 @@ export const constructionRouter = router({
     if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到指定项目下的施工日报" });
     if (existing.createdBy !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "仅日报填报人可以提交主管审核" });
     try { assertConstructionDailyReportStatusTransition(existing.status, "submitted"); } catch (error) { asBadRequest(error); }
-    const supervisors = await getProjectReportSupervisorIds(db, input.projectId, user.id);
-    if (!supervisors.length) throw new TRPCError({ code: "BAD_REQUEST", message: "当前项目未配置有效主管审核人，请联系超级管理员先分配项目主管岗位" });
-    const updateResult = await db.update(constructionDailyReports).set({ status: "submitted" }).where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, "draft")));
+    const autoApprove = await isSupervisorReviewAutoApprove(db);
+    const supervisors = autoApprove ? [] : await getProjectReportSupervisorIds(db, input.projectId, user.id);
+    if (!autoApprove && !supervisors.length) throw new TRPCError({ code: "BAD_REQUEST", message: "当前项目未配置有效主管审核人，请联系超级管理员先分配项目主管岗位" });
+    const updateResult = await db.update(constructionDailyReports).set(autoApprove ? { status: "locked", reviewReply: "系统设置已开启上级主管审核自动通过，日报自动归档。", reviewedBy: user.id, reviewedAt: new Date() } : { status: "submitted" }).where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, "draft")));
     assertConditionalDailyReportWrite(updateResult);
-    await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "submit_daily_report_for_review", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报提交项目主管审核，通知 ${supervisors.length} 位主管` });
-    await notifyReportSupervisors({ projectId: input.projectId, reportId: input.id, supervisorIds: supervisors, eventCode: "construction_daily_report_review_requested", title: "施工日报待您审核", content: "一份施工日报已提交至项目主管审核，请填写回复并确认处理。" });
-    return { success: true, supervisorCount: supervisors.length };
+    await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: autoApprove ? "auto_approve_daily_report_by_supervisor_setting" : "submit_daily_report_for_review", targetType: "construction_daily_report", targetId: String(input.id), summary: autoApprove ? "统一上级主管审核开关已开启：施工日报自动审核通过并归档" : `施工日报提交项目主管审核，通知 ${supervisors.length} 位主管` });
+    if (!autoApprove) await notifyReportSupervisors({ projectId: input.projectId, reportId: input.id, supervisorIds: supervisors, eventCode: "construction_daily_report_review_requested", title: "施工日报待您审核", content: "一份施工日报已提交至项目主管审核，请填写回复并确认处理。" });
+    return { success: true, supervisorCount: supervisors.length, autoApproved: autoApprove };
   }),
 
   /** 项目主管填写审核回复：确认通过即自动归档锁定，退回则回到填报人修改。 */

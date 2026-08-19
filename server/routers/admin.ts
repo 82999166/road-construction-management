@@ -53,6 +53,7 @@ import { ensureFoundationData } from "../services/foundationData";
 import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
+import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
 import { storageGetSignedUrl } from "../storage";
@@ -1760,6 +1761,30 @@ export const adminRouter = router({
       const db = await getDb();
       if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "test_external_ai_configuration", targetType: "external_ai", targetId: "configuration_bundle", summary: `外部 AI API 连接校验通过：${configuration.baseUrl}，模型 ${configuration.model}` });
       return { success: true, message: "已成功连接 AI API 的模型目录端点；未发送任何项目业务数据。" };
+    }),
+    /** 统一控制所有“上级主管审核”业务节点；不替代会计审核、付款、收入确认和终态锁定。 */
+    setSupervisorReviewAutoApprove: protectedProcedure.input(z.object({ enabled: z.boolean() })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY)).limit(1);
+      const value = input.enabled ? "true" : "false";
+      const displayName = "上级主管审核自动通过";
+      const remarks = "开启后仅自动通过配置为上级主管审核的业务节点；会计审核、付款、收入确认和终态锁定仍按原状态机与职责分离规则办理。";
+      await db.transaction(async tx => {
+        if (existing) {
+          const nextVersion = existing.version + 1;
+          const writeResult = await tx.update(systemSettings).set({ category: "业务审批", displayName, valueJson: value, valuePreview: input.enabled ? "开启：上级主管审核节点自动通过" : "关闭：需上级主管人工审核", isSensitive: false, status: "published", version: nextVersion, publishedAt: new Date(), remarks, updatedBy: admin.id }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+          assertVersionedSettingWrite(writeResult);
+          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify({ category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks }) });
+        } else {
+          const result = await tx.insert(systemSettings).values({ category: "业务审批", settingKey: SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY, displayName, valueJson: value, valuePreview: input.enabled ? "开启：上级主管审核节点自动通过" : "关闭：需上级主管人工审核", isSensitive: false, status: "published", version: 1, publishedAt: new Date(), remarks, updatedBy: admin.id });
+          const settingId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+          if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "set_supervisor_review_auto_approve", targetType: "setting", targetId: SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY, summary: input.enabled ? "开启统一上级主管审核自动通过" : "关闭统一上级主管审核自动通过，后续业务需人工主管审核" });
+      });
+      return { success: true, enabled: input.enabled };
     }),
     saveDraft: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), expectedVersion: z.number().int().positive().optional(), category: z.string().min(2).max(64), settingKey: z.string().regex(/^[A-Z0-9_:.\-]+$/), displayName: z.string().min(2).max(128), value: z.string().max(50000), isSensitive: z.boolean(), remarks: z.string().max(2000).nullable().optional() }))
