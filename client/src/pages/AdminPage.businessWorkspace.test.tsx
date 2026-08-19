@@ -85,6 +85,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
+  it("在权限管理中提供公司管理人员薪资标准的明确入口，并复用受控人员类型筛选", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("公司管理人员薪资标准");
+    expect(source).toContain("进入公司人员薪资设置");
+    expect(source).toContain('type: "management"');
+    expect(source).toContain("不会覆盖已审核或已付款工资");
+  });
+
   it("将所有 CSV 导出统一写入当前筛选范围、导出记录数和生成时间", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
@@ -349,6 +358,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("全选本模块");
     expect(source).toContain("清空</Button>");
     expect(source).toContain("角色一旦配置某业务域的详细权限");
+  });
+
+  it("将权限管理清晰解释为菜单、页面、操作三级，并保留项目范围的服务端共同边界", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("第一级 · 菜单");
+    expect(source).toContain("第二级 · 页面");
+    expect(source).toContain("第三级 · 操作");
+    expect(source).toContain("用户专属权限仅覆盖本模块操作，不扩大项目范围");
+    expect(source).toContain("跨项目查询会被服务端拒绝");
   });
 
   it("在每位普通管理人员卡片中提供用户专属操作权限入口，并用独立对话框保存到具体用户", () => {
