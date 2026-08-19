@@ -1586,6 +1586,37 @@ export const subcontractPackages = mysqlTable(
   }),
 );
 
+/** 项目外包合同台账：运输、劳务分包、机械租赁等合同只保存受控业务摘要与计价快照，附件影像另行归档。 */
+export const outsourceContracts = mysqlTable(
+  "outsource_contracts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    contractNo: varchar("contractNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    contractType: mysqlEnum("contractType", ["transport", "labor_subcontract", "machinery_lease", "material_supply", "other"]).notNull(),
+    counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
+    counterpartyContact: varchar("counterpartyContact", { length: 100 }),
+    pricingMethod: mysqlEnum("pricingMethod", ["lump_sum", "unit_price", "trip", "ton", "m3", "day", "month", "other"]).notNull(),
+    unit: varchar("unit", { length: 32 }),
+    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }),
+    contractAmount: decimal("contractAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    startDate: date("startDate"),
+    endDate: date("endDate"),
+    status: mysqlEnum("status", ["draft", "active", "suspended", "expired", "closed", "void"]).default("draft").notNull(),
+    attachmentEvidenceId: bigint("attachmentEvidenceId", { mode: "number" }),
+    contractSummary: varchar("contractSummary", { length: 1000 }),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    contractNoUnique: uniqueIndex("outsource_contracts_no_unique").on(table.contractNo),
+    projectStatusIndex: index("outsource_contracts_project_status_index").on(table.projectId, table.status),
+    projectTypeIndex: index("outsource_contracts_project_type_index").on(table.projectId, table.contractType),
+  }),
+);
+
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
 export const financialRecords = mysqlTable(
   "financial_records",

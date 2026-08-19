@@ -9,6 +9,7 @@ import { constructionRouter } from "./routers/construction";
 import { evidenceRouter } from "./routers/evidence";
 import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
 import { subcontractRouter } from "./routers/subcontract";
+import { contractRouter } from "./routers/contracts";
 import { laborRouter } from "./routers/labor";
 import { messageRouter } from "./routers/messages";
 import { mobileRouter } from "./routers/mobile";
@@ -83,6 +84,7 @@ export const appRouter = router({
   purchasing: purchasingRouter,
   measurement: measurementRouter,
   subcontract: subcontractRouter,
+  contract: contractRouter,
   finance: financeRouter,
   projectRisk: projectRiskRouter,
 });

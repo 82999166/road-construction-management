@@ -1,6 +1,8 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
 import SettlementTemplateCalculator from "@/components/SettlementTemplateCalculator";
+import ConstructionToolbox from "@/components/ConstructionToolbox";
+import ContractManagementPanel from "@/components/ContractManagementPanel";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +24,7 @@ import {
   Calculator,
   DatabaseBackup,
   ExternalLink,
+  FileText,
   FolderKanban,
   Fuel,
   KeyRound,
@@ -58,6 +61,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: ShoppingCart, label: "采购与仓储", path: "/admin/purchasing", section: "业财与控制" },
   { icon: Calculator, label: "计量工具", path: "/admin/measurement-tools", section: "业财与控制" },
   { icon: FolderKanban, label: "工程结算与分包", path: "/admin/subcontract", section: "业财与控制" },
+  { icon: FileText, label: "合同管理", path: "/admin/contracts", section: "业财与控制" },
   { icon: ShieldCheck, label: "AI 项目风控", path: "/admin/risk", section: "业财与控制" },
   { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "业财与控制" },
   { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "业财与控制" },
@@ -516,12 +520,13 @@ export default function AdminPage() {
   const isPurchasing = activeSection === "purchasing";
   const isMeasurementTools = activeSection === "measurement-tools";
   const isSubcontract = activeSection === "subcontract";
+  const isContracts = activeSection === "contracts";
   const isDiesel = activeSection === "diesel";
   const isRisk = activeSection === "risk";
   const isFinance = activeSection === "finance" || isDiesel;
   const isBroadcast = activeSection === "broadcast";
   const isWechatLogin = activeSection === "wechat-login";
-  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport || isPurchasing || isSubcontract;
+  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport || isPurchasing || isSubcontract || isContracts;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
   const isSettings = activeSection === "settings";
@@ -2493,6 +2498,7 @@ export default function AdminPage() {
       setInventoryTransactionDialogOpen(true);
     };
     return <div className="space-y-6">
+      <Card className="border-[#d8e3e0] bg-[#f8fbfa]"><CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold text-[#203c48]">生活开支采购录入</p><p className="mt-1 text-sm leading-6 text-slate-500">食堂食材、宿舍营地、水电气网络、办公用品和通勤后勤等生活类支出，使用“清单采购录入”按固定类别登记。请先在手机端拍摄清单水印影像，再填写数量、单价和下单时间；金额、审核开关与审计由服务端控制。</p></div><Button className="shrink-0" onClick={() => window.location.assign(`/mobile/purchasing?projectId=${workspaceProjectId}`)} disabled={!hasBusinessWorkspaceProject}>前往生活开支采购录入</Button></CardContent></Card>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-[#203c48]">采购与仓储 · 采购闭环与库存审计</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">采购订单与库存台账</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">集中查看采购申请、清单小额采购、订单收货、结算余额以及不可变库存收发流水。库存余额由服务端按项目、物料和单位实时汇总，不能直接改写。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openInventoryDialog("outbound")} disabled={!hasBusinessWorkspaceProject}>登记领用出库</Button><Button onClick={() => openInventoryDialog("inbound")} disabled={!hasBusinessWorkspaceProject}>登记入库</Button></div></div>
       {renderWorkspaceProjectFilter("采购仓储项目范围", "选择项目后读取该项目采购申请、采购订单、实际结算与库存收发流水；未选择项目不会显示或办理库存数据。")}
       {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取采购申请、订单、仓储余额和出入库台账。" /> : purchasingRequests.isLoading || purchasingOrders.isLoading || purchasingInventory.isLoading || purchasingSettlements.isLoading ? <EmptyState text="正在读取采购与仓储台账…" /> : purchasingRequests.isError || purchasingOrders.isError || purchasingInventory.isError || purchasingSettlements.isError ? <EmptyState text="暂无法读取采购与仓储数据，请确认当前账号的采购模块、岗位与项目范围授权。" /> : <>
@@ -2899,9 +2905,9 @@ export default function AdminPage() {
     </div>;
   };
 
-  const renderMeasurementTools = () => <div className="space-y-6"><div><p className="text-sm font-medium text-[#203c48]">计量工具 · 独立测算工作区</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">工程计量与结算模板</h1><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500">在此使用土石方和附属工程两套独立模板，录入桩号、图纸参数、方量、业主单价和分包单价后即时对照测算。该工具用于方案测算与打印，不会自动写入项目部收方、施工队分包批次或财务结算台账。</p></div><Card className="border-[#d8e3e0] bg-[#f8fbfa]"><CardContent className="grid gap-3 p-4 md:grid-cols-3"><div><p className="font-medium text-[#203c48]">一、土石方结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按桩号录入天然方土石方，结合土石系数计算运输、填方和分包双价。</p></div><div><p className="font-medium text-[#203c48]">二、附属工程结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按里程、涵洞、边沟、挡墙等构件录入图纸参数并自动计算方量。</p></div><div><p className="font-medium text-[#203c48]">三、正式业务边界</p><p className="mt-1 text-xs leading-5 text-slate-500">正式分包需在“工程结算与分包”中关联已审核收方、施工队和结算状态机办理。</p></div></CardContent></Card><SettlementTemplateCalculator /></div>;
+  const renderMeasurementTools = () => <div className="space-y-6"><div><p className="text-sm font-medium text-[#203c48]">计量工具 · 独立测算工作区</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">工程计量与施工辅助工具</h1><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500">集中提供土石方、附属工程、混凝土材料、机械台班和运输运价的辅助测算。所有工具仅用于方案测算与打印，不会自动写入项目部收方、施工队分包批次或财务结算台账。</p></div><Card className="border-[#d8e3e0] bg-[#f8fbfa]"><CardContent className="grid gap-3 p-4 md:grid-cols-3"><div><p className="font-medium text-[#203c48]">一、土石方结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按桩号录入天然方土石方，结合土石系数计算运输、填方和分包双价。</p></div><div><p className="font-medium text-[#203c48]">二、附属工程结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按里程、涵洞、边沟、挡墙等构件录入图纸参数并自动计算方量。</p></div><div><p className="font-medium text-[#203c48]">三、施工辅助测算</p><p className="mt-1 text-xs leading-5 text-slate-500">混凝土材料、机械台班和运输运价按输入参数即时测算，结果须由现场和商务人员复核。</p></div></CardContent></Card><ConstructionToolbox /><SettlementTemplateCalculator /></div>;
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "measurement-tools" ? renderMeasurementTools() : activeSection === "subcontract" ? renderSubcontract() : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "measurement-tools" ? renderMeasurementTools() : activeSection === "subcontract" ? renderSubcontract() : activeSection === "contracts" ? <ContractManagementPanel projects={(projects.data ?? []).map(project => ({ id: project.id, name: project.name }))} /> : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
