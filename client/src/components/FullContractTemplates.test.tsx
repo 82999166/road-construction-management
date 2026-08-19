@@ -12,5 +12,9 @@ describe("完整外包合同模板库", () => {
     expect(source).toContain("复制正文");
     expect(source).toContain("打印");
     expect(source).toContain("项目法务/律师审阅");
+    expect(source).toContain("完整合同预览");
+    expect(source).toContain("附件目录");
+    expect(source).toContain("甲方（盖章）");
+    expect(source).toContain("法律审定提示");
   });
 });
