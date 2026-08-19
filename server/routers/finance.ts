@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
+import { inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
@@ -273,24 +274,29 @@ const smallDirectPurchaseInput = z.object({
   amount: moneySchema.refine(value => value > 0, "金额必须大于 0").optional(),
   orderedAt: isoDateTimeSchema,
   evidenceId: z.number().int().positive(),
+  hasInvoice: z.boolean().default(false),
+  invoiceEvidenceId: z.number().int().positive().nullable().optional(),
 });
 
 /** 普通采购单据照片不生成水印，只作为采购清单、送货单或验收单的审计附件归档。 */
 const purchaseDocumentUploadInput = z.object({
   projectId: z.number().int().positive(),
   fileName: z.string().trim().min(1).max(200),
-  mimeType: z.enum(["image/jpeg", "image/png"]),
-  base64Data: z.string().min(16).max(12_000_000),
+  mimeType: z.enum(["image/jpeg", "image/png", "application/pdf"]),
+  base64Data: z.string().min(16).max(22_000_000),
   description: z.string().trim().min(2).max(300).default("采购单据照片"),
+  attachmentKind: z.enum(["document", "invoice"]).default("document"),
 });
 
-function decodePurchaseDocumentBase64(value: string, mimeType: "image/jpeg" | "image/png") {
+function decodePurchaseDocumentBase64(value: string, mimeType: "image/jpeg" | "image/png" | "application/pdf") {
   const normalized = value.includes(",") ? value.slice(value.indexOf(",") + 1) : value;
   const bytes = Buffer.from(normalized, "base64");
-  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "单据照片必须为 JPG 或 PNG，且单张不超过 8MB" });
+  const maxBytes = mimeType === "application/pdf" ? 15 * 1024 * 1024 : 5 * 1024 * 1024;
+  if (!bytes.length || bytes.length > maxBytes) throw new TRPCError({ code: "BAD_REQUEST", message: mimeType === "application/pdf" ? "发票 PDF 不能超过 15MB" : "单据或发票照片必须为 JPG/PNG，且单张不超过 5MB" });
   const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   const isPng = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  if ((mimeType === "image/jpeg" && !isJpeg) || (mimeType === "image/png" && !isPng)) throw new TRPCError({ code: "BAD_REQUEST", message: "单据照片格式与文件内容不一致" });
+  const isPdf = bytes.length >= 5 && bytes.subarray(0, 5).equals(Buffer.from("%PDF-"));
+  if ((mimeType === "image/jpeg" && !isJpeg) || (mimeType === "image/png" && !isPng) || (mimeType === "application/pdf" && !isPdf)) throw new TRPCError({ code: "BAD_REQUEST", message: "单据、发票文件格式与内容不一致" });
   return bytes;
 }
 
@@ -566,7 +572,14 @@ export const purchasingRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
-    return db.select().from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)).orderBy(desc(purchaseOrders.updatedAt));
+    const orders = await db.select().from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)).orderBy(desc(purchaseOrders.updatedAt));
+    const evidenceIds = Array.from(new Set(orders.flatMap(order => [order.evidenceId, order.invoiceEvidenceId]).filter((id): id is number => id !== null)));
+    const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
+    const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
+      const stored = await storageGet(evidence.fileKey);
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType, url: stored.url }] as const;
+    })));
+    return orders.map(order => ({ ...order, documentAttachment: order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null, invoiceAttachment: order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null }));
   }),
 
   /** 仅返回当前项目的采购取证影像，供小额物资在 OCR 后人工补全并关联，URL 使用短时签名。 */
@@ -596,18 +609,18 @@ export const purchasingRouter = router({
     const result = await db.insert(evidenceRecords).values({
       projectId: input.projectId,
       sourceType: "purchase",
-      sourceId: "small_direct_document",
+      sourceId: input.attachmentKind === "invoice" ? "small_direct_invoice" : "small_direct_document",
       fileKey: storedFile.key,
       fileName: input.fileName,
       mimeType: input.mimeType,
-      watermarkJson: JSON.stringify({ description: input.description, captureMode: "purchase_document_upload", capturedAt: capturedAt.toISOString(), version: 1 }),
+      watermarkJson: JSON.stringify({ description: input.description, attachmentKind: input.attachmentKind, captureMode: "purchase_document_upload", capturedAt: capturedAt.toISOString(), version: 2 }),
       longitude: null,
       latitude: null,
       capturedAt,
       uploadedBy: user.id,
     });
     const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "upload_purchase_document", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档采购单据照片：${input.description.slice(0, 80)}（非水印影像）` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: input.attachmentKind === "invoice" ? "upload_purchase_invoice" : "upload_purchase_document", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档采购${input.attachmentKind === "invoice" ? "发票" : "单据"}附件：${input.description.slice(0, 80)}（非水印影像）` });
     return { success: true, id: evidenceId, fileName: input.fileName };
   }),
 
@@ -628,14 +641,19 @@ export const purchasingRouter = router({
     if (!category) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的固定采购类别" });
     const [evidence] = await db.select({ id: evidenceRecords.id, sourceType: evidenceRecords.sourceType, ocrResultJson: evidenceRecords.ocrResultJson }).from(evidenceRecords).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
     if (!evidence || evidence.sourceType !== "purchase") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目已归档的采购影像" });
+    if (input.hasInvoice && !input.invoiceEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "选择有发票时必须上传并关联发票照片或 PDF" });
+    if (input.invoiceEvidenceId) {
+      const [invoiceEvidence] = await db.select({ id: evidenceRecords.id, sourceType: evidenceRecords.sourceType }).from(evidenceRecords).where(and(eq(evidenceRecords.id, input.invoiceEvidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
+      if (!invoiceEvidence || invoiceEvidence.sourceType !== "purchase") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目已归档的发票附件" });
+    }
     if (input.supplierId) {
       const [supplier] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1);
       if (!supplier || supplier.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效供应商" });
     }
     const requiresSupervisorApproval = !(await isSupervisorReviewAutoApprove(db));
-    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
+    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, hasInvoice: input.hasInvoice, invoiceEvidenceId: input.hasInvoice ? input.invoiceEvidenceId ?? null : null, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
     const orderId = Number(created?.id);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: requiresSupervisorApproval ? "create_small_direct_order" : "auto_approve_small_direct_order_by_supervisor_setting", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: requiresSupervisorApproval ? "create_small_direct_order" : "auto_approve_small_direct_order_by_supervisor_setting", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，发票 ${input.hasInvoice ? `已附 #${input.invoiceEvidenceId}` : "无发票"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}` });
     if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}（${isManualAmount ? "手动录入" : "自动计算"}），已附采购单据照片，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, id: orderId, limit, requiresSupervisorApproval, amount, amountSource: isManualAmount ? "manual" : "auto" };
   }),

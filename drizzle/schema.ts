@@ -1415,6 +1415,9 @@ export const purchaseOrders = mysqlTable(
     quantity: decimal("quantity", { precision: 16, scale: 3 }),
     unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
+    /** 默认无发票；发生发票时关联原始照片或 PDF 审计附件。 */
+    hasInvoice: boolean("hasInvoice").default(false).notNull(),
+    invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
     ocrSummary: varchar("ocrSummary", { length: 500 }),
     supplierId: int("supplierId"),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),

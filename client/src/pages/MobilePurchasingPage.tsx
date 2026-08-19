@@ -40,7 +40,7 @@ function createOrderDraft() {
 }
 
 function createSmallDirectDraft() {
-  return { categoryId: "", itemDescription: "", quantity: "", unitPrice: "", amountMode: "auto" as "auto" | "manual", manualAmount: "", evidenceId: "", orderedAt: new Date().toISOString().slice(0, 16) };
+  return { categoryId: "", itemDescription: "", quantity: "", unitPrice: "", amountMode: "auto" as "auto" | "manual", manualAmount: "", evidenceId: "", hasInvoice: false, invoiceEvidenceId: "", orderedAt: new Date().toISOString().slice(0, 16) };
 }
 
 function fileToBase64(file: File) {
@@ -50,6 +50,25 @@ function fileToBase64(file: File) {
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.readAsDataURL(file);
   });
+}
+
+/** 上传前将单据照片压缩至最长边 1920px、JPEG 质量 0.82；PDF 保持原文件以保留票面与电子签章。 */
+async function optimizePurchaseImage(file: File) {
+  if (!file.type.startsWith("image/") || typeof document === "undefined") return file;
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const element = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    element.onload = () => { URL.revokeObjectURL(objectUrl); resolve(element); };
+    element.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("读取单据照片失败")); };
+    element.src = objectUrl;
+  });
+  const scale = Math.min(1, 1920 / Math.max(image.width, image.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  return blob ? new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }) : file;
 }
 
 /** 采购仓储移动端：所有可见数据均由项目、组织和岗位范围在服务端过滤。 */
@@ -180,20 +199,22 @@ export default function MobilePurchasingPage() {
   function submitSmallDirectOrder() {
     const useManualAmount = smallDirectDraft.amountMode === "manual";
     if (!selectedProjectId || !smallDirectDraft.categoryId || !smallDirectDraft.itemDescription.trim() || !smallDirectDraft.evidenceId || (useManualAmount ? !smallDirectDraft.manualAmount : (!smallDirectDraft.quantity || !smallDirectDraft.unitPrice))) return toast.error(useManualAmount ? "请上传单据照片后填写类别、物资名称和手动金额" : "请上传单据照片后填写类别、物资名称、数量和单价");
-    createSmallDirectOrder.mutate({ projectId: selectedProjectId, categoryId: Number(smallDirectDraft.categoryId), itemDescription: smallDirectDraft.itemDescription.trim(), supplierId: null, quantity: smallDirectDraft.quantity ? Number(smallDirectDraft.quantity) : undefined, unitPrice: smallDirectDraft.unitPrice ? Number(smallDirectDraft.unitPrice) : undefined, amount: useManualAmount ? Number(smallDirectDraft.manualAmount) : undefined, evidenceId: Number(smallDirectDraft.evidenceId), orderedAt: new Date(smallDirectDraft.orderedAt).toISOString() });
+    if (smallDirectDraft.hasInvoice && !smallDirectDraft.invoiceEvidenceId) return toast.error("请选择已归档的发票照片或 PDF");
+    createSmallDirectOrder.mutate({ projectId: selectedProjectId, categoryId: Number(smallDirectDraft.categoryId), itemDescription: smallDirectDraft.itemDescription.trim(), supplierId: null, quantity: smallDirectDraft.quantity ? Number(smallDirectDraft.quantity) : undefined, unitPrice: smallDirectDraft.unitPrice ? Number(smallDirectDraft.unitPrice) : undefined, amount: useManualAmount ? Number(smallDirectDraft.manualAmount) : undefined, evidenceId: Number(smallDirectDraft.evidenceId), hasInvoice: smallDirectDraft.hasInvoice, invoiceEvidenceId: smallDirectDraft.hasInvoice ? Number(smallDirectDraft.invoiceEvidenceId) : null, orderedAt: new Date(smallDirectDraft.orderedAt).toISOString() });
   }
 
-  async function uploadPurchaseDocumentFile(file: File | undefined) {
+  async function uploadPurchaseDocumentFile(file: File | undefined, attachmentKind: "document" | "invoice" = "document") {
     if (!file) return;
     if (!selectedProjectId) return toast.error("请先选择项目");
-    if (!(["image/jpeg", "image/png"] as string[]).includes(file.type)) return toast.error("仅支持 JPG 或 PNG 单据照片");
-    if (file.size > 8 * 1024 * 1024) return toast.error("单据照片不能超过 8MB");
+    if (!(["image/jpeg", "image/png", "application/pdf"] as string[]).includes(file.type)) return toast.error("仅支持 JPG、PNG 或 PDF 附件");
+    const optimized = file.type === "application/pdf" ? file : await optimizePurchaseImage(file);
+    if (optimized.size > (optimized.type === "application/pdf" ? 15 : 5) * 1024 * 1024) return toast.error(optimized.type === "application/pdf" ? "发票 PDF 不能超过 15MB" : "压缩后单据照片仍超过 5MB，请重新拍摄或裁剪");
     try {
-      const result = await uploadPurchaseDocument.mutateAsync({ projectId: selectedProjectId, fileName: file.name, mimeType: file.type as "image/jpeg" | "image/png", base64Data: await fileToBase64(file), description: "采购清单、送货单或验收单照片" });
+      const result = await uploadPurchaseDocument.mutateAsync({ projectId: selectedProjectId, fileName: optimized.name, mimeType: optimized.type as "image/jpeg" | "image/png" | "application/pdf", base64Data: await fileToBase64(optimized), description: attachmentKind === "invoice" ? "采购发票附件" : "采购清单、送货单或验收单照片", attachmentKind });
       if (!result.id) throw new Error("单据归档未返回编号");
-      setSmallDirectDraft(current => ({ ...current, evidenceId: String(result.id) }));
+      setSmallDirectDraft(current => attachmentKind === "invoice" ? ({ ...current, invoiceEvidenceId: String(result.id) }) : ({ ...current, evidenceId: String(result.id) }));
       await refreshData();
-      toast.success("采购单据照片已归档");
+      toast.success(attachmentKind === "invoice" ? "采购发票附件已归档" : "采购单据照片已归档");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "单据照片上传失败");
     }
