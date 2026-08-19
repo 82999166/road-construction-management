@@ -15,4 +15,18 @@ describe("原生计量结算模板", () => {
     expect(markup).not.toContain("iframe");
     expect(markup).not.toContain("Not found");
   });
+
+  it("附属工程页签提供里程、图纸参数、自动方量和业主/分包双价对照", () => {
+    const markup = renderToStaticMarkup(<SettlementTemplateCalculator initialTab="auxiliary" />);
+
+    expect(markup).toContain("附属工程构件清单与双价测算");
+    expect(markup).toContain("里程桩号");
+    expect(markup).toContain("图纸长(m)");
+    expect(markup).toContain("图纸宽(m)");
+    expect(markup).toContain("图纸高(m)");
+    expect(markup).toContain("自动方量");
+    expect(markup).toContain("业主金额");
+    expect(markup).toContain("分包金额");
+    expect(markup).toContain("测算差额");
+  });
 });

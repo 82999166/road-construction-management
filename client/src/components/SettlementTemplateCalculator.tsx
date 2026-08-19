@@ -9,7 +9,7 @@ import React, { useMemo, useState } from "react";
 type TemplateTab = "earthwork" | "auxiliary";
 type EarthSurveyRow = { id: number; stakeNo: string; length: string; width: string; depth: string; soil: string; rock: string; materialType: string };
 type Price = { subcontract: string; owner: string };
-type AuxiliaryRow = { id: number; itemName: string; unit: string; subcontract: string; owner: string; quantity: string; remarks: string };
+type AuxiliaryRow = { id: number; mileage: string; structureType: string; itemName: string; unit: string; drawingLength: string; drawingWidth: string; drawingHeight: string; aperture: string; count: string; quantity: string; subcontract: string; owner: string; remarks: string };
 
 const toNumber = (value: string) => {
   const result = Number.parseFloat(value);
@@ -18,7 +18,7 @@ const toNumber = (value: string) => {
 const money = (value: number) => `¥${value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const quantity = (value: number) => value.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
 const makeEarthRow = (id: number): EarthSurveyRow => ({ id, stakeNo: "", length: "", width: "", depth: "", soil: "", rock: "", materialType: "土" });
-const makeAuxiliaryRow = (id: number, itemName = "", unit = ""): AuxiliaryRow => ({ id, itemName, unit, subcontract: "", owner: "", quantity: "", remarks: "" });
+const makeAuxiliaryRow = (id: number, itemName = "", unit = ""): AuxiliaryRow => ({ id, mileage: "", structureType: "涵洞", itemName, unit, drawingLength: "", drawingWidth: "", drawingHeight: "", aperture: "", count: "1", quantity: "", subcontract: "", owner: "", remarks: "" });
 
 const EARTH_PRICE_LINES = [
   { key: "soil", label: "挖土方", unit: "m³", note: "天然方" },
@@ -53,8 +53,8 @@ function AmountSummary({ ownerAmount, subcontractAmount, deductions, warrantyRat
   </div>;
 }
 
-export default function SettlementTemplateCalculator() {
-  const [tab, setTab] = useState<TemplateTab>("earthwork");
+export default function SettlementTemplateCalculator({ initialTab = "earthwork" }: { initialTab?: TemplateTab }) {
+  const [tab, setTab] = useState<TemplateTab>(initialTab);
   const [projectName, setProjectName] = useState("");
   const [period, setPeriod] = useState("");
   const [warrantyRate, setWarrantyRate] = useState("3");
@@ -64,7 +64,7 @@ export default function SettlementTemplateCalculator() {
   const [earthPrices, setEarthPrices] = useState<Record<string, Price>>(EMPTY_PRICE);
   const [earthAdjustments, setEarthAdjustments] = useState({ utilSoil: "", utilRock: "", borrowSoil: "", borrowRock: "", backfill: "" });
   const [earthDeductions, setEarthDeductions] = useState(EMPTY_DEDUCTIONS);
-  const [auxiliaryRows, setAuxiliaryRows] = useState<AuxiliaryRow[]>(() => AUXILIARY_ITEMS.map(([itemName, unit], index) => makeAuxiliaryRow(index + 1, itemName, unit)));
+  const [auxiliaryRows, setAuxiliaryRows] = useState<AuxiliaryRow[]>([makeAuxiliaryRow(1)]);
   const [auxiliaryDeductions, setAuxiliaryDeductions] = useState(EMPTY_DEDUCTIONS);
 
   const earthCalculation = useMemo(() => {
@@ -98,10 +98,11 @@ export default function SettlementTemplateCalculator() {
 
   const auxiliaryCalculation = useMemo(() => {
     const lines = auxiliaryRows.map(row => {
-      const currentQuantity = toNumber(row.quantity);
+      const drawingQuantity = toNumber(row.drawingLength) * toNumber(row.drawingWidth) * toNumber(row.drawingHeight) * Math.max(toNumber(row.count), 1);
+      const currentQuantity = row.quantity.trim() === "" ? drawingQuantity : toNumber(row.quantity);
       const subcontractAmount = currentQuantity * toNumber(row.subcontract);
       const ownerAmount = currentQuantity * toNumber(row.owner);
-      return { ...row, currentQuantity, subcontractAmount, ownerAmount, margin: ownerAmount - subcontractAmount };
+      return { ...row, drawingQuantity, currentQuantity, subcontractAmount, ownerAmount, margin: ownerAmount - subcontractAmount };
     });
     return { lines, ownerAmount: lines.reduce((sum, line) => sum + line.ownerAmount, 0), subcontractAmount: lines.reduce((sum, line) => sum + line.subcontractAmount, 0) };
   }, [auxiliaryRows]);
@@ -112,7 +113,7 @@ export default function SettlementTemplateCalculator() {
   const auxiliaryDeductionAmount = Object.values(auxiliaryDeductions).reduce((sum, value) => sum + toNumber(value), 0);
 
   const resetEarthwork = () => { setProjectName(""); setPeriod(""); setWarrantyRate("3"); setSoilCoefficient("1.13"); setRockCoefficient("1.13"); setEarthRows([makeEarthRow(1)]); setEarthPrices(EMPTY_PRICE); setEarthAdjustments({ utilSoil: "", utilRock: "", borrowSoil: "", borrowRock: "", backfill: "" }); setEarthDeductions(EMPTY_DEDUCTIONS); };
-  const resetAuxiliary = () => { setProjectName(""); setPeriod(""); setWarrantyRate("3"); setAuxiliaryRows(AUXILIARY_ITEMS.map(([itemName, unit], index) => makeAuxiliaryRow(index + 1, itemName, unit))); setAuxiliaryDeductions(EMPTY_DEDUCTIONS); };
+  const resetAuxiliary = () => { setProjectName(""); setPeriod(""); setWarrantyRate("3"); setAuxiliaryRows([makeAuxiliaryRow(1)]); setAuxiliaryDeductions(EMPTY_DEDUCTIONS); };
   const activeCalculation = tab === "earthwork" ? earthCalculation : auxiliaryCalculation;
   const activeDeductions = tab === "earthwork" ? earthDeductionAmount : auxiliaryDeductionAmount;
 
@@ -138,8 +139,16 @@ function PriceTable({ lines, prices, onPriceChange }: { lines: { key: string; la
   return <section><h3 className="mb-2 font-semibold text-[#203c48]">二、分包计价与中标收入</h3><div className="overflow-x-auto rounded-xl border"><Table className="min-w-[960px] text-xs"><TableHeader className="bg-[#203c48]"><TableRow><TableHead className="text-white">项目</TableHead><TableHead className="text-white">单位</TableHead><TableHead className="text-white">分包单价</TableHead><TableHead className="text-white">业主中标价</TableHead><TableHead className="text-white">结算量</TableHead><TableHead className="text-white">分包合价</TableHead><TableHead className="text-white">中标合价</TableHead><TableHead className="text-white">利润</TableHead><TableHead className="text-white">备注</TableHead></TableRow></TableHeader><TableBody>{lines.map(line => <TableRow key={line.key}><TableCell className="font-medium">{line.label}</TableCell><TableCell>{line.unit}</TableCell><TableCell><Input className="h-8 w-24" type="number" min="0" value={prices[line.key].subcontract} onChange={event => onPriceChange(line.key, "subcontract", event.target.value)} /></TableCell><TableCell><Input className="h-8 w-24" type="number" min="0" value={prices[line.key].owner} onChange={event => onPriceChange(line.key, "owner", event.target.value)} /></TableCell><TableCell>{quantity(line.quantity)}</TableCell><TableCell>{money(line.subcontractAmount)}</TableCell><TableCell>{money(line.ownerAmount)}</TableCell><TableCell className={line.margin >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>{money(line.margin)}</TableCell><TableCell>{line.note}</TableCell></TableRow>)}</TableBody></Table></div></section>;
 }
 
-function AuxiliaryTable({ rows, onChange, onAdd, onDelete }: { rows: (AuxiliaryRow & { currentQuantity: number; subcontractAmount: number; ownerAmount: number; margin: number })[]; onChange: (id: number, field: keyof AuxiliaryRow, value: string) => void; onAdd: () => void; onDelete: (id: number) => void }) {
-  return <section><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold text-[#203c48]">一、附属工程清单计价</h3><p className="text-xs text-slate-500">填写分包价、业主中标价和完成量，系统即时计算双价金额与测算差额。</p></div><Button size="sm" variant="outline" className="print:hidden" onClick={onAdd}><Plus className="mr-1 h-4 w-4" />增加清单行</Button></div><div className="overflow-x-auto rounded-xl border"><Table className="min-w-[1120px] text-xs"><TableHeader className="bg-[#203c48]"><TableRow><TableHead className="text-white">项目名称</TableHead><TableHead className="text-white">单位</TableHead><TableHead className="text-white">分包单价</TableHead><TableHead className="text-white">业主中标价</TableHead><TableHead className="text-white">完成量</TableHead><TableHead className="text-white">分包合价</TableHead><TableHead className="text-white">中标合价</TableHead><TableHead className="text-white">利润</TableHead><TableHead className="text-white">备注</TableHead><TableHead className="print:hidden text-white">操作</TableHead></TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.id}>{(["itemName", "unit", "subcontract", "owner", "quantity"] as (keyof AuxiliaryRow)[]).map(field => <TableCell key={field}><Input className="h-8 min-w-[76px]" type={["subcontract", "owner", "quantity"].includes(field) ? "number" : "text"} value={row[field]} onChange={event => onChange(row.id, field, event.target.value)} /></TableCell>)}<TableCell>{money(row.subcontractAmount)}</TableCell><TableCell>{money(row.ownerAmount)}</TableCell><TableCell className={row.margin >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>{money(row.margin)}</TableCell><TableCell><Input className="h-8 min-w-[110px]" value={row.remarks} onChange={event => onChange(row.id, "remarks", event.target.value)} /></TableCell><TableCell className="print:hidden"><Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" onClick={() => onDelete(row.id)}><Trash2 className="h-4 w-4" /></Button></TableCell></TableRow>)}</TableBody></Table></div></section>;
+function AuxiliaryTable({ rows, onChange, onAdd, onDelete }: { rows: (AuxiliaryRow & { drawingQuantity: number; currentQuantity: number; subcontractAmount: number; ownerAmount: number; margin: number })[]; onChange: (id: number, field: keyof AuxiliaryRow, value: string) => void; onAdd: () => void; onDelete: (id: number) => void }) {
+  const fields: { field: keyof AuxiliaryRow; label: string; width: string; type?: "number" | "text"; placeholder?: string }[] = [
+    { field: "mileage", label: "里程桩号", width: "min-w-[104px]", placeholder: "K12+340" }, { field: "structureType", label: "构件类型", width: "min-w-[92px]", placeholder: "涵洞" },
+    { field: "itemName", label: "构件/项目名称", width: "min-w-[150px]", placeholder: "例如圆管涵" }, { field: "unit", label: "单位", width: "min-w-[68px]", placeholder: "m³" },
+    { field: "drawingLength", label: "图纸长(m)", width: "min-w-[82px]", type: "number" }, { field: "drawingWidth", label: "图纸宽(m)", width: "min-w-[82px]", type: "number" },
+    { field: "drawingHeight", label: "图纸高(m)", width: "min-w-[82px]", type: "number" }, { field: "aperture", label: "孔径/规格", width: "min-w-[100px]", placeholder: "φ1.5m" },
+    { field: "count", label: "数量", width: "min-w-[70px]", type: "number" }, { field: "quantity", label: "结算方量", width: "min-w-[92px]", type: "number", placeholder: "留空自动算" },
+    { field: "owner", label: "业主单价", width: "min-w-[86px]", type: "number" }, { field: "subcontract", label: "分包单价", width: "min-w-[86px]", type: "number" },
+  ];
+  return <section><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold text-[#203c48]">一、附属工程构件清单与双价测算</h3><p className="text-xs text-slate-500">按里程录入涵洞、边沟、挡墙等构件。结算方量留空时，系统按图纸长 × 宽 × 高 × 数量自动计算；非体积项目可直接填写结算方量。</p></div><Button size="sm" variant="outline" className="print:hidden" onClick={onAdd}><Plus className="mr-1 h-4 w-4" />增加构件行</Button></div><datalist id="auxiliary-structure-types"><option value="涵洞" /><option value="边沟" /><option value="挡墙" /><option value="急流槽" /><option value="排水沟" /><option value="截水沟" /><option value="护坡" /><option value="路肩墙" /><option value="其他" /></datalist><div className="overflow-x-auto rounded-xl border"><Table className="min-w-[1940px] text-xs"><TableHeader className="bg-[#203c48]"><TableRow>{fields.map(item => <TableHead key={item.field} className="text-white">{item.label}</TableHead>)}<TableHead className="text-white">自动方量</TableHead><TableHead className="text-white">业主金额</TableHead><TableHead className="text-white">分包金额</TableHead><TableHead className="text-white">测算差额</TableHead><TableHead className="text-white">图纸/备注</TableHead><TableHead className="print:hidden text-white">操作</TableHead></TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.id}>{fields.map(item => <TableCell key={item.field}><Input className={`h-8 ${item.width}`} type={item.type || "text"} list={item.field === "structureType" ? "auxiliary-structure-types" : undefined} placeholder={item.placeholder} value={row[item.field]} onChange={event => onChange(row.id, item.field, event.target.value)} /></TableCell>)}<TableCell>{quantity(row.drawingQuantity)}</TableCell><TableCell>{money(row.ownerAmount)}</TableCell><TableCell>{money(row.subcontractAmount)}</TableCell><TableCell className={row.margin >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>{money(row.margin)}</TableCell><TableCell><Input className="h-8 min-w-[150px]" placeholder="图号、签证或说明" value={row.remarks} onChange={event => onChange(row.id, "remarks", event.target.value)} /></TableCell><TableCell className="print:hidden"><Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" onClick={() => onDelete(row.id)}><Trash2 className="h-4 w-4" /></Button></TableCell></TableRow>)}</TableBody></Table></div></section>;
 }
 
 function DeductionPanel({ value, onChange }: { value: typeof EMPTY_DEDUCTIONS; onChange: (value: typeof EMPTY_DEDUCTIONS) => void }) {
