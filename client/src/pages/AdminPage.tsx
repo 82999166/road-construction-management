@@ -28,6 +28,7 @@ import {
   Printer,
   Camera,
   ScrollText,
+  ShoppingCart,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -52,6 +53,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源协同" },
   { icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "资源协同" },
   { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财与控制" },
+  { icon: ShoppingCart, label: "采购与仓储", path: "/admin/purchasing", section: "业财与控制" },
   { icon: FolderKanban, label: "工程结算与分包", path: "/admin/subcontract", section: "业财与控制" },
   { icon: ShieldCheck, label: "AI 项目风控", path: "/admin/risk", section: "业财与控制" },
   { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "业财与控制" },
@@ -119,6 +121,7 @@ type ConstructionWeather = "sunny" | "cloudy" | "rainy" | "snowy" | "windy" | "o
 type ConstructionReportEditor = { id?: number; projectId: number; status: "draft" | "submitted" | "approved" | "rejected" | "locked"; reportDate: string; workArea: string; weather: ConstructionWeather; workContent: string; safetyNotes: string; issueNotes: string; progressPercent: string };
 type SubcontractTeamForm = { id?: number; projectId: string; teamName: string; contactName: string; contactPhone: string; status: "active" | "suspended" | "closed"; remarks: string };
 type SubcontractPackageForm = { id?: number; projectId: string; measurementTakeoffId: string; subcontractTeamId: string; workItem: string; workLocation: string; unit: "m3" | "m2" | "m" | "t" | "piece" | "set" | "other"; quantity: string; upstreamUnitPrice: string; subcontractUnitPrice: string; remarks: string };
+type InventoryTransactionForm = { projectId: string; transactionType: "inbound" | "outbound" | "return"; itemName: string; unit: string; quantity: string; unitCost: string; occurredAt: string; remarks: string };
 type DesktopRecordDetail = { title: string; description: string; fields: Array<{ label: string; value: ReactNode }>; note?: string };
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = { parentId: "", code: "", name: "", type: "department", managerUserId: "", costCenterCode: "", sortOrder: "0", status: "active" };
@@ -149,6 +152,7 @@ const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour:
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
 const EMPTY_SUBCONTRACT_TEAM_FORM: SubcontractTeamForm = { projectId: "", teamName: "", contactName: "", contactPhone: "", status: "active", remarks: "" };
 const EMPTY_SUBCONTRACT_PACKAGE_FORM: SubcontractPackageForm = { projectId: "", measurementTakeoffId: "", subcontractTeamId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", remarks: "" };
+const EMPTY_INVENTORY_TRANSACTION_FORM: InventoryTransactionForm = { projectId: "", transactionType: "inbound", itemName: "", unit: "件", quantity: "", unitCost: "0", occurredAt: toLocalDateTimeInput(new Date()), remarks: "" };
 const CONSTRUCTION_WEATHER_LABELS: Record<ConstructionWeather, string> = { sunny: "晴", cloudy: "多云", rainy: "雨", snowy: "雪", windy: "大风", other: "其他" };
 const OFFICIAL_ACCOUNT_BASE_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_ID",
@@ -504,13 +508,14 @@ export default function AdminPage() {
   const isLabor = activeSection === "labor";
   const isMachinery = activeSection === "machinery";
   const isTransport = activeSection === "transport";
+  const isPurchasing = activeSection === "purchasing";
   const isSubcontract = activeSection === "subcontract";
   const isDiesel = activeSection === "diesel";
   const isRisk = activeSection === "risk";
   const isFinance = activeSection === "finance" || isDiesel;
   const isBroadcast = activeSection === "broadcast";
   const isWechatLogin = activeSection === "wechat-login";
-  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport || isSubcontract;
+  const isBusinessWorkspace = isConstruction || isLabor || isMachinery || isTransport || isPurchasing || isSubcontract;
   const isPermission = activeSection === "permission";
   const isBusiness = activeSection === "business";
   const isSettings = activeSection === "settings";
@@ -586,6 +591,8 @@ export default function AdminPage() {
   const [paymentReference, setPaymentReference] = useState("");
   const [constructionReportEditor, setConstructionReportEditor] = useState<ConstructionReportEditor | null>(null);
   const [desktopRecordDetail, setDesktopRecordDetail] = useState<DesktopRecordDetail | null>(null);
+  const [inventoryTransactionForm, setInventoryTransactionForm] = useState<InventoryTransactionForm>(EMPTY_INVENTORY_TRANSACTION_FORM);
+  const [inventoryTransactionDialogOpen, setInventoryTransactionDialogOpen] = useState(false);
   const [vehicleLedgerFilter, setVehicleLedgerFilter] = useState({ search: "", projectId: "all", ownership: "all", status: "all" });
   useEffect(() => {
     if (evidenceWatermarkTemplate.data?.template) setWatermarkTemplateForm({ ...evidenceWatermarkTemplate.data.template, fields: [...evidenceWatermarkTemplate.data.template.fields] });
@@ -665,6 +672,10 @@ export default function AdminPage() {
   const subcontractPackages = trpc.subcontract.listPackages.useQuery(subcontractPackagesInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
   const subcontractSummary = trpc.subcontract.summary.useQuery(workspaceProjectInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
   const subcontractTakeoffs = trpc.measurement.listTakeoffs.useQuery(workspaceProjectInput, { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject });
+  const purchasingRequests = trpc.purchasing.listRequests.useQuery(workspaceProjectInput, { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject });
+  const purchasingOrders = trpc.purchasing.listOrders.useQuery(workspaceProjectInput, { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject });
+  const purchasingInventory = trpc.purchasing.listInventory.useQuery(workspaceProjectInput, { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject });
+  const purchasingSettlements = trpc.purchasing.listSettlements.useQuery(workspaceProjectInput, { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject });
   const financeSummary = trpc.finance.summary.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financePeriod) });
   const financeInvoices = trpc.finance.listInvoices.useQuery(financeProjectInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dailyAccountingReport = trpc.finance.getDailyPrintableReport.useQuery({ projectId: Number(financeProjectId || 0), closingDate: financeClosingDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(financeClosingDate) });
@@ -1139,6 +1150,18 @@ export default function AdminPage() {
     onSuccess: async () => {
       toast.success("分包批次状态已更新");
       await refreshSubcontractWorkspace();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const refreshPurchasingWorkspace = async () => {
+    await Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingInventory.refetch(), purchasingSettlements.refetch(), audits.refetch()]);
+  };
+  const saveInventoryTransaction = trpc.purchasing.saveInventoryTransaction.useMutation({
+    onSuccess: async result => {
+      toast.success(`库存流水已登记，金额 ¥${displayMoney(result.amount)}`);
+      setInventoryTransactionDialogOpen(false);
+      setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM);
+      await refreshPurchasingWorkspace();
     },
     onError: error => toast.error(error.message),
   });
@@ -2434,6 +2457,35 @@ export default function AdminPage() {
     );
   };
 
+  const renderPurchasing = () => {
+    const requests = purchasingRequests.data ?? [];
+    const orders = purchasingOrders.data ?? [];
+    const inventoryData = purchasingInventory.data;
+    const inventoryBalances = Array.isArray(inventoryData) ? [] : inventoryData?.balances ?? [];
+    const inventoryTransactions = Array.isArray(inventoryData) ? [] : inventoryData?.transactions ?? [];
+    const settlementTotals = purchasingSettlements.data?.totalsByOrder ?? {};
+    const submittedRequests = requests.filter(item => item.status === "submitted");
+    const activeOrders = orders.filter(item => !["closed", "void"].includes(item.status));
+    const totalInventoryValue = inventoryBalances.reduce((sum, item) => sum + Number(item.totalAmount), 0);
+    const pendingSettlementAmount = Object.values(settlementTotals).reduce((sum, item) => sum + Number(item.remainingAmount), 0);
+    const statusLabel = (status: string) => ({ draft: "草稿", submitted: "待审批", approved: "已批准", ordered: "已下单", received: "已收货", stocked: "已入库", closed: "已关闭", rejected: "已退回", confirmed: "已确认", void: "已作废" }[status] ?? status);
+    const transactionLabel = (type: string) => type === "inbound" ? "入库" : type === "outbound" ? "领用出库" : "退库";
+    const openInventoryDialog = (transactionType: InventoryTransactionForm["transactionType"]) => {
+      setInventoryTransactionForm({ ...EMPTY_INVENTORY_TRANSACTION_FORM, projectId: String(workspaceProjectId), transactionType, occurredAt: toLocalDateTimeInput(new Date()) });
+      setInventoryTransactionDialogOpen(true);
+    };
+    return <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-[#203c48]">采购与仓储 · 采购闭环与库存审计</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">采购订单与库存台账</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">集中查看采购申请、清单小额采购、订单收货、结算余额以及不可变库存收发流水。库存余额由服务端按项目、物料和单位实时汇总，不能直接改写。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openInventoryDialog("outbound")} disabled={!hasBusinessWorkspaceProject}>登记领用出库</Button><Button onClick={() => openInventoryDialog("inbound")} disabled={!hasBusinessWorkspaceProject}>登记入库</Button></div></div>
+      {renderWorkspaceProjectFilter("采购仓储项目范围", "选择项目后读取该项目采购申请、采购订单、实际结算与库存收发流水；未选择项目不会显示或办理库存数据。")}
+      {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取采购申请、订单、仓储余额和出入库台账。" /> : purchasingRequests.isLoading || purchasingOrders.isLoading || purchasingInventory.isLoading || purchasingSettlements.isLoading ? <EmptyState text="正在读取采购与仓储台账…" /> : purchasingRequests.isError || purchasingOrders.isError || purchasingInventory.isError || purchasingSettlements.isError ? <EmptyState text="暂无法读取采购与仓储数据，请确认当前账号的采购模块、岗位与项目范围授权。" /> : <>
+        <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="待审批申请" value={submittedRequests.length} description={`采购申请共 ${requests.length} 单`} icon={ScrollText} /><MetricCard title="在途采购订单" value={activeOrders.length} description={`订单总金额 ¥${displayMoney(activeOrders.reduce((sum, item) => sum + Number(item.amount), 0))}`} icon={ShoppingCart} /><MetricCard title="库存物料品种" value={inventoryBalances.filter(item => Number(item.balanceQuantity) > 0).length} description="按物料名称与单位汇总" icon={DatabaseBackup} /><MetricCard title="库存账面金额" value={`¥${displayMoney(totalInventoryValue)}`} description={`待结算 ¥${displayMoney(pendingSettlementAmount)}`} icon={BarChart3} /></section>
+        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">采购申请与订单闭环</CardTitle><CardDescription>采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和水印影像归档规则；本页用于项目级全流程复核。</CardDescription></div><Button size="sm" variant="outline" onClick={() => Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingSettlements.refetch()])}>刷新采购台账</Button></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[980px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购申请</TableHead><TableHead>金额</TableHead><TableHead>说明</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead></TableRow></TableHeader><TableBody>{requests.length ? requests.map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.requestNo}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell className="max-w-[440px] truncate">{item.description}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{displayDate(item.updatedAt)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无采购申请记录。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1080px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购订单</TableHead><TableHead>模式 / 物资</TableHead><TableHead>订单金额</TableHead><TableHead>已结算 / 待结算</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{orders.length ? orders.map(item => { const settlement = settlementTotals[String(item.id)] ?? { settledAmount: 0, remainingAmount: Number(item.amount) }; return <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.orderNo}</TableCell><TableCell><p>{item.procurementMode === "small_direct" ? "小额直接采购" : "申请转订单"}</p><p className="mt-1 max-w-[260px] truncate text-slate-500">{item.itemDescription || "采购申请关联订单"}</p></TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell><p>¥{displayMoney(settlement.settledAmount)}</p><p className="mt-1 text-slate-500">待 ¥{displayMoney(settlement.remainingAmount)}</p></TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `采购订单详情 · ${item.orderNo}`, description: "采购金额、结算余额和状态均来自服务端受控业务记录。", fields: [{ label: "采购模式", value: item.procurementMode === "small_direct" ? "小额直接采购" : "采购申请转订单" }, { label: "物资说明", value: item.itemDescription || "—" }, { label: "订单金额", value: `¥ ${displayMoney(item.amount)}` }, { label: "已结算", value: `¥ ${displayMoney(settlement.settledAmount)}` }, { label: "待结算", value: `¥ ${displayMoney(settlement.remainingAmount)}` }, { label: "当前状态", value: statusLabel(item.status) }] })}>详情</Button></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={6} className="h-20 text-center text-slate-500">当前项目暂无采购订单记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">仓储余额与收发流水</CardTitle><CardDescription>入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openInventoryDialog("return")}>登记退库</Button><Button size="sm" variant="outline" onClick={() => purchasingInventory.refetch()}>刷新库存</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[820px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>物料</TableHead><TableHead>单位</TableHead><TableHead>库存余额</TableHead><TableHead>库存账面金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{inventoryBalances.length ? inventoryBalances.map(item => <TableRow key={`${item.itemName}-${item.unit}`}><TableCell className="font-medium text-[#203c48]">{item.itemName}</TableCell><TableCell>{item.unit}</TableCell><TableCell className={Number(item.balanceQuantity) < 0 ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>{displayMoney(item.balanceQuantity)}</TableCell><TableCell>¥{displayMoney(item.totalAmount)}</TableCell><TableCell>{Number(item.balanceQuantity) < 0 ? <Badge variant="outline" className="border-rose-200 text-rose-700">账面负库存待核查</Badge> : Number(item.balanceQuantity) === 0 ? <Badge variant="outline">无库存</Badge> : <Badge variant="outline" className="border-emerald-200 text-emerald-700">可用</Badge>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无库存流水；请从入库、领用出库或退库开始登记。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[920px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>流水单号</TableHead><TableHead>类型</TableHead><TableHead>物料</TableHead><TableHead>数量 / 单位</TableHead><TableHead>金额</TableHead><TableHead>发生时间</TableHead><TableHead>备注</TableHead></TableRow></TableHeader><TableBody>{inventoryTransactions.length ? inventoryTransactions.slice(0, 30).map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.transactionNo}</TableCell><TableCell>{transactionLabel(item.transactionType)}</TableCell><TableCell>{item.itemName}</TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell>{displayDate(item.occurredAt)}</TableCell><TableCell className="max-w-[260px] truncate">{item.remarks || "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">暂无库存收发流水。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+      </>}
+      <Dialog open={inventoryTransactionDialogOpen} onOpenChange={open => { setInventoryTransactionDialogOpen(open); if (!open) setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM); }}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>登记库存{transactionLabel(inventoryTransactionForm.transactionType)}</DialogTitle><DialogDescription>库存金额由数量 × 单价在服务器重新计算并写入不可变流水。请以实际物料、数量和发生时间为准，禁止用负数冲销。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveInventoryTransaction.mutate({ projectId: Number(inventoryTransactionForm.projectId), transactionType: inventoryTransactionForm.transactionType, itemName: inventoryTransactionForm.itemName.trim(), unit: inventoryTransactionForm.unit.trim(), quantity: Number(inventoryTransactionForm.quantity), unitCost: Number(inventoryTransactionForm.unitCost), occurredAt: new Date(inventoryTransactionForm.occurredAt).toISOString(), remarks: inventoryTransactionForm.remarks.trim() || null }); }}><div className="grid gap-4 sm:grid-cols-2"><Field label="项目"><Input value={selectedWorkspaceProject?.name ?? ""} disabled /></Field><Field label="收发类型"><Select value={inventoryTransactionForm.transactionType} onValueChange={value => setInventoryTransactionForm(current => ({ ...current, transactionType: value as InventoryTransactionForm["transactionType"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="inbound">入库</SelectItem><SelectItem value="outbound">领用出库</SelectItem><SelectItem value="return">退库</SelectItem></SelectContent></Select></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="物料名称"><Input value={inventoryTransactionForm.itemName} maxLength={200} placeholder="例如：水泥 P.O 42.5" onChange={event => setInventoryTransactionForm(current => ({ ...current, itemName: event.target.value }))} /></Field><Field label="计量单位"><Input value={inventoryTransactionForm.unit} maxLength={32} placeholder="例如：袋、吨、件" onChange={event => setInventoryTransactionForm(current => ({ ...current, unit: event.target.value }))} /></Field></div><div className="grid gap-4 sm:grid-cols-3"><Field label="数量"><Input type="number" min="0.001" step="0.001" value={inventoryTransactionForm.quantity} onChange={event => setInventoryTransactionForm(current => ({ ...current, quantity: event.target.value }))} /></Field><Field label="单价（元）"><Input type="number" min="0" step="0.01" value={inventoryTransactionForm.unitCost} onChange={event => setInventoryTransactionForm(current => ({ ...current, unitCost: event.target.value }))} /></Field><Field label="发生时间"><Input type="datetime-local" value={inventoryTransactionForm.occurredAt} onChange={event => setInventoryTransactionForm(current => ({ ...current, occurredAt: event.target.value }))} /></Field></div><Field label="备注"><Textarea value={inventoryTransactionForm.remarks} maxLength={500} placeholder="可填写领用班组、存放位置、单据号或退库原因" onChange={event => setInventoryTransactionForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setInventoryTransactionDialogOpen(false)}>取消</Button><Button type="submit" disabled={!inventoryTransactionForm.projectId || !inventoryTransactionForm.itemName.trim() || !inventoryTransactionForm.unit.trim() || !Number.isFinite(Number(inventoryTransactionForm.quantity)) || Number(inventoryTransactionForm.quantity) <= 0 || !Number.isFinite(Number(inventoryTransactionForm.unitCost)) || Number(inventoryTransactionForm.unitCost) < 0 || !inventoryTransactionForm.occurredAt || saveInventoryTransaction.isPending}>{saveInventoryTransaction.isPending ? "正在登记…" : `确认${transactionLabel(inventoryTransactionForm.transactionType)}`}</Button></DialogFooter></form></DialogContent></Dialog>
+    </div>;
+  };
+
   const renderSubcontract = () => {
     const teams = subcontractTeams.data ?? [];
     const packages = subcontractPackages.data ?? [];
@@ -2825,7 +2877,7 @@ export default function AdminPage() {
     </div>;
   };
 
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "subcontract" ? renderSubcontract() : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "subcontract" ? renderSubcontract() : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
     <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
