@@ -29,7 +29,7 @@ import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSupe
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
-import { storageGet } from "../storage";
+import { storageGet, storagePut } from "../storage";
 
 /** 期间一律采用 YYYY-MM，防止浏览器时区导致项目月报跨月统计。 */
 const periodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM");
@@ -273,6 +273,25 @@ const smallDirectPurchaseInput = z.object({
   orderedAt: isoDateTimeSchema,
   evidenceId: z.number().int().positive(),
 });
+
+/** 普通采购单据照片不生成水印，只作为采购清单、送货单或验收单的审计附件归档。 */
+const purchaseDocumentUploadInput = z.object({
+  projectId: z.number().int().positive(),
+  fileName: z.string().trim().min(1).max(200),
+  mimeType: z.enum(["image/jpeg", "image/png"]),
+  base64Data: z.string().min(16).max(12_000_000),
+  description: z.string().trim().min(2).max(300).default("采购单据照片"),
+});
+
+function decodePurchaseDocumentBase64(value: string, mimeType: "image/jpeg" | "image/png") {
+  const normalized = value.includes(",") ? value.slice(value.indexOf(",") + 1) : value;
+  const bytes = Buffer.from(normalized, "base64");
+  if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "单据照片必须为 JPG 或 PNG，且单张不超过 8MB" });
+  const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if ((mimeType === "image/jpeg" && !isJpeg) || (mimeType === "image/png" && !isPng)) throw new TRPCError({ code: "BAD_REQUEST", message: "单据照片格式与文件内容不一致" });
+  return bytes;
+}
 
 /** 采购订单结算只接收本次实际付款金额，待结算余额始终由服务端财务流水计算。 */
 const purchaseSettlementInput = z.object({
@@ -560,14 +579,45 @@ export const purchasingRouter = router({
     }));
   }),
 
-  /** 小额物资以清单水印影像存档；金额由数量乘单价计算，并可按后台开关直接入账。 */
+  /** 采购单据直接拍照上传：不调用水印相机，不要求定位，仅归档为当前项目采购审计附件。 */
+  uploadPurchaseDocument: protectedProcedure.input(purchaseDocumentUploadInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertPurchaseAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const bytes = decodePurchaseDocumentBase64(input.base64Data, input.mimeType);
+    const capturedAt = new Date();
+    const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "purchase-document.jpg";
+    const storedFile = await storagePut(`purchase-documents/${input.projectId}/${capturedAt.toISOString().slice(0, 10)}/${user.id}-${safeFileName}`, bytes, input.mimeType);
+    const result = await db.insert(evidenceRecords).values({
+      projectId: input.projectId,
+      sourceType: "purchase",
+      sourceId: "small_direct_document",
+      fileKey: storedFile.key,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      watermarkJson: JSON.stringify({ description: input.description, captureMode: "purchase_document_upload", capturedAt: capturedAt.toISOString(), version: 1 }),
+      longitude: null,
+      latitude: null,
+      capturedAt,
+      uploadedBy: user.id,
+    });
+    const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "upload_purchase_document", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档采购单据照片：${input.description.slice(0, 80)}（非水印影像）` });
+    return { success: true, id: evidenceId, fileName: input.fileName };
+  }),
+
+  /** 小额物资关联普通单据照片；手动金额优先，否则由数量乘单价计算，并按后台开关直接入账。 */
   createSmallDirectOrder: protectedProcedure.input(smallDirectPurchaseInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     await assertPurchaseAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-    const amount = input.quantity !== undefined && input.unitPrice !== undefined ? roundMoney(input.quantity * input.unitPrice) : input.amount;
+    const calculatedAmount = input.quantity !== undefined && input.unitPrice !== undefined ? roundMoney(input.quantity * input.unitPrice) : null;
+    const isManualAmount = input.amount !== undefined;
+    const amount = isManualAmount ? roundMoney(input.amount as number) : calculatedAmount;
     if (!amount || amount <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "请填写数量和单价，或提供有效金额" });
     const limit = await getSmallDirectPurchaseLimit(db);
     if (amount > limit) throw new TRPCError({ code: "BAD_REQUEST", message: `小额免申请采购金额不得超过 ¥${limit.toFixed(2)}，请先提交采购申请` });
@@ -582,9 +632,9 @@ export const purchasingRouter = router({
     const requiresSupervisorApproval = await getPurchaseRequiresSupervisorApproval(db);
     const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
     const orderId = Number(created?.id);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_small_direct_order", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "配置关闭后直接入账"}，已关联水印影像 #${input.evidenceId}` });
-    if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}，已附清单水印影像，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
-    return { success: true, id: orderId, limit, requiresSupervisorApproval, amount };
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_small_direct_order", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "配置关闭后直接入账"}，已关联单据照片 #${input.evidenceId}` });
+    if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}（${isManualAmount ? "手动录入" : "自动计算"}），已附采购单据照片，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
+    return { success: true, id: orderId, limit, requiresSupervisorApproval, amount, amountSource: isManualAmount ? "manual" : "auto" };
   }),
 
   /** 返回由服务端汇总的采购订单结算明细和余额，禁止移动端自行累计金额。 */
