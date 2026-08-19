@@ -2837,7 +2837,7 @@ export default function AdminPage() {
     const financeLedgerIncome = financeLedgerRows.filter(record => record.direction === "income" && record.settlementStatus !== "void").reduce((sum, record) => sum + Number(record.amount), 0);
     const financeLedgerExpense = financeLedgerRows.filter(record => record.direction === "expense" && record.settlementStatus !== "void").reduce((sum, record) => sum + Number(record.amount), 0);
     const settlementStatusLabel: Record<string, string> = { unpaid: "未结清", partial: "部分结清", paid: "已结清", void: "已作废" };
-    const sourceTypeLabel: Record<string, string> = { manual: "人工财务流水", measurement_claim: "工程计量申报", measurement_payment: "工程计量回款", purchase_order_settlement: "采购订单结算", financial_reversal: "财务冲销" };
+    const sourceTypeLabel: Record<string, string> = { manual: "人工财务流水", measurement_claim: "工程计量申报", measurement_payment: "工程计量回款", purchase_order_payable: "采购订单应付", purchase_order_settlement: "采购订单结算", financial_reversal: "财务冲销" };
     return <div className="space-y-5">
       <Card className="border-[#d8e3e0] shadow-sm">
         <CardHeader><CardTitle className="text-base">{isDiesel ? "柴油管理与加油台账" : "审计级财务管理"}</CardTitle><CardDescription>{isDiesel ? "管理员按每次加油的日期、升数和当天单价登记；系统在服务端固化金额快照并自动归集到机械、车辆、运输扣款和项目成本。" : "按项目和会计期间读取真实费用、成本、应收应付及发票状态。发票台账不重复计入成本；每日日结生成不可变快照，供会计审核与凭证装订打印。"}</CardDescription></CardHeader>

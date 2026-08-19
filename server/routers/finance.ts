@@ -1219,7 +1219,39 @@ export const financeRouter = router({
     const db = await getDb();
     if (!db) return { incomeAmount: 0, expenseAmount: 0, profitAmount: 0, receivableAmount: 0, payableAmount: 0, records: [] };
     const range = getMonthRange(input.period);
-    const records = await db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(desc(financialRecords.occurredAt));
+    const [physicalRecords, periodPurchaseOrders, allPurchaseSettlements] = await Promise.all([
+      db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(desc(financialRecords.occurredAt)),
+      db.select().from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))).orderBy(desc(purchaseOrders.orderedAt)),
+      db.select({ sourceId: financialRecords.sourceId, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus }).from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.sourceType, "purchase_order_settlement"))).orderBy(desc(financialRecords.occurredAt)),
+    ]);
+    const settledByOrder = new Map<string, number>();
+    for (const settlement of allPurchaseSettlements) {
+      if (!settlement.sourceId || settlement.settlementStatus === "void") continue;
+      settledByOrder.set(settlement.sourceId, roundMoney((settledByOrder.get(settlement.sourceId) ?? 0) + Number(settlement.amount)));
+    }
+    const purchasePayables = periodPurchaseOrders
+      .filter(order => ["confirmed", "received", "closed"].includes(order.status))
+      .map(order => {
+        const remainingAmount = roundMoney(Math.max(0, Number(order.amount) - (settledByOrder.get(String(order.id)) ?? 0)));
+        if (remainingAmount <= 0) return null;
+        return {
+          id: `purchase-payable-${order.id}`,
+          recordNo: `${order.orderNo}-AP`,
+          projectId: order.projectId,
+          direction: "expense" as const,
+          category: "采购应付",
+          amount: String(remainingAmount),
+          occurredAt: order.orderedAt,
+          settlementStatus: (settledByOrder.get(String(order.id)) ?? 0) > 0 ? "partial" : "unpaid",
+          sourceType: "purchase_order_payable",
+          sourceId: String(order.id),
+          evidenceId: order.evidenceId,
+          remarks: `采购订单 ${order.orderNo}：${order.itemDescription}；未结余额 ¥${remainingAmount.toFixed(2)}`,
+          dailyClosingId: null,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+    const records = [...physicalRecords, ...purchasePayables].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
     const confirmedIncomeRecords = records.filter(item => item.direction === "income" && item.sourceType !== "measurement_payment" && item.settlementStatus !== "void");
     const measurementPayments = records.filter(item => item.sourceType === "measurement_payment" && item.settlementStatus !== "void");
     const paymentByClaim = new Map<string, number>();
@@ -1233,9 +1265,9 @@ export const financeRouter = router({
       if (item.sourceType !== "measurement_claim") return sum + Number(item.amount);
       return sum + Math.max(0, Number(item.amount) - (paymentByClaim.get(item.sourceId ?? "") ?? 0));
     }, 0));
-    const payableAmount = roundMoney(records.filter(item => item.direction === "expense" && ["unpaid", "partial"].includes(item.settlementStatus)).reduce((sum, item) => sum + Number(item.amount), 0));
+    const payableAmount = roundMoney(records.filter(item => item.direction === "expense" && item.sourceType !== "purchase_order_settlement" && ["unpaid", "partial"].includes(item.settlementStatus)).reduce((sum, item) => sum + Number(item.amount), 0));
     const cashInflowAmount = roundMoney(records.filter(item => item.direction === "income" && item.settlementStatus !== "void" && (item.sourceType === "measurement_payment" || (item.sourceType !== "measurement_claim" && item.settlementStatus === "paid"))).reduce((sum, item) => sum + Number(item.amount), 0));
-    const cashOutflowAmount = roundMoney(records.filter(item => item.direction === "expense" && item.settlementStatus === "paid").reduce((sum, item) => sum + Number(item.amount), 0));
+    const cashOutflowAmount = roundMoney(records.filter(item => item.direction === "expense" && (item.settlementStatus === "paid" || item.sourceType === "purchase_order_settlement")).reduce((sum, item) => sum + Number(item.amount), 0));
     return { incomeAmount, expenseAmount, profitAmount: roundMoney(incomeAmount - expenseAmount), receivableAmount, payableAmount, cashInflowAmount, cashOutflowAmount, netCashFlowAmount: roundMoney(cashInflowAmount - cashOutflowAmount), records };
   }),
 });

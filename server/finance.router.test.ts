@@ -505,6 +505,23 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
+  it("已确认采购订单作为应付进入财务总账，实际采购结算只计入现金流且不重复累计", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [{ id: 201, recordNo: "PSET-001", direction: "expense", category: "采购结算", amount: "200.00", settlementStatus: "paid", sourceType: "purchase_order_settlement", sourceId: "81", occurredAt: new Date("2026-07-22T08:00:00.000Z") }],
+      [{ id: 81, projectId: 10, orderNo: "SPD-001", itemDescription: "生活物资", amount: "1000.00", status: "confirmed", orderedAt: new Date("2026-07-20T08:00:00.000Z"), evidenceId: null }],
+      [{ sourceId: "81", amount: "200.00", settlementStatus: "paid" }],
+    ) as never);
+
+    const result = await financeRouter.createCaller(createAuthContext()).summary({ projectId: 10, period: "2026-07" });
+
+    expect(result).toMatchObject({ expenseAmount: 1000, payableAmount: 800, cashOutflowAmount: 200, netCashFlowAmount: -200 });
+    expect(result.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceType: "purchase_order_payable", amount: "800", settlementStatus: "partial", sourceId: "81" }),
+      expect.objectContaining({ sourceType: "purchase_order_settlement", amount: "200.00", settlementStatus: "paid", sourceId: "81" }),
+    ]));
+  });
+
   it("财务月报将计量收入确认与实际回款分开统计，并以回款余额计算应收", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([
