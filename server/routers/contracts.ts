@@ -5,6 +5,7 @@ import { auditLogs, outsourceContracts } from "../../drizzle/schema";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertRoleOperationPermission, getEffectiveRoleCodes, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 
 const contractType = z.enum(["transport", "labor_subcontract", "machinery_lease", "material_supply", "other"]);
 const pricingMethod = z.enum(["lump_sum", "unit_price", "trip", "ton", "m3", "day", "month", "other"]);
@@ -93,6 +94,7 @@ export const contractRouter = router({
     }
     if (!contractId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "合同保存后未找到记录" });
     await db.insert(auditLogs).values({ userId: user.id, module: "contract", action: input.id ? "update_outsource_contract" : "create_outsource_contract", targetType: "outsource_contract", targetId: String(contractId), summary: `${input.id ? "维护" : "新建"}外包合同：${input.counterpartyName}，金额 ¥${input.contractAmount.toFixed(2)}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "contract", eventCode: input.id ? "outsource_contract_updated" : "outsource_contract_created", targetType: "outsource_contract", targetId: String(contractId), title: input.id ? "外包合同草案已更新" : "外包合同草案已建立", content: "一份外包合同已登记或更新，请进入系统查看受控合同台账与签署前审阅提示。", deepLink: "/admin/contracts" }).catch(() => undefined);
     return { success: true, contractId };
   }),
 
@@ -111,6 +113,7 @@ export const contractRouter = router({
     if (!["closed", "void"].includes(input.targetStatus) && !canMaintain(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无合同状态维护权限" });
     await db.update(outsourceContracts).set({ status: input.targetStatus }).where(and(eq(outsourceContracts.id, input.id), eq(outsourceContracts.status, existing.status)));
     await db.insert(auditLogs).values({ userId: user.id, module: "contract", action: "transition_outsource_contract", targetType: "outsource_contract", targetId: String(input.id), summary: `外包合同状态变更为：${input.targetStatus}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "contract", eventCode: `outsource_contract_${input.targetStatus}`, targetType: "outsource_contract", targetId: String(input.id), title: `外包合同状态已更新`, content: "一份外包合同的办理状态已更新，请进入系统查看受控合同台账。", deepLink: "/admin/contracts" }).catch(() => undefined);
     return { success: true };
   }),
 });

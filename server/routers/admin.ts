@@ -932,8 +932,10 @@ export const adminRouter = router({
         else if (input.status !== "void") await db.insert(machineCostRecords).values(costValues);
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}` });
+      void notifyOfficialAccountBusinessEventSafely({ userId: admin.id, projectId: input.projectId, module: "diesel", eventCode: effectiveStatus === "void" ? "diesel_refuel_voided" : input.id ? "diesel_refuel_updated" : "diesel_refuel_recorded", targetType: "diesel_refuel", targetId: String(recordId), title: effectiveStatus === "void" ? "柴油领用已作废" : input.id ? "柴油领用已更新" : "柴油领用已直接记账", content: "一笔柴油领用记录已处理，请进入系统查看受控台账与原始凭证。", deepLink: "/admin/diesel" }).catch(() => undefined);
       if (priceAlert.isAlert) {
         await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "price_alert", targetType: "diesel_refuel", targetId: String(recordId), summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）` });
+        void notifyOfficialAccountBusinessEventSafely({ userId: admin.id, projectId: input.projectId, module: "diesel", eventCode: "diesel_price_alert", targetType: "diesel_refuel", targetId: String(recordId), title: "柴油现金价格异常待核验", content: "一笔柴油领用触发价格异常规则，请进入系统核对供油记录、票据与供应商对账。", deepLink: "/admin/diesel" }).catch(() => undefined);
       }
       return { success: true, id: recordId, amount, appliedUnitPrice, priceAlert };
     }),

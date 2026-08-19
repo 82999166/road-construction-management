@@ -3,9 +3,9 @@ import { vi } from "vitest";
 import { buildSingleFieldSummary, normalizeTemplateFieldValue, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./services/officialAccountNotifier";
 
 describe("服务号业务通知模板矩阵", () => {
-  it("覆盖采购、施工、运输、财务、计量、劳务、机械与安全消息", () => {
+  it("覆盖采购、柴油、合同、施工、运输、财务、计量、劳务、机械与安全消息", () => {
     const modules = new Set(OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.map(item => item.module));
-    expect(modules).toEqual(new Set(["construction", "purchasing", "transport", "finance", "measurement", "labor", "machinery", "security"]));
+    expect(modules).toEqual(new Set(["construction", "purchasing", "diesel", "transport", "finance", "measurement", "labor", "machinery", "contract", "security"]));
   });
 
   it("每类通知均有事件、跳转地址与最小模板字段需求", () => {
@@ -23,6 +23,8 @@ describe("服务号业务通知模板矩阵", () => {
     expect(eventCodes.has("transport_load_driver_notice")).toBe(true);
     expect(eventCodes.has("transport_unload_driver_notice")).toBe(true);
     expect(eventCodes.has("construction_daily_report_updated")).toBe(true);
+    expect(eventCodes.has("diesel_price_alert")).toBe(true);
+    expect(eventCodes.has("outsource_contract_created")).toBe(true);
   });
 
   it("对仅有一个可填字段的私有模板启用摘要兼容，保留标题、内容和事件语义", () => {

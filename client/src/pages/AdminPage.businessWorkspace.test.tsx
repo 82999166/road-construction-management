@@ -396,6 +396,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
   });
 
+  it("在财务管理显示小类目成本占比，并支持导出当前项目和期间的真实汇总", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("小类目成本占比与导出");
+    expect(source).toContain("生活开支占项目开支");
+    expect(source).toContain("工资劳务占项目开支");
+    expect(source).toContain("导出小类目汇总");
+    expect(source).toContain("riskFinanceAnalysis.data?.subcategories");
+    expect(source).toContain("采购订单应付与实际现金结算继续分开处理");
+  });
+
   it("提供项目容量完备度、整改责任人期限和逾期升级验收闭环", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

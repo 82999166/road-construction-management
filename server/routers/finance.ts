@@ -577,7 +577,7 @@ export const purchasingRouter = router({
     const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
     const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
       const stored = await storageGet(evidence.fileKey);
-      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType, url: stored.url }] as const;
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url: stored.url }] as const;
     })));
     return orders.map(order => ({ ...order, documentAttachment: order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null, invoiceAttachment: order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null }));
   }),
@@ -778,6 +778,7 @@ export const purchasingRouter = router({
     await db.insert(inventoryTransactions).values({ projectId: input.projectId, requestId: input.requestId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, transactionNo: createBusinessNo("INV"), transactionType: input.transactionType, itemName: input.itemName, unit: input.unit, quantity: String(input.quantity), unitCost: String(roundMoney(input.unitCost)), amount: String(amount), occurredAt: new Date(input.occurredAt), operatorId: user.id, remarks: input.remarks ?? null });
     if (input.transactionType === "inbound" && input.requestId) await db.update(purchaseRequests).set({ status: "stocked", stockedBy: user.id, stockedAt: new Date() }).where(eq(purchaseRequests.id, input.requestId));
     await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.itemName, summary: `登记库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用" : "退库"}：${input.itemName}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.purchaseOrderId ? String(input.purchaseOrderId) : `${input.transactionType}:${input.itemName}`, title: `库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用出库" : "退库"}已登记`, content: "一笔采购仓储收发记录已登记，请进入系统查看受控台账。", deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, amount };
   }),
 });

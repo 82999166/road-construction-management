@@ -20,7 +20,7 @@ const OFFICIAL_ACCOUNT_CONFIG_KEYS = [
 
 type OfficialAccountConfigKey = (typeof OFFICIAL_ACCOUNT_CONFIG_KEYS)[number];
 type OfficialAccountEgressConfig = { egressUrl?: string; egressSharedSecret?: string };
-export type OfficialAccountModule = "purchasing" | "measurement" | "finance" | "machinery" | "transport" | "security" | "labor" | "construction";
+export type OfficialAccountModule = "purchasing" | "measurement" | "finance" | "machinery" | "transport" | "security" | "labor" | "construction" | "diesel" | "contract";
 type OfficialAccountTemplateBinding = { templateId: string; title: string; templateFields: Record<string, string> };
 export type OfficialAccountConfig = { appId: string; appSecret: string; appUrl: string | null; moduleTemplates: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>>; fallbackTemplate?: OfficialAccountTemplateBinding } & OfficialAccountEgressConfig;
 export type OfficialAccountCredentialConfig = { appId: string; appSecret: string; appUrl: string | null } & OfficialAccountEgressConfig;
@@ -74,11 +74,13 @@ export type OfficialAccountNotificationTemplateCoverage = {
 export const OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX: OfficialAccountNotificationTemplateCoverage[] = [
   { module: "construction", name: "施工日报与现场审核", events: ["construction_daily_report_created", "construction_daily_report_updated", "construction_daily_report_submitted", "construction_daily_report_approved", "construction_daily_report_rejected", "construction_daily_report_locked"], deepLink: "/mobile/construction", purpose: "施工日报录入、修改、审核和归档提醒", requiredVariables: ["title", "content", "eventCode"] },
   { module: "purchasing", name: "采购申请与订单审核", events: ["purchase_request_submitted", "purchase_request_approved", "purchase_request_rejected", "purchase_order_small_direct_submitted", "purchase_order_confirmed", "purchase_order_received", "purchase_order_settlement"], deepLink: "/mobile/purchasing", purpose: "常规采购申请、小额免申请订单、收货和结算提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "diesel", name: "柴油领用与价格核验", events: ["diesel_refuel_recorded", "diesel_refuel_updated", "diesel_refuel_voided", "diesel_price_alert"], deepLink: "/admin/diesel", purpose: "柴油直接记账、作废和现金价格异常核验提醒", requiredVariables: ["title", "content", "targetId"] },
   { module: "transport", name: "运输刷卡与趟次闭环", events: ["transport_card_event_exception", "transport_load_card_confirmed", "transport_unload_card_confirmed", "transport_load_driver_notice", "transport_unload_driver_notice", "transport_trip_confirmed", "transport_trip_completed"], deepLink: "/mobile/transport", purpose: "装土、卸土刷卡、司机通知、异常复核和趟次状态提醒", requiredVariables: ["title", "content", "targetId"] },
   { module: "finance", name: "财务流水与审计处理", events: ["financial_income", "financial_expense", "financial_voided", "financial_reversed"], deepLink: "/mobile/finance", purpose: "项目收支登记、作废和冲销提醒", requiredVariables: ["title", "content", "eventCode"] },
   { module: "measurement", name: "收方、计量与回款", events: ["takeoff_submitted", "takeoff_reviewed", "takeoff_approved", "takeoff_locked", "measurement_submitted", "measurement_approved", "measurement_payment"], deepLink: "/mobile/measurement", purpose: "项目收方、工程计量、审核锁定及回款提醒", requiredVariables: ["title", "content", "targetId"] },
   { module: "labor", name: "劳务实名、证照与工资", events: ["labor_identity_verified", "labor_certificate_archived", "payroll_submitted", "payroll_paid", "payroll_voided"], deepLink: "/mobile/labor", purpose: "实名核验、证照归档、工资审核与发放提醒", requiredVariables: ["title", "content", "eventCode"] },
   { module: "machinery", name: "机械成本审核", events: ["machine_cost_submitted", "machine_cost_approved", "machine_cost_rejected", "machine_cost_locked"], deepLink: "/mobile/machinery", purpose: "机械成本登记和审核提醒", requiredVariables: ["title", "content", "targetId"] },
+  { module: "contract", name: "外包合同办理", events: ["outsource_contract_created", "outsource_contract_updated", "outsource_contract_active", "outsource_contract_suspended", "outsource_contract_closed", "outsource_contract_void"], deepLink: "/admin/contracts", purpose: "外包合同草案、启用、暂停、关闭和作废提醒", requiredVariables: ["title", "content", "targetId"] },
   { module: "security", name: "系统安全与连接告警", events: ["system_connector_test_failed", "role_permissions_updated"], deepLink: "/admin/settings", purpose: "权限变更和外部连接失败提醒", requiredVariables: ["title", "content", "eventCode"] },
 ];
 
@@ -113,7 +115,7 @@ function parseModuleTemplateMappings(rawValue: string | null): Partial<Record<Of
   try {
     const parsed = JSON.parse(rawValue) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const allowedModules = new Set<OfficialAccountModule>(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction"]);
+    const allowedModules = new Set<OfficialAccountModule>(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction", "diesel", "contract"]);
     const result: Partial<Record<OfficialAccountModule, OfficialAccountTemplateBinding>> = {};
     for (const [module, binding] of Object.entries(parsed)) {
       if (!allowedModules.has(module as OfficialAccountModule) || !binding || typeof binding !== "object" || Array.isArray(binding)) continue;

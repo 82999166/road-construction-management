@@ -328,20 +328,31 @@ async function getFinanceCategoryAnalysis(projectId: number, period: string) {
     db.select({ id: assetMaintenanceRecords.id, assetType: assetMaintenanceRecords.assetType, amount: assetMaintenanceRecords.amount, occurredAt: assetMaintenanceRecords.occurredAt, status: assetMaintenanceRecords.status }).from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.projectId, projectId), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
   ]);
   const buckets = new Map(Object.keys(FINANCE_CATEGORY_LABELS).map(code => [code, { code, label: FINANCE_CATEGORY_LABELS[code], amount: 0, recordCount: 0, sources: new Set<string>() }]));
+  const subcategoryBuckets = new Map<string, { code: string; parentCode: string; label: string; amount: number; recordCount: number; sources: Set<string> }>();
   const add = (code: string, amount: number, source: string) => {
     const bucket = buckets.get(code) ?? buckets.get("other")!;
     bucket.amount += amount;
     bucket.recordCount += 1;
     bucket.sources.add(source);
   };
-  for (const row of financeRows.filter(row => row.settlementStatus !== "void")) add(classifyFinanceCategory(row), Number(row.amount), "财务流水");
-  for (const row of dieselRows.filter(row => row.status !== "void")) add("diesel", Number(row.amount), "柴油领用");
-  for (const row of payrollRows.filter(row => ["approved", "paid"].includes(row.status))) add("payroll", Number(row.amount), "工资条");
-  for (const row of machineCosts.filter(row => row.status !== "void")) add(row.costType === "fuel" ? "diesel" : "machinery", Number(row.amount), "机械成本");
-  for (const row of maintenanceRows.filter(row => row.status !== "void")) add(row.assetType === "machine" ? "machinery" : "vehicle_transport", Number(row.amount), "维修保养");
+  const addSubcategory = (parentCode: string, label: string, amount: number, source: string) => {
+    const normalizedLabel = label.trim().slice(0, 80) || "未分类明细";
+    const key = `${parentCode}:${normalizedLabel}`;
+    const bucket = subcategoryBuckets.get(key) ?? { code: key, parentCode, label: normalizedLabel, amount: 0, recordCount: 0, sources: new Set<string>() };
+    bucket.amount += amount;
+    bucket.recordCount += 1;
+    bucket.sources.add(source);
+    subcategoryBuckets.set(key, bucket);
+  };
+  for (const row of financeRows.filter(row => row.settlementStatus !== "void")) { const code = classifyFinanceCategory(row); add(code, Number(row.amount), "财务流水"); addSubcategory(code, row.category || "人工财务流水", Number(row.amount), "财务流水"); }
+  for (const row of dieselRows.filter(row => row.status !== "void")) { add("diesel", Number(row.amount), "柴油领用"); addSubcategory("diesel", "柴油领用", Number(row.amount), "柴油领用"); }
+  for (const row of payrollRows.filter(row => ["approved", "paid"].includes(row.status))) { add("payroll", Number(row.amount), "工资条"); addSubcategory("payroll", "已审核工资条", Number(row.amount), "工资条"); }
+  for (const row of machineCosts.filter(row => row.status !== "void")) { const code = row.costType === "fuel" ? "diesel" : "machinery"; const label = row.costType === "fuel" ? "机械油料" : row.costType === "repair" ? "机械维修" : row.costType === "overtime" ? "机械加班" : row.costType === "mobilization" ? "机械进退场" : "机械其他成本"; add(code, Number(row.amount), "机械成本"); addSubcategory(code, label, Number(row.amount), "机械成本"); }
+  for (const row of maintenanceRows.filter(row => row.status !== "void")) { const code = row.assetType === "machine" ? "machinery" : "vehicle_transport"; const label = row.assetType === "machine" ? "机械维修保养" : "车辆维修保养"; add(code, Number(row.amount), "维修保养"); addSubcategory(code, label, Number(row.amount), "维修保养"); }
   const categories = Array.from(buckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
+  const subcategories = Array.from(subcategoryBuckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
   const expenseAmount = round(categories.reduce((total, item) => total + item.amount, 0));
-  return { period, projectId, expenseAmount, categories: categories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })) };
+  return { period, projectId, expenseAmount, categories: categories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })), subcategories: subcategories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })) };
 }
 
 export function safeParseBriefing(value: string | null | undefined) {
