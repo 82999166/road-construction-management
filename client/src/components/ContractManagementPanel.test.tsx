@@ -1,0 +1,15 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+describe("外包合同管理入口与草案", () => {
+  it("新建按钮会给出项目范围或权限反馈，并提供三类可编辑合同草案", () => {
+    const source = readFileSync(fileURLToPath(new URL("./ContractManagementPanel.tsx", import.meta.url)), "utf8");
+
+    expect(source).toContain("请先选择合同项目范围，再新建外包合同");
+    expect(source).toContain("附属工程外包合同草案");
+    expect(source).toContain("渣土车运输合同草案");
+    expect(source).toContain("工程机械租赁合同草案");
+    expect(source).toContain("签署前请由项目法务或律师");
+  });
+});
