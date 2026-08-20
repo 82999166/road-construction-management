@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "a0ec8002-5d36-4384-a036-a96c2134e671",
-  "prevId": "791d6461-4ede-48af-90e8-3482d759c69c",
+  "id": "ef7578c2-2efb-484c-b895-42a1ff070b0c",
+  "prevId": "a0ec8002-5d36-4384-a036-a96c2134e671",
   "tables": {
     "asset_maintenance_records": {
       "name": "asset_maintenance_records",
@@ -6546,6 +6546,35 @@
           "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "payloadEncrypted": {
+          "name": "payloadEncrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "executionMode": {
+          "name": "executionMode",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'manual_confirmation'"
+        },
+        "bridgeTokenHash": {
+          "name": "bridgeTokenHash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bridgeTokenExpiresAt": {
+          "name": "bridgeTokenExpiresAt",
+          "type": "datetime",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "payloadVersion": {

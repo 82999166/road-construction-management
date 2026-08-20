@@ -1197,6 +1197,13 @@ export const rfidCardWriteJobs = mysqlTable(
     writerDeviceId: int("writerDeviceId"),
     action: mysqlEnum("action", ["issue", "rewrite", "revoke"]).notNull(),
     payloadFingerprint: varchar("payloadFingerprint", { length: 64 }).notNull(),
+    /** 正式 PC 写卡任务将 RC3 载荷和签名深链 AES-GCM 加密暂存；浏览器和普通任务列表均不返回明文。 */
+    payloadEncrypted: text("payloadEncrypted"),
+    /** manual_confirmation、mobile_web_nfc、pc_bridge。仅 pc_bridge 可由本地桥接回读后自动确认。 */
+    executionMode: varchar("executionMode", { length: 32 }).default("manual_confirmation").notNull(),
+    /** 一次性桥接令牌只存 SHA-256 摘要，过期或完成后失效。 */
+    bridgeTokenHash: varchar("bridgeTokenHash", { length: 64 }),
+    bridgeTokenExpiresAt: datetime("bridgeTokenExpiresAt"),
     payloadVersion: int("payloadVersion").notNull(),
     status: mysqlEnum("status", ["prepared", "confirmed", "failed", "cancelled"]).default("prepared").notNull(),
     failureReason: varchar("failureReason", { length: 500 }),

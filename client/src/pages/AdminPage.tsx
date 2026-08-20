@@ -905,7 +905,7 @@ export default function AdminPage() {
   const selectedRfidVehicle = useMemo(() => (transportVehicleLedger.data ?? []).find(vehicle => String(vehicle.id) === rfidCardForm.vehicleId) ?? null, [rfidCardForm.vehicleId, transportVehicleLedger.data]);
   const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
   const [rfidCardDialogOpen, setRfidCardDialogOpen] = useState(false);
-  const [rfidWritePreview, setRfidWritePreview] = useState<{ jobId: number; jobNo: string; payload: Record<string, unknown>; hardwareMode: "manual_confirmation" } | null>(null);
+  const [rfidWritePreview, setRfidWritePreview] = useState<{ jobId: number; jobNo: string; payload: Record<string, unknown> | null; hardwareMode: "manual_confirmation" | "pc_bridge"; bridgeToken: string | null } | null>(null);
   const [roleForm, setRoleForm] = useState<RoleForm>(EMPTY_ROLE_FORM);
   const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>(EMPTY_ASSIGNMENT_FORM);
   const [personnelSearch, setPersonnelSearch] = useState("");
@@ -1338,11 +1338,33 @@ export default function AdminPage() {
   };
   const prepareRfidCardWrite = trpc.transport.prepareRfidCardWrite.useMutation({
     onSuccess: data => {
-      setRfidWritePreview({ jobId: data.jobId, jobNo: data.jobNo, payload: data.payload as Record<string, unknown>, hardwareMode: data.hardwareMode });
-      toast.success("写卡载荷已生成；请在现场写卡器完成物理写入后确认结果");
+      const isPcBridge = data.hardwareMode === "pc_bridge";
+      setRfidWritePreview({ jobId: data.jobId, jobNo: data.jobNo, payload: "payload" in data ? data.payload as Record<string, unknown> : null, hardwareMode: data.hardwareMode, bridgeToken: isPcBridge ? data.bridgeToken : null });
+      toast.success(isPcBridge ? "PC 受控写卡任务已生成，请保持新卡放在 uTrust 感应区后执行写入。" : "写卡载荷已生成；请在现场写卡器完成物理写入后确认结果");
     },
     onError: error => toast.error(error.message),
   });
+  const [writingRfidCard, setWritingRfidCard] = useState(false);
+  const writeRfidCardWithBridge = async () => {
+    if (!rfidWritePreview?.bridgeToken) return toast.error("本地写卡授权无效，请重新生成 PC 写卡任务");
+    setWritingRfidCard(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
+    try {
+      const response = await fetch("http://127.0.0.1:47601/api/write-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: rfidWritePreview.bridgeToken }), cache: "no-store", signal: controller.signal });
+      const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; message?: string; status?: string };
+      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error(result.message || `本地写卡未通过回读校验（HTTP ${response.status}）`);
+      toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
+      setRfidWritePreview(null);
+      await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === "AbortError" ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。" : error instanceof Error ? error.message : "本地车辆卡写入失败";
+      toast.error(message);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setWritingRfidCard(false);
+    }
+  };
   const confirmRfidCardWrite = trpc.transport.confirmRfidCardWrite.useMutation({
     onSuccess: async data => {
       toast.success(data.status === "confirmed" ? "写卡结果已确认并留痕" : "写卡失败已记录，请核对设备和卡片后重试");
@@ -2783,7 +2805,7 @@ export default function AdminPage() {
           <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-sm font-medium text-[#203c48]">射频写卡 · 受控预留</p><CardTitle className="mt-1 text-base">车辆卡绑定与写卡任务</CardTitle><CardDescription className="mt-1 max-w-3xl">系统生成并审计车辆、车型、货厢、司机与联系电话载荷；当前不伪造 USB/串口直连，现场需使用已登记写卡器完成物理写入后再确认结果。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM); setRfidWriterDialogOpen(true); }}>登记写卡器</Button><Button size="sm" onClick={() => { const firstVehicle = transportVehicleLedger.data?.[0]; setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: firstVehicle ? String(firstVehicle.id) : "", writerDeviceId: writerDevices[0] ? String(writerDevices[0].id) : "", driverPhone: firstVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} disabled={!transportVehicleLedger.data?.length}>绑定车辆卡</Button></div></CardHeader>
           <CardContent className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
             <div className="space-y-2"><p className="text-sm font-medium text-slate-800">写卡器设备</p>{writerDevices.length ? writerDevices.map(device => <div key={device.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{device.displayName}</p><BusinessStatusBadge status={device.status} /></div><p className="mt-1 text-xs text-slate-500">编号 {device.deviceCode} · 型号 {device.model || "待采购/未登记"} · {device.connectionMode === "manual_placeholder" ? "人工确认模式" : device.connectionMode}</p></div>) : <EmptyState text="尚未登记写卡器。可先登记编号和型号，硬件协议后续再受控接入。" />}</div>
-            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(card => <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{card.plateNo}</p><BusinessStatusBadge status={card.status} /><Badge variant="outline">卡 {card.cardUidMasked}</Badge></div><p className="mt-1 text-xs text-slate-500">司机电话 {card.driverPhoneMasked || "未登记"} · 写卡器 {card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""} · 最近写入 {displayDate(card.lastWrittenAt)}</p></div><Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: card.lastWrittenAt ? "rewrite" : "issue" })} disabled={prepareRfidCardWrite.isPending || card.status !== "active"}>{prepareRfidCardWrite.isPending ? "生成中…" : card.lastWrittenAt ? "生成补写任务" : "生成写卡任务"}</Button></div></div>) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>
+            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(card => <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{card.plateNo}</p><BusinessStatusBadge status={card.status} /><Badge variant="outline">卡 {card.cardUidMasked}</Badge></div><p className="mt-1 text-xs text-slate-500">司机电话 {card.driverPhoneMasked || "未登记"} · 写卡器 {card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""} · 最近写入 {displayDate(card.lastWrittenAt)}</p></div><Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: card.lastWrittenAt ? "rewrite" : "issue", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || card.status !== "active"}>{prepareRfidCardWrite.isPending ? "生成中…" : card.lastWrittenAt ? "PC 补写车辆卡" : "PC 写入车辆卡"}</Button></div></div>) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>
           </CardContent>
         </Card>
 
@@ -2830,7 +2852,7 @@ export default function AdminPage() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>受控写卡载荷 · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。</DialogDescription></DialogHeader><pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre><DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending}>记录写卡失败</Button><Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button></DialogFooter></DialogContent></Dialog>
+        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "PC 受控车辆卡写入" : "受控写卡载荷"} · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "请将已绑定的 NTAG216 保持在 uTrust 4701 F CL Reader 感应区。系统仅把一次性任务授权交给本机桥接；桥接将读取 UID、向服务器领取匹配载荷、写入 NDEF 并逐字节回读，全部成功后自动确认。" : "请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。"}</DialogDescription></DialogHeader>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950"><p className="font-semibold">将卡片放在读卡器感应区后开始。</p><p className="mt-1 text-xs">不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。</p></div> : <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre>}<DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending || writingRfidCard}>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "关闭任务" : "记录写卡失败"}</Button>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <Button onClick={() => void writeRfidCardWithBridge()} disabled={writingRfidCard}>{writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}</Button> : <Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button>}</DialogFooter></DialogContent></Dialog>
       </div>
     );
   };

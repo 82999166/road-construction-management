@@ -40,6 +40,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
+import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -308,6 +309,7 @@ const rfidWritePrepareInput = z.object({
   projectId: z.number().int().positive(),
   writerDeviceId: z.number().int().positive().nullable().optional(),
   action: z.enum(["issue", "rewrite", "revoke"]).default("issue"),
+  executionMode: z.enum(["manual_confirmation", "pc_bridge"]).default("manual_confirmation"),
 });
 
 /**
@@ -1540,6 +1542,7 @@ export const transportRouter = router({
     const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
     const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const jobNo = createRfidWriteJobNo(input.projectId);
+    const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
     await db.insert(rfidCardWriteJobs).values({
       jobNo,
       projectId: input.projectId,
@@ -1548,6 +1551,8 @@ export const transportRouter = router({
       writerDeviceId: null,
       action: "issue",
       payloadFingerprint,
+      payloadEncrypted: encryptSecret(JSON.stringify({ payload, nfcEntryUrl })),
+      executionMode: "mobile_web_nfc",
       payloadVersion: card.payloadVersion,
       preparedBy: user.id,
     });
@@ -1561,7 +1566,6 @@ export const transportRouter = router({
       targetId: String(card.id),
       summary: `准备手机首次发卡：车辆 ${vehicle.plateNo}，系统卡号 ${card.cardUidMasked}`,
     });
-    const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
     return { success: true, jobId: job.id, jobNo, cardId: card.id, cardCode: card.cardUidMasked, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "mobile_web_nfc" as const };
   }),
 
@@ -1589,12 +1593,16 @@ export const transportRouter = router({
     const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
     const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const jobNo = createRfidWriteJobNo(input.projectId);
-    await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadVersion: card.payloadVersion, preparedBy: user.id });
+    const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
+    const bridgeToken = input.executionMode === "pc_bridge" ? createRfidBridgeToken() : null;
+    const bridgeTokenExpiresAt = bridgeToken ? new Date(Date.now() + RFID_BRIDGE_TOKEN_TTL_MS) : null;
+    await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadEncrypted: encryptSecret(JSON.stringify({ payload, nfcEntryUrl })), executionMode: input.executionMode, bridgeTokenHash: bridgeToken ? hashRfidBridgeToken(bridgeToken) : null, bridgeTokenExpiresAt, payloadVersion: card.payloadVersion, preparedBy: user.id });
     const [job] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.jobNo, jobNo)).limit(1);
     if (!job) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "写卡任务创建失败" });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "prepare_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: `准备${input.action === "rewrite" ? "补写" : input.action === "revoke" ? "挂失" : "写入"}车辆 ${vehicle.plateNo} 的射频卡任务` });
-    const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
-    return { success: true, jobId: job.id, jobNo, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "manual_confirmation" as const };
+    return input.executionMode === "pc_bridge"
+      ? { success: true, jobId: job.id, jobNo, payloadFingerprint, bridgeToken, bridgeTokenExpiresAt: bridgeTokenExpiresAt?.toISOString() ?? null, hardwareMode: "pc_bridge" as const }
+      : { success: true, jobId: job.id, jobNo, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "manual_confirmation" as const };
   }),
 
   /** 物理写卡器接入前由现场管理员确认结果；失败和确认均保留任务审计，不能通过前端静默修改卡状态。 */
@@ -1608,6 +1616,7 @@ export const transportRouter = router({
     const [job] = await db.select().from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.id, input.id)).limit(1);
     if (!job || job.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "写卡任务不存在或不属于当前项目" });
     if (job.status !== "prepared") throw new TRPCError({ code: "CONFLICT", message: "该写卡任务已处理，请勿重复确认" });
+    if (job.executionMode === "pc_bridge") throw new TRPCError({ code: "FORBIDDEN", message: "本地 uTrust 写卡任务必须由桥接完成 UID 校验与回读确认，不能手工确认成功" });
     const now = new Date();
     await db.update(rfidCardWriteJobs).set({ status: input.success ? "confirmed" : "failed", failureReason: input.success ? null : input.failureReason ?? "现场写卡未成功", confirmedBy: user.id, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
     if (input.success) {

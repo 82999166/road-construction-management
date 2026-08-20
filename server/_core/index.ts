@@ -8,6 +8,7 @@ import { registerIdentityRecoveryRoute } from "../identityRecovery";
 import { registerOfficialAccountBindingRoutes } from "../officialAccountBinding";
 import { registerDailyProjectDigestHeartbeatRoute } from "../dailyProjectDigestHeartbeat";
 import { registerProjectRiskHeartbeatRoute } from "../projectRiskHeartbeat";
+import { registerLocalRfidBridgeRoutes } from "../localRfidBridge";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -44,6 +45,7 @@ async function startServer() {
   registerOfficialAccountBindingRoutes(app);
   registerDailyProjectDigestHeartbeatRoute(app);
   registerProjectRiskHeartbeatRoute(app);
+  registerLocalRfidBridgeRoutes(app);
   // 微信服务号网页授权域名校验文件必须在 SPA 静态回退之前从根路径返回。
   app.get("/MP_verify_amDyVeLccZJcmzJL.txt", (_req, res) => {
     res.type("text/plain").send("amDyVeLccZJcmzJL");
