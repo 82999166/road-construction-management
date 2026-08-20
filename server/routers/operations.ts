@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, isNull, lt, ne } from "drizzle-orm";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -308,6 +308,15 @@ const rfidWritePrepareInput = z.object({
   projectId: z.number().int().positive(),
   writerDeviceId: z.number().int().positive().nullable().optional(),
   action: z.enum(["issue", "rewrite", "revoke"]).default("issue"),
+});
+
+/**
+ * Android Web NFC 不会向网页暴露 NTAG216 的物理 UID。因此首次发卡由服务端生成不可预测的
+ * 逻辑卡绑定引用，实际装卸扫描继续只信任卡内受签名深链并由服务端转换为该绑定引用。
+ */
+const mobileNfcInitialIssueInput = z.object({
+  projectId: z.number().int().positive(),
+  vehicleId: z.number().int().positive(),
 });
 
 const rfidWriteConfirmInput = z.object({
@@ -1451,6 +1460,80 @@ export const transportRouter = router({
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
     return { success: true };
+  }),
+
+  /**
+   * 全新空白 NTAG216 的手机首次发卡入口。先创建“待写入”车辆卡和受控任务，再将签名载荷
+   * 返回给当前 Android Chrome 交互；只有 confirmRfidCardWrite 成功确认后卡片才变为 active。
+   * 这样现场不需要先在 PC 端手工读取 UID 或建立空卡绑定。
+   */
+  prepareMobileNfcInitialIssue: protectedProcedure.input(mobileNfcInitialIssueInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
+    if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未启用，不能发放 NFC 车辆卡" });
+    if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账录入外部司机姓名，再进行手机首次发卡" });
+    const driverPhone = vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : "";
+    if (!driverPhone) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账录入司机手机号，再进行手机首次发卡" });
+
+    const [activeCard] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards)
+      .where(and(eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.vehicleId, vehicle.id), eq(transportVehicleRfidCards.status, "active")))
+      .limit(1);
+    if (activeCard) throw new TRPCError({ code: "CONFLICT", message: "该车辆已有已启用 NFC 卡；如需替换或补写，请在车辆卡台账中执行受控操作" });
+
+    // 写入失败的首次任务保留为 suspended，下一次手机发卡复用同一逻辑卡绑定，避免产生无主卡记录。
+    let [card] = await db.select().from(transportVehicleRfidCards)
+      .where(and(eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.vehicleId, vehicle.id), eq(transportVehicleRfidCards.status, "suspended"), isNull(transportVehicleRfidCards.lastWrittenAt)))
+      .orderBy(desc(transportVehicleRfidCards.updatedAt))
+      .limit(1);
+    if (!card) {
+      const logicalCardReference = `mobile-ndef:${randomUUID()}`;
+      const cardUidFingerprint = fingerprintRfidCardUid(logicalCardReference);
+      const cardUidMasked = `MOB-${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+      await db.insert(transportVehicleRfidCards).values({
+        projectId: input.projectId,
+        vehicleId: vehicle.id,
+        writerDeviceId: null,
+        cardUidFingerprint,
+        cardUidMasked,
+        driverPhoneEncrypted: encryptSecret(driverPhone),
+        driverPhoneMasked: maskSecret(driverPhone),
+        payloadVersion: 3,
+        status: "suspended",
+        issuedAt: new Date(),
+        createdBy: user.id,
+      });
+      [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.cardUidFingerprint, cardUidFingerprint)).limit(1);
+    }
+    if (!card) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "首次发卡绑定创建失败" });
+
+    const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const jobNo = createRfidWriteJobNo(input.projectId);
+    await db.insert(rfidCardWriteJobs).values({
+      jobNo,
+      projectId: input.projectId,
+      vehicleId: vehicle.id,
+      cardId: card.id,
+      writerDeviceId: null,
+      action: "issue",
+      payloadFingerprint,
+      payloadVersion: card.payloadVersion,
+      preparedBy: user.id,
+    });
+    const [job] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.jobNo, jobNo)).limit(1);
+    if (!job) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "手机首次发卡任务创建失败" });
+    await db.insert(auditLogs).values({
+      userId: user.id,
+      module: "transport",
+      action: "prepare_mobile_nfc_initial_issue",
+      targetType: "transport_vehicle_rfid_card",
+      targetId: String(card.id),
+      summary: `准备手机首次发卡：车辆 ${vehicle.plateNo}，系统卡号 ${card.cardUidMasked}`,
+    });
+    const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
+    return { success: true, jobId: job.id, jobNo, cardId: card.id, cardCode: card.cardUidMasked, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "mobile_web_nfc" as const };
   }),
 
   /** 管理员准备一次写卡任务。返回的载荷只在本次受控响应中提供，数据库仅保存其摘要以防止卡片内容被静态导出。 */
