@@ -1,0 +1,2 @@
+ALTER TABLE `transport_route_presets` ADD `minimumTransitMinutes` int DEFAULT 10 NOT NULL;--> statement-breakpoint
+ALTER TABLE `transport_route_presets` ADD `unloadGeofenceMeters` int DEFAULT 300 NOT NULL;

@@ -250,6 +250,8 @@ const mobileNfcInvoicePreviewInput = z.object({ token: z.string().trim().min(12)
 const mobileNfcInvoiceConfirmInput = mobileNfcInvoicePreviewInput.extend({
   routePresetId: z.number().int().positive().optional(),
   idempotencyKey: z.string().trim().min(8).max(160),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
   occurredAt: isoDateTimeSchema,
 });
 
@@ -285,6 +287,8 @@ const transportRoutePresetInput = z.object({
   unloadSiteId: z.number().int().positive(),
   freightRuleId: z.number().int().positive(),
   presetDistanceKm: z.number().gt(0).max(9999),
+  minimumTransitMinutes: z.number().int().min(1, "最短运输时间至少 1 分钟").max(1440, "最短运输时间不能超过 24 小时").default(10),
+  unloadGeofenceMeters: z.number().int().min(30, "卸土点定位容差至少 30 米").max(5000, "卸土点定位容差不能超过 5000 米").default(300),
   isDefault: z.boolean().default(false),
   status: z.enum(["active", "disabled"]),
 }).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
@@ -425,6 +429,15 @@ function getChinaBusinessDate(value = new Date()) {
 
 function triggerTransportRiskScan(projectId: number) {
   void runProjectRiskScan(projectId, getChinaBusinessDate()).catch(() => undefined);
+}
+
+function calculateCoordinateDistanceMeters(fromLatitude: number, fromLongitude: number, toLatitude: number, toLongitude: number) {
+  const toRadians = (value: number) => value * Math.PI / 180;
+  const earthRadiusMeters = 6_371_000;
+  const latitudeDelta = toRadians(toLatitude - fromLatitude);
+  const longitudeDelta = toRadians(toLongitude - fromLongitude);
+  const a = Math.sin(latitudeDelta / 2) ** 2 + Math.cos(toRadians(fromLatitude)) * Math.cos(toRadians(toLatitude)) * Math.sin(longitudeDelta / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function throwIfDuplicateActiveVehicleTransit(error: unknown, plateNo: string): never {
@@ -629,6 +642,22 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   if (eventType === "load" && trip.loadConfirmedAt) return markNeedsReview("该趟次已存在装土确认，疑似重复刷卡事件");
   if (eventType === "unload" && !trip.loadConfirmedAt) return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
   if (eventType === "unload" && trip.unloadConfirmedAt) return markNeedsReview("该趟次已存在卸土确认，疑似重复刷卡事件");
+  if (eventType === "unload") {
+    const routePresetId = Number((trip.routeSnapshot as { routePresetId?: number } | null)?.routePresetId || 0);
+    if (!routePresetId) return markNeedsReview("当前运单缺少路线安全参数，不能直接确认卸土，请人工核验");
+    const [[route], [unloadSite]] = await Promise.all([
+      db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, routePresetId)).limit(1),
+      expectedSiteId ? db.select().from(transportSites).where(eq(transportSites.id, expectedSiteId)).limit(1) : Promise.resolve([]),
+    ]);
+    if (!route || !unloadSite) return markNeedsReview("当前卸土路线或地点配置已失效，不能直接确认卸土，请人工核验");
+    const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
+    const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(transitStartAt).getTime()) / 60_000));
+    if (elapsedMinutes < route.minimumTransitMinutes) return markNeedsReview(`卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本路线最短运输时间为 ${route.minimumTransitMinutes} 分钟；未达到时间不能完成卸土`);
+    if (input.latitude === null || input.latitude === undefined || input.longitude === null || input.longitude === undefined) return markNeedsReview("卸土异常：未取得定位信息，不能确认已到达卸土点");
+    if (unloadSite.latitude === null || unloadSite.latitude === undefined || unloadSite.longitude === null || unloadSite.longitude === undefined) return markNeedsReview("卸土点未配置定位坐标，不能直接确认卸土，请人工核验");
+    const distanceMeters = Math.round(calculateCoordinateDistanceMeters(Number(input.latitude), Number(input.longitude), Number(unloadSite.latitude), Number(unloadSite.longitude)));
+    if (distanceMeters > route.unloadGeofenceMeters) return markNeedsReview(`卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${route.unloadGeofenceMeters} 米，不能完成卸土`);
+  }
 
   const updateResult = eventType === "load"
     ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id, loadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
@@ -807,7 +836,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   if (resolved.activeTrip) {
     const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, resolved.activeTrip.id)).limit(1);
     if (!trip) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在" });
-    const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "unload");
+    const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, latitude: input.latitude, longitude: input.longitude, occurredAt: input.occurredAt }, "unload");
     if (event.success && !event.needsReview) await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
     if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
     return { ...event, stage: "completed" as const, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
@@ -1946,11 +1975,11 @@ export const transportRouter = router({
     if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线装土点不存在或未启用" });
     if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或未启用" });
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
-    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), isDefault: input.isDefault, status: input.status };
+    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, unloadGeofenceMeters: input.unloadGeofenceMeters, isDefault: input.isDefault, status: input.status };
     if (input.isDefault) await db.update(transportRoutePresets).set({ isDefault: false }).where(eq(transportRoutePresets.projectId, input.projectId));
     if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));
     else await db.insert(transportRoutePresets).values({ ...values, createdBy: user.id });
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟，卸土容差 ${input.unloadGeofenceMeters} 米` });
     return { success: true };
   }),
 
