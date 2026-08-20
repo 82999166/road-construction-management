@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { CreditCard, Radio } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 type NdefWriterLike = { write: (message: { records: Array<{ recordType: "url" | "text"; data: string }> }) => Promise<void> };
@@ -13,7 +13,15 @@ export function MobileNfcCardIssuer({ projectId }: { projectId: number }) {
   const utils = trpc.useUtils();
   const cards = trpc.transport.listVehicleRfidCards.useQuery({ projectId }, { enabled: Boolean(projectId), retry: false });
   const [cardId, setCardId] = useState("");
-  const selectedCard = useMemo(() => cards.data?.find(card => String(card.id) === cardId) ?? null, [cardId, cards.data]);
+  const eligibleCards = useMemo(() => (cards.data ?? []).filter(card => card.status === "active"), [cards.data]);
+  const selectedCard = useMemo(() => eligibleCards.find(card => String(card.id) === cardId) ?? null, [cardId, eligibleCards]);
+  useEffect(() => {
+    if (!eligibleCards.length) {
+      if (cardId) setCardId("");
+      return;
+    }
+    if (!eligibleCards.some(card => String(card.id) === cardId)) setCardId(String(eligibleCards[0].id));
+  }, [cardId, eligibleCards]);
   const prepare = trpc.transport.prepareRfidCardWrite.useMutation({ onError: error => toast.error(error.message) });
   const confirm = trpc.transport.confirmRfidCardWrite.useMutation({ onError: error => toast.error(error.message) });
 
@@ -38,5 +46,5 @@ export function MobileNfcCardIssuer({ projectId }: { projectId: number }) {
   }
 
   const nfcSupported = typeof window !== "undefined" && Boolean((window as NdefWindow).NDEFWriter);
-  return <Card className="border border-[#80a7b8] bg-[#eef8fb] print:hidden"><CardContent className="p-4"><div className="flex items-start gap-3"><CreditCard className="mt-0.5 h-5 w-5 shrink-0 text-[#256a88]" /><div className="min-w-0 flex-1"><p className="font-semibold text-[#194d64]">手机 NFC 发卡</p><p className="mt-1 text-xs leading-5 text-[#38677a]">每张车辆卡首次绑定后只需发卡一次。手机将写入车牌、司机姓名、联系电话、签名身份与受控票据网址；后续装土和卸土均仅读卡。</p><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]"><Select value={cardId} onValueChange={setCardId}><SelectTrigger className="border-[#a9ccd9] bg-white"><SelectValue placeholder="选择已绑定车辆卡" /></SelectTrigger><SelectContent>{cards.data?.filter(card => card.status === "active").map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · 卡 {card.cardUidMasked} · {card.lastWrittenAt ? "补写" : "首次发卡"}</SelectItem>)}</SelectContent></Select><Button className="bg-[#256a88] hover:bg-[#1d5972]" disabled={!selectedCard || !nfcSupported || prepare.isPending || confirm.isPending} onClick={() => void issue()}><Radio className="mr-1 h-4 w-4" />{prepare.isPending || confirm.isPending ? "正在发卡…" : "手机发卡"}</Button></div>{!nfcSupported ? <p className="mt-2 text-xs text-[#9c4d27]">当前浏览器不支持 Web NFC。请使用 Android Chrome；其他手机可继续拍车牌发票。</p> : null}</div></div></CardContent></Card>;
+  return <Card className="border border-[#80a7b8] bg-[#eef8fb] print:hidden"><CardContent className="p-4"><div className="flex items-start gap-3"><CreditCard className="mt-0.5 h-5 w-5 shrink-0 text-[#256a88]" /><div className="min-w-0 flex-1"><p className="font-semibold text-[#194d64]">手机 NFC 发卡</p><p className="mt-1 text-xs leading-5 text-[#38677a]">每张车辆卡首次绑定后只需发卡一次。手机将写入车牌、司机姓名、联系电话、签名身份与受控票据网址；后续装土和卸土均仅读卡。</p><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]"><Select value={cardId} onValueChange={setCardId} disabled={cards.isLoading || !eligibleCards.length}><SelectTrigger className="border-[#a9ccd9] bg-white"><SelectValue placeholder={cards.isLoading ? "正在读取已绑定车辆卡…" : "选择已绑定车辆卡"} /></SelectTrigger><SelectContent>{eligibleCards.map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · 卡 {card.cardUidMasked} · {card.lastWrittenAt ? "补写" : "首次发卡"}</SelectItem>)}</SelectContent></Select><Button className="bg-[#256a88] hover:bg-[#1d5972]" disabled={!selectedCard || !nfcSupported || prepare.isPending || confirm.isPending} onClick={() => void issue()}><Radio className="mr-1 h-4 w-4" />{prepare.isPending || confirm.isPending ? "正在发卡…" : "手机发卡"}</Button></div>{cards.error ? <p className="mt-2 text-xs text-[#9c4d27]">无法读取车辆卡：{cards.error.message}</p> : null}{!cards.isLoading && !cards.error && !eligibleCards.length ? <p className="mt-2 text-xs text-[#9c4d27]">当前项目没有已启用的车辆卡。请先在管理端完成“车辆档案 → 绑定车辆射频卡”，并确认车辆已录入外部司机姓名和手机号。</p> : null}{!nfcSupported ? <p className="mt-2 text-xs text-[#9c4d27]">当前浏览器不支持 Web NFC。请使用 Android Chrome；其他手机可继续拍车牌发票。</p> : null}</div></div></CardContent></Card>;
 }

@@ -23,4 +23,11 @@ describe("手机 NFC 发卡", () => {
     expect(source).toContain("Android Chrome");
     expect(source).toContain("拍车牌发票");
   });
+
+  it("已启用车辆卡应自动选中；无卡或查询失败时必须显示可操作原因", () => {
+    expect(source).toContain("eligibleCards[0].id");
+    expect(source).toContain("当前项目没有已启用的车辆卡");
+    expect(source).toContain("无法读取车辆卡");
+    expect(source).toContain("正在读取已绑定车辆卡");
+  });
 });
