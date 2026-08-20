@@ -901,6 +901,7 @@ export default function AdminPage() {
   const [rfidWriterDeviceForm, setRfidWriterDeviceForm] = useState<RfidWriterDeviceForm>(EMPTY_RFID_WRITER_DEVICE_FORM);
   const [rfidCardForm, setRfidCardForm] = useState<RfidCardForm>(EMPTY_RFID_CARD_FORM);
   const [, setRfidPendingUid] = useState("");
+  const [readingRfidBindingUid, setReadingRfidBindingUid] = useState(false);
   const selectedRfidVehicle = useMemo(() => (transportVehicleLedger.data ?? []).find(vehicle => String(vehicle.id) === rfidCardForm.vehicleId) ?? null, [rfidCardForm.vehicleId, transportVehicleLedger.data]);
   const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
   const [rfidCardDialogOpen, setRfidCardDialogOpen] = useState(false);
@@ -1310,6 +1311,31 @@ export default function AdminPage() {
     },
     onError: error => toast.error(error.message),
   });
+  const readRfidBindingUid = async () => {
+    setReadingRfidBindingUid(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch("http://127.0.0.1:47601/api/read-uid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const result = await response.json().catch(() => ({})) as { success?: boolean; cardUid?: string; message?: string };
+      if (!response.ok || !result.success || !result.cardUid) throw new Error(result.message || `读取卡 ID 失败（HTTP ${response.status}）`);
+      setRfidCardForm(current => ({ ...current, cardUid: result.cardUid! }));
+      toast.success("已读取卡 ID，并自动填入本次绑定表单。");
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "读取卡 ID 超时：请确认 NTAG216 已放在 uTrust 4701 F CL Reader 感应区。"
+        : error instanceof Error ? error.message : "读取卡 ID 失败";
+      toast.error(message);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setReadingRfidBindingUid(false);
+    }
+  };
   const prepareRfidCardWrite = trpc.transport.prepareRfidCardWrite.useMutation({
     onSuccess: data => {
       setRfidWritePreview({ jobId: data.jobId, jobNo: data.jobNo, payload: data.payload as Record<string, unknown>, hardwareMode: data.hardwareMode });
@@ -2791,7 +2817,7 @@ export default function AdminPage() {
                 <Field label="车牌号"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
                 <Field label="驾驶员姓名"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
                 <Field label="驾驶员联系电话"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
-                <Field label="卡 ID / UID"><Input readOnly value={rfidCardForm.cardUid} placeholder="请从 uTrust 面板读取卡 UID" /></Field>
+                <Field label="卡 ID / UID"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
                 <Field label="卡片状态"><Input disabled value={rfidCardForm.status === "active" ? "启用" : rfidCardForm.status === "suspended" ? "暂停" : "已停用"} /></Field>
                 <Field label="签名版本"><Input disabled value="RC3 · 服务端签名校验" /></Field>
               </div>
