@@ -1800,7 +1800,7 @@ export default function AdminPage() {
                 <Badge variant={realDataReadiness.data.ready ? "secondary" : "outline"}>{realDataReadiness.data.ready ? "可安排复测" : "待补齐真实数据"}</Badge>
               </div>
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {realDataReadiness.data.checks.map(check => <div key={check.key} className={`rounded-lg border p-3 ${check.ready ? "border-emerald-100 bg-emerald-50/40" : "border-amber-100 bg-amber-50/40"}`}><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{check.label}</p><Badge variant={check.ready ? "secondary" : "outline"}>{check.ready ? "已就绪" : "待补齐"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-500">{check.detail}</p></div>)}
+                {realDataReadiness.data.checks.map(check => <div key={check.key} className={`rounded-lg border p-3 ${check.ready ? "border-emerald-100 bg-emerald-50/40" : "border-amber-100 bg-amber-50/40"}`}><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{check.label}</p><Badge variant={check.ready ? "secondary" : "outline"}>{check.ready ? "已就绪" : "待补齐"}</Badge></div><p className="mt-1.5 text-xs leading-5 text-slate-500">{check.detail}</p><div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-slate-500">责任：{check.ownerRole}</p><Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setLocation(check.actionPath)}>{check.actionLabel}</Button></div></div>)}
               </div>
             </div>
           ) : <EmptyState text="暂无预检结果，请刷新后重试。" />}

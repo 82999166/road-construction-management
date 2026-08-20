@@ -9,8 +9,8 @@ describe("真实项目数据验收预检", () => {
     expect(result.checks.find(check => check.key === "print")?.ready).toBe(false);
   });
 
-  it("仅在授权、劳务、考勤和工资真实记录齐备时允许进行完整复测", () => {
-    const result = evaluateRealDataReadiness({ organizations: 2, projects: 3, roleAssignments: 4, departmentScopes: 5, laborWorkers: 6, attendanceRecords: 7, payrollStatements: 8 });
+  it("仅在授权、现场、资源、采购、计量、分包、财务、通知与劳务真实记录齐备时允许进行完整复测", () => {
+    const result = evaluateRealDataReadiness({ organizations: 2, projects: 3, roleAssignments: 4, departmentScopes: 5, laborWorkers: 6, attendanceRecords: 7, payrollStatements: 8, constructionDailyReports: 2, evidenceRecords: 3, machines: 1, transportVehicles: 2, dieselRefuelRecords: 3, transportTrips: 4, purchaseOrders: 2, inventoryTransactions: 3, measurementClaims: 2, measurementTakeoffRecords: 2, outsourceContracts: 1, subcontractPackages: 1, financialRecords: 4, officialAccountBindings: 2, officialAccountNotifications: 5 });
     expect(result.ready).toBe(true);
     expect(result.checks.every(check => check.ready)).toBe(true);
   });
