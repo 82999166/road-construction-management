@@ -16,8 +16,10 @@ describe("NTAG216 运输 NFC 最小载荷", () => {
 
   it("拒绝任何被改写的项目引用、修订号或签名", () => {
     const payload = buildTransportNfcCardPayload({ cardId: 18, projectId: 6, payloadVersion: 2, plateNo: "粤A12345", driverName: "张司机", driverPhone: "13800138000" });
+    const changedSignature = `${payload.s.slice(0, -1)}${payload.s.endsWith("X") ? "Y" : "X"}`;
     expect(verifyTransportNfcCardPayload({ ...payload, p: 7 })).toBe(false);
     expect(verifyTransportNfcCardPayload({ ...payload, h: "13800138001" })).toBe(false);
-    expect(verifyTransportNfcCardPayload({ ...payload, s: `${payload.s.slice(0, -1)}X` })).toBe(false);
+    expect(verifyTransportNfcCardPayload({ ...payload, s: changedSignature })).toBe(false);
+    expect(verifyTransportNfcCardPayload({ ...payload, s: `${payload.s}x` })).toBe(false);
   });
 });

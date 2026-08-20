@@ -1066,7 +1066,15 @@ export const transportRouter = router({
     const rows = await db.select().from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)).orderBy(desc(transportVehicles.updatedAt));
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     const scopedRows = isDriverOnly ? rows.filter(vehicle => vehicle.driverUserId === user.id) : rows;
-    return scopedRows.map(vehicle => ({ ...vehicle, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)) }));
+    const canViewDriverPhone = !isDriverOnly && roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER"].includes(role));
+    return scopedRows.map(vehicle => {
+      const { driverPhoneEncrypted, ...safeVehicle } = vehicle;
+      return {
+        ...safeVehicle,
+        driverPhone: canViewDriverPhone && driverPhoneEncrypted ? decryptSecret(driverPhoneEncrypted) : null,
+        theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
+      };
+    });
   }),
 
   /** 车辆统一台账按项目与期间返回真实运输、柴油、维修及租赁汇总；收入始终以运输毛收入计算，避免与柴油扣运费快照重复扣减。 */

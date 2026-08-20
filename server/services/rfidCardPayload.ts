@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { ENV } from "../_core/env";
 
 export type TransportNfcCardPayloadV2 = {
@@ -47,5 +47,7 @@ export function buildTransportNfcCardPayload(input: { cardId: number; projectId:
 
 export function verifyTransportNfcCardPayload(payload: TransportNfcCardPayloadV2) {
   const { s, ...unsigned } = payload;
-  return s === createSignature(unsigned);
+  const expected = createSignature(unsigned);
+  if (typeof s !== "string" || s.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(s, "utf8"), Buffer.from(expected, "utf8"));
 }

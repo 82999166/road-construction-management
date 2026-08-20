@@ -194,6 +194,27 @@ describe("机械与运输 tRPC 路由", () => {
     expect(result[0]).toMatchObject({ id: 11, driverUserId: 1, theoreticalVolumeCubicMeters: 14.904 });
   });
 
+  it("运输管理角色可为车辆卡绑定预填驾驶员电话，但车辆查询绝不返回电话加密密文", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{
+      id: 11,
+      projectId: 10,
+      driverUserId: 1,
+      plateNo: "粤A12345",
+      driverName: "王师傅",
+      driverPhoneEncrypted: encryptSecret("13800138000"),
+      driverPhoneMasked: "138****8000",
+      boxLengthMeters: "6",
+      boxWidthMeters: "2.3",
+      boxHeightMeters: "1.2",
+      loadFactor: "0.9",
+    }]) as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).listVehicles({ projectId: 10 });
+    expect(result[0]).toMatchObject({ plateNo: "粤A12345", driverName: "王师傅", driverPhone: "13800138000" });
+    expect(result[0]).not.toHaveProperty("driverPhoneEncrypted");
+  });
+
   it("单车分析只汇总当前项目的运输、柴油和维修记录，并按柴油金额计算占运输收入比例", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(

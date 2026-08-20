@@ -901,6 +901,7 @@ export default function AdminPage() {
   const [rfidWriterDeviceForm, setRfidWriterDeviceForm] = useState<RfidWriterDeviceForm>(EMPTY_RFID_WRITER_DEVICE_FORM);
   const [rfidCardForm, setRfidCardForm] = useState<RfidCardForm>(EMPTY_RFID_CARD_FORM);
   const [, setRfidPendingUid] = useState("");
+  const selectedRfidVehicle = useMemo(() => (transportVehicleLedger.data ?? []).find(vehicle => String(vehicle.id) === rfidCardForm.vehicleId) ?? null, [rfidCardForm.vehicleId, transportVehicleLedger.data]);
   const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
   const [rfidCardDialogOpen, setRfidCardDialogOpen] = useState(false);
   const [rfidWritePreview, setRfidWritePreview] = useState<{ jobId: number; jobNo: string; payload: Record<string, unknown>; hardwareMode: "manual_confirmation" } | null>(null);
@@ -2762,7 +2763,46 @@ export default function AdminPage() {
 
         <Dialog open={rfidWriterDialogOpen} onOpenChange={setRfidWriterDialogOpen}><DialogContent><DialogHeader><DialogTitle>登记射频写卡器</DialogTitle><DialogDescription>目前先记录写卡器型号与使用状态；未接入设备适配器前，系统只允许生成并人工确认写卡任务。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-3 sm:grid-cols-2"><Field label="设备编号"><Input value={rfidWriterDeviceForm.deviceCode} placeholder="例如 RFID-W-001" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, deviceCode: event.target.value }))} /></Field><Field label="显示名称"><Input value={rfidWriterDeviceForm.displayName} placeholder="装土点写卡器" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, displayName: event.target.value }))} /></Field></div><div className="grid gap-3 sm:grid-cols-2"><Field label="型号（预留）"><Input value={rfidWriterDeviceForm.model} placeholder="采购后填写" onChange={event => setRfidWriterDeviceForm(current => ({ ...current, model: event.target.value }))} /></Field><Field label="连接方式"><Select value={rfidWriterDeviceForm.connectionMode} onValueChange={value => setRfidWriterDeviceForm(current => ({ ...current, connectionMode: value as RfidWriterDeviceForm["connectionMode"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="manual_placeholder">人工确认（当前）</SelectItem><SelectItem value="usb">USB（预留）</SelectItem><SelectItem value="serial">串口（预留）</SelectItem><SelectItem value="network">网络（预留）</SelectItem></SelectContent></Select></Field></div><Field label="备注"><Input value={rfidWriterDeviceForm.remarks} onChange={event => setRfidWriterDeviceForm(current => ({ ...current, remarks: event.target.value }))} /></Field></div><DialogFooter><Button variant="outline" onClick={() => setRfidWriterDialogOpen(false)}>取消</Button><Button disabled={!rfidWriterDeviceForm.deviceCode.trim() || !rfidWriterDeviceForm.displayName.trim() || saveRfidWriterDevice.isPending} onClick={() => saveRfidWriterDevice.mutate({ projectId: workspaceProjectId, deviceCode: rfidWriterDeviceForm.deviceCode, displayName: rfidWriterDeviceForm.displayName, model: rfidWriterDeviceForm.model || null, connectionMode: rfidWriterDeviceForm.connectionMode, status: rfidWriterDeviceForm.status, remarks: rfidWriterDeviceForm.remarks || null })}>{saveRfidWriterDevice.isPending ? "保存中…" : "保存设备"}</Button></DialogFooter></DialogContent></Dialog>
 
-        <Dialog open={rfidCardDialogOpen} onOpenChange={setRfidCardDialogOpen}><DialogContent><DialogHeader><DialogTitle>绑定车辆射频卡</DialogTitle><DialogDescription>卡 UID 和司机电话仅用于本次绑定；服务端只保存 UID 指纹、电话密文和掩码。请勿将身份证、银行卡或结算金额写入卡片。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><Field label="车辆"><Select value={rfidCardForm.vehicleId} onValueChange={value => setRfidCardForm(current => ({ ...current, vehicleId: value }))}><SelectTrigger><SelectValue placeholder="选择车辆" /></SelectTrigger><SelectContent>{transportVehicleLedger.data?.map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>)}</SelectContent></Select></Field><Field label="写卡器（可选）"><Select value={rfidCardForm.writerDeviceId || "UNASSIGNED"} onValueChange={value => setRfidCardForm(current => ({ ...current, writerDeviceId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择写卡器" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">暂不指定</SelectItem>{writerDevices.filter(device => device.status === "active").map(device => <SelectItem key={device.id} value={String(device.id)}>{device.displayName} · {device.deviceCode}</SelectItem>)}</SelectContent></Select></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="读取的卡 UID"><Input value={rfidCardForm.cardUid} placeholder="仅本次输入，保存后不回显" onChange={event => setRfidCardForm(current => ({ ...current, cardUid: event.target.value }))} /></Field><Field label="司机联系电话"><Input value={rfidCardForm.driverPhone} placeholder="仅本次输入，保存后加密" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field></div></div><DialogFooter><Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button><Button disabled={!rfidCardForm.vehicleId || !rfidCardForm.cardUid.trim() || !rfidCardForm.driverPhone.trim() || saveVehicleRfidCard.isPending} onClick={() => saveVehicleRfidCard.mutate({ projectId: workspaceProjectId, vehicleId: Number(rfidCardForm.vehicleId), writerDeviceId: rfidCardForm.writerDeviceId ? Number(rfidCardForm.writerDeviceId) : null, cardUid: rfidCardForm.cardUid, driverPhone: rfidCardForm.driverPhone, status: rfidCardForm.status })}>{saveVehicleRfidCard.isPending ? "保存中…" : "保存绑定"}</Button></DialogFooter></DialogContent></Dialog>
+        <Dialog open={rfidCardDialogOpen} onOpenChange={setRfidCardDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>绑定车辆射频卡</DialogTitle>
+              <DialogDescription>卡 ID/UID、车牌与驾驶员信息用于本次受控绑定和 RC3 签名写卡。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="车辆（车牌号）">
+                  <Select value={rfidCardForm.vehicleId} onValueChange={value => {
+                    const vehicle = (transportVehicleLedger.data ?? []).find(item => String(item.id) === value);
+                    setRfidCardForm(current => ({ ...current, vehicleId: value, driverPhone: vehicle?.driverPhone || current.driverPhone }));
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="选择车辆" /></SelectTrigger>
+                    <SelectContent>{transportVehicleLedger.data?.map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+                <Field label="写卡器（用于审计）">
+                  <Select value={rfidCardForm.writerDeviceId || "UNASSIGNED"} onValueChange={value => setRfidCardForm(current => ({ ...current, writerDeviceId: value === "UNASSIGNED" ? "" : value }))}>
+                    <SelectTrigger><SelectValue placeholder="选择写卡器" /></SelectTrigger>
+                    <SelectContent><SelectItem value="UNASSIGNED">暂不指定</SelectItem>{writerDevices.filter(device => device.status === "active").map(device => <SelectItem key={device.id} value={String(device.id)}>{device.displayName} · {device.deviceCode}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <div className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50/60 p-3 sm:grid-cols-2">
+                <Field label="车牌号"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
+                <Field label="驾驶员姓名"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
+                <Field label="驾驶员联系电话"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
+                <Field label="卡 ID / UID"><Input readOnly value={rfidCardForm.cardUid} placeholder="请从 uTrust 面板读取卡 UID" /></Field>
+                <Field label="卡片状态"><Input disabled value={rfidCardForm.status === "active" ? "启用" : rfidCardForm.status === "suspended" ? "暂停" : "已停用"} /></Field>
+                <Field label="签名版本"><Input disabled value="RC3 · 服务端签名校验" /></Field>
+              </div>
+              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">写入正式卡时，卡内仅包含车牌号、驾驶员姓名、联系电话、卡绑定引用、项目引用、修订号、随机挑战值与签名。路线、方量、单价、金额和结算状态不写入卡片。</p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button>
+              <Button disabled={!rfidCardForm.vehicleId || !rfidCardForm.cardUid.trim() || !rfidCardForm.driverPhone.trim() || saveVehicleRfidCard.isPending} onClick={() => saveVehicleRfidCard.mutate({ projectId: workspaceProjectId, vehicleId: Number(rfidCardForm.vehicleId), writerDeviceId: rfidCardForm.writerDeviceId ? Number(rfidCardForm.writerDeviceId) : null, cardUid: rfidCardForm.cardUid, driverPhone: rfidCardForm.driverPhone, status: rfidCardForm.status })}>{saveVehicleRfidCard.isPending ? "保存中…" : "保存绑定"}</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>受控写卡载荷 · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。</DialogDescription></DialogHeader><pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre><DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending}>记录写卡失败</Button><Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button></DialogFooter></DialogContent></Dialog>
       </div>
@@ -3004,7 +3044,7 @@ export default function AdminPage() {
           </TabsList>
         </Tabs>
         {content}
-        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: transportVehicleLedger.data?.[0] ? String(transportVehicleLedger.data[0].id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid }); setRfidCardDialogOpen(true); }} /> : null}
+        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); const defaultVehicle = transportVehicleLedger.data?.[0]; setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: defaultVehicle ? String(defaultVehicle.id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid, driverPhone: defaultVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} /> : null}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
