@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTransportNfcCardPayload, verifyTransportNfcCardPayload } from "./services/rfidCardPayload";
+import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcCardPayload, verifyTransportNfcDeepLinkToken } from "./services/rfidCardPayload";
 
 describe("NTAG216 运输 NFC 最小载荷", () => {
   it("携带现场核对所需车牌、司机与电话，并以签名保护卡绑定引用和可读识别字段", () => {
@@ -21,5 +21,16 @@ describe("NTAG216 运输 NFC 最小载荷", () => {
     expect(verifyTransportNfcCardPayload({ ...payload, h: "13800138001" })).toBe(false);
     expect(verifyTransportNfcCardPayload({ ...payload, s: changedSignature })).toBe(false);
     expect(verifyTransportNfcCardPayload({ ...payload, s: `${payload.s}x` })).toBe(false);
+  });
+
+  it("生成不含业务明细的签名深链，并拒绝被篡改的卡片入口", () => {
+    const deepLink = buildTransportNfcDeepLink({ cardId: 18, projectId: 6, payloadVersion: 2 });
+    const token = new URL(deepLink).searchParams.get("nfc");
+
+    expect(deepLink).toContain("https://yx.maomaoyx.com/mobile/transport?nfc=");
+    expect(deepLink).not.toMatch(/粤A12345|13800138000|route|amount|volume|settlement/i);
+    expect(token).toBeTruthy();
+    expect(verifyTransportNfcDeepLinkToken(token!)).toEqual({ cardId: 18, projectId: 6, payloadVersion: 2 });
+    expect(verifyTransportNfcDeepLinkToken(`${token}x`)).toBeNull();
   });
 });

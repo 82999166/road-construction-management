@@ -40,4 +40,13 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("NFC 票据");
     expect(source).toContain("直拍票据");
   });
+
+  it("签名 NFC 深链必须展示现场读卡设备选择，并以服务端双设备接口确认装土或卸土", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('get("nfc")');
+    expect(source).toContain("listReaderDevices");
+    expect(source).toContain("scanNfcLink");
+    expect(source).toContain("确认本次刷卡");
+  });
 });

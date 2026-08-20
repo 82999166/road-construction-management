@@ -24,4 +24,11 @@ describe("uTrust 本地桥接面板", () => {
     expect(source).toContain("onUidRead(result.cardUid)");
     expect(source).toContain("读取卡 UID 并绑定");
   });
+
+  it("装土点与卸土点读卡设备必须可登记到具体地点，供手机 NFC 双设备闭环选择", () => {
+    expect(source).toContain("装卸点读卡设备");
+    expect(source).toContain("saveReaderDevice.mutate");
+    expect(source).toContain("LOAD-NFC-01");
+    expect(source).toContain("手机 NFC 触碰车辆卡后");
+  });
 });

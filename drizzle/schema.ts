@@ -1257,6 +1257,27 @@ export const transportSites = mysqlTable(
   }),
 );
 
+/** 装土/卸土现场读卡设备台账；设备归属一个启用地点，实际操作仍要求登录用户处于该项目运输权限和地点管理员边界内。 */
+export const transportReaderDevices = mysqlTable(
+  "transport_reader_devices",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    siteId: int("siteId").notNull(),
+    deviceCode: varchar("deviceCode", { length: 128 }).notNull(),
+    displayName: varchar("displayName", { length: 128 }).notNull(),
+    status: mysqlEnum("status", ["active", "disabled", "maintenance"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectDeviceCodeUnique: uniqueIndex("transport_reader_devices_project_code_unique").on(table.projectId, table.deviceCode),
+    siteStatusIndex: index("transport_reader_devices_site_status_index").on(table.siteId, table.status),
+  }),
+);
+
 /** 项目装卸路线预设：票据只选择路线，服务端锁定装卸点、里程与生效运价快照。 */
 export const transportRoutePresets = mysqlTable(
   "transport_route_presets",
@@ -1311,14 +1332,17 @@ export const transportTrips = mysqlTable(
    unloadConfirmedBy: int("unloadConfirmedBy"),
    loadEventId: bigint("loadEventId", { mode: "number" }),
    unloadEventId: bigint("unloadEventId", { mode: "number" }),
+   /** 同车同项目在途刷卡会话键，仅在装土确认至卸土确认期间有效，防止重复装土创建并行票据。 */
+   nfcTransitKey: varchar("nfcTransitKey", { length: 128 }),
    exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"]).default("none").notNull(),
  },
  table => ({
    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
-   projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
-   projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
- }),
+    projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
+    projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
+    projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(table.projectId, table.nfcTransitKey),
+  }),
 );
 
 /** 装土与卸土刷卡原子事件；设备重传和乱序均留痕并进入人工复核。 */

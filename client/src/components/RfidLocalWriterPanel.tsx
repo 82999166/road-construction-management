@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
@@ -23,12 +24,26 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
   const [bridgeMessage, setBridgeMessage] = useState("尚未检测本机 uTrust 桥接服务。");
   const [checkingBridge, setCheckingBridge] = useState(false);
   const [readingUid, setReadingUid] = useState(false);
+  const [readerSiteId, setReaderSiteId] = useState("UNSELECTED");
+  const [readerDeviceCode, setReaderDeviceCode] = useState("");
+  const [readerDisplayName, setReaderDisplayName] = useState("");
   const utils = trpc.useUtils();
   const writerDevices = trpc.transport.listRfidWriterDevices.useQuery({ projectId }, { enabled: projectId > 0 });
+  const transportSites = trpc.transport.listSites.useQuery({ projectId }, { enabled: projectId > 0 });
+  const readerDevices = trpc.transport.listReaderDevices.useQuery({ projectId }, { enabled: projectId > 0 });
   const recordTest = trpc.transport.recordRfidHardwareTest.useMutation({
     onSuccess: () => {
       utils.transport.listRfidWriterDevices.invalidate({ projectId });
     },
+  });
+  const saveReaderDevice = trpc.transport.saveReaderDevice.useMutation({
+    onSuccess: async () => {
+      toast.success("现场读卡设备已登记，可用于装土/卸土双刷卡闭环。");
+      setReaderDeviceCode("");
+      setReaderDisplayName("");
+      await readerDevices.refetch();
+    },
+    onError: error => toast.error(error.message),
   });
 
   const requestBridge = async (path: string) => {
@@ -113,6 +128,12 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     }
   };
 
+  const registerReaderDevice = () => {
+    if (readerSiteId === "UNSELECTED") return toast.error("请先选择读卡设备所在的装土点或卸土点");
+    if (!readerDeviceCode.trim() || !readerDisplayName.trim()) return toast.error("请填写现场设备编号和显示名称");
+    saveReaderDevice.mutate({ projectId, siteId: Number(readerSiteId), deviceCode: readerDeviceCode, displayName: readerDisplayName, status: "active" });
+  };
+
   return (
     <Card className="border-cyan-200 bg-cyan-50/40">
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
@@ -137,6 +158,16 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
         </div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>
         <p className="rounded-lg border border-cyan-200 bg-white/70 px-3 py-2 text-xs leading-5 text-cyan-950">操作顺序：先将可覆盖的测试 NTAG216 放至 <strong>uTrust 4701 F CL Reader</strong> 感应区，点击“检测本地桥接”，再点击“写入测试卡”。桥接会先读取 UID 指纹、写入 `RC3T` 测试 NDEF、回读验证；不触碰锁定页、配置页或写保护口令。</p>
+        <div className="rounded-xl border border-[#b6d6df] bg-white/70 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#174c60]">装卸点读卡设备</p><p className="mt-0.5 text-xs text-[#577b88]">装土点和卸土点各登记一台设备。手机 NFC 触碰车辆卡后，系统将按所选设备绑定地点自动判断首次发车或二次闭环。</p></div><span className="rounded-full bg-[#e7f4f7] px-2 py-1 text-xs font-medium text-[#23657b]">已登记 {readerDevices.data?.length ?? 0} 台</span></div>
+          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1.1fr)_minmax(0,.8fr)_minmax(0,1fr)_auto]">
+            <Select value={readerSiteId} onValueChange={setReaderSiteId}><SelectTrigger className="bg-white"><SelectValue placeholder="选择装土点或卸土点" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择地点</SelectItem>{(transportSites.data ?? []).filter(site => site.status === "active").map(site => <SelectItem key={site.id} value={String(site.id)}>{site.siteType === "load" ? "装土" : "卸土"} · {site.name}</SelectItem>)}</SelectContent></Select>
+            <Input value={readerDeviceCode} onChange={event => setReaderDeviceCode(event.target.value.toUpperCase())} placeholder="设备编号，如 LOAD-NFC-01" />
+            <Input value={readerDisplayName} onChange={event => setReaderDisplayName(event.target.value)} placeholder="设备名称，如 1#装土点读卡器" />
+            <Button type="button" variant="outline" onClick={registerReaderDevice} disabled={saveReaderDevice.isPending}>{saveReaderDevice.isPending ? "登记中…" : "登记设备"}</Button>
+          </div>
+          {readerDevices.data?.length ? <div className="mt-3 flex flex-wrap gap-2">{readerDevices.data.map(device => <span key={device.id} className={`rounded-lg border px-2 py-1 text-xs ${device.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-slate-50 text-slate-600"}`}>{device.siteType === "load" ? "装土" : "卸土"} · {device.siteName} · {device.displayName} ({device.deviceCode})</span>)}</div> : null}
+        </div>
       </CardContent>
     </Card>
   );
