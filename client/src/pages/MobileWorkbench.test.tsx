@@ -62,6 +62,20 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain('aria-label="进入消息中心"');
   });
 
+  it("在首屏并列展示待办理审批、待确认工资和今日运输趟次，方便现场人员优先处理高频待办", () => {
+    const markup = renderWorkbench({
+      user: { id: 7, name: "现场管理员", roleCodes: ["CONSTRUCTION_MANAGER"], departments: [{ id: 11, name: "施工管理部", type: "department" }], departmentModules: ["CONSTRUCTION"] },
+      menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "CONSTRUCTION", title: "施工管理" }, { code: "MESSAGES", title: "消息中心" }],
+      statistics: { pendingApprovals: 3, unreadMessages: 2, todayTrips: 6, pendingPayroll: 1 },
+    });
+
+    expect(markup).toContain("待办理审批");
+    expect(markup).toContain("待确认工资");
+    expect(markup).toContain("今日运输趟次");
+    expect(markup).toContain(">3<");
+    expect(markup).toContain(">6<");
+  });
+
   it("没有部门业务授权时展示受控的空状态而不是猜测菜单", () => {
     const markup = renderWorkbench({
       user: { id: 7, name: "待授权人员", roleCodes: [], departments: [], departmentModules: [] },

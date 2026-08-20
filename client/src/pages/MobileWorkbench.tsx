@@ -227,12 +227,12 @@ export default function MobileWorkbench() {
 
         <main className="space-y-6 px-5 pb-24 pt-5">
           {isUsingSnapshot ? <section role="status" className="flex items-start gap-3 rounded-2xl border border-[#dfb78a] bg-[#fff0db] p-3 text-[#6d3d20]"><CloudOff className="mt-0.5 h-4 w-4 shrink-0" /><div className="min-w-0"><p className="text-xs font-semibold">{isOnline ? "网络连接暂时不稳定" : "离线查看模式"}</p><p className="mt-1 text-xs leading-5">正在显示本机上次同步的岗位菜单和摘要（{new Date(snapshot?.savedAt ?? Date.now()).toLocaleString()}）。{isOnline ? "网络恢复后会自动同步，您也可以立即重新同步。" : "离线期间不可提交业务操作。"}</p></div><button aria-label="恢复网络后重新尝试同步" disabled={!isOnline} className="ml-auto rounded-lg p-1.5 transition-colors hover:bg-[#f5dfc4] disabled:cursor-not-allowed disabled:opacity-50" onClick={retryWorkbench}><RefreshCw className="h-4 w-4" /></button></section> : null}
-          <section className="grid grid-cols-2 gap-3">
-            {[{ label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }].map(item => {
+          <section className="grid grid-cols-3 gap-2">
+            {[{ label: "待办理审批", value: statistics?.pendingApprovals ?? 0, icon: ClipboardCheck, tone: "bg-[#eef3e8] text-[#567243]" }, { label: "待确认工资", value: statistics?.pendingPayroll ?? 0, icon: WalletCards, tone: "bg-[#f7e9de] text-[#8a3e27]" }, { label: "今日运输趟次", value: statistics?.todayTrips ?? 0, icon: Truck, tone: "bg-[#f2eee8] text-[#72503c]" }].map(item => {
               // 将图标提升为大写组件变量，符合 JSX 动态组件的语法约束。
               const StatisticIcon = item.icon;
-              const cardBody = <><div className={`grid h-10 w-10 place-items-center rounded-xl ${item.tone}`}><StatisticIcon className="h-5 w-5" /></div><div><p className="text-lg font-semibold leading-none">{item.value}</p><p className="mt-1 text-xs text-[#8f7566]">{item.label}</p></div></>;
-              return <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-3 p-4">{cardBody}</CardContent></Card>;
+              const cardBody = <><div className={`grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}><StatisticIcon className="h-4 w-4" /></div><div className="min-w-0"><p className="text-base font-semibold leading-none">{item.value}</p><p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#8f7566]">{item.label}</p></div></>;
+              return <Card key={item.label} className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-start gap-2 p-3">{cardBody}</CardContent></Card>;
             })}
           </section>
 
