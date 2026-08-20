@@ -9,5 +9,8 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("previewMobileNfcInvoice");
     expect(source).toContain("confirmMobileNfcInvoice");
     expect(source).toContain("保存并开具发票");
+    expect(source).toContain("该车还未卸土，不能开具新发票");
+    expect(source).toContain("speechSynthesis");
+    expect(source).toContain("text-3xl font-black");
   });
 });

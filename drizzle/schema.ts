@@ -1341,6 +1341,8 @@ export const transportTrips = mysqlTable(
    unloadEventId: bigint("unloadEventId", { mode: "number" }),
    /** 同车同项目在途刷卡会话键，仅在装土确认至卸土确认期间有效，防止重复装土创建并行票据。 */
    nfcTransitKey: varchar("nfcTransitKey", { length: 128 }),
+   /** 所有开票来源共用的一车一在途锁；仅在卸土、作废或终态结算后清空，数据库唯一索引兜底并发重复开票。 */
+   activeVehicleTransitKey: varchar("activeVehicleTransitKey", { length: 128 }),
    exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"]).default("none").notNull(),
  },
  table => ({
@@ -1349,6 +1351,7 @@ export const transportTrips = mysqlTable(
     projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
     projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
     projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(table.projectId, table.nfcTransitKey),
+    projectActiveVehicleTransitUnique: uniqueIndex("transport_trips_project_active_vehicle_transit_unique").on(table.projectId, table.activeVehicleTransitKey),
   }),
 );
 

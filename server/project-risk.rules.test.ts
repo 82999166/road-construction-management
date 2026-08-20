@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRiskOverdueEscalationCron, classifyFinanceCategory, detectTransportRisk, safeParseBriefing } from "./routers/projectRisk";
+import { buildRiskOverdueEscalationCron, classifyFinanceCategory, detectTransportIntegrityRisks, detectTransportRisk, safeParseBriefing } from "./routers/projectRisk";
 
 describe("AI 项目风险规则", () => {
   it("按权威业务类别归集生活、柴油、工资、机械、车辆运输与采购成本", () => {
@@ -18,6 +18,20 @@ describe("AI 项目风险规则", () => {
 
     expect(detectTransportRisk(highSpeedTrip, rule).map(item => item.ruleCode)).toContain("TRANSPORT_SPEED_HIGH");
     expect(detectTransportRisk(longDurationTrip, rule).map(item => item.ruleCode)).toContain("TRANSPORT_DURATION_LONG");
+  });
+
+  it("仅以真实趟次时间和状态生成并行在途、短间隔与非工作时段待核验提示", () => {
+    const trips = [
+      { id: 41, vehicleId: 8, tripNo: "TR-1-20260820230000-01", status: "draft", startAt: new Date("2026-08-20T15:00:00.000Z"), unloadConfirmedAt: null },
+      { id: 42, vehicleId: 8, tripNo: "TR-1-20260820230100-01", status: "submitted", startAt: new Date("2026-08-20T15:01:00.000Z"), unloadConfirmedAt: null },
+      { id: 43, vehicleId: 9, tripNo: "TR-1-20260820110000-01", status: "submitted", startAt: new Date("2026-08-20T03:00:00.000Z"), unloadConfirmedAt: new Date("2026-08-20T03:10:00.000Z") },
+      { id: 44, vehicleId: 9, tripNo: "TR-1-20260820111500-01", status: "submitted", startAt: new Date("2026-08-20T03:15:00.000Z"), unloadConfirmedAt: new Date("2026-08-20T03:25:00.000Z") },
+    ] as unknown as Parameters<typeof detectTransportIntegrityRisks>[0];
+
+    const risks = detectTransportIntegrityRisks(trips);
+    expect(risks.map(item => item.ruleCode)).toContain("TRANSPORT_PARALLEL_OPEN_TRIPS");
+    expect(risks.map(item => item.ruleCode)).toContain("TRANSPORT_SHORT_REPEAT_INTERVAL");
+    expect(risks.some(item => item.summary.includes("不代表已认定存在违规"))).toBe(true);
   });
 
   it("将中国标准时间的每日整改升级检查转换为 UTC 六段 cron", () => {

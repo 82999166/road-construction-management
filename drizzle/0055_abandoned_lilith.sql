@@ -1,0 +1,2 @@
+ALTER TABLE `transport_trips` ADD `activeVehicleTransitKey` varchar(128);--> statement-breakpoint
+ALTER TABLE `transport_trips` ADD CONSTRAINT `transport_trips_project_active_vehicle_transit_unique` UNIQUE(`projectId`,`activeVehicleTransitKey`);

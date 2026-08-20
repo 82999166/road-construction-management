@@ -412,6 +412,32 @@ function createTransportTripNo(projectId: number, occurredAt = new Date()) {
   return `TR-${projectId}-${secondKey}-${String(latestTripSecondSequence).padStart(2, "0")}`;
 }
 
+/** 所有开票方式共用的车辆在途锁；卡片会话键仍仅用于 NFC 卸土闭环匹配。 */
+function createActiveVehicleTransitKey(projectId: number, vehicleId: number) {
+  return `vehicle:${projectId}:${vehicleId}`;
+}
+
+function throwIfDuplicateActiveVehicleTransit(error: unknown, plateNo: string): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("transport_trips_project_active_vehicle_transit_unique") || message.includes("activeVehicleTransitKey")) {
+    throw new TRPCError({ code: "CONFLICT", message: `车辆 ${plateNo} 还未卸土，请先完成当前运单后再开具新发票` });
+  }
+  throw error;
+}
+
+/** 历史票据可能尚未写入新锁字段，开票前仍须按车辆状态查询一次作为兼容保护。 */
+async function assertNoOpenTransportTrip(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, vehicleId: number, plateNo: string) {
+  const rows = await db.select({ tripNo: transportTrips.tripNo, id: transportTrips.id }).from(transportTrips).where(and(
+    eq(transportTrips.projectId, projectId),
+    eq(transportTrips.vehicleId, vehicleId),
+    isNull(transportTrips.unloadConfirmedAt),
+    ne(transportTrips.status, "void"),
+    ne(transportTrips.status, "settled"),
+  ));
+  const activeTrip = rows.sort((left, right) => Number(right.id) - Number(left.id))[0];
+  if (activeTrip) throw new TRPCError({ code: "CONFLICT", message: `车辆 ${plateNo} 还未卸土，请先完成当前运单 ${activeTrip.tripNo} 后再开具新发票` });
+}
+
 /**
  * 运输异常仅由服务端按已固化的趟次快照计算，前端只负责展示；
  * 这避免司机通过修改浏览器状态规避核验提示。
@@ -647,6 +673,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
 
   if (site.siteType === "load") {
     if (activeTrip) throw new TRPCError({ code: "CONFLICT", message: `车辆 ${vehicle.plateNo} 已有在途票据 ${activeTrip.tripNo}，请在对应卸土点完成第二次刷卡后再发车` });
+    await assertNoOpenTransportTrip(db, input.projectId, vehicle.id, vehicle.plateNo);
     const [route] = await db.select().from(transportRoutePresets).where(and(eq(transportRoutePresets.projectId, input.projectId), eq(transportRoutePresets.loadSiteId, site.id), eq(transportRoutePresets.status, "active"))).orderBy(desc(transportRoutePresets.isDefault), desc(transportRoutePresets.updatedAt)).limit(1);
     if (!route) throw new TRPCError({ code: "BAD_REQUEST", message: "当前装土点未配置启用的装卸路线，不能发车" });
     const [[unloadSite], [rule]] = await Promise.all([
@@ -663,7 +690,11 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     try { price = calculateTieredFreightAmount({ actualDistanceKm: Number(route.presetDistanceKm), startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity }); } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = createTransportTripNo(input.projectId);
     const routeSnapshot = { source: "nfc_dual_reader", routePresetId: route.id, invoiceMode: "nfc_card", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: { id: site.id, name: site.name, administratorUserId: site.administratorUserId, readerDeviceCode: reader.deviceCode }, unloadSite: { id: unloadSite.id, name: unloadSite.name, administratorUserId: unloadSite.administratorUserId }, startLatitude: input.latitude ?? null, startLongitude: input.longitude ?? null };
-    await db.insert(transportTrips).values({ tripNo, vehicleId: vehicle.id, projectId: input.projectId, freightRuleId: rule.id, invoiceMode: "nfc_card", loadSiteId: site.id, unloadSiteId: unloadSite.id, startAt: occurredAt, actualDistanceKm: String(route.presetDistanceKm), volumeCubicMeters: String(theoreticalVolume), calculatedUnitPrice: String(price.unitPrice), calculatedAmount: String(price.totalAmount), routeSnapshot, status: "draft", nfcTransitKey: transitKey });
+    try {
+      await db.insert(transportTrips).values({ tripNo, vehicleId: vehicle.id, projectId: input.projectId, freightRuleId: rule.id, invoiceMode: "nfc_card", loadSiteId: site.id, unloadSiteId: unloadSite.id, startAt: occurredAt, actualDistanceKm: String(route.presetDistanceKm), volumeCubicMeters: String(theoreticalVolume), calculatedUnitPrice: String(price.unitPrice), calculatedAmount: String(price.totalAmount), routeSnapshot, status: "draft", nfcTransitKey: transitKey, activeVehicleTransitKey: createActiveVehicleTransitKey(input.projectId, vehicle.id) });
+    } catch (error) {
+      throwIfDuplicateActiveVehicleTransit(error, vehicle.plateNo);
+    }
     const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
     if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "装土刷卡运输票据创建失败" });
     const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "load");
@@ -688,7 +719,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   if (activeTrip.unloadSiteId !== site.id) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卸土设备与在途票据的路线卸土点不一致，已拒绝闭环" });
   const event = await recordTransportCardEvent(ctx, { tripId: activeTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "unload");
   if (event.success && !event.needsReview) {
-    await db.update(transportTrips).set({ nfcTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, activeTrip.id), eq(transportTrips.nfcTransitKey, transitKey)));
+    await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, activeTrip.id), eq(transportTrips.nfcTransitKey, transitKey)));
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_unload_close_transit_trip", targetType: "transport_trip", targetId: String(activeTrip.id), summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 闭环运输票据 ${activeTrip.tripNo}` });
     const loadAdministratorUserId = (activeTrip.routeSnapshot as { loadSite?: { administratorUserId?: number | null } } | null)?.loadSite?.administratorUserId ?? null;
     const unloadRecipientUserIds = Array.from(new Set([loadAdministratorUserId, site.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
@@ -765,7 +796,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, resolved.activeTrip.id)).limit(1);
     if (!trip) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在" });
     const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "unload");
-    if (event.success && !event.needsReview) await db.update(transportTrips).set({ nfcTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
+    if (event.success && !event.needsReview) await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
     return { ...event, stage: "completed" as const, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
   }
   if (!input.routePresetId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先选择运输线路" });
@@ -778,6 +809,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
   ]);
   if (!vehicle || vehicle.status !== "active" || !loadSite || loadSite.status !== "active" || !unloadSite || unloadSite.status !== "active" || !rule || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "车辆、路线地点或运价已变更，请重新刷卡后开票" });
+  await assertNoOpenTransportTrip(db, resolved.projectId, vehicle.id, vehicle.plateNo);
   if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，不能自动开票" });
   let theoreticalVolume: number;
   try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
@@ -785,7 +817,11 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   try { price = calculateTieredFreightAmount({ actualDistanceKm: Number(route.presetDistanceKm), startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity: rule.settlementUnit === "cubic_meter" ? theoreticalVolume : 1 }); } catch (error) { throwDomainAsBadRequest(error); }
   const tripNo = createTransportTripNo(resolved.projectId, occurredAt);
   const transitKey = `nfc:${resolved.projectId}:${card.id}`;
-  await db.insert(transportTrips).values({ tripNo, vehicleId: vehicle.id, projectId: resolved.projectId, freightRuleId: rule.id, invoiceMode: "nfc_card", loadSiteId: loadSite.id, unloadSiteId: unloadSite.id, startAt: occurredAt, actualDistanceKm: String(route.presetDistanceKm), volumeCubicMeters: String(theoreticalVolume), calculatedUnitPrice: String(price.unitPrice), calculatedAmount: String(price.totalAmount), routeSnapshot: { source: "mobile_nfc_invoice", routePresetId: route.id, invoiceMode: "nfc_card", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: { id: loadSite.id, name: loadSite.name, administratorUserId: loadSite.administratorUserId }, unloadSite: { id: unloadSite.id, name: unloadSite.name, administratorUserId: unloadSite.administratorUserId } }, status: "draft", nfcTransitKey: transitKey });
+  try {
+    await db.insert(transportTrips).values({ tripNo, vehicleId: vehicle.id, projectId: resolved.projectId, freightRuleId: rule.id, invoiceMode: "nfc_card", loadSiteId: loadSite.id, unloadSiteId: unloadSite.id, startAt: occurredAt, actualDistanceKm: String(route.presetDistanceKm), volumeCubicMeters: String(theoreticalVolume), calculatedUnitPrice: String(price.unitPrice), calculatedAmount: String(price.totalAmount), routeSnapshot: { source: "mobile_nfc_invoice", routePresetId: route.id, invoiceMode: "nfc_card", settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: { id: loadSite.id, name: loadSite.name, administratorUserId: loadSite.administratorUserId }, unloadSite: { id: unloadSite.id, name: unloadSite.name, administratorUserId: unloadSite.administratorUserId } }, status: "draft", nfcTransitKey: transitKey, activeVehicleTransitKey: createActiveVehicleTransitKey(resolved.projectId, vehicle.id) });
+  } catch (error) {
+    throwIfDuplicateActiveVehicleTransit(error, vehicle.plateNo);
+  }
   const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
   if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "运输开票保存失败" });
   const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: resolved.projectId, siteId: loadSite.id, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "load");
@@ -2040,8 +2076,10 @@ export const transportRouter = router({
     } catch (error) { throwDomainAsBadRequest(error); }
     const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
     if (input.invoiceMode === "plate_photo" && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票必须关联现场直拍的车牌水印照片" });
+    if (!input.endAt) await assertNoOpenTransportTrip(db, input.projectId, vehicle.id, vehicle.plateNo);
     const routeSnapshot = { source: "mobile", routePresetId: routePreset?.id ?? null, invoiceMode: input.invoiceMode, settlementUnit: rule.settlementUnit, theoreticalVolumeCubicMeters: theoreticalVolume, billableSteps: price.billableSteps, loadSite: loadSite ? { id: loadSite.id, name: loadSite.name, address: loadSite.address, administratorUserId: loadSite.administratorUserId } : null, unloadSite: unloadSite ? { id: unloadSite.id, name: unloadSite.name, address: unloadSite.address, administratorUserId: unloadSite.administratorUserId } : null, platePhotoEvidenceId: input.invoiceMode === "plate_photo" ? input.evidenceId ?? null : null, startLatitude: input.startLatitude ?? null, startLongitude: input.startLongitude ?? null, endLatitude: input.endLatitude ?? null, endLongitude: input.endLongitude ?? null };
-    await db.insert(transportTrips).values({
+    try {
+      await db.insert(transportTrips).values({
       tripNo,
       vehicleId: input.vehicleId,
       projectId: input.projectId,
@@ -2058,8 +2096,12 @@ export const transportRouter = router({
       calculatedAmount: String(price.totalAmount),
       routeSnapshot,
       evidenceId: input.evidenceId ?? null,
-      status: input.invoiceMode === "plate_photo" ? "submitted" : "draft",
-    });
+        status: input.invoiceMode === "plate_photo" ? "submitted" : "draft",
+        activeVehicleTransitKey: input.endAt ? null : createActiveVehicleTransitKey(input.projectId, input.vehicleId),
+      });
+    } catch (error) {
+      throwIfDuplicateActiveVehicleTransit(error, vehicle.plateNo);
+    }
     if (input.evidenceId) {
       await db.update(evidenceRecords).set({ sourceId: `transport-trip-${tripNo}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
     }
@@ -2113,6 +2155,7 @@ export const transportRouter = router({
     const settlementValues = input.nextStatus === "settled"
       ? {
           status: input.nextStatus,
+          activeVehicleTransitKey: null,
           fuelDeductionAmount: String(fuelDeductionAmount),
           netSettlementAmount: String(Number((grossAmount - fuelDeductionAmount).toFixed(2))),
           fuelSettlementSnapshot: {
@@ -2122,7 +2165,7 @@ export const transportRouter = router({
             records: deductibleFuelRecords.map(record => ({ id: record.id, recordNo: record.recordNo, liters: Number(record.liters), unitPrice: Number(record.appliedUnitPrice), amount: Number(record.amount), supplyMethod: record.supplyMethod })),
           },
         }
-      : { status: input.nextStatus };
+      : { status: input.nextStatus, ...(input.nextStatus === "void" ? { activeVehicleTransitKey: null } : {}) };
     const updateResult = await db.update(transportTrips)
       .set(settlementValues)
       .where(and(eq(transportTrips.id, input.id), eq(transportTrips.status, trip.status)));

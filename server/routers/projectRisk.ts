@@ -28,6 +28,7 @@ import { createHeartbeatJob, updateHeartbeatJob } from "../_core/heartbeat";
 import { invokeLLM } from "../_core/llm";
 import { protectedProcedure, router } from "../_core/trpc";
 import { getPublishedExternalAiConfiguration, invokeExternalAiJson } from "../services/externalAiApi";
+import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 
 const periodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM");
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
@@ -185,6 +186,32 @@ export function detectTransportRisk(trip: typeof transportTrips.$inferSelect, ru
   return results;
 }
 
+/**
+ * 运输完整性规则只根据已落库的趟次时间与状态计算，输出“待人工核验”信号，
+ * 不推断或指控管理员、司机存在串通行为。
+ */
+export function detectTransportIntegrityRisks(trips: Array<typeof transportTrips.$inferSelect>): CandidateRisk[] {
+  const candidates: CandidateRisk[] = [];
+  const byVehicle = new Map<number, Array<typeof transportTrips.$inferSelect>>();
+  for (const trip of trips.filter(item => item.status !== "void")) byVehicle.set(trip.vehicleId, [...(byVehicle.get(trip.vehicleId) ?? []), trip]);
+  for (const [vehicleId, vehicleTrips] of Array.from(byVehicle.entries())) {
+    const openTrips = vehicleTrips.filter(trip => !trip.unloadConfirmedAt && trip.status !== "settled");
+    if (openTrips.length > 1) candidates.push({ category: "transport", severity: "critical", ruleCode: "TRANSPORT_PARALLEL_OPEN_TRIPS", sourceType: "transport_vehicle", sourceId: String(vehicleId), title: "同一车辆存在并行未卸土运单", summary: `该车辆当前有 ${openTrips.length} 张未完成卸土的运输票据。该结果仅表示需要人工核验装卸现场、刷卡记录和调度安排，不代表已认定存在违规。`, evidence: { vehicleId, openTripCount: openTrips.length, tripNos: openTrips.map(trip => trip.tripNo).join("、") } });
+    const completed = vehicleTrips.filter(trip => Boolean(trip.unloadConfirmedAt)).sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
+    for (let index = 1; index < completed.length; index += 1) {
+      const current = completed[index];
+      const previous = completed[index - 1];
+      const intervalMinutes = (current.startAt.getTime() - previous.startAt.getTime()) / 60_000;
+      if (intervalMinutes >= 0 && intervalMinutes < 20) candidates.push({ category: "transport", severity: "warning", ruleCode: "TRANSPORT_SHORT_REPEAT_INTERVAL", sourceType: "transport_trip", sourceId: String(current.id), title: "同车运输票据间隔异常短", summary: `该车相邻两张已完成运输票据间隔 ${round(intervalMinutes, 1)} 分钟。请核对装卸时间、路线距离、现场刷卡和实际调度，不代表已认定存在违规。`, evidence: { vehicleId, tripId: Number(current.id), previousTripId: Number(previous.id), intervalMinutes: round(intervalMinutes, 1) } });
+    }
+    for (const trip of vehicleTrips) {
+      const hourChina = Number(new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", hourCycle: "h23" }).format(trip.startAt));
+      if (hourChina <= 4 || hourChina >= 23) candidates.push({ category: "transport", severity: "notice", ruleCode: "TRANSPORT_NON_WORKING_HOUR", sourceType: "transport_trip", sourceId: String(trip.id), title: "运输票据处于非工作时段", summary: `该趟运输在中国标准时间 ${String(hourChina).padStart(2, "0")}:00 左右创建。请核对夜间施工计划、调度安排和现场记录，不代表已认定存在违规。`, evidence: { vehicleId, tripId: Number(trip.id), hourChina } });
+    }
+  }
+  return candidates;
+}
+
 async function buildRiskCandidates(projectId: number, businessDate: string, rule: RiskRule) {
   const { db } = await getProjectOrThrow(projectId);
   const businessDateAt = businessDateValue(businessDate);
@@ -225,6 +252,7 @@ async function buildRiskCandidates(projectId: number, businessDate: string, rule
     if (ratio > rule.maxFuelFillRatio) candidates.push({ category: "fuel", severity: ratio > rule.maxFuelFillRatio * 1.25 ? "critical" : "warning", ruleCode: "FUEL_FILL_OVER_CAPACITY", sourceType: "diesel_refuel", sourceId: String(row.id), title: "加油量超过设备核定油箱容量", summary: `本次加油 ${round(liters, 2)} L，占核定油箱 ${round(capacity, 2)} L 的 ${round(ratio * 100, 1)}%，超过项目阈值 ${round(rule.maxFuelFillRatio * 100, 1)}%，请核对设备、油表和加油单。`, evidence: { refuelId: Number(row.id), liters: round(liters, 2), tankCapacityLiters: round(capacity, 2), fillRatio: round(ratio, 3), thresholdRatio: rule.maxFuelFillRatio } });
   }
   for (const trip of trips) candidates.push(...detectTransportRisk(trip, rule));
+  candidates.push(...detectTransportIntegrityRisks(trips));
   return { candidates, scanned: { pendingConstructionReports: reports.length, openAttendanceCheckIns: checkIns.length, dieselRefuelRecords: dieselRows.filter(item => item.status !== "void").length, transportTrips: trips.filter(item => item.status !== "void").length } };
 }
 
@@ -264,6 +292,20 @@ async function notifyRiskRecipients(project: { id: number; name: string; organiz
     channel: "in_app",
   }).onDuplicateKeyUpdate({ set: { title: `项目风险提醒｜${project.name}`.slice(0, 200), content: `${alert.title}：${alert.summary}`.slice(0, 1000), deepLink: "/admin/risk", status: "sent", sentAt: new Date(), channel: "in_app" } })));
   if (recipients.length) await db.update(projectRiskAlerts).set({ notifiedAt: new Date() }).where(eq(projectRiskAlerts.id, alert.id));
+  if (recipients.length && alert.category === "transport" && alert.ruleCode.startsWith("TRANSPORT_")) {
+    void notifyOfficialAccountBusinessEventSafely({
+      userId: recipients[0],
+      recipientUserIds: recipients,
+      projectId: project.id,
+      module: "transport",
+      eventCode: "transport_integrity_risk_pending_review",
+      targetType: "project_risk_alert",
+      targetId: String(alert.id),
+      title: `运输待核验风险｜${project.name}`,
+      content: `${alert.title}：${alert.summary}`,
+      deepLink: "/admin/risk",
+    }).catch(() => undefined);
+  }
   return recipients.length;
 }
 
