@@ -41,6 +41,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
+import { runProjectRiskScan } from "./projectRisk";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -417,6 +418,15 @@ function createActiveVehicleTransitKey(projectId: number, vehicleId: number) {
   return `vehicle:${projectId}:${vehicleId}`;
 }
 
+function getChinaBusinessDate(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value).reduce<Record<string, string>>((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function triggerTransportRiskScan(projectId: number) {
+  void runProjectRiskScan(projectId, getChinaBusinessDate()).catch(() => undefined);
+}
+
 function throwIfDuplicateActiveVehicleTransit(error: unknown, plateNo: string): never {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("transport_trips_project_active_vehicle_transit_unique") || message.includes("activeVehicleTransitKey")) {
@@ -712,6 +722,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
       content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成装土刷卡，请按路线前往 ${unloadSite.name} 完成卸土闭环。`,
       deepLink: "/mobile/transport",
     }).catch(() => undefined);
+    if (event.success && !event.needsReview) triggerTransportRiskScan(input.projectId);
     return { ...event, stage: "in_transit" as const, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: site.name, unloadSiteName: unloadSite.name };
   }
 
@@ -735,6 +746,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
       content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成卸土刷卡，运输票据 ${activeTrip.tripNo} 已进入待核验状态。`,
       deepLink: "/mobile/transport",
     }).catch(() => undefined);
+    triggerTransportRiskScan(input.projectId);
   }
   return { ...event, stage: "completed" as const, tripId: activeTrip.id, tripNo: activeTrip.tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: (activeTrip.routeSnapshot as { loadSite?: { name?: string } } | null)?.loadSite?.name ?? "装土点", unloadSiteName: site.name };
 }
@@ -797,6 +809,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     if (!trip) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在" });
     const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "unload");
     if (event.success && !event.needsReview) await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
+    if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
     return { ...event, stage: "completed" as const, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
   }
   if (!input.routePresetId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先选择运输线路" });
@@ -826,6 +839,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "运输开票保存失败" });
   const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: resolved.projectId, siteId: loadSite.id, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "load");
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: Array.from(new Set([loadSite.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0))), projectId: resolved.projectId, module: "transport", eventCode: "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: "运输 NFC 发票已开具", content: `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "mobile_nfc_invoice_created", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `手机刷 NFC 卡开具运输发票 ${tripNo}：${vehicle.plateNo}，${loadSite.name} → ${unloadSite.name}` });
   return { ...event, stage: "in_transit" as const, tripNo, vehiclePlateNo: vehicle.plateNo };
 }

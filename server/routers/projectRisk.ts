@@ -449,6 +449,27 @@ function externalAiFallbackReason(error: unknown) {
   return "external_ai_request_failed";
 }
 
+/** 手动和业务事件共用；依靠预警唯一键和通知幂等键抵抗开票重试与并发扫描。 */
+export async function runProjectRiskScan(projectId: number, businessDate: string) {
+  const { db, project } = await getProjectOrThrow(projectId);
+  const [storedRule] = await db.select().from(projectRiskRules).where(eq(projectRiskRules.projectId, projectId)).limit(1);
+  const rule = asRule(storedRule);
+  if (!rule.enabled) return { enabled: false, detectedCount: 0, createdCount: 0, notifiedCount: 0, alerts: [] as Array<typeof projectRiskAlerts.$inferSelect> };
+  const { candidates, scanned } = await buildRiskCandidates(projectId, businessDate, rule);
+  let createdCount = 0;
+  let notifiedCount = 0;
+  const alerts = [] as Array<typeof projectRiskAlerts.$inferSelect>;
+  for (const candidate of candidates) {
+    const persisted = await persistRiskCandidate(projectId, businessDate, candidate);
+    alerts.push(persisted.alert);
+    if (persisted.created) {
+      createdCount += 1;
+      notifiedCount += await notifyRiskRecipients(project, persisted.alert);
+    }
+  }
+  return { enabled: true, scanned, detectedCount: candidates.length, createdCount, notifiedCount, alerts };
+}
+
 export const projectRiskRouter = router({
   getRule: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
@@ -498,23 +519,7 @@ export const projectRiskRouter = router({
 
   scan: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), businessDate: businessDateSchema })).mutation(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
-    const { db, project } = await getProjectOrThrow(input.projectId);
-    const [storedRule] = await db.select().from(projectRiskRules).where(eq(projectRiskRules.projectId, input.projectId)).limit(1);
-    const rule = asRule(storedRule);
-    if (!rule.enabled) return { enabled: false, detectedCount: 0, createdCount: 0, notifiedCount: 0, alerts: [] };
-    const { candidates, scanned } = await buildRiskCandidates(input.projectId, input.businessDate, rule);
-    let createdCount = 0;
-    let notifiedCount = 0;
-    const alerts = [] as Array<typeof projectRiskAlerts.$inferSelect>;
-    for (const candidate of candidates) {
-      const persisted = await persistRiskCandidate(input.projectId, input.businessDate, candidate);
-      alerts.push(persisted.alert);
-      if (persisted.created) {
-        createdCount += 1;
-        notifiedCount += await notifyRiskRecipients(project, persisted.alert);
-      }
-    }
-    return { enabled: true, scanned, detectedCount: candidates.length, createdCount, notifiedCount, alerts };
+    return runProjectRiskScan(input.projectId, input.businessDate);
   }),
 
   listAlerts: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema, status: z.enum(["all", "open", "acknowledged", "in_rectification", "resolved", "ignored"]).default("all") })).query(async ({ ctx, input }) => {
