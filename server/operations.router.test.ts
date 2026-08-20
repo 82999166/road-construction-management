@@ -553,21 +553,21 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "bind_vehicle_rfid_card", summary: expect.not.stringContaining("13800138000") });
   });
 
-  it("写卡任务仅临时返回完整车辆与司机载荷，数据库只保存载荷摘要并保留确认任务", async () => {
+  it("写卡任务仅临时返回 NTAG216 最小身份载荷，数据库只保存载荷摘要并保留确认任务", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
         [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "active", payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
         [{ id: 11, projectId: 10, status: "active", driverUserId: 7, plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
-        [{ id: 7, name: "张司机" }],
         [{ id: 401 }],
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
     const result = await transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 21, writerDeviceId: null, action: "issue" });
-    expect(result).toMatchObject({ success: true, jobId: 401, hardwareMode: "manual_confirmation", payload: expect.objectContaining({ vehicle: expect.objectContaining({ plateNo: "粤A12345" }), driver: expect.objectContaining({ name: "张司机", phone: "13800138000" }) }) });
+    expect(result).toMatchObject({ success: true, jobId: 401, hardwareMode: "manual_confirmation", payload: { t: "RC2", c: 21, p: 10, r: 1, n: expect.any(String), s: expect.any(String) } });
+    expect(JSON.stringify(result.payload)).not.toMatch(/粤A12345|张司机|13800138000|vehicle|driver|phone/i);
     expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ cardId: 21, payloadVersion: 1, action: "issue" });
     expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain("13800138000");
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "prepare_rfid_card_write", targetId: "401" });

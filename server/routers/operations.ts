@@ -38,6 +38,7 @@ import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
+import { buildTransportNfcCardPayload } from "../services/rfidCardPayload";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -1303,30 +1304,12 @@ export const transportRouter = router({
     if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
     if (!vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未绑定司机，不能生成写卡载荷" });
-    const [driver] = await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, vehicle.driverUserId)).limit(1);
-    if (!driver) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆绑定司机不存在，不能生成写卡载荷" });
     const writerDeviceId = input.writerDeviceId ?? card.writerDeviceId;
     if (writerDeviceId) {
       const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, writerDeviceId)).limit(1);
       if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "写卡器不存在、未启用或不属于当前项目" });
     }
-    const driverPhone = card.driverPhoneEncrypted ? decryptSecret(card.driverPhoneEncrypted) : "";
-    if (!driverPhone) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆射频卡未保存司机电话，不能生成完整写卡载荷" });
-    const payload = {
-      schema: "road-construction-rfid/v1",
-      cardId: card.id,
-      projectId: input.projectId,
-      vehicle: {
-        id: vehicle.id,
-        plateNo: vehicle.plateNo,
-        vehicleType: vehicle.vehicleType,
-        cargoBox: { lengthMeters: Number(vehicle.boxLengthMeters), widthMeters: Number(vehicle.boxWidthMeters), heightMeters: Number(vehicle.boxHeightMeters), loadFactor: Number(vehicle.loadFactor) },
-      },
-      driver: { userId: driver.id, name: driver.name || "未命名司机", phone: driverPhone },
-      payloadVersion: card.payloadVersion,
-      issuedAt: new Date().toISOString(),
-      action: input.action,
-    };
+    const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
     const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const jobNo = createRfidWriteJobNo(input.projectId);
     await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadVersion: card.payloadVersion, preparedBy: user.id });
