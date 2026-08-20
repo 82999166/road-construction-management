@@ -1834,6 +1834,45 @@ export const transportRouter = router({
     return { success: true };
   }),
 
+  /**
+   * 初卡擦除的服务端审计终结。物理擦除由本地桥接固定清空 NDEF 用户区完成；
+   * 此处只接受已停用/待重发卡的真实 UID 指纹，禁止把正在使用的 active 卡静默解绑。
+   */
+  finalizeRfidInitialErase: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    cardId: z.number().int().positive(),
+    cardUidFingerprint: z.string().min(16).max(256),
+    writerDeviceId: z.number().int().positive().nullable().optional(),
+  })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
+    if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "待恢复初卡的车辆卡不存在或不属于当前项目" });
+    if (card.status === "active") throw new TRPCError({ code: "BAD_REQUEST", message: "正在使用的车辆卡不能擦除；请先在车辆卡台账执行挂失/停用，再恢复为初卡" });
+    if (!["revoked", "suspended"].includes(card.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卡状态不允许恢复初卡，请先停止该卡的业务使用" });
+    if (card.cardUidFingerprint !== input.cardUidFingerprint) throw new TRPCError({ code: "CONFLICT", message: "感应卡 UID 与所选车辆卡不一致，已拒绝登记擦除结果" });
+    if (input.writerDeviceId) {
+      const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.writerDeviceId)).limit(1);
+      if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "所选写卡器不可用或不属于当前项目" });
+      await db.update(rfidWriterDevices).set({ lastConfirmedAt: new Date() }).where(eq(rfidWriterDevices.id, input.writerDeviceId));
+    }
+    const now = new Date();
+    await db.update(transportVehicleRfidCards).set({ status: "revoked", revokedAt: now }).where(eq(transportVehicleRfidCards.id, card.id));
+    await db.insert(auditLogs).values({
+      userId: user.id,
+      module: "transport",
+      action: "rfid_initial_card_erased",
+      targetType: "transport_vehicle_rfid_card",
+      targetId: String(card.id),
+      summary: `已擦除并恢复初卡：卡 ${card.cardUidMasked}，UID 指纹 ${input.cardUidFingerprint.slice(0, 10)}…；仅 NDEF 用户区，原绑定保持已停用。`,
+    });
+    return { success: true, cardId: card.id, cardStatus: "revoked" as const };
+  }),
+
   listFreightRules: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
