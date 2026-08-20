@@ -1211,7 +1211,7 @@ export const transportRouter = router({
     const rows = await db.select().from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)).orderBy(desc(transportVehicles.updatedAt));
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     const scopedRows = isDriverOnly ? rows.filter(vehicle => vehicle.driverUserId === user.id) : rows;
-    const canViewDriverPhone = !isDriverOnly && roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER"].includes(role));
+    const canViewDriverPhone = !isDriverOnly && roleCodes.some(role => ["ALL", "SUPER_ADMIN", "TRANSPORT_MANAGER", "PROJECT_MANAGER"].includes(role));
     return scopedRows.map(vehicle => {
       const { driverPhoneEncrypted, ...safeVehicle } = vehicle;
       return {
