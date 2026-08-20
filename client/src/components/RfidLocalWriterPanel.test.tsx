@@ -1,0 +1,21 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const source = readFileSync(resolve(process.cwd(), "client/src/components/RfidLocalWriterPanel.tsx"), "utf8");
+
+describe("uTrust 本地桥接面板", () => {
+  it("检测按钮必须展示加载态、八秒超时和可读网络访问失败说明", () => {
+    expect(source).toContain("const [checkingBridge, setCheckingBridge]");
+    expect(source).toContain("AbortController");
+    expect(source).toContain("8_000");
+    expect(source).toContain("浏览器无法访问本机 127.0.0.1 桥接");
+    expect(source).toContain("正在检测…");
+  });
+
+  it("正式测试写卡必须等待桥接健康检查成功，并在页面保留实时状态文字", () => {
+    expect(source).toContain('bridgeStatus !== "ready"');
+    expect(source).toContain('aria-live="polite"');
+    expect(source).toContain("已连接：智能卡服务");
+  });
+});
