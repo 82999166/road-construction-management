@@ -11,16 +11,18 @@ const LOCAL_BRIDGE_URL = "http://127.0.0.1:47601";
 
 type BridgeResult = {
   success?: boolean;
+  cardUid?: string;
   cardUidFingerprint?: string;
   message?: string;
   detail?: string;
 };
 
-export default function RfidLocalWriterPanel({ projectId }: { projectId: number }) {
+export default function RfidLocalWriterPanel({ projectId, onUidRead }: { projectId: number; onUidRead: (uid: string) => void }) {
   const [writerDeviceId, setWriterDeviceId] = useState("UNASSIGNED");
   const [bridgeStatus, setBridgeStatus] = useState<"unknown" | "ready" | "offline">("unknown");
   const [bridgeMessage, setBridgeMessage] = useState("尚未检测本机 uTrust 桥接服务。");
   const [checkingBridge, setCheckingBridge] = useState(false);
+  const [readingUid, setReadingUid] = useState(false);
   const utils = trpc.useUtils();
   const writerDevices = trpc.transport.listRfidWriterDevices.useQuery({ projectId }, { enabled: projectId > 0 });
   const recordTest = trpc.transport.recordRfidHardwareTest.useMutation({
@@ -93,6 +95,24 @@ export default function RfidLocalWriterPanel({ projectId }: { projectId: number 
     }
   };
 
+  const readUidForBinding = async () => {
+    setReadingUid(true);
+    setBridgeMessage("正在通过 uTrust 4701 F CL Reader 读取卡 UID…");
+    try {
+      const result = await requestBridge("/api/read-uid");
+      if (!result.success || !result.cardUid) throw new Error(result.message || "未读取到有效卡 UID");
+      onUidRead(result.cardUid);
+      setBridgeMessage("已读取卡 UID，正在打开车辆卡绑定窗口；UID 仅在本次绑定请求中使用。");
+      toast.success("已读取卡 UID，请在弹出的窗口确认车辆和联系电话。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "读取卡 UID 失败";
+      setBridgeMessage(message);
+      toast.error(message);
+    } finally {
+      setReadingUid(false);
+    }
+  };
+
   return (
     <Card className="border-cyan-200 bg-cyan-50/40">
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
@@ -103,7 +123,7 @@ export default function RfidLocalWriterPanel({ projectId }: { projectId: number 
         <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${bridgeStatus === "ready" ? "bg-emerald-100 text-emerald-800" : bridgeStatus === "offline" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-600"}`}><Radio className="h-3.5 w-3.5" />{bridgeStatus === "ready" ? "本地桥接已连接" : bridgeStatus === "offline" ? "本地桥接未连接" : "待检测"}</span>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-end">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-end">
           <div>
             <Label>登记写卡器（用于审计）</Label>
             <Select value={writerDeviceId} onValueChange={setWriterDeviceId}>
@@ -112,6 +132,7 @@ export default function RfidLocalWriterPanel({ projectId }: { projectId: number 
             </Select>
           </div>
           <Button type="button" variant="outline" onClick={checkBridge} disabled={checkingBridge}><Radio className="mr-1.5 h-4 w-4" />{checkingBridge ? "正在检测…" : "检测本地桥接"}</Button>
+          <Button type="button" variant="outline" onClick={readUidForBinding} disabled={readingUid || bridgeStatus !== "ready"}><Usb className="mr-1.5 h-4 w-4" />{readingUid ? "正在读取 UID…" : "读取卡 UID 并绑定"}</Button>
           <Button type="button" onClick={runTestWrite} disabled={recordTest.isPending || bridgeStatus !== "ready"}><ShieldCheck className="mr-1.5 h-4 w-4" />{recordTest.isPending ? "正在回读校验…" : "写入测试卡"}</Button>
         </div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>

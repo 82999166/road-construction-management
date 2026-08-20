@@ -900,6 +900,7 @@ export default function AdminPage() {
   const [dieselAlertThreshold, setDieselAlertThreshold] = useState("10");
   const [rfidWriterDeviceForm, setRfidWriterDeviceForm] = useState<RfidWriterDeviceForm>(EMPTY_RFID_WRITER_DEVICE_FORM);
   const [rfidCardForm, setRfidCardForm] = useState<RfidCardForm>(EMPTY_RFID_CARD_FORM);
+  const [, setRfidPendingUid] = useState("");
   const [rfidWriterDialogOpen, setRfidWriterDialogOpen] = useState(false);
   const [rfidCardDialogOpen, setRfidCardDialogOpen] = useState(false);
   const [rfidWritePreview, setRfidWritePreview] = useState<{ jobId: number; jobNo: string; payload: Record<string, unknown>; hardwareMode: "manual_confirmation" } | null>(null);
@@ -3003,7 +3004,7 @@ export default function AdminPage() {
           </TabsList>
         </Tabs>
         {content}
-        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} /> : null}
+        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: transportVehicleLedger.data?.[0] ? String(transportVehicleLedger.data[0].id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid }); setRfidCardDialogOpen(true); }} /> : null}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>

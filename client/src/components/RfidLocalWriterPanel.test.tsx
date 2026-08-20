@@ -18,4 +18,10 @@ describe("uTrust 本地桥接面板", () => {
     expect(source).toContain('aria-live="polite"');
     expect(source).toContain("已连接：智能卡服务");
   });
+
+  it("车辆卡绑定可通过本地桥接只读 UID 接口自动带入，而不是要求管理员手工抄录", () => {
+    expect(source).toContain('"/api/read-uid"');
+    expect(source).toContain("onUidRead(result.cardUid)");
+    expect(source).toContain("读取卡 UID 并绑定");
+  });
 });
