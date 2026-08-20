@@ -560,7 +560,7 @@ describe("机械与运输 tRPC 路由", () => {
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", driverUserId: 7, plateNo: "粤A12345" }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345" }],
         [],
       ),
       insert: vi.fn(() => ({ values: insertValues })),
@@ -580,8 +580,7 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
         [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "active", payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
-        [{ id: 11, projectId: 10, status: "active", driverUserId: 7, plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
-        [{ id: 7, name: "张司机" }],
+        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
         [{ id: 401 }],
       ),
       insert: vi.fn(() => ({ values: insertValues })),

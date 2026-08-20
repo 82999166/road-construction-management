@@ -1339,7 +1339,7 @@ export const transportRouter = router({
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const existing = input.id ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1))[0] : null;
-    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: input.driverUserId ?? null, driverName: input.driverName ?? null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
+    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: null, driverName: input.driverName?.trim() || null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
     if (input.id) {
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
       await assertProjectInCurrentScope(ctx, existing.projectId);
@@ -1423,7 +1423,7 @@ export const transportRouter = router({
     const roleCodes = await assertTransportAccess(ctx);
     assertCanManageTransportResources(roleCodes);
     const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
-    if (!vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账绑定司机，再创建射频卡绑定" });
+    if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账录入外部司机姓名，再创建射频卡绑定" });
     if (input.writerDeviceId) {
       const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.writerDeviceId)).limit(1);
       if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目可用的写卡器" });
@@ -1465,9 +1465,7 @@ export const transportRouter = router({
     if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
     if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
-    if (!vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未绑定司机，不能生成写卡载荷" });
-    const [driver] = await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, vehicle.driverUserId)).limit(1);
-    if (!driver) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆绑定司机不存在，不能生成写卡载荷" });
+    if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未录入外部司机姓名，不能生成写卡载荷" });
     const writerDeviceId = input.writerDeviceId ?? card.writerDeviceId;
     if (writerDeviceId) {
       const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, writerDeviceId)).limit(1);
@@ -1475,7 +1473,7 @@ export const transportRouter = router({
     }
     const driverPhone = card.driverPhoneEncrypted ? decryptSecret(card.driverPhoneEncrypted) : "";
     if (!driverPhone) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆射频卡未保存司机电话，不能生成现场可核对的写卡载荷" });
-    const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: driver.name || "未命名司机", driverPhone });
+    const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
     const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const jobNo = createRfidWriteJobNo(input.projectId);
     await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadVersion: card.payloadVersion, preparedBy: user.id });
