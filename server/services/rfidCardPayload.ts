@@ -2,10 +2,13 @@ import { createHmac, randomBytes } from "node:crypto";
 import { ENV } from "../_core/env";
 
 export type TransportNfcCardPayloadV2 = {
-  t: "RC2";
+  t: "RC3";
   c: number;
   p: number;
   r: number;
+  v: string;
+  d: string;
+  h: string;
   n: string;
   s: string;
 };
@@ -18,7 +21,7 @@ function requireCardSigningSecret() {
 }
 
 function signingText(payload: Omit<TransportNfcCardPayloadV2, "s">) {
-  return [SIGNATURE_CONTEXT, payload.t, payload.c, payload.p, payload.r, payload.n].join("|");
+  return [SIGNATURE_CONTEXT, payload.t, payload.c, payload.p, payload.r, payload.v, payload.d, payload.h, payload.n].join("|");
 }
 
 function createSignature(payload: Omit<TransportNfcCardPayloadV2, "s">) {
@@ -26,14 +29,17 @@ function createSignature(payload: Omit<TransportNfcCardPayloadV2, "s">) {
 }
 
 /**
- * NTAG216 卡内只写最小身份凭证。原始卡 UID 由读卡器读取后单独派生指纹；车牌、司机、电话、路线、方量、单价和金额全部留在服务端权威台账。
+ * NTAG216 卡内写入现场发票管理员需要核对的车牌、司机姓名和联系电话，以及签名保护的卡绑定引用。原始卡 UID 由读卡器读取后单独派生指纹；路线、方量、单价、金额和结算状态全部留在服务端权威台账。
  */
-export function buildTransportNfcCardPayload(input: { cardId: number; projectId: number; payloadVersion: number }): TransportNfcCardPayloadV2 {
+export function buildTransportNfcCardPayload(input: { cardId: number; projectId: number; payloadVersion: number; plateNo: string; driverName: string; driverPhone: string }): TransportNfcCardPayloadV2 {
   const unsigned = {
-    t: "RC2" as const,
+    t: "RC3" as const,
     c: input.cardId,
     p: input.projectId,
     r: input.payloadVersion,
+    v: input.plateNo,
+    d: input.driverName,
+    h: input.driverPhone,
     n: randomBytes(9).toString("base64url"),
   };
   return { ...unsigned, s: createSignature(unsigned) };
