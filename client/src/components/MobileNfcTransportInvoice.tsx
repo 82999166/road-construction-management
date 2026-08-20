@@ -38,20 +38,23 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const [scanStatus, setScanStatus] = useState(initialToken ? "已从车辆卡安全链接读取车辆信息。" : "正在等待车辆卡靠近手机…");
   const [successResult, setSuccessResult] = useState<{ stage: "in_transit" | "completed"; tripNo: string } | null>(null);
   const scanTokenRef = useRef("");
+  const announce = (message: string) => {
+    if (!("speechSynthesis" in window)) return toast.info("当前浏览器不支持语音播报，请查看大字号成功提示");
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
+    const speech = new SpeechSynthesisUtterance(message);
+    speech.lang = "zh-CN";
+    speech.rate = 0.8;
+    speech.volume = 1;
+    window.setTimeout(() => window.speechSynthesis.speak(speech), 80);
+  };
   const preview = trpc.transport.previewMobileNfcInvoice.useQuery({ token }, { enabled: open && Boolean(token), retry: false });
   const issue = trpc.transport.confirmMobileNfcInvoice.useMutation({
     onSuccess: async result => {
       const successMessage = result.stage === "in_transit" ? "发票成功，车辆已发车，请前往卸土点。" : "卸土成功，本趟运输已完成。";
       setSuccessResult({ stage: result.stage, tripNo: result.tripNo });
       toast.success(successMessage);
-      if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const speech = new SpeechSynthesisUtterance(successMessage);
-        speech.lang = "zh-CN";
-        speech.rate = 0.88;
-        speech.volume = 1;
-        window.speechSynthesis.speak(speech);
-      }
+      announce(successMessage);
       await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
       setScanStatus(result.stage === "in_transit" ? `开票成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。` : `卸土闭环成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。`);
     },
@@ -98,6 +101,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const submit = async () => {
     if (!token || !preview.data) return;
     if (!preview.data.activeTrip && !routePresetId) return toast.error("请先选择运输线路");
+    if ("speechSynthesis" in window) window.speechSynthesis.resume();
     let latitude: number | undefined;
     let longitude: number | undefined;
     if (preview.data.activeTrip) {
@@ -113,5 +117,5 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     issue.mutate({ token, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
   };
 
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]"><DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />刷 NFC 卡发票</DialogTitle></DialogHeader><div className="space-y-3"><p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>{successResult ? <div aria-live="assertive" className="rounded-2xl border-2 border-[#4f875a] bg-[#eef9ee] px-4 py-5 text-center text-[#1f5f30]"><p className="text-3xl font-black tracking-wide">{successResult.stage === "in_transit" ? "发票成功" : "卸土成功"}</p><p className="mt-3 text-lg font-bold">{successResult.stage === "in_transit" ? "车辆已发车，请前往卸土点" : "本趟运输已完成闭环"}</p><p className="mt-2 text-sm font-semibold">运单号：{successResult.tripNo}</p></div> : null}<Card className="border-[#b4d0db] bg-white"><CardContent className="p-3"><p className="text-sm font-medium text-[#24546b]">{scanStatus}</p>{preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}{preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{preview.error.message}</p> : null}{preview.data ? <div className="mt-3 space-y-2"><div className="rounded-xl bg-[#edf7fb] p-3"><div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div><p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p></div>{preview.data.activeTrip ? <div className="rounded-xl border-2 border-[#c56632] bg-[#fff6ed] p-3 text-sm text-[#824b2a]"><p className="font-bold">该车还未卸土，不能开具新发票</p><p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p><p className="mt-1 text-xs">路线：{preview.data.activeTrip.loadSiteName} → {preview.data.activeTrip.unloadSiteName}</p><p className="mt-2 text-xs">请在卸土点确认卸土闭环后，才能开具下一张发票。</p></div> : <><Select value={routePresetId} onValueChange={setRoutePresetId}><SelectTrigger className="border-[#a9ccd9]"><SelectValue placeholder="选择运输线路" /></SelectTrigger><SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {route.distanceKm} km</SelectItem>)}</SelectContent></Select>{!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}</>}<Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}><CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}</Button></div> : null}</CardContent></Card></div></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]"><DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />刷 NFC 卡发票</DialogTitle></DialogHeader><div className="space-y-3"><p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>{successResult ? <div aria-live="assertive" className="rounded-2xl border-2 border-[#4f875a] bg-[#eef9ee] px-4 py-5 text-center text-[#1f5f30]"><p className="text-3xl font-black tracking-wide">{successResult.stage === "in_transit" ? "发票成功" : "卸土成功"}</p><p className="mt-3 text-lg font-bold">{successResult.stage === "in_transit" ? "车辆已发车，请前往卸土点" : "本趟运输已完成闭环"}</p><p className="mt-2 text-sm font-semibold">运单号：{successResult.tripNo}</p><Button variant="outline" className="mt-4 border-[#4f875a] bg-white text-[#1f5f30]" onClick={() => announce(successResult.stage === "in_transit" ? "发票成功，车辆已发车，请前往卸土点。" : "卸土成功，本趟运输已完成。")} >播放成功语音</Button></div> : null}<Card className="border-[#b4d0db] bg-white"><CardContent className="p-3"><p className="text-sm font-medium text-[#24546b]">{scanStatus}</p>{preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}{preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{preview.error.message}</p> : null}{preview.data ? <div className="mt-3 space-y-2"><div className="rounded-xl bg-[#edf7fb] p-3"><div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div><p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p></div>{preview.data.activeTrip ? <div className="rounded-xl border-2 border-[#c56632] bg-[#fff6ed] p-3 text-sm text-[#824b2a]"><p className="font-bold">该车还未卸土，不能开具新发票</p><p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p><p className="mt-1 text-xs">路线：{preview.data.activeTrip.loadSiteName} → {preview.data.activeTrip.unloadSiteName}</p><p className="mt-2 text-xs">请在卸土点确认卸土闭环后，才能开具下一张发票。</p></div> : <><Select value={routePresetId} onValueChange={setRoutePresetId}><SelectTrigger className="border-[#a9ccd9]"><SelectValue placeholder="选择运输线路" /></SelectTrigger><SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {route.distanceKm} km</SelectItem>)}</SelectContent></Select>{!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}</>}<Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}><CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}</Button></div> : null}</CardContent></Card></div></DialogContent></Dialog>;
 }

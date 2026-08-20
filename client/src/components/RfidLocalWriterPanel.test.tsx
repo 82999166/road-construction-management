@@ -25,6 +25,13 @@ describe("uTrust 本地桥接面板", () => {
     expect(source).toContain("读取卡 UID 并绑定");
   });
 
+  it("初卡恢复只能调用固定的本地擦除接口，并要求二次确认且明确不修改锁位或写保护", () => {
+    expect(source).toContain('"/api/erase-initial-card"');
+    expect(source).toContain("确认擦除当前 NTAG216 的 NDEF 用户区并恢复为空白初卡");
+    expect(source).toContain("擦除并恢复初卡");
+    expect(source).toContain("不会修改制造商区、锁定位、配置页或写保护口令");
+  });
+
   it("装土点与卸土点读卡设备必须可登记到具体地点，供手机 NFC 双设备闭环选择", () => {
     expect(source).toContain("装卸点读卡设备");
     expect(source).toContain("saveReaderDevice.mutate");

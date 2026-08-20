@@ -24,6 +24,7 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
   const [bridgeMessage, setBridgeMessage] = useState("尚未检测本机 uTrust 桥接服务。");
   const [checkingBridge, setCheckingBridge] = useState(false);
   const [readingUid, setReadingUid] = useState(false);
+  const [erasingInitial, setErasingInitial] = useState(false);
   const [readerSiteId, setReaderSiteId] = useState("UNSELECTED");
   const [readerDeviceCode, setReaderDeviceCode] = useState("");
   const [readerDisplayName, setReaderDisplayName] = useState("");
@@ -128,6 +129,21 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     }
   };
 
+  const eraseToInitial = async () => {
+    if (!window.confirm("确认擦除当前 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销，但不会修改制造商区、锁定位、配置页或写保护口令。")) return;
+    setErasingInitial(true);
+    try {
+      const result = await requestBridge("/api/erase-initial-card") as BridgeResult & { initialNdef?: boolean };
+      if (!result.success || !result.initialNdef) throw new Error(result.message || "初卡恢复回读校验失败");
+      setBridgeMessage("已擦除 NDEF 用户区并回读确认空白初卡；请在车辆卡台账中重新办理绑定和正式写入。");
+      toast.success("NFC 卡已恢复为空白初卡，未修改锁定位或写保护。");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "恢复初卡失败");
+    } finally {
+      setErasingInitial(false);
+    }
+  };
+
   const registerReaderDevice = () => {
     if (readerSiteId === "UNSELECTED") return toast.error("请先选择读卡设备所在的装土点或卸土点");
     if (!readerDeviceCode.trim() || !readerDisplayName.trim()) return toast.error("请填写现场设备编号和显示名称");
@@ -155,6 +171,7 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
           <Button type="button" variant="outline" onClick={checkBridge} disabled={checkingBridge}><Radio className="mr-1.5 h-4 w-4" />{checkingBridge ? "正在检测…" : "检测本地桥接"}</Button>
           <Button type="button" variant="outline" onClick={readUidForBinding} disabled={readingUid || bridgeStatus !== "ready"}><Usb className="mr-1.5 h-4 w-4" />{readingUid ? "正在读取 UID…" : "读取卡 UID 并绑定"}</Button>
           <Button type="button" onClick={runTestWrite} disabled={recordTest.isPending || bridgeStatus !== "ready"}><ShieldCheck className="mr-1.5 h-4 w-4" />{recordTest.isPending ? "正在回读校验…" : "写入测试卡"}</Button>
+          <Button type="button" variant="destructive" onClick={eraseToInitial} disabled={erasingInitial || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "擦除并恢复初卡"}</Button>
         </div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>
         <p className="rounded-lg border border-cyan-200 bg-white/70 px-3 py-2 text-xs leading-5 text-cyan-950">操作顺序：先将可覆盖的测试 NTAG216 放至 <strong>uTrust 4701 F CL Reader</strong> 感应区，点击“检测本地桥接”，再点击“写入测试卡”。桥接会先读取 UID 指纹、写入 `RC3T` 测试 NDEF、回读验证；不触碰锁定页、配置页或写保护口令。</p>
