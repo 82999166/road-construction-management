@@ -4,6 +4,7 @@ import SettlementTemplateCalculator from "@/components/SettlementTemplateCalcula
 import ConstructionToolbox from "@/components/ConstructionToolbox";
 import ContractManagementPanel from "@/components/ContractManagementPanel";
 import RoadRailKnowledgeBase from "@/components/RoadRailKnowledgeBase";
+import RfidLocalWriterPanel from "@/components/RfidLocalWriterPanel";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -3002,6 +3003,7 @@ export default function AdminPage() {
           </TabsList>
         </Tabs>
         {content}
+        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} /> : null}
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>

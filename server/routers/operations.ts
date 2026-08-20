@@ -285,6 +285,15 @@ const rfidWriteConfirmInput = z.object({
   failureReason: z.string().trim().max(500).nullable().optional(),
 });
 
+/** 本地环回桥接仅返回 UID 指纹；后台不接收或持久化测试卡的原始 UID。 */
+const rfidHardwareTestInput = z.object({
+  projectId: z.number().int().positive(),
+  writerDeviceId: z.number().int().positive().nullable().optional(),
+  success: z.boolean(),
+  cardUidFingerprint: z.string().regex(/^[a-f0-9]{64}$/i, "卡 UID 指纹格式无效").nullable().optional(),
+  failureReason: z.string().trim().max(500).nullable().optional(),
+});
+
 /** 统一将前端日期解释为 UTC 业务日零点，避免月结边界受浏览器时区影响。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -1342,6 +1351,31 @@ export const transportRouter = router({
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.success ? "confirm_rfid_card_write" : "fail_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: input.success ? "确认射频写卡任务成功" : "记录射频写卡任务失败" });
     return { success: true, status: input.success ? "confirmed" as const : "failed" as const };
+  }),
+
+  /** 本地 uTrust 测试桥接只登记结果与不可逆 UID 指纹，不得将测试成功直接转化为正式车辆卡已签发。 */
+  recordRfidHardwareTest: protectedProcedure.input(rfidHardwareTestInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    if (input.writerDeviceId) {
+      const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.writerDeviceId)).limit(1);
+      if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目已启用的写卡器" });
+      if (input.success) await db.update(rfidWriterDevices).set({ lastConfirmedAt: new Date() }).where(eq(rfidWriterDevices.id, input.writerDeviceId));
+    }
+    const fingerprintSummary = input.cardUidFingerprint ? `，测试卡指纹 ${input.cardUidFingerprint.slice(0, 10)}…` : "";
+    await db.insert(auditLogs).values({
+      userId: user.id,
+      module: "transport",
+      action: input.success ? "rfid_hardware_test_success" : "rfid_hardware_test_failed",
+      targetType: "rfid_writer_hardware_test",
+      targetId: String(input.writerDeviceId ?? input.projectId),
+      summary: input.success ? `uTrust 本地测试写卡与回读通过${fingerprintSummary}` : `uTrust 本地测试写卡失败：${input.failureReason ?? "未返回原因"}`,
+    });
+    return { success: true };
   }),
 
   listFreightRules: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {

@@ -573,4 +573,26 @@ describe("机械与运输 tRPC 路由", () => {
     expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain("13800138000");
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "prepare_rfid_card_write", targetId: "401" });
   });
+
+  it("本地硬件测试只登记项目范围内的读写结果和 UID 指纹摘要，不会签发或激活正式车辆卡", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const auditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values: auditValues })) } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).recordRfidHardwareTest({
+      projectId: 10,
+      writerDeviceId: null,
+      success: true,
+      cardUidFingerprint: "a".repeat(64),
+    })).resolves.toEqual({ success: true });
+
+    expect(assertProjectInCurrentScope).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
+      module: "transport",
+      action: "rfid_hardware_test_success",
+      targetType: "rfid_writer_hardware_test",
+      summary: expect.stringContaining("uTrust 本地测试写卡与回读通过"),
+    }));
+    expect(JSON.stringify(auditValues.mock.calls[0]?.[0])).not.toContain("a".repeat(64));
+  });
 });
