@@ -2255,7 +2255,12 @@ export const transportRouter = router({
             records: deductibleFuelRecords.map(record => ({ id: record.id, recordNo: record.recordNo, liters: Number(record.liters), unitPrice: Number(record.appliedUnitPrice), amount: Number(record.amount), supplyMethod: record.supplyMethod })),
           },
         }
-      : { status: input.nextStatus, ...(input.nextStatus === "void" ? { activeVehicleTransitKey: null } : {}) };
+      : {
+          status: input.nextStatus,
+          ...(input.nextStatus === "void"
+            ? { activeVehicleTransitKey: null, nfcTransitKey: null, endAt: new Date() }
+            : {}),
+        };
     const updateResult = await db.update(transportTrips)
       .set(settlementValues)
       .where(and(eq(transportTrips.id, input.id), eq(transportTrips.status, trip.status)));

@@ -12,5 +12,8 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("该车还未卸土，不能开具新发票");
     expect(source).toContain("speechSynthesis");
     expect(source).toContain("text-3xl font-black");
+    expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
+    expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");
+    expect(source).not.toContain("if (!open || initialToken) return");
   });
 });

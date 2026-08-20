@@ -63,6 +63,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
 
   useEffect(() => {
     if (!open) return;
+    scanTokenRef.current = "";
     setToken(initialToken?.trim() || "");
     setRoutePresetId("");
     setSuccessResult(null);
@@ -70,7 +71,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   }, [initialToken, open]);
 
   useEffect(() => {
-    if (!open || initialToken) return;
+    if (!open) return;
     const Reader = (window as NdefReaderWindow).NDEFReader;
     if (!Reader) {
       setScanStatus("当前手机不支持页面内自动读卡；请直接触碰车辆卡打开同一开票页。");
@@ -80,17 +81,24 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     const reader = new Reader();
     const onReading = (event: NdefReadingEvent) => {
       const nextToken = event.message.records.map(getNfcToken).find(Boolean) || "";
-      if (!nextToken || nextToken === scanTokenRef.current) return;
+      if (!nextToken) return;
+      if (nextToken === scanTokenRef.current) {
+        void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
+        setScanStatus("已重新读取车辆卡，正在刷新车辆与在途状态…");
+        return;
+      }
       scanTokenRef.current = nextToken;
       setToken(nextToken);
       setRoutePresetId("");
+      setSuccessResult(null);
       setScanStatus("车辆卡已读取，正在核验车辆身份与当前在途状态…");
+      void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
     };
     reader.addEventListener("reading", onReading);
     void reader.scan({ signal: controller.signal }).then(() => setScanStatus("请将已启用的车辆卡贴近手机。"))
       .catch(() => setScanStatus("无法启动页面内读卡；请允许 NFC 权限，或直接触碰车辆卡打开开票页。"));
     return () => controller.abort();
-  }, [initialToken, open]);
+  }, [open, utils.transport.previewMobileNfcInvoice]);
 
   useEffect(() => {
     if (!preview.data?.routes?.length || preview.data.activeTrip) return;
