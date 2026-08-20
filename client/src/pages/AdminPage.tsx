@@ -1354,9 +1354,9 @@ export default function AdminPage() {
       const response = await fetch("http://127.0.0.1:47601/api/write-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: rfidWritePreview.bridgeToken }), cache: "no-store", signal: controller.signal });
       const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; message?: string; status?: string };
       if (!response.ok || !result.success || result.status !== "confirmed") throw new Error(result.message || `本地写卡未通过回读校验（HTTP ${response.status}）`);
-      toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
-      setRfidWritePreview(null);
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
+      toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
+      window.requestAnimationFrame(() => setRfidWritePreview(null));
     } catch (error) {
       const message = error instanceof DOMException && error.name === "AbortError" ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。" : error instanceof Error ? error.message : "本地车辆卡写入失败";
       toast.error(message);
@@ -1367,9 +1367,9 @@ export default function AdminPage() {
   };
   const confirmRfidCardWrite = trpc.transport.confirmRfidCardWrite.useMutation({
     onSuccess: async data => {
-      toast.success(data.status === "confirmed" ? "写卡结果已确认并留痕" : "写卡失败已记录，请核对设备和卡片后重试");
-      setRfidWritePreview(null);
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
+      toast.success(data.status === "confirmed" ? "写卡结果已确认并留痕" : "写卡失败已记录，请核对设备和卡片后重试");
+      window.requestAnimationFrame(() => setRfidWritePreview(null));
     },
     onError: error => toast.error(error.message),
   });

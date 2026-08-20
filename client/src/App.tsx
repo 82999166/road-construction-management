@@ -119,8 +119,10 @@ function App() {
         // switchable
       >
         <TooltipProvider>
-          <Toaster />
-          <Router />
+          <div className="notranslate" translate="no">
+            <Toaster />
+            <Router />
+          </div>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

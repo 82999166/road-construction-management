@@ -9,5 +9,6 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("http://127.0.0.1:47601/api/write-vehicle-card");
     expect(source).toContain("写入并回读确认");
     expect(source).toContain("车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。");
+    expect(source).toContain("window.requestAnimationFrame(() => setRfidWritePreview(null))");
   });
 });
