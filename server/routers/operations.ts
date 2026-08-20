@@ -34,7 +34,7 @@ import {
   calculateTieredFreightAmount,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -489,6 +489,17 @@ function assertCanManageTransportResources(roleCodes: readonly string[]) {
   if (!roleCodes.includes("ALL") && !roleCodes.some(role => ["TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护射频写卡设备或车辆卡绑定" });
   }
+}
+
+/** 手机首次发卡可由超级管理员、运输管理岗位或具备明确运输新增/维护权限的项目管理员办理；只读专属权限不得签发车辆卡。 */
+async function assertCanIssueMobileNfcCards(ctx: Parameters<typeof requireAuthenticatedUser>[0], roleCodes: readonly string[]) {
+  if (roleCodes.includes("ALL") || roleCodes.some(role => ["TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) return;
+  const [createDecision, editDecision] = await Promise.all([
+    getRoleOperationPermissionDecision(ctx, "TRANSPORT", "create"),
+    getRoleOperationPermissionDecision(ctx, "TRANSPORT", "edit"),
+  ]);
+  if (createDecision.allowed || editDecision.allowed) return;
+  throw new TRPCError({ code: "FORBIDDEN", message: "当前账号仅有运输查看权限，未获车辆卡签发或维护授权" });
 }
 
 async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload") {
@@ -1471,7 +1482,7 @@ export const transportRouter = router({
    */
   listMobileNfcInitialIssueCandidates: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     const roleCodes = await assertTransportAccess(ctx);
-    assertCanManageTransportResources(roleCodes);
+    await assertCanIssueMobileNfcCards(ctx, roleCodes);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
@@ -1502,7 +1513,7 @@ export const transportRouter = router({
   prepareMobileNfcInitialIssue: protectedProcedure.input(mobileNfcInitialIssueInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertTransportAccess(ctx);
-    assertCanManageTransportResources(roleCodes);
+    await assertCanIssueMobileNfcCards(ctx, roleCodes);
     const { db, vehicle } = await getScopedVehicle(ctx, input.vehicleId, input.projectId, roleCodes);
     if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未启用，不能发放 NFC 车辆卡" });
     if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "请先在车辆台账录入外部司机姓名，再进行手机首次发卡" });
