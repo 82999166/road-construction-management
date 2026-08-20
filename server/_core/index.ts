@@ -48,6 +48,9 @@ async function startServer() {
   app.get("/MP_verify_amDyVeLccZJcmzJL.txt", (_req, res) => {
     res.type("text/plain").send("amDyVeLccZJcmzJL");
   });
+  app.get("/MP_verify_ovXYyaGy5gpoUjxo.txt", (_req, res) => {
+    res.type("text/plain").send("ovXYyaGy5gpoUjxo");
+  });
   // tRPC API
   app.use(
     "/api/trpc",
