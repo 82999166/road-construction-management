@@ -2156,7 +2156,7 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "数据库连接暂不可用，无法执行真实数据验收预检" });
-      const [[organization], [project], [roleAssignment], [departmentScope], [laborWorker], [attendance], [payroll], [dailyReport], [evidence], [machine], [vehicle], [diesel], [trip], [purchaseOrder], [inventory], [measurementClaim], [takeoff], [contract], [subcontractPackage], [financial], [officialBinding], [officialNotification]] = await Promise.all([
+      const [[organization], [project], [roleAssignment], [departmentScope], [laborWorker], [attendance], [payroll], [dailyReport], [evidence], [machine], [vehicle], [diesel], [trip], [purchaseOrder], [inventory], [measurementClaim], [takeoff], [contract], [subcontractPackage], [financial], [officialBinding], [officialNotification], [officialTemplateGap]] = await Promise.all([
         db.select({ total: count() }).from(organizations),
         db.select({ total: count() }).from(projects),
         db.select({ total: count() }).from(userRoleAssignments),
@@ -2179,6 +2179,7 @@ export const adminRouter = router({
         db.select({ total: count() }).from(financialRecords),
         db.select({ total: count() }).from(officialAccountBindings),
         db.select({ total: count() }).from(notificationRecords).where(eq(notificationRecords.channel, "official_account")),
+        db.select({ total: count() }).from(notificationRecords).where(and(eq(notificationRecords.channel, "official_account"), eq(notificationRecords.status, "skipped"), eq(notificationRecords.failureCode, "module_template_not_bound"))),
       ]);
       return evaluateRealDataReadiness({
         organizations: Number(organization?.total ?? 0),
@@ -2203,6 +2204,7 @@ export const adminRouter = router({
         financialRecords: Number(financial?.total ?? 0),
         officialAccountBindings: Number(officialBinding?.total ?? 0),
         officialAccountNotifications: Number(officialNotification?.total ?? 0),
+        officialAccountTemplateGaps: Number(officialTemplateGap?.total ?? 0),
       });
     }),
   }),

@@ -10,12 +10,14 @@ describe("全业务真实项目数据健康预检", () => {
       dieselRefuelRecords: 0, transportTrips: 1, purchaseOrders: 1, inventoryTransactions: 1,
       measurementClaims: 1, measurementTakeoffRecords: 1, outsourceContracts: 1, subcontractPackages: 1,
       financialRecords: 1, officialAccountBindings: 1, officialAccountNotifications: 1,
+      officialAccountTemplateGaps: 1,
     });
 
     expect(result.ready).toBe(false);
     expect(result.checks.find(check => check.key === "resources")?.ready).toBe(false);
     expect(result.checks.find(check => check.key === "resources")?.actionPath).toBe("/admin/diesel");
     expect(result.checks.find(check => check.key === "resources")?.ownerRole).toContain("机务");
+    expect(result.findings.map(item => item.id)).toEqual(expect.arrayContaining(["resource_without_consumption", "official_template_not_bound"]));
   });
 
   it("仅在各业务域均有真实聚合记录时标记为可安排完整复测", () => {
@@ -26,10 +28,12 @@ describe("全业务真实项目数据健康预检", () => {
       dieselRefuelRecords: 3, transportTrips: 4, purchaseOrders: 2, inventoryTransactions: 3,
       measurementClaims: 2, measurementTakeoffRecords: 2, outsourceContracts: 1, subcontractPackages: 1,
       financialRecords: 4, officialAccountBindings: 2, officialAccountNotifications: 5,
+      officialAccountTemplateGaps: 0,
     });
 
     expect(result.ready).toBe(true);
     expect(result.checks.every(check => check.ready)).toBe(true);
     expect(result.checks.find(check => check.key === "notification")?.actionLabel).toBe("检查模板投递");
+    expect(result.findings).toEqual([]);
   });
 });

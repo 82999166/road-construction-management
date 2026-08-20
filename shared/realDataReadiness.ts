@@ -22,6 +22,7 @@ export type RealDataReadinessCounts = {
   financialRecords?: number;
   officialAccountBindings?: number;
   officialAccountNotifications?: number;
+  officialAccountTemplateGaps?: number;
 };
 
 export type RealDataReadinessCheck = {
@@ -29,6 +30,16 @@ export type RealDataReadinessCheck = {
   label: string;
   ready: boolean;
   detail: string;
+  ownerRole: string;
+  actionPath: string;
+  actionLabel: string;
+};
+
+export type RealDataReadinessFinding = {
+  id: "daily_report_not_measured" | "resource_without_consumption" | "purchase_not_stocked" | "contract_not_subcontracted" | "business_not_financed" | "official_template_not_bound";
+  severity: "critical" | "warning";
+  title: string;
+  summary: string;
   ownerRole: string;
   actionPath: string;
   actionLabel: string;
@@ -55,6 +66,7 @@ export function evaluateRealDataReadiness(counts: RealDataReadinessCounts) {
   const financialRecords = counts.financialRecords ?? 0;
   const officialAccountBindings = counts.officialAccountBindings ?? 0;
   const officialAccountNotifications = counts.officialAccountNotifications ?? 0;
+  const officialAccountTemplateGaps = counts.officialAccountTemplateGaps ?? 0;
   const constructionReady = constructionDailyReports > 0 && evidenceRecords > 0;
   const resourcesReady = machines + transportVehicles > 0 && dieselRefuelRecords > 0 && transportTrips > 0;
   const purchasingReady = purchaseOrders > 0 && inventoryTransactions > 0;
@@ -80,5 +92,12 @@ export function evaluateRealDataReadiness(counts: RealDataReadinessCounts) {
     { key: "notification", label: "服务号通知与投递审计", ready: notificationReady, detail: `服务号绑定 ${officialAccountBindings} 人、服务号投递记录 ${officialAccountNotifications} 条；模板是否真实可下发仍以模块绑定和微信回执为准。`, ownerRole: "数字化运维负责人", actionPath: "/admin/settings", actionLabel: "检查模板投递" },
     { key: "print", label: "工资打印视图", ready: printReady, detail: payrollReady ? "已有真实工资单，可进入打印视图人工核验。" : "需先具备真实工资单，才可进行打印视图人工核验。", ownerRole: "会计 / 财务负责人", actionPath: "/admin/labor", actionLabel: "打开工资打印" },
   ];
-  return { ready: checks.every(check => check.ready), counts, checks };
+  const findings: RealDataReadinessFinding[] = [];
+  if (constructionDailyReports > 0 && measurementClaims + measurementTakeoffRecords === 0) findings.push({ id: "daily_report_not_measured", severity: "warning", title: "施工日报尚未进入收方或计量", summary: `已有施工日报 ${constructionDailyReports} 条，但收方与工程计量均为 0；进度产值和计量收入暂不能形成可审计对照。`, ownerRole: "项目生产经理 / 商务合约负责人", actionPath: "/admin/settlement", actionLabel: "补齐收方计量" });
+  if (machines + transportVehicles > 0 && (dieselRefuelRecords === 0 || transportTrips === 0)) findings.push({ id: "resource_without_consumption", severity: "critical", title: "资源台账未形成完整油耗或趟次", summary: `已有机械与车辆台账 ${machines + transportVehicles} 台，柴油领用 ${dieselRefuelRecords} 条、运输趟次 ${transportTrips} 条；资源成本无法形成完整作业面归集。`, ownerRole: "机务 / 运输负责人", actionPath: "/admin/diesel", actionLabel: "补录资源消耗" });
+  if (purchaseOrders > 0 && inventoryTransactions === 0) findings.push({ id: "purchase_not_stocked", severity: "critical", title: "采购订单尚未形成库存收发", summary: `已有采购订单 ${purchaseOrders} 条，但库存收发为 0；不得以订单金额替代实际入库和领用成本。`, ownerRole: "物资负责人", actionPath: "/admin/purchasing", actionLabel: "处理采购库存" });
+  if (outsourceContracts > 0 && subcontractPackages === 0) findings.push({ id: "contract_not_subcontracted", severity: "warning", title: "外包合同尚未形成分包包件", summary: `已有外包合同 ${outsourceContracts} 条，但分包包件为 0；合同、工程量、结算和应付尚未建立映射。`, ownerRole: "商务合约负责人", actionPath: "/admin/subcontract", actionLabel: "维护分包包件" });
+  if ((constructionDailyReports + purchaseOrders + outsourceContracts + counts.payrollStatements) > 0 && financialRecords === 0) findings.push({ id: "business_not_financed", severity: "critical", title: "业务记录尚未形成财务确认", summary: "已存在施工、采购、合同或工资业务记录，但正式财务流水为 0；经营看板只能展示业务暂估，不能作为付款或利润结论。", ownerRole: "财务负责人", actionPath: "/admin/finance", actionLabel: "进入财务确认" });
+  if (officialAccountTemplateGaps > 0) findings.push({ id: "official_template_not_bound", severity: "warning", title: "服务号业务模板尚未完整绑定", summary: `发现 ${officialAccountTemplateGaps} 条投递记录因模块模板未绑定而跳过；需在新服务号获批后按模块绑定真实模板并验证微信回执。`, ownerRole: "数字化运维负责人", actionPath: "/admin/settings", actionLabel: "检查模板投递" });
+  return { ready: checks.every(check => check.ready), counts, checks, findings };
 }
