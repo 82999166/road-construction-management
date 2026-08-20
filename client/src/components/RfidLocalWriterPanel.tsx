@@ -55,14 +55,14 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     onError: error => toast.error(error.message),
   });
 
-  const requestBridge = async (path: string) => {
+  const requestBridge = async (path: string, payload?: Record<string, unknown>) => {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 8_000);
     try {
       const isHealthCheck = path === "/health";
       const response = await fetch(`${LOCAL_BRIDGE_URL}${path}`, {
         method: isHealthCheck ? "GET" : "POST",
-        ...(isHealthCheck ? {} : { headers: { "Content-Type": "application/json" } }),
+        ...(isHealthCheck ? {} : { headers: { "Content-Type": "application/json" }, body: payload ? JSON.stringify(payload) : undefined }),
         cache: "no-store",
         signal: controller.signal,
       });
@@ -142,14 +142,15 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     if (!window.confirm("确认擦除当前 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销，但不会修改制造商区、锁定位、配置页或写保护口令。")) return;
     setErasingInitial(true);
     try {
-      const result = await requestBridge("/api/erase-initial-card") as BridgeResult & { initialNdef?: boolean };
+      const result = await requestBridge("/api/erase-initial-card", { confirmErase: "ERASE_NTAG216_USER_AREA" }) as BridgeResult & { initialNdef?: boolean };
       if (!result.success || !result.initialNdef) throw new Error(result.message || "初卡恢复回读校验失败");
       if (!result.cardUidFingerprint) throw new Error("桥接未返回卡 UID 指纹，不能登记初卡恢复结果");
       await finalizeInitialErase.mutateAsync({ projectId, cardId: Number(eraseCardId), cardUidFingerprint: result.cardUidFingerprint, writerDeviceId: writerDeviceId === "UNASSIGNED" ? null : Number(writerDeviceId) });
       setBridgeMessage("已擦除 NDEF 用户区并回读确认空白初卡；请在车辆卡台账中重新办理绑定和正式写入。");
       toast.success("NFC 卡已恢复为空白初卡，未修改锁定位或写保护。");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "恢复初卡失败");
+      const message = error instanceof Error ? error.message : "恢复初卡失败";
+      toast.error(message === "erase_confirmation_required" ? "本机桥接未收到擦除确认，请刷新页面后重新确认操作" : message);
     } finally {
       setErasingInitial(false);
     }
