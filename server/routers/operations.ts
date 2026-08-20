@@ -1904,7 +1904,18 @@ export const transportRouter = router({
     return { success: true };
   }),
 
-  listTrips: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema.optional() })).query(async ({ ctx, input }) => {
+  listTrips: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    date: businessDateSchema.optional(),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+    dateFrom: businessDateSchema.optional(),
+    dateTo: businessDateSchema.optional(),
+    vehicleId: z.number().int().positive().optional(),
+    status: z.enum(["draft", "submitted", "verified", "settled", "void"]).optional(),
+    routePresetId: z.number().int().positive().optional(),
+  }).superRefine((value, issue) => {
+    if (value.dateFrom && value.dateTo && value.dateFrom > value.dateTo) issue.addIssue({ code: "custom", path: ["dateTo"], message: "结束日期不能早于开始日期" });
+  })).query(async ({ ctx, input }) => {
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
@@ -1917,6 +1928,16 @@ export const transportRouter = router({
       predicates.push(gte(transportTrips.startAt, start), lt(transportTrips.startAt, end));
     }
     let rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
+    const { month, dateFrom, dateTo, vehicleId, status, routePresetId } = input;
+    if (month) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 7) === month);
+    if (dateFrom) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 10) >= dateFrom);
+    if (dateTo) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 10) <= dateTo);
+    if (vehicleId) rows = rows.filter(trip => trip.vehicleId === vehicleId);
+    if (status) rows = rows.filter(trip => trip.status === status);
+    if (routePresetId) rows = rows.filter(trip => {
+      const snapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
+      return Number(snapshot.routePresetId ?? 0) === routePresetId;
+    });
     const user = requireAuthenticatedUser(ctx);
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     if (isDriverOnly) {
@@ -1924,9 +1945,36 @@ export const transportRouter = router({
       const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
       rows = rows.filter(trip => vehicleIds.has(trip.vehicleId));
     }
-    const vehicleRows = await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId));
-    const vehiclePlates = new Map(vehicleRows.map(vehicle => [vehicle.id, vehicle.plateNo]));
-    return rows.map(trip => ({ ...trip, vehiclePlateNo: vehiclePlates.get(trip.vehicleId) ?? `车辆 #${trip.vehicleId}`, anomalies: calculateTransportAnomalies(trip) }));
+    const [vehicleRows, siteRows, eventRows] = await Promise.all([
+      db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo, vehicleType: transportVehicles.vehicleType, ownership: transportVehicles.ownership, driverName: transportVehicles.driverName, ownerName: transportVehicles.ownerName, boxLengthMeters: transportVehicles.boxLengthMeters, boxWidthMeters: transportVehicles.boxWidthMeters, boxHeightMeters: transportVehicles.boxHeightMeters, loadFactor: transportVehicles.loadFactor }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      db.select({ id: transportSites.id, name: transportSites.name, address: transportSites.address, siteType: transportSites.siteType }).from(transportSites).where(eq(transportSites.projectId, input.projectId)),
+      rows.length ? db.select({ tripId: transportCardEvents.tripId, eventType: transportCardEvents.eventType, occurredAt: transportCardEvents.occurredAt, deviceId: transportCardEvents.deviceId, validationStatus: transportCardEvents.validationStatus, validationReason: transportCardEvents.validationReason }).from(transportCardEvents).where(eq(transportCardEvents.projectId, input.projectId)) : Promise.resolve([]),
+    ]);
+    const vehiclesById = new Map(vehicleRows.map(vehicle => [vehicle.id, vehicle]));
+    const sitesById = new Map(siteRows.map(site => [site.id, site]));
+    const tripIds = new Set(rows.map(trip => trip.id));
+    const eventsByTrip = new Map<number, typeof eventRows>();
+    eventRows.filter(event => tripIds.has(Number(event.tripId))).forEach(event => eventsByTrip.set(Number(event.tripId), [...(eventsByTrip.get(Number(event.tripId)) ?? []), event]));
+    const siteAddress = (siteId: number | null, snapshotSite: unknown) => {
+      const snapshot = snapshotSite && typeof snapshotSite === "object" ? snapshotSite as { name?: unknown; address?: unknown } : null;
+      const liveSite = siteId ? sitesById.get(siteId) : undefined;
+      return { name: typeof snapshot?.name === "string" ? snapshot.name : liveSite?.name ?? "未设置", address: typeof snapshot?.address === "string" && snapshot.address.trim() ? snapshot.address : liveSite?.address?.trim() || liveSite?.name || "未登记中文地址" };
+    };
+    return rows.map(trip => {
+      const routeSnapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
+      const vehicle = vehiclesById.get(trip.vehicleId);
+      const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, validationStatus: event.validationStatus, validationReason: event.validationReason }));
+      return {
+        ...trip,
+        routeSnapshot: { routePresetId: Number(routeSnapshot.routePresetId ?? 0) || null, settlementUnit: routeSnapshot.settlementUnit ?? null, invoiceMode: routeSnapshot.invoiceMode ?? trip.invoiceMode ?? "nfc_card" },
+        vehiclePlateNo: vehicle?.plateNo ?? `车辆 #${trip.vehicleId}`,
+        vehicle: vehicle ? { plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, driverName: vehicle.driverName ?? null, ownerName: vehicle.ownerName ?? null, theoreticalVolumeCubicMeters: Math.round(Number(vehicle.boxLengthMeters) * Number(vehicle.boxWidthMeters) * Number(vehicle.boxHeightMeters) * Number(vehicle.loadFactor) * 1000) / 1000 } : null,
+        loadLocation: siteAddress(trip.loadSiteId, routeSnapshot.loadSite),
+        unloadLocation: siteAddress(trip.unloadSiteId, routeSnapshot.unloadSite),
+        cardEvents: events,
+        anomalies: calculateTransportAnomalies(trip),
+      };
+    });
   }),
 
   /** 录入运输趟次并把当时运价和原始载货参数写入快照，后续修改价格规则不影响历史金额。 */

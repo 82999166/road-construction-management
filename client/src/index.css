@@ -237,3 +237,8 @@
     grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
   }
 }
+
+/* 完整运输台账上线后隐藏其正上方的历史简版表，避免重复展示同一批趟次。 */
+div.w-full.border-\[\#d8e3e0\].shadow-sm:has(+ #transport-trip-ledger-upgrade) {
+  display: none;
+}
