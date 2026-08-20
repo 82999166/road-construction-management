@@ -632,6 +632,19 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "装土刷卡运输票据创建失败" });
     const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "load");
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_load_create_transit_trip", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `装土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 创建在途票据 ${tripNo}` });
+    const loadRecipientUserIds = Array.from(new Set([site.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
+    void notifyOfficialAccountBusinessEventSafely({
+      userId: user.id,
+      recipientUserIds: loadRecipientUserIds,
+      projectId: input.projectId,
+      module: "transport",
+      eventCode: "transport_nfc_load_departed",
+      targetType: "transport_trip",
+      targetId: String(createdTrip.id),
+      title: "运输车辆已装土发车",
+      content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成装土刷卡，请按路线前往 ${unloadSite.name} 完成卸土闭环。`,
+      deepLink: "/mobile/transport",
+    }).catch(() => undefined);
     return { ...event, stage: "in_transit" as const, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: site.name, unloadSiteName: unloadSite.name };
   }
 
@@ -641,6 +654,20 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   if (event.success && !event.needsReview) {
     await db.update(transportTrips).set({ nfcTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, activeTrip.id), eq(transportTrips.nfcTransitKey, transitKey)));
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_unload_close_transit_trip", targetType: "transport_trip", targetId: String(activeTrip.id), summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 闭环运输票据 ${activeTrip.tripNo}` });
+    const loadAdministratorUserId = (activeTrip.routeSnapshot as { loadSite?: { administratorUserId?: number | null } } | null)?.loadSite?.administratorUserId ?? null;
+    const unloadRecipientUserIds = Array.from(new Set([loadAdministratorUserId, site.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
+    void notifyOfficialAccountBusinessEventSafely({
+      userId: user.id,
+      recipientUserIds: unloadRecipientUserIds,
+      projectId: input.projectId,
+      module: "transport",
+      eventCode: "transport_nfc_unload_completed",
+      targetType: "transport_trip",
+      targetId: String(activeTrip.id),
+      title: "运输卸土刷卡已完成",
+      content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成卸土刷卡，运输票据 ${activeTrip.tripNo} 已进入待核验状态。`,
+      deepLink: "/mobile/transport",
+    }).catch(() => undefined);
   }
   return { ...event, stage: "completed" as const, tripId: activeTrip.id, tripNo: activeTrip.tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: (activeTrip.routeSnapshot as { loadSite?: { name?: string } } | null)?.loadSite?.name ?? "装土点", unloadSiteName: site.name };
 }
