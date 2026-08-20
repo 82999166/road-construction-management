@@ -837,8 +837,14 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, resolved.activeTrip.id)).limit(1);
     if (!trip) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在" });
     const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, latitude: input.latitude, longitude: input.longitude, occurredAt: input.occurredAt }, "unload");
-    if (event.success && !event.needsReview) await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
-    if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
+    if (!event.success || event.needsReview) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: event.reason || "卸土异常，当前运单仍在运输中，不能显示卸土成功" });
+    }
+    const updateResult = await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
+    if (!didConditionalWriteApply(updateResult)) {
+      throw new TRPCError({ code: "CONFLICT", message: "卸土状态未能最终写入，当前运单仍在运输中，请刷新后核验" });
+    }
+    triggerTransportRiskScan(resolved.projectId);
     return { ...event, stage: "completed" as const, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
   }
   if (!input.routePresetId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先选择运输线路" });
@@ -2024,13 +2030,15 @@ export const transportRouter = router({
       const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
       rows = rows.filter(trip => vehicleIds.has(trip.vehicleId));
     }
-    const [vehicleRows, siteRows, eventRows] = await Promise.all([
+    const [vehicleRows, siteRows, eventRows, operatorRows] = await Promise.all([
       db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo, vehicleType: transportVehicles.vehicleType, ownership: transportVehicles.ownership, driverName: transportVehicles.driverName, ownerName: transportVehicles.ownerName, boxLengthMeters: transportVehicles.boxLengthMeters, boxWidthMeters: transportVehicles.boxWidthMeters, boxHeightMeters: transportVehicles.boxHeightMeters, loadFactor: transportVehicles.loadFactor }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
-      db.select({ id: transportSites.id, name: transportSites.name, address: transportSites.address, siteType: transportSites.siteType }).from(transportSites).where(eq(transportSites.projectId, input.projectId)),
-      rows.length ? db.select({ tripId: transportCardEvents.tripId, eventType: transportCardEvents.eventType, occurredAt: transportCardEvents.occurredAt, deviceId: transportCardEvents.deviceId, validationStatus: transportCardEvents.validationStatus, validationReason: transportCardEvents.validationReason }).from(transportCardEvents).where(eq(transportCardEvents.projectId, input.projectId)) : Promise.resolve([]),
+      db.select({ id: transportSites.id, name: transportSites.name, address: transportSites.address, siteType: transportSites.siteType, administratorUserId: transportSites.administratorUserId }).from(transportSites).where(eq(transportSites.projectId, input.projectId)),
+      rows.length ? db.select({ tripId: transportCardEvents.tripId, eventType: transportCardEvents.eventType, occurredAt: transportCardEvents.occurredAt, deviceId: transportCardEvents.deviceId, siteId: transportCardEvents.siteId, operatorUserId: transportCardEvents.operatorUserId, validationStatus: transportCardEvents.validationStatus, validationReason: transportCardEvents.validationReason }).from(transportCardEvents).where(eq(transportCardEvents.projectId, input.projectId)) : Promise.resolve([]),
+      db.select({ id: users.id, name: users.name }).from(users),
     ]);
     const vehiclesById = new Map(vehicleRows.map(vehicle => [vehicle.id, vehicle]));
     const sitesById = new Map(siteRows.map(site => [site.id, site]));
+    const operatorsById = new Map(operatorRows.map(operator => [operator.id, operator.name]));
     const tripIds = new Set(rows.map(trip => trip.id));
     const eventsByTrip = new Map<number, typeof eventRows>();
     eventRows.filter(event => tripIds.has(Number(event.tripId))).forEach(event => eventsByTrip.set(Number(event.tripId), [...(eventsByTrip.get(Number(event.tripId)) ?? []), event]));
@@ -2042,14 +2050,14 @@ export const transportRouter = router({
     return rows.map(trip => {
       const routeSnapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
       const vehicle = vehiclesById.get(trip.vehicleId);
-      const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, validationStatus: event.validationStatus, validationReason: event.validationReason }));
+      const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, siteName: event.siteId ? sitesById.get(event.siteId)?.name ?? "未登记地点" : "未登记地点", operatorName: event.operatorUserId ? operatorsById.get(event.operatorUserId) ?? "未登记确认人" : "未登记确认人", validationStatus: event.validationStatus, validationReason: event.validationReason }));
       return {
         ...trip,
         routeSnapshot: { routePresetId: Number(routeSnapshot.routePresetId ?? 0) || null, settlementUnit: routeSnapshot.settlementUnit ?? null, invoiceMode: routeSnapshot.invoiceMode ?? trip.invoiceMode ?? "nfc_card" },
         vehiclePlateNo: vehicle?.plateNo ?? `车辆 #${trip.vehicleId}`,
         vehicle: vehicle ? { plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, driverName: vehicle.driverName ?? null, ownerName: vehicle.ownerName ?? null, theoreticalVolumeCubicMeters: Math.round(Number(vehicle.boxLengthMeters) * Number(vehicle.boxWidthMeters) * Number(vehicle.boxHeightMeters) * Number(vehicle.loadFactor) * 1000) / 1000 } : null,
-        loadLocation: siteAddress(trip.loadSiteId, routeSnapshot.loadSite),
-        unloadLocation: siteAddress(trip.unloadSiteId, routeSnapshot.unloadSite),
+        loadLocation: { ...siteAddress(trip.loadSiteId, routeSnapshot.loadSite), administratorName: trip.loadSiteId ? operatorsById.get(sitesById.get(trip.loadSiteId)?.administratorUserId ?? 0) ?? "未指定" : "未指定" },
+        unloadLocation: { ...siteAddress(trip.unloadSiteId, routeSnapshot.unloadSite), administratorName: trip.unloadSiteId ? operatorsById.get(sitesById.get(trip.unloadSiteId)?.administratorUserId ?? 0) ?? "未指定" : "未指定" },
         cardEvents: events,
         anomalies: calculateTransportAnomalies(trip),
       };
