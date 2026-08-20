@@ -396,6 +396,19 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
   });
 
+  it("在治理概览提供施工项目经营 KPI 作业指引，并明确真实数据来源、管理频率、责任角色与工作区入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("施工项目经营 KPI 作业指引");
+    expect(source).toContain("施工日报有效率");
+    expect(source).toContain("资源成本归集");
+    expect(source).toContain("采购实耗闭环");
+    expect(source).toContain("计量与分包对账");
+    expect(source).toContain("财务确认与资金计划");
+    expect(source).toContain("服务号通知送达率");
+    expect(source).toContain("业务暂估、未审核成本或未确认收入必须与财务确认口径分开查看");
+  });
+
   it("在财务管理显示小类目成本占比，并支持导出当前项目和期间的真实汇总", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

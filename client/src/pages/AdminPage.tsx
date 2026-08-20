@@ -1807,6 +1807,23 @@ export default function AdminPage() {
           ) : <EmptyState text="暂无预检结果，请刷新后重试。" />}
         </CardContent>
       </Card>
+      <Card className="border-[#d8e3e0] shadow-sm">
+        <CardHeader>
+          <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">项目经理驾驶舱 · 作业节奏</p>
+          <CardTitle className="mt-1 text-base">施工项目经营 KPI 作业指引</CardTitle>
+          <CardDescription>指标只用于组织真实业务录入、审核与复核；业务暂估、未审核成本或未确认收入必须与财务确认口径分开查看。</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {[
+            { name: "施工日报有效率", cadence: "每日", owner: "项目生产经理", source: "日报、工程部位、影像、资源消耗", path: "/admin/construction", action: "检查施工日报" },
+            { name: "资源成本归集", cadence: "每周", owner: "机务 / 运输负责人", source: "机械台班、柴油领用、运输趟次", path: "/admin/diesel", action: "核对资源消耗" },
+            { name: "采购实耗闭环", cadence: "每周", owner: "物资负责人", source: "采购订单、验收、入库、领用、退库", path: "/admin/purchasing", action: "处理采购库存" },
+            { name: "计量与分包对账", cadence: "每周", owner: "商务合约负责人", source: "收方、工程计量、分包包件、合同清单", path: "/admin/settlement", action: "录入收方计量" },
+            { name: "财务确认与资金计划", cadence: "每周 / 月", owner: "财务负责人", source: "应收应付、资金流水、已审核业务单据", path: "/admin/finance", action: "进入财务确认" },
+            { name: "服务号通知送达率", cadence: "每日", owner: "数字化运维负责人", source: "真实模板、员工绑定、投递回执与失败码", path: "/admin/settings", action: "检查模板投递" },
+          ].map(item => <div key={item.name} className="rounded-xl border border-[#d8e3e0] bg-[#f8fbfa] p-3"><div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold text-[#203c48]">{item.name}</p><Badge variant="outline">{item.cadence}</Badge></div><p className="mt-2 text-xs text-slate-500">责任：{item.owner}</p><p className="mt-1 text-xs leading-5 text-slate-600">数据源：{item.source}</p><Button size="sm" variant="outline" className="mt-3 h-7 px-2 text-xs" onClick={() => setLocation(item.path)}>{item.action}</Button></div>)}
+        </CardContent>
+      </Card>
     </div>
   );
 
