@@ -8,7 +8,7 @@ describe("手机 NFC 发卡", () => {
   it("全新卡应直接选择未发卡车辆，并由服务端创建首次写卡任务而不依赖 Windows 写卡器", () => {
     expect(source).toContain("prepareMobileNfcInitialIssue");
     expect(source).toContain("selectedVehicle.id");
-    expect(source).toContain("!activeCardVehicleIds.has(vehicle.id)");
+    expect(source).toContain("listMobileNfcInitialIssueCandidates");
     expect(source).toContain("全新空白 NTAG216 不需要预先绑定");
   });
 
@@ -28,7 +28,8 @@ describe("手机 NFC 发卡", () => {
   it("待发卡车辆应自动选中；无可发车辆或查询失败时必须显示可操作原因", () => {
     expect(source).toContain("eligibleVehicles[0].id");
     expect(source).toContain("当前没有可首次发卡的车辆");
-    expect(source).toContain("无法读取车辆台账");
+    expect(source).toContain("无法读取待发卡车辆");
     expect(source).toContain("正在读取待发卡车辆");
+    expect(source).toContain("重新读取");
   });
 });

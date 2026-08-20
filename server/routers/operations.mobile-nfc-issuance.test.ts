@@ -12,6 +12,13 @@ describe("运输手机 NFC 首次发卡", () => {
     expect(source).toContain('status: "suspended"');
   });
 
+  it("首次发卡候选必须由服务端依据车辆、司机资料和启用卡状态统一判定", () => {
+    expect(source).toContain("listMobileNfcInitialIssueCandidates");
+    expect(source).toContain("已有启用车辆卡，请使用补写或换卡流程");
+    expect(source).toContain("未录入司机手机号");
+    expect(source).toContain("eligible: !reason");
+  });
+
   it("首次写入必须使用服务端签名载荷与深链，并保留受控写卡任务和审计", () => {
     expect(source).toContain("buildTransportNfcCardPayload");
     expect(source).toContain("buildTransportNfcDeepLink");

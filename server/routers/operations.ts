@@ -1463,6 +1463,35 @@ export const transportRouter = router({
   }),
 
   /**
+   * 手机首次发卡候选由服务端统一判定，避免前端因司机手机号脱敏、卡片查询延迟或缓存状态把
+   * 实际可发卡车辆错误置灰。返回的是最小化车辆识别信息与业务原因，不返回司机手机号明文。
+   */
+  listMobileNfcInitialIssueCandidates: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const [projectVehicles, projectCards] = await Promise.all([
+      db.select().from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)).orderBy(desc(transportVehicles.updatedAt)),
+      db.select({ vehicleId: transportVehicleRfidCards.vehicleId }).from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.status, "active"))),
+    ]);
+    const activeCardVehicleIds = new Set(projectCards.map(card => card.vehicleId));
+    return projectVehicles.map(vehicle => {
+      const reason = vehicle.status !== "active"
+        ? "车辆已停用，请先在车辆台账启用"
+        : !vehicle.driverName?.trim()
+          ? "未录入司机姓名"
+          : !vehicle.driverPhoneEncrypted
+            ? "未录入司机手机号"
+            : activeCardVehicleIds.has(vehicle.id)
+              ? "已有启用车辆卡，请使用补写或换卡流程"
+              : null;
+      return { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? "未录入", vehicleStatus: vehicle.status, eligible: !reason, reason };
+    });
+  }),
+
+  /**
    * 全新空白 NTAG216 的手机首次发卡入口。先创建“待写入”车辆卡和受控任务，再将签名载荷
    * 返回给当前 Android Chrome 交互；只有 confirmRfidCardWrite 成功确认后卡片才变为 active。
    * 这样现场不需要先在 PC 端手工读取 UID 或建立空卡绑定。
