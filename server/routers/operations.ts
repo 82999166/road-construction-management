@@ -1466,7 +1466,8 @@ export const transportRouter = router({
     if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
     if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未录入外部司机姓名，不能生成写卡载荷" });
-    const writerDeviceId = input.writerDeviceId ?? card.writerDeviceId;
+    // undefined 沿用历史写卡器；null 明确表示由手机 Web NFC 发卡，不关联 Windows 写卡器。
+    const writerDeviceId = input.writerDeviceId === undefined ? card.writerDeviceId : input.writerDeviceId;
     if (writerDeviceId) {
       const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, writerDeviceId)).limit(1);
       if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "写卡器不存在、未启用或不属于当前项目" });
