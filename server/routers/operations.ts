@@ -157,6 +157,7 @@ const vehicleInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
+  ownership: z.enum(["owned", "leased", "trip_settlement"]).default("owned"),
   ownerName: z.string().trim().max(128).nullable().optional(),
   driverUserId: z.number().int().positive().nullable().optional(),
   driverName: z.string().trim().max(128).nullable().optional(),
@@ -1262,7 +1263,7 @@ export const transportRouter = router({
       const trips = activeTrips.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId);
       const refuels = activeRefuels.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId);
       const maintenance = activeMaintenance.filter(item => item.assetId === vehicle.id && item.projectId === vehicle.projectId);
-      const rule = allLeaseRules.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId && item.status === "active").sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
+      const rule = vehicle.ownership === "leased" ? allLeaseRules.filter(item => item.vehicleId === vehicle.id && item.projectId === vehicle.projectId && item.status === "active").sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime())) : undefined;
       const grossIncome = roundMoney(trips.reduce((sum, item) => sum + Number(item.calculatedAmount ?? 0), 0));
       const settlementIncome = roundMoney(trips.reduce((sum, item) => sum + Number(item.netSettlementAmount ?? item.calculatedAmount ?? 0), 0));
       const fuelLiters = roundMoney(refuels.reduce((sum, item) => sum + Number(item.liters), 0));
@@ -1309,7 +1310,7 @@ export const transportRouter = router({
       db.select().from(transportTrips).where(and(eq(transportTrips.vehicleId, input.vehicleId), eq(transportTrips.projectId, input.projectId))),
       db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.assetType, "vehicle"), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"))),
       db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "vehicle"), eq(assetMaintenanceRecords.assetId, input.vehicleId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"))),
-      db.select().from(transportVehicleLeaseRules).where(and(eq(transportVehicleLeaseRules.vehicleId, input.vehicleId), eq(transportVehicleLeaseRules.projectId, input.projectId), eq(transportVehicleLeaseRules.status, "active"))),
+      vehicle.ownership === "leased" ? db.select().from(transportVehicleLeaseRules).where(and(eq(transportVehicleLeaseRules.vehicleId, input.vehicleId), eq(transportVehicleLeaseRules.projectId, input.projectId), eq(transportVehicleLeaseRules.status, "active"))) : Promise.resolve([]),
     ]);
     const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
     type Aggregate = { date: string; tripCount: number; tripNos: string[]; distanceKm: number; grossIncome: number; settlementIncome: number; fuelLiters: number; fuelAmount: number; repairAmount: number; maintenanceAmount: number; sourceCounts: { trips: number; refuels: number; maintenance: number } };
@@ -1350,7 +1351,7 @@ export const transportRouter = router({
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const existing = input.id ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1))[0] : null;
-    const values = { projectId: input.projectId, plateNo: input.plateNo, ownerName: input.ownerName ?? null, driverUserId: null, driverName: input.driverName?.trim() || null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
+    const values = { projectId: input.projectId, plateNo: input.plateNo, ownership: input.ownership, ownerName: input.ownerName ?? null, driverUserId: null, driverName: input.driverName?.trim() || null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
     if (input.id) {
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
       await assertProjectInCurrentScope(ctx, existing.projectId);

@@ -1,0 +1,1 @@
+ALTER TABLE `transport_vehicles` MODIFY COLUMN `ownership` enum('owned','leased','trip_settlement') NOT NULL DEFAULT 'owned';

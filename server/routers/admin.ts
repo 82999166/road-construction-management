@@ -84,7 +84,7 @@ const vehicleManagementInput = z.object({
   organizationId: z.number().int().positive().nullable().optional(),
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
   vehicleType: z.enum(["dump_truck", "tractor", "mixer", "flatbed", "pickup", "suv", "other"]),
-  ownership: z.enum(["owned", "leased"]).default("owned"),
+  ownership: z.enum(["owned", "leased", "trip_settlement"]).default("owned"),
   ownerName: z.string().trim().max(128).nullable().optional(),
   driverUserId: z.number().int().positive().nullable().optional(),
   driverName: z.string().trim().max(128).nullable().optional(),
@@ -1041,7 +1041,7 @@ export const adminRouter = router({
         action: input.id ? "admin_update_vehicle" : "admin_create_vehicle",
         targetType: "transport_vehicle",
         targetId: String(vehicleId),
-        summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}${input.ownership === "leased" ? "，已维护外租租金与租期" : ""}`,
+        summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}${input.ownership === "leased" ? "，已维护外租租金与租期" : input.ownership === "trip_settlement" ? "，渣土车按趟结算且不计租金" : ""}`,
       });
       return {
         success: true,
