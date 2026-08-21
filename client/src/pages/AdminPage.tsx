@@ -2636,7 +2636,7 @@ export default function AdminPage() {
     const checkIns = laborCheckIns.data ?? [];
     const visiblePayrolls = filterPayrollRows(payrolls, { search: laborPayrollSearch, team: laborPayrollTeam, status: laborPayrollStatus });
     const payrollSummary = summarizePayrollAmounts(visiblePayrolls);
-    const payrollCategories = summarizeLaborPayrollCategories(visiblePayrolls, new Map(workers.map(worker => [worker.id, worker.workerCategory])));
+    const payrollCategories = summarizeLaborPayrollCategories(payrolls, new Map(workers.map(worker => [worker.id, worker.workerCategory])));
     const companyPayrollSummary = payrollCategories.company;
     const laborTeamPayrollSummary = payrollCategories.laborTeam;
     const temporaryDailySummary = summarizePayrollAmounts(dailyWages);
@@ -2646,9 +2646,10 @@ export default function AdminPage() {
     const laborWorkspaceQueryEnabled = canQuery && isLabor && hasBusinessWorkspaceProject;
     const laborWorkspaceLoading = laborWorkspaceQueryEnabled && (laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading || laborDailyWages.isLoading);
     const laborWorkspaceHasError = laborWorkspaceQueryEnabled && (laborWorkers.isError || laborAttendance.isError || laborCheckIns.isError || payrollStatements.isError || laborDailyWages.isError);
+    const laborWorkspaceRefreshing = laborWorkers.isFetching || laborAttendance.isFetching || laborCheckIns.isFetching || payrollStatements.isFetching || laborDailyWages.isFetching;
     const retryLaborWorkspace = () => Promise.all([laborWorkers.refetch(), laborAttendance.refetch(), laborCheckIns.refetch(), payrollStatements.refetch(), laborDailyWages.refetch()]);
     return (
-      <LaborWorkspaceShell projectFilter={renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")} hasProject={hasBusinessWorkspaceProject} queryEnabled={laborWorkspaceQueryEnabled} loading={laborWorkspaceLoading} hasError={laborWorkspaceHasError} refreshing={laborWorkers.isFetching || laborAttendance.isFetching || laborCheckIns.isFetching || payrollStatements.isFetching || laborDailyWages.isFetching} onRetry={() => void retryLaborWorkspace()}>
+      <LaborWorkspaceShell projectFilter={renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")} hasProject={hasBusinessWorkspaceProject} queryEnabled={laborWorkspaceQueryEnabled} loading={laborWorkspaceLoading} hasError={laborWorkspaceHasError} refreshing={laborWorkspaceRefreshing} onRetry={() => void retryLaborWorkspace()}>
         {!laborWorkspaceLoading && !laborWorkspaceHasError && laborWorkspaceQueryEnabled && hasBusinessWorkspaceProject ? (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="实名制人员" value={workers.length} description="已按敏感字段脱敏" icon={UsersRound} /><MetricCard title="在场人员" value={workers.filter(item => item.attendanceStatus === "active").length} description="可计入当前项目考勤" icon={ShieldCheck} /><MetricCard title="今日已上班" value={checkIns.length} description={`${checkIns.filter(item => item.checkedOutAt).length} 人已完成下班打卡`} icon={ScrollText} /><MetricCard title="待会计处理" value={payrolls.filter(item => item.status === "reviewing").length} description="审核中工资条" icon={BarChart3} /></section>
