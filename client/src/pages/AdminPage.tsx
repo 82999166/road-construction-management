@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
 import { LaborPayrollHeadline } from "@/components/LaborPayrollHeadline";
 import { DailyWagePaymentDialog } from "@/components/DailyWagePaymentDialog";
+import { PayrollPaymentDialog } from "@/components/PayrollPaymentDialog";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -2735,7 +2736,7 @@ export default function AdminPage() {
           </>
         )}
         <DailyWagePaymentDialog target={dailyWagePaymentTarget} paidAt={dailyWagePaymentForm.paidAt} paymentReference={dailyWagePaymentForm.paymentReference} pending={payDailyWage.isPending} onClose={() => { setDailyWagePaymentTarget(null); setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" }); }} onPaidAtChange={paidAt => setDailyWagePaymentForm(current => ({ ...current, paidAt }))} onPaymentReferenceChange={paymentReference => setDailyWagePaymentForm(current => ({ ...current, paymentReference }))} onConfirm={() => { if (!dailyWagePaymentTarget) return; payDailyWage.mutate({ id: dailyWagePaymentTarget.id, paidAt: new Date(`${dailyWagePaymentForm.paidAt}T00:00:00.000Z`), paymentReference: dailyWagePaymentForm.paymentReference.trim() || null }); }} />
-        <Dialog open={Boolean(payrollPaymentTarget)} onOpenChange={open => { if (!open) { setPayrollPaymentTarget(null); setPaymentReference(""); } }}><DialogContent><DialogHeader><DialogTitle>确认工资发放</DialogTitle><DialogDescription>系统不会发起银行转账。请在外部资金流程完成后，填写付款凭证号或资金流水号，服务端会复核财务岗位、项目范围和工资条状态。</DialogDescription></DialogHeader><div className="space-y-2"><Label htmlFor="payment-reference">付款凭证号 / 资金流水号</Label><Input id="payment-reference" value={paymentReference} placeholder="至少 4 个字符" onChange={event => setPaymentReference(event.target.value)} /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollPaymentTarget(null)} disabled={payPayroll.isPending}>取消</Button><Button disabled={!payrollPaymentTarget || paymentReference.trim().length < 4 || payPayroll.isPending} onClick={() => payrollPaymentTarget && payPayroll.mutate({ id: payrollPaymentTarget.id, paymentReference: paymentReference.trim() })}>{payPayroll.isPending ? "正在确认…" : `确认 ${payrollPaymentTarget?.workerName ?? "工资条"} 发放`}</Button></DialogFooter></DialogContent></Dialog>
+        <PayrollPaymentDialog target={payrollPaymentTarget} paymentReference={paymentReference} pending={payPayroll.isPending} onClose={() => { setPayrollPaymentTarget(null); setPaymentReference(""); }} onPaymentReferenceChange={setPaymentReference} onConfirm={() => { if (!payrollPaymentTarget) return; payPayroll.mutate({ id: payrollPaymentTarget.id, paymentReference: paymentReference.trim() }); }} />
       </div>
     );
   };
