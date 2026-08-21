@@ -1,4 +1,5 @@
 import { Activity, ArrowUpRight, Building2, ClipboardCheck, CreditCard, FileText, Gauge, HardHat, RefreshCw, Route, Truck, WalletCards } from "lucide-react";
+import React from "react";
 
 export type OperatingDashboardData = {
   scope: { projectId: number | null; period: string | null };

@@ -1,59 +1,23 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import OperatingCommandCenter, { type OperatingDashboardData } from "@/components/OperatingCommandCenter";
 import { Button } from "@/components/ui/button";
-import { consumePostLoginReturnPath, createAdminLoginPath, createLoginPath } from "@/lib/authNavigation";
-import { ArrowRight, Building2, HardHat, ShieldCheck, Smartphone } from "lucide-react";
-import React, { useEffect } from "react";
+import { createAdminLoginPath, createLoginPath } from "@/lib/authNavigation";
+import { trpc } from "@/lib/trpc";
+import { ArrowRight, HardHat, LockKeyhole, Smartphone } from "lucide-react";
+import React from "react";
 import { useLocation } from "wouter";
 
-/** 系统入口页：普通管理人员与超级管理员使用独立入口，服务端仍裁决最终访问范围。 */
+/** 网站首页即交通施工指挥大屏；真实经营指标仍仅在超级管理员身份与服务端权限校验通过后展示。 */
 export default function Home() {
   const { user, loading, isAuthenticated } = useAuth();
   const [, setLocation] = useLocation();
+  const canReadOperatingDashboard = isAuthenticated && user?.role === "admin";
+  const operatingDashboard = trpc.admin.business.operatingDashboard.useQuery({ projectId: undefined, period: undefined }, { enabled: canReadOperatingDashboard, retry: false });
 
-  useEffect(() => {
-    if (loading) return;
-    if (!isAuthenticated) {
-      // 根路径不再停留在营销页或岗位同步加载态；认证缺失、失败或超时降级后
-          // 默认进入普通管理人员登录；超级管理员使用独立的全局治理入口。
-      setLocation(createLoginPath("/admin"));
-      return;
-    }
-    setLocation(consumePostLoginReturnPath("/admin"));
-  }, [isAuthenticated, loading, setLocation]);
+  const openAdminLogin = () => setLocation(createAdminLoginPath("/"));
+  const openBusinessLogin = () => setLocation(createLoginPath("/mobile"));
 
-  return (
-    <div className="min-h-screen bg-[#f7f6f2] text-slate-900">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-6 lg:px-8">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#203c48] text-white shadow-sm"><HardHat className="h-5 w-5" /></div>
-          <div><p className="text-sm font-semibold tracking-tight">悦信云智管</p><p className="text-xs text-slate-500">工程承包一体化管理平台</p></div>
-        </div>
-        <div className="flex items-center gap-2">
-          {isAuthenticated ? <span className="hidden text-sm text-slate-500 sm:inline">您好，{user?.name || "用户"}</span> : null}
-          <Button variant="outline" className="border-slate-300 bg-white" onClick={() => isAuthenticated ? setLocation("/admin") : setLocation(createLoginPath("/admin"))}>{isAuthenticated ? "进入管理后台" : "普通管理员登录"}</Button>
-        </div>
-      </header>
-      <main className="mx-auto grid w-full max-w-6xl gap-12 px-5 pb-14 pt-12 lg:grid-cols-[1.15fr_.85fr] lg:px-8 lg:pt-20">
-        <section className="max-w-2xl">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-[#e9f0ed] px-3 py-1.5 text-xs font-medium text-[#285847]"><ShieldCheck className="h-3.5 w-3.5" /> 微信公众号唯一通知与账号安全通道</div>
-          <h1 className="text-4xl font-semibold leading-tight tracking-tight text-[#172b34] sm:text-5xl">让施工现场、经营数据与管理决策处于同一节奏。</h1>
-          <p className="mt-6 max-w-xl text-base leading-7 text-slate-600">普通管理员按角色、部门、组织和项目范围进入业务管理；超级管理员使用独立入口进入全局治理与系统配置。所有访问范围仍由服务端强制裁决。</p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Button className="bg-[#203c48] px-5 hover:bg-[#17313b]" onClick={() => isAuthenticated ? setLocation("/admin") : setLocation(createLoginPath("/admin"))}>{loading ? "正在识别登录状态" : "普通管理员登录"}<ArrowRight className="ml-2 h-4 w-4" /></Button>
-            <Button variant="outline" className="border-slate-300 bg-white px-5" onClick={() => isAuthenticated ? setLocation("/mobile") : setLocation(createLoginPath("/mobile"))}>进入移动业务工作台</Button>
-            {!isAuthenticated ? <Button variant="outline" className="border-[#bf946e] bg-[#fff9f3] px-5 text-[#6b4028] hover:bg-[#f7eadf]" onClick={() => setLocation(createAdminLoginPath("/admin"))}>超级管理员登录</Button> : null}
-          </div>
-        </section>
-        <section className="grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
-          {[{ icon: Building2, title: "普通管理员入口", text: "按岗位、部门与项目范围进入业务管理" }, { icon: Smartphone, title: "授权业务版块", text: "按岗位、部门与项目范围动态呈现" }, { icon: ShieldCheck, title: "超级管理员入口", text: "全局配置与关键业务均由服务端审计保护" }].map(item => (
-            <div key={item.title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_35px_rgba(31,57,65,.06)]">
-              <item.icon className="h-5 w-5 text-[#b87836]" />
-              <h2 className="mt-3 text-sm font-semibold text-slate-800">{item.title}</h2>
-              <p className="mt-1 text-xs leading-5 text-slate-500">{item.text}</p>
-            </div>
-          ))}
-        </section>
-      </main>
-    </div>
-  );
+  return <main className="min-h-screen bg-[#030d24] p-0 text-white lg:p-3">
+    {canReadOperatingDashboard && operatingDashboard.data ? <OperatingCommandCenter data={operatingDashboard.data as OperatingDashboardData} scopeLabel="全部项目 · 全部期间" isRefreshing={operatingDashboard.isFetching} onRefresh={() => void operatingDashboard.refetch()} onNavigate={setLocation} /> : <section className="relative grid min-h-screen place-items-center overflow-hidden border border-[#1b5ba8] bg-[#040e27] px-5 py-10 lg:min-h-[calc(100vh-24px)]"><div className="pointer-events-none absolute inset-0 opacity-45 [background-image:linear-gradient(rgba(29,103,190,.14)_1px,transparent_1px),linear-gradient(90deg,rgba(29,103,190,.14)_1px,transparent_1px),radial-gradient(circle_at_50%_0%,rgba(27,103,255,.42),transparent_42%)] [background-size:34px_34px,34px_34px,auto]" /><div className="relative w-full max-w-3xl border border-cyan-300/30 bg-[#071832]/88 p-6 shadow-[0_20px_80px_rgba(0,16,61,.6)] sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center border border-cyan-300/70 bg-cyan-400/10 text-cyan-200"><HardHat className="h-7 w-7" /></div><p className="mt-6 text-center text-xs tracking-[0.28em] text-cyan-300">YUEXIN · TRAFFIC CONSTRUCTION</p><h1 className="mt-3 text-center text-2xl font-bold tracking-[0.16em] text-white sm:text-4xl">悦信云智管 · 交通施工指挥中心</h1><p className="mx-auto mt-5 max-w-xl text-center text-sm leading-7 text-cyan-50/70">首页为道路与铁路施工经营数据大屏。资金、计量、进度、运输与劳务指标仅从当前授权范围内的真实服务端台账聚合，不向未授权身份展示。</p><div className="mx-auto mt-8 grid max-w-xl gap-3 sm:grid-cols-2">{loading ? <div className="col-span-full rounded border border-cyan-300/20 bg-cyan-300/5 px-4 py-3 text-center text-sm text-cyan-100/70">正在核验登录状态…</div> : <><Button className="h-11 bg-cyan-500 text-[#03112c] hover:bg-cyan-300" onClick={openAdminLogin}><LockKeyhole className="mr-2 h-4 w-4" />超级管理员查看数据大屏</Button><Button variant="outline" className="h-11 border-cyan-300/45 bg-transparent text-cyan-100 hover:bg-cyan-300/10 hover:text-white" onClick={openBusinessLogin}><Smartphone className="mr-2 h-4 w-4" />进入我的业务工作台</Button></>}</div>{isAuthenticated && !canReadOperatingDashboard ? <div className="mt-6 flex items-center justify-between gap-3 border-t border-cyan-300/15 pt-5 text-sm text-cyan-100/65"><span>当前账号无全局经营数据权限。</span><button type="button" className="inline-flex items-center text-cyan-300 hover:text-white" onClick={() => setLocation("/mobile")}>进入已授权业务 <ArrowRight className="ml-1 h-4 w-4" /></button></div> : null}</div></section>}
+  </main>;
 }
