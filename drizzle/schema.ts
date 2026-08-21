@@ -1838,6 +1838,134 @@ export const outsourceContracts = mysqlTable(
   }),
 );
 
+/**
+ * 纳税主体仅用于项目财税辅助、导出和审计归集；不在本系统生成申报表、税款或税务机关回执。
+ */
+export const taxEntityProfiles = mysqlTable(
+  "tax_entity_profiles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    entityName: varchar("entityName", { length: 200 }).notNull(),
+    taxpayerIdentifier: varchar("taxpayerIdentifier", { length: 64 }).notNull(),
+    taxMethod: mysqlEnum("taxMethod", ["general", "small_scale", "simplified", "other"]).default("general").notNull(),
+    registeredLocation: varchar("registeredLocation", { length: 300 }),
+    status: mysqlEnum("status", ["active", "suspended", "archived"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    taxpayerIdentifierUnique: uniqueIndex("tax_entity_profiles_identifier_unique").on(table.taxpayerIdentifier),
+    statusIndex: index("tax_entity_profiles_status_index").on(table.status),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "tax_entity_profiles_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
+ * 项目税务辅助档案记录实际项目所在地、计税方法和合同不含税口径。
+ * 该档案只能协助持证人员准备资料，任何税率与申报税额都不得由系统自动虚构。
+ */
+export const projectTaxProfiles = mysqlTable(
+  "project_tax_profiles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    projectLocation: varchar("projectLocation", { length: 300 }).notNull(),
+    taxMethod: mysqlEnum("taxMethod", ["general", "small_scale", "simplified", "other"]).default("general").notNull(),
+    contractExTaxAmount: decimal("contractExTaxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    contractTaxRate: decimal("contractTaxRate", { precision: 7, scale: 4 }).default("0").notNull(),
+    crossRegionConstruction: boolean("crossRegionConstruction").default(false).notNull(),
+    subcontractDeductionMethod: mysqlEnum("subcontractDeductionMethod", ["not_applicable", "supporting_document", "other"]).default("not_applicable").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["active", "archived"]).default("active").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectUnique: uniqueIndex("project_tax_profiles_project_unique").on(table.projectId),
+    entityIndex: index("project_tax_profiles_entity_index").on(table.taxEntityId, table.status),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "project_tax_profiles_entity_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "project_tax_profiles_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
+ * 财税辅助事项是对分包扣除凭证、印花税、薪税待处理、跨地区预缴和税会差异的人工资料清单，
+ * 只保存真实来源、人工确认金额和回执引用，不承担自动算税或税务申报。
+ */
+export const taxAuxiliaryEntries = mysqlTable(
+  "tax_auxiliary_entries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    entryType: mysqlEnum("entryType", ["vat_input", "vat_output", "subcontract_deduction", "stamp_duty", "payroll_handoff", "cross_region_prepayment", "book_tax_difference", "other"]).notNull(),
+    sourceType: varchar("sourceType", { length: 64 }),
+    sourceId: varchar("sourceId", { length: 128 }),
+    subject: varchar("subject", { length: 300 }).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).default("0").notNull(),
+    taxBaseAmount: decimal("taxBaseAmount", { precision: 16, scale: 2 }),
+    referenceTaxRate: decimal("referenceTaxRate", { precision: 7, scale: 4 }),
+    reportedTaxAmount: decimal("reportedTaxAmount", { precision: 16, scale: 2 }),
+    documentReference: varchar("documentReference", { length: 200 }),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    status: mysqlEnum("status", ["pending", "handed_off", "receipt_recorded", "void"]).default("pending").notNull(),
+    notes: varchar("notes", { length: 1000 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectPeriodTypeIndex: index("tax_auxiliary_entries_project_period_type_index").on(table.projectId, table.period, table.entryType, table.status),
+    sourceIndex: index("tax_auxiliary_entries_source_index").on(table.sourceType, table.sourceId),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "tax_auxiliary_entries_entity_fk" }).onDelete("restrict"),
+    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "tax_auxiliary_entries_evidence_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "tax_auxiliary_entries_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
+ * 正式财务软件或电子税务局的资料交接批次。快照哈希固定生成时的真实业务数据，
+ * 后续只能登记外部回执引用，不可回写或伪造外部系统处理结果。
+ */
+export const taxHandoffBatches = mysqlTable(
+  "tax_handoff_batches",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    batchNo: varchar("batchNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    handoffType: mysqlEnum("handoffType", ["vat_invoice", "financial_ledger", "payroll", "contract_tax", "cross_region", "combined"]).notNull(),
+    format: mysqlEnum("format", ["csv"]).default("csv").notNull(),
+    recordCount: int("recordCount").default(0).notNull(),
+    snapshotHash: varchar("snapshotHash", { length: 64 }).notNull(),
+    snapshotJson: text("snapshotJson").notNull(),
+    receiptReference: varchar("receiptReference", { length: 200 }),
+    receiptEvidenceId: bigint("receiptEvidenceId", { mode: "number" }),
+    status: mysqlEnum("status", ["generated", "handed_off", "receipt_recorded", "void"]).default("generated").notNull(),
+    generatedBy: int("generatedBy").notNull(),
+    generatedAt: datetime("generatedAt").notNull(),
+    receiptRecordedBy: int("receiptRecordedBy"),
+    receiptRecordedAt: datetime("receiptRecordedAt"),
+    notes: varchar("notes", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    batchNoUnique: uniqueIndex("tax_handoff_batches_no_unique").on(table.batchNo),
+    projectPeriodIndex: index("tax_handoff_batches_project_period_index").on(table.projectId, table.period, table.handoffType, table.status),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "tax_handoff_batches_entity_fk" }).onDelete("restrict"),
+    receiptEvidenceFk: foreignKey({ columns: [table.receiptEvidenceId], foreignColumns: [evidenceRecords.id], name: "tax_handoff_batches_receipt_evidence_fk" }).onDelete("restrict"),
+    generatorFk: foreignKey({ columns: [table.generatedBy], foreignColumns: [users.id], name: "tax_handoff_batches_generator_fk" }).onDelete("restrict"),
+    receiptRecorderFk: foreignKey({ columns: [table.receiptRecordedBy], foreignColumns: [users.id], name: "tax_handoff_batches_receipt_recorder_fk" }).onDelete("restrict"),
+  }),
+);
+
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
 export const financialRecords = mysqlTable(
   "financial_records",

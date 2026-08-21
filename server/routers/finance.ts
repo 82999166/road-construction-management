@@ -15,12 +15,19 @@ import {
   measurementClaims,
   measurementTakeoffEvidences,
   measurementTakeoffRecords,
+  outsourceContracts,
+  payrollStatements,
+  projectTaxProfiles,
   projects,
   purchaseCategories,
   purchaseOrders,
   purchaseRequests,
   suppliers,
   systemSettings,
+  taxAuxiliaryEntries,
+  taxEntityProfiles,
+  taxHandoffBatches,
+  temporaryDailyWageSettlements,
 } from "../../drizzle/schema";
 import {
   assertApprovalTransition,
@@ -226,6 +233,79 @@ async function assertFinancialDayWritable(
   if (closure && ["closed", "archived"].includes(closure.status)) {
     throw new TRPCError({ code: "CONFLICT", message: `${businessDate.toISOString().slice(0, 10)} 已完成日结（${closure.closingNo}），不可${actionLabel}；请由财务负责人先授权反结账。` });
   }
+}
+
+type TaxHandoffManifest = {
+  version: 1;
+  generatedAt: string;
+  projectId: number;
+  period: string;
+  taxEntity: { id: number; entityName: string; taxpayerIdentifier: string; taxMethod: string };
+  projectProfile: { projectLocation: string; crossRegionConstruction: boolean; contractExTaxAmount: string; contractTaxRate: string; subcontractDeductionMethod: string };
+  columns: string[];
+  rows: string[][];
+};
+
+/** RFC 4180 风格转义：交接批次保留真实字段快照，浏览器只负责下载，不自行改算。 */
+function toTaxHandoffCsv(manifest: TaxHandoffManifest) {
+  const escape = (value: string) => `"${String(value).replaceAll("\"", "\"\"")}"`;
+  return `\uFEFF${[manifest.columns, ...manifest.rows].map(row => row.map(escape).join(",")).join("\r\n")}`;
+}
+
+/**
+ * 构造正式财务软件/电子税务局准备资料的不可变交接快照。
+ * 金额来自既有业务事实或人工明确登记的辅助事项；本函数不计算个人所得税、增值税、印花税或预缴税额。
+ */
+async function buildTaxHandoffManifest(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  input: z.infer<typeof taxHandoffInput>,
+): Promise<TaxHandoffManifest> {
+  const [profile] = await db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1);
+  if (!profile || profile.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "请先维护有效的项目税务辅助档案后再生成交接资料" });
+  const [entity] = await db.select().from(taxEntityProfiles).where(eq(taxEntityProfiles.id, profile.taxEntityId)).limit(1);
+  if (!entity || entity.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "项目关联的纳税主体不存在或未启用，不能生成交接资料" });
+  const range = getMonthRange(input.period);
+  const [invoices, records, monthlyPayroll, dailyPayroll, contracts, auxiliary] = await Promise.all([
+    db.select().from(financialInvoices).where(and(eq(financialInvoices.projectId, input.projectId), gte(financialInvoices.issuedAt, range.start), lt(financialInvoices.issuedAt, range.endExclusive))).orderBy(financialInvoices.issuedAt, financialInvoices.id),
+    db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(financialRecords.occurredAt, financialRecords.id),
+    db.select().from(payrollStatements).where(and(eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period))).orderBy(payrollStatements.id),
+    db.select().from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.projectId, input.projectId), gte(temporaryDailyWageSettlements.settlementDate, range.start), lt(temporaryDailyWageSettlements.settlementDate, range.endExclusive))).orderBy(temporaryDailyWageSettlements.settlementDate, temporaryDailyWageSettlements.id),
+    db.select().from(outsourceContracts).where(eq(outsourceContracts.projectId, input.projectId)).orderBy(outsourceContracts.contractNo),
+    db.select().from(taxAuxiliaryEntries).where(and(eq(taxAuxiliaryEntries.projectId, input.projectId), eq(taxAuxiliaryEntries.period, input.period))).orderBy(taxAuxiliaryEntries.entryType, taxAuxiliaryEntries.id),
+  ]);
+  const rows: string[][] = [];
+  const add = (row: string[]) => rows.push(row);
+  const include = (type: z.infer<typeof taxHandoffInput>["handoffType"], groups: readonly z.infer<typeof taxHandoffInput>["handoffType"][]) => type === "combined" || groups.includes(type);
+  if (include(input.handoffType, ["vat_invoice"])) {
+    for (const invoice of invoices) add(["发票项目分摊", "financial_invoices", String(invoice.id), invoice.issuedAt.toISOString().slice(0, 10), `${invoice.counterpartyName} · ${invoice.invoiceNo}`, invoice.direction === "income" ? "销项/收入资料" : "进项/成本资料", String(invoice.allocatedAmount), String(invoice.taxAmount), `${invoice.status}/${invoice.allocationStatus}`, invoice.evidenceId ? `证据#${invoice.evidenceId}` : "未关联原件"]);
+  }
+  if (include(input.handoffType, ["financial_ledger"])) {
+    for (const record of records) add(["项目资金流水", "financial_records", record.recordNo, record.occurredAt.toISOString(), record.category, record.direction === "income" ? "收入" : "支出", String(record.amount), "", record.settlementStatus, record.sourceType ? `${record.sourceType}:${record.sourceId ?? ""}` : "人工登记"]);
+  }
+  if (include(input.handoffType, ["payroll"])) {
+    for (const payroll of monthlyPayroll) add(["工资薪金待处理", "payroll_statements", String(payroll.id), payroll.period, `人员#${payroll.workerId} 月度工资`, "工资薪金", String(payroll.actualAmount), "", payroll.status, payroll.paymentReference ?? "待正式薪税系统处理"]);
+    for (const payroll of dailyPayroll) add(["临时日结薪酬待处理", "temporary_daily_wage_settlements", String(payroll.id), payroll.settlementDate.toISOString().slice(0, 10), `人员#${payroll.workerId} 临时日结`, "工资薪金", String(payroll.actualAmount), "", payroll.status, payroll.paymentReference ?? "待正式薪税系统处理"]);
+  }
+  if (include(input.handoffType, ["contract_tax"])) {
+    for (const contract of contracts) add(["合同税费资料", "outsource_contracts", String(contract.id), contract.startDate?.toISOString().slice(0, 10) ?? "", `${contract.contractNo} · ${contract.counterpartyName}`, contract.contractType, String(contract.contractAmount), "", contract.status, contract.attachmentEvidenceId ? `合同影像#${contract.attachmentEvidenceId}` : "未关联合同影像"]);
+  }
+  const selectedAuxiliaryTypes = input.handoffType === "cross_region" ? ["cross_region_prepayment"] : input.handoffType === "contract_tax" ? ["subcontract_deduction", "stamp_duty"] : input.handoffType === "payroll" ? ["payroll_handoff"] : input.handoffType === "vat_invoice" ? ["vat_input", "vat_output"] : input.handoffType === "financial_ledger" ? ["book_tax_difference"] : null;
+  for (const entry of auxiliary.filter(item => input.handoffType === "combined" || selectedAuxiliaryTypes?.includes(item.entryType))) {
+    add(["财税辅助事项", "tax_auxiliary_entries", String(entry.id), entry.period, entry.subject, entry.entryType, String(entry.amount), entry.reportedTaxAmount ?? "", entry.status, entry.documentReference ?? (entry.sourceType ? `${entry.sourceType}:${entry.sourceId ?? ""}` : "待补充")]);
+  }
+  if (include(input.handoffType, ["cross_region"]) && profile.crossRegionConstruction) {
+    add(["项目税务档案提示", "project_tax_profiles", String(profile.id), input.period, `跨地区建筑服务资料准备：${profile.projectLocation}`, "跨地区预缴辅助", String(profile.contractExTaxAmount), "", "待持证人员核验", "本行为资料提示，不代表已预缴或应预缴税额"]);
+  }
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    projectId: input.projectId,
+    period: input.period,
+    taxEntity: { id: entity.id, entityName: entity.entityName, taxpayerIdentifier: entity.taxpayerIdentifier, taxMethod: entity.taxMethod },
+    projectProfile: { projectLocation: profile.projectLocation, crossRegionConstruction: profile.crossRegionConstruction, contractExTaxAmount: String(profile.contractExTaxAmount), contractTaxRate: String(profile.contractTaxRate), subcontractDeductionMethod: profile.subcontractDeductionMethod },
+    columns: ["资料类别", "来源表", "来源单号/ID", "业务日期/期间", "摘要", "性质", "金额", "原始税额/已确认税额", "业务状态", "凭证/交接参考"],
+    rows,
+  };
 }
 
 /** 采购申请审批权仅限项目负责人、财务负责人和系统管理员。 */
@@ -455,6 +535,74 @@ const dailyClosingInput = z.object({
 
 const dailyClosingReopenInput = dailyClosingInput.extend({
   reason: z.string().trim().min(5, "请填写不少于 5 个字的反结账原因").max(500),
+});
+
+/** 仅由财务岗位维护的纳税主体资料；税号只用于与正式财务/税务系统交接，不向普通业务页面投影。 */
+const taxEntityProfileInput = z.object({
+  id: z.number().int().positive().optional(),
+  entityName: z.string().trim().min(2, "请填写纳税主体名称").max(200),
+  taxpayerIdentifier: z.string().trim().min(8, "请填写有效的纳税人识别号").max(64),
+  taxMethod: z.enum(["general", "small_scale", "simplified", "other"]),
+  registeredLocation: z.string().trim().max(300).nullable().optional(),
+  status: z.enum(["active", "suspended", "archived"]),
+  remarks: z.string().trim().max(500).nullable().optional(),
+});
+
+/** 项目税务档案只采集真实项目所在地、合同不含税金额等资料，不由系统推导应纳税额。 */
+const projectTaxProfileInput = z.object({
+  projectId: z.number().int().positive(),
+  taxEntityId: z.number().int().positive(),
+  projectLocation: z.string().trim().min(2, "请填写项目实际所在地").max(300),
+  taxMethod: z.enum(["general", "small_scale", "simplified", "other"]),
+  contractExTaxAmount: moneySchema,
+  contractTaxRate: z.number().min(0).max(1),
+  crossRegionConstruction: z.boolean(),
+  subcontractDeductionMethod: z.enum(["not_applicable", "supporting_document", "other"]),
+  remarks: z.string().trim().max(500).nullable().optional(),
+  status: z.enum(["active", "archived"]),
+});
+
+/** 手工补充的分包扣除、印花税、薪税待处理、预缴与税会差异资料项；所有税额均仅记录外部专业确认值。 */
+const taxAuxiliaryEntryInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  period: periodSchema,
+  entryType: z.enum(["vat_input", "vat_output", "subcontract_deduction", "stamp_duty", "payroll_handoff", "cross_region_prepayment", "book_tax_difference", "other"]),
+  sourceType: z.string().trim().max(64).nullable().optional(),
+  sourceId: z.string().trim().max(128).nullable().optional(),
+  subject: z.string().trim().min(2, "请填写资料事项").max(300),
+  amount: moneySchema,
+  taxBaseAmount: moneySchema.nullable().optional(),
+  referenceTaxRate: z.number().min(0).max(1).nullable().optional(),
+  reportedTaxAmount: moneySchema.nullable().optional(),
+  documentReference: z.string().trim().max(200).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+
+const taxAuxiliaryEntryTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["handed_off", "receipt_recorded", "void"]),
+  documentReference: z.string().trim().max(200).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+
+const taxHandoffInput = z.object({
+  projectId: z.number().int().positive(),
+  period: periodSchema,
+  handoffType: z.enum(["vat_invoice", "financial_ledger", "payroll", "contract_tax", "cross_region", "combined"]),
+  notes: z.string().trim().max(500).nullable().optional(),
+});
+
+const taxHandoffTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["handed_off", "receipt_recorded", "void"]),
+  receiptReference: z.string().trim().max(200).nullable().optional(),
+  receiptEvidenceId: z.number().int().positive().nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
 });
 
 /** 项目部收方草稿，工程量与单价由服务端重新计算申报金额。 */
@@ -1099,6 +1247,155 @@ export const financeRouter = router({
       canReverse: canReverseFinancialRecord(roleCodes),
       readOnly: !canCreateFinancialRecord(roleCodes),
     };
+  }),
+
+  /** 财税辅助工作区只展示已授权项目的资料清单与交接历史，不声称本系统完成法定申报。 */
+  taxWorkspace: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema })).query(async ({ ctx, input }) => {
+    await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { projectProfile: null, entityOptions: [], entries: [], handoffBatches: [], disclaimer: "数据库暂不可用，无法读取财税辅助资料。" };
+    const [projectProfile] = await db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1);
+    const [entityOptions, entries, batches] = await Promise.all([
+      db.select().from(taxEntityProfiles).where(inArray(taxEntityProfiles.status, ["active", "suspended"])).orderBy(taxEntityProfiles.entityName),
+      db.select().from(taxAuxiliaryEntries).where(and(eq(taxAuxiliaryEntries.projectId, input.projectId), eq(taxAuxiliaryEntries.period, input.period))).orderBy(desc(taxAuxiliaryEntries.updatedAt), desc(taxAuxiliaryEntries.id)),
+      db.select({ id: taxHandoffBatches.id, batchNo: taxHandoffBatches.batchNo, period: taxHandoffBatches.period, handoffType: taxHandoffBatches.handoffType, format: taxHandoffBatches.format, recordCount: taxHandoffBatches.recordCount, snapshotHash: taxHandoffBatches.snapshotHash, receiptReference: taxHandoffBatches.receiptReference, receiptEvidenceId: taxHandoffBatches.receiptEvidenceId, status: taxHandoffBatches.status, generatedAt: taxHandoffBatches.generatedAt, receiptRecordedAt: taxHandoffBatches.receiptRecordedAt, notes: taxHandoffBatches.notes }).from(taxHandoffBatches).where(and(eq(taxHandoffBatches.projectId, input.projectId), eq(taxHandoffBatches.period, input.period))).orderBy(desc(taxHandoffBatches.generatedAt)),
+    ]);
+    return {
+      projectProfile: projectProfile ?? null,
+      entityOptions,
+      entries,
+      handoffBatches: batches,
+      disclaimer: "本区仅归集真实项目业务资料、人工确认的辅助事项及外部系统回执引用；不自动计算税额、不生成纳税申报结果，也不替代持证会计师或税务师。",
+    };
+  }),
+
+  /** 纳税主体属于公司级高敏感基础资料，仅会计/财务负责人维护，列表仍受财务模块门禁。 */
+  saveTaxEntityProfile: protectedProcedure.input(taxEntityProfileInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "纳税主体资料仅限会计或财务负责人维护" });
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const values = { entityName: input.entityName, taxpayerIdentifier: input.taxpayerIdentifier.toUpperCase(), taxMethod: input.taxMethod, registeredLocation: input.registeredLocation ?? null, status: input.status, remarks: input.remarks ?? null };
+    if (input.id) {
+      const [existing] = await db.select({ id: taxEntityProfiles.id }).from(taxEntityProfiles).where(eq(taxEntityProfiles.id, input.id)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "未找到纳税主体资料" });
+      await db.update(taxEntityProfiles).set(values).where(eq(taxEntityProfiles.id, input.id));
+    } else {
+      await db.insert(taxEntityProfiles).values({ ...values, createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_tax_entity_profile" : "create_tax_entity_profile", targetType: "tax_entity_profile", targetId: String(input.id ?? values.taxpayerIdentifier), summary: `${input.id ? "维护" : "新建"}纳税主体辅助资料：${input.entityName}` });
+    return { success: true };
+  }),
+
+  /** 项目税务档案绑定唯一纳税主体；合同不含税金额和税率仅记录持证人员/合同资料确认值，不自动生成税额。 */
+  saveProjectTaxProfile: protectedProcedure.input(projectTaxProfileInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "项目税务辅助档案仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [entity] = await db.select({ id: taxEntityProfiles.id, status: taxEntityProfiles.status }).from(taxEntityProfiles).where(eq(taxEntityProfiles.id, input.taxEntityId)).limit(1);
+    if (!entity || entity.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择已启用的纳税主体" });
+    const values = { taxEntityId: input.taxEntityId, projectLocation: input.projectLocation, taxMethod: input.taxMethod, contractExTaxAmount: String(roundMoney(input.contractExTaxAmount)), contractTaxRate: String(input.contractTaxRate), crossRegionConstruction: input.crossRegionConstruction, subcontractDeductionMethod: input.subcontractDeductionMethod, remarks: input.remarks ?? null, status: input.status };
+    await db.insert(projectTaxProfiles).values({ projectId: input.projectId, ...values, createdBy: user.id }).onDuplicateKeyUpdate({ set: values });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "save_project_tax_profile", targetType: "project_tax_profile", targetId: String(input.projectId), summary: `维护项目财税辅助档案：${input.projectLocation}` });
+    return { success: true };
+  }),
+
+  /** 保存人工确认的财税辅助资料事项；待交接、已交接和已登记回执的状态由独立状态机维护。 */
+  saveTaxAuxiliaryEntry: protectedProcedure.input(taxAuxiliaryEntryInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财税辅助事项仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [profile] = await db.select({ taxEntityId: projectTaxProfiles.taxEntityId, status: projectTaxProfiles.status }).from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1);
+    if (!profile || profile.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "请先维护有效项目税务辅助档案" });
+    const values = { projectId: input.projectId, taxEntityId: profile.taxEntityId, period: input.period, entryType: input.entryType, sourceType: input.sourceType ?? null, sourceId: input.sourceId ?? null, subject: input.subject, amount: String(roundMoney(input.amount)), taxBaseAmount: input.taxBaseAmount === null || input.taxBaseAmount === undefined ? null : String(roundMoney(input.taxBaseAmount)), referenceTaxRate: input.referenceTaxRate === null || input.referenceTaxRate === undefined ? null : String(input.referenceTaxRate), reportedTaxAmount: input.reportedTaxAmount === null || input.reportedTaxAmount === undefined ? null : String(roundMoney(input.reportedTaxAmount)), documentReference: input.documentReference ?? null, evidenceId: input.evidenceId ?? null, notes: input.notes ?? null };
+    if (input.id) {
+      const [existing] = await db.select().from(taxAuxiliaryEntries).where(eq(taxAuxiliaryEntries.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目财税辅助事项" });
+      if (existing.status !== "pending") throw new TRPCError({ code: "CONFLICT", message: "已交接、已登记回执或已作废的辅助事项不可直接修改" });
+      await db.update(taxAuxiliaryEntries).set(values).where(and(eq(taxAuxiliaryEntries.id, input.id), eq(taxAuxiliaryEntries.status, "pending")));
+    } else {
+      await db.insert(taxAuxiliaryEntries).values({ ...values, status: "pending", createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_tax_auxiliary_entry" : "create_tax_auxiliary_entry", targetType: "tax_auxiliary_entry", targetId: String(input.id ?? input.subject), summary: `${input.id ? "维护" : "新增"}财税辅助事项：${input.subject}` });
+    return { success: true };
+  }),
+
+  /** 财税辅助事项交接状态不可回退；回执仅记录真实外部引用或受控证据，不伪造申报结果。 */
+  transitionTaxAuxiliaryEntry: protectedProcedure.input(taxAuxiliaryEntryTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财税辅助事项状态仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [entry] = await db.select().from(taxAuxiliaryEntries).where(eq(taxAuxiliaryEntries.id, input.id)).limit(1);
+    if (!entry || entry.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目财税辅助事项" });
+    const allowedTargets: Record<string, string[]> = { pending: ["handed_off", "void"], handed_off: ["receipt_recorded", "void"], receipt_recorded: [], void: [] };
+    if (!allowedTargets[entry.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前辅助事项状态不允许该操作" });
+    if (input.targetStatus === "receipt_recorded" && !input.documentReference && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部回执时至少填写回执引用或关联受控证据" });
+    const result = await db.update(taxAuxiliaryEntries).set({ status: input.targetStatus, documentReference: input.documentReference ?? entry.documentReference, evidenceId: input.evidenceId ?? entry.evidenceId, notes: input.notes ?? entry.notes }).where(and(eq(taxAuxiliaryEntries.id, input.id), eq(taxAuxiliaryEntries.status, entry.status)));
+    assertConditionalBusinessWrite(result, "财税辅助事项已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_auxiliary_${input.targetStatus}`, targetType: "tax_auxiliary_entry", targetId: String(input.id), summary: `财税辅助事项状态变更为：${input.targetStatus}` });
+    return { success: true };
+  }),
+
+  /** 生成正式财务软件/电子税务局资料交接CSV，并将完整字段快照和SHA-256写入批次审计链。 */
+  createTaxHandoffBatch: protectedProcedure.input(taxHandoffInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财税资料交接仅限会计或财务负责人生成" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const manifest = await buildTaxHandoffManifest(db, input);
+    const snapshotJson = JSON.stringify(manifest);
+    const snapshotHash = createHash("sha256").update(snapshotJson).digest("hex");
+    const batchNo = createBusinessNo("TAX");
+    const generatedAt = new Date();
+    const [created] = await db.insert(taxHandoffBatches).values({ batchNo, projectId: input.projectId, taxEntityId: manifest.taxEntity.id, period: input.period, handoffType: input.handoffType, format: "csv", recordCount: manifest.rows.length, snapshotHash, snapshotJson, status: "generated", generatedBy: user.id, generatedAt, notes: input.notes ?? null }).$returningId();
+    const batchId = Number(created?.id);
+    if (!Number.isInteger(batchId) || batchId <= 0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "财税交接批次创建失败，请稍后重试" });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "create_tax_handoff_batch", targetType: "tax_handoff_batch", targetId: batchNo, summary: `生成${input.period}财税资料交接批次：${input.handoffType}，共 ${manifest.rows.length} 行` });
+    return { success: true, batchId, batchNo, snapshotHash, recordCount: manifest.rows.length, csv: toTaxHandoffCsv(manifest) };
+  }),
+
+  /** 下载时只返回已保存批次的生成时快照，禁止用当前数据覆盖历史交接内容。 */
+  downloadTaxHandoffBatch: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [batch] = await db.select().from(taxHandoffBatches).where(eq(taxHandoffBatches.id, input.id)).limit(1);
+    if (!batch || batch.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目财税交接批次" });
+    const manifest = JSON.parse(batch.snapshotJson) as TaxHandoffManifest;
+    return { batchNo: batch.batchNo, period: batch.period, handoffType: batch.handoffType, snapshotHash: batch.snapshotHash, csv: toTaxHandoffCsv(manifest) };
+  }),
+
+  /** 交接批次状态不可倒退，外部回执只能登记真实编号或受控证据引用。 */
+  transitionTaxHandoffBatch: protectedProcedure.input(taxHandoffTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "财税交接批次状态仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [batch] = await db.select().from(taxHandoffBatches).where(eq(taxHandoffBatches.id, input.id)).limit(1);
+    if (!batch || batch.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目财税交接批次" });
+    const allowedTargets: Record<string, string[]> = { generated: ["handed_off", "void"], handed_off: ["receipt_recorded", "void"], receipt_recorded: [], void: [] };
+    if (!allowedTargets[batch.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前交接批次状态不允许该操作" });
+    if (input.targetStatus === "receipt_recorded" && !input.receiptReference && !input.receiptEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部回执时至少填写回执引用或关联受控证据" });
+    const result = await db.update(taxHandoffBatches).set({ status: input.targetStatus, receiptReference: input.receiptReference ?? batch.receiptReference, receiptEvidenceId: input.receiptEvidenceId ?? batch.receiptEvidenceId, receiptRecordedBy: input.targetStatus === "receipt_recorded" ? user.id : batch.receiptRecordedBy, receiptRecordedAt: input.targetStatus === "receipt_recorded" ? new Date() : batch.receiptRecordedAt, notes: input.notes ?? batch.notes }).where(and(eq(taxHandoffBatches.id, input.id), eq(taxHandoffBatches.status, batch.status)));
+    assertConditionalBusinessWrite(result, "财税交接批次已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_handoff_${input.targetStatus}`, targetType: "tax_handoff_batch", targetId: batch.batchNo, summary: `财税交接批次状态变更为：${input.targetStatus}` });
+    return { success: true };
   }),
 
   listRecords: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema.optional() })).query(async ({ ctx, input }) => {
