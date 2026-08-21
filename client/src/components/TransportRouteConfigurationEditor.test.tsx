@@ -9,6 +9,13 @@ describe("装卸土点与路线编辑", () => {
     expect(source).toContain("编辑卸土点");
     expect(source).toContain("saveSite.mutate");
     expect(source).toContain("中文详细地址");
+    expect(source).toContain("新增装土点");
+    expect(source).toContain("新增卸土点");
+    expect(source).toContain("openNewSite");
+    expect(source).toContain("utils.transport.listSites.invalidate()");
+    expect(source).toContain("utils.transport.listRoutePresets.invalidate()");
+    expect(source).toContain("activeLoadSites.map");
+    expect(source).toContain("activeUnloadSites.map");
     expect(source).not.toContain("纬度 Latitude");
     expect(source).not.toContain("经度 Longitude");
   });
