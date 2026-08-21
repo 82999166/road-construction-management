@@ -37,6 +37,7 @@ import {
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { makeRequest, type GeocodingResult } from "../_core/map";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
@@ -47,6 +48,18 @@ import { runProjectRiskScan } from "./projectRisk";
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const isoDateTimeSchema = z.string().datetime({ offset: true, message: "时间必须使用 ISO 8601 格式" });
+
+/** 业务人员维护中文详细地址；服务端仅为围栏计算解析并保存内部坐标，不向页面返回。 */
+async function resolveTransportSiteAddress(address: string) {
+  try {
+    const result = await makeRequest<GeocodingResult>("/maps/api/geocode/json", { address, language: "zh-CN", region: "cn" });
+    const first = result.results?.[0];
+    if (result.status !== "OK" || !first) throw new Error(result.status || "ZERO_RESULTS");
+    return { address: first.formatted_address, latitude: first.geometry.location.lat, longitude: first.geometry.location.lng };
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "未能定位该中文详细地址，请补充省、市、区县、道路/桩号或地标后重试" });
+  }
+}
 
 /** 外租资源保存时必须同时记录可结算的租金、计费方式与租期。 */
 const assetLeaseTermsInput = z.object({
@@ -663,7 +676,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     const hasMobileCoordinates = input.latitude !== null && input.latitude !== undefined && input.longitude !== null && input.longitude !== undefined;
     const hasUnloadSiteCoordinates = unloadSite.latitude !== null && unloadSite.latitude !== undefined && unloadSite.longitude !== null && unloadSite.longitude !== undefined;
     if (!hasMobileCoordinates || !hasUnloadSiteCoordinates) {
-      const reason = !hasMobileCoordinates ? "卸土异常：未取得定位信息" : "卸土点未配置定位坐标";
+      const reason = !hasMobileCoordinates ? "卸土异常：未取得现场定位" : "卸土点中文详细地址尚未完成地图定位校验";
       if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
       safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
     } else {
@@ -1936,7 +1949,12 @@ export const transportRouter = router({
       ? await Promise.all(administratorIds.map(async id => (await db.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, id)).limit(1))[0]))
       : [];
     const nameById = new Map(administrators.filter(Boolean).map(item => [item!.id, item!.name]));
-    return rows.map(site => ({ ...site, administratorName: site.administratorUserId ? nameById.get(site.administratorUserId) ?? "未找到用户" : "未配置" }));
+    return rows.map(({ latitude, longitude, ...site }) => ({
+      ...site,
+      /** 坐标仅用于服务端围栏计算；业务端只显示中文详细地址与解析状态。 */
+      addressResolved: latitude !== null && longitude !== null,
+      administratorName: site.administratorUserId ? nameById.get(site.administratorUserId) ?? "未找到用户" : "未配置",
+    }));
   }),
 
   /** 现场地点和刷卡管理员只允许运输负责人、项目负责人或系统管理员维护。 */
@@ -1950,13 +1968,15 @@ export const transportRouter = router({
       const [administrator] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.administratorUserId)).limit(1);
       if (!administrator) throw new TRPCError({ code: "BAD_REQUEST", message: "指定的现场管理员账号不存在" });
     }
+    const rawAddress = input.address?.trim() || null;
+    const addressResolution = rawAddress ? await resolveTransportSiteAddress(rawAddress) : null;
     const values = {
       projectId: input.projectId,
       siteType: input.siteType,
       name: input.name,
-      address: input.address?.trim() || null,
-      latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude),
-      longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude),
+      address: addressResolution?.address ?? rawAddress,
+      latitude: addressResolution ? String(addressResolution.latitude) : (input.latitude === null || input.latitude === undefined ? null : String(input.latitude)),
+      longitude: addressResolution ? String(addressResolution.longitude) : (input.longitude === null || input.longitude === undefined ? null : String(input.longitude)),
       administratorUserId: input.administratorUserId ?? null,
       status: input.status,
     };

@@ -122,6 +122,7 @@ export default function MobileEvidencePage() {
   const [files, setFiles] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [coordinates, setCoordinates] = useState<{ longitude: number; latitude: number } | null>(null);
+  const [locationAddress, setLocationAddress] = useState("");
   const [captureWeather, setCaptureWeather] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<{ id: number; fileName: string } | null>(null);
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
@@ -148,6 +149,10 @@ export default function MobileEvidencePage() {
   const evidenceListInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const evidence = trpc.evidence.list.useQuery(evidenceListInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const upload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const reverseGeocode = trpc.location.reverseGeocode.useMutation({
+    onSuccess: result => setLocationAddress(result.address),
+    onError: () => toast.warning("当前定位未能解析为中文详细地址，请稍后重新读取定位"),
+  });
   /** OCR 仅作辅助，采购影像上传后自动执行一次，其他影像仍保留用户主动触发入口。 */
   const runOcr = trpc.evidence.ocr.useMutation({
     onSuccess: async () => {
@@ -186,7 +191,13 @@ export default function MobileEvidencePage() {
     if (!locationEnabled) return toast.error("管理员已停用浏览器定位采集连接器");
     if (!navigator.geolocation) return toast.error("当前浏览器不支持定位服务");
     navigator.geolocation.getCurrentPosition(
-      position => { setCoordinates({ longitude: position.coords.longitude, latitude: position.coords.latitude }); toast.success("已读取当前定位"); },
+      position => {
+        const next = { longitude: position.coords.longitude, latitude: position.coords.latitude };
+        setCoordinates(next);
+        setLocationAddress("");
+        reverseGeocode.mutate({ latitude: next.latitude, longitude: next.longitude });
+        toast.success("已读取现场定位，正在解析中文详细地址");
+      },
       () => toast.error("未能读取定位，您仍可在无定位状态下归档影像"),
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
     );
@@ -198,6 +209,7 @@ export default function MobileEvidencePage() {
     if (captureConfig.isError) return toast.error("采集连接器配置加载失败，请稍后重试");
     if (!cameraEnabled) return toast.error("现场影像采集连接器已被管理员停用");
     if (locationRequired && !coordinates) return toast.error("当前项目要求上传影像时读取定位");
+    if (coordinates && !locationAddress) return toast.error("正在解析中文详细地址，请稍候再归档");
     if (!files.length) return toast.error("请拍摄或选择至少一张现场影像");
     if (!description.trim()) return toast.error("请填写现场说明");
     try {
@@ -208,8 +220,8 @@ export default function MobileEvidencePage() {
         capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
         principal: `施工负责人：${user?.name || "当前管理员"}`,
         weather: `天气：${captureWeather || "未获取"}`,
-        location: `地点：${coordinates ? "现场定位已获取" : "未取得定位"}`,
-        coordinates: `经纬度：${coordinates ? `${coordinates.longitude.toFixed(6)}°E，${coordinates.latitude.toFixed(6)}°N` : "未取得"}`,
+        location: `详细地点：${locationAddress || "未取得"}`,
+        coordinates: `详细地点：${locationAddress || "未取得"}`,
         organization: `施工单位：${watermarkTemplate.organizationLabel}`,
         project: `项目名称：${projectName}`,
         antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
@@ -250,7 +262,7 @@ export default function MobileEvidencePage() {
               <div><Label>归属项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="mt-2 border-[#ead9c8] bg-[#fffaf5]"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-3"><div><Label>取证类型</Label><Select value={sourceType} onValueChange={value => setSourceType(value as typeof sourceType)}><SelectTrigger className="mt-2 border-[#ead9c8] bg-[#fffaf5]"><SelectValue /></SelectTrigger><SelectContent>{SOURCE_OPTIONS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div><div><Label>关联业务编号</Label><Input className="mt-2 border-[#ead9c8] bg-[#fffaf5]" value={sourceId} maxLength={128} placeholder="可选" onChange={event => setSourceId(event.target.value)} /></div></div>
               <div><Label>现场说明</Label><Textarea className="mt-2 min-h-20 border-[#ead9c8] bg-[#fffaf5]" value={description} maxLength={500} placeholder="例如：K12+500 路基压实作业完成情况" onChange={event => setDescription(event.target.value)} /></div>
-              <div className="rounded-xl border border-[#c7d7e8] bg-[#f6fbff] p-3"><div className="flex items-center justify-between gap-3"><span className="inline-flex items-center gap-1.5 text-xs text-[#366c9e]"><MapPin className="h-3.5 w-3.5" />{coordinates ? `${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}` : locationEnabled ? (locationRequired ? "需读取定位后上传" : "尚未读取定位") : "定位连接器已停用"}</span><button className="inline-flex items-center gap-1 text-xs font-semibold text-[#276da7] disabled:cursor-not-allowed disabled:opacity-50" disabled={!locationEnabled} onClick={requestCoordinates}><LocateFixed className="h-3.5 w-3.5" />读取定位</button></div><div className="mt-3 overflow-hidden rounded-lg border border-[#cfe0ef]"><div className="bg-[#2177d3] px-3 py-1.5 text-xs font-bold text-white">{watermarkTemplate.title}</div><div className="space-y-1 bg-white/90 px-3 py-2 text-[11px] leading-4 text-[#2b3b48]">{watermarkTemplate.fields.slice(0, 4).map(field => <p key={field}>{({ capturedAt: `拍摄时间：${new Date().toLocaleString("zh-CN")}`, principal: `施工负责人：${user?.name || "当前管理员"}`, weather: `天气：${captureWeather || "待获取"}`, location: `地点：${coordinates ? "现场定位已获取" : "待获取"}`, coordinates: "经纬度：待获取", organization: `施工单位：${watermarkTemplate.organizationLabel}`, project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`, antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1 text-[10px] font-medium text-white">{watermarkTemplate.footerLabel}</div></div></div>
+              <div className="rounded-xl border border-[#c7d7e8] bg-[#f6fbff] p-3"><div className="flex items-center justify-between gap-3"><span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-[#366c9e]"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{locationAddress ? `详细地点：${locationAddress}` : coordinates ? "正在解析中文详细地址…" : locationEnabled ? (locationRequired ? "需读取定位后上传" : "尚未读取定位") : "定位连接器已停用"}</span></span><button className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-[#276da7] disabled:cursor-not-allowed disabled:opacity-50" disabled={!locationEnabled || reverseGeocode.isPending} onClick={requestCoordinates}><LocateFixed className="h-3.5 w-3.5" />读取定位</button></div><div className="mt-3 overflow-hidden rounded-lg border border-[#cfe0ef]"><div className="bg-[#2177d3] px-3 py-1.5 text-xs font-bold text-white">{watermarkTemplate.title}</div><div className="space-y-1 bg-white/90 px-3 py-2 text-[11px] leading-4 text-[#2b3b48]">{watermarkTemplate.fields.slice(0, 4).map(field => <p key={field}>{({ capturedAt: `拍摄时间：${new Date().toLocaleString("zh-CN")}`, principal: `施工负责人：${user?.name || "当前管理员"}`, weather: `天气：${captureWeather || "待获取"}`, location: `详细地点：${locationAddress || "待获取"}`, coordinates: `详细地点：${locationAddress || "待获取"}`, organization: `施工单位：${watermarkTemplate.organizationLabel}`, project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`, antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1 text-[10px] font-medium text-white">{watermarkTemplate.footerLabel}</div></div></div>
             </CardContent></Card>
             <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><div className="flex items-end justify-between gap-3"><div><Label>现场影像</Label><p className="mt-1 text-[11px] text-[#80685b]">可连续添加多张；每张将固化管理员、项目、定位、日期、时间与天气水印。</p></div>{files.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {files.length}/12 张</span> : null}</div><label className={`mt-3 flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3 text-center ${cameraEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"}`}><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" disabled={!cameraEnabled} onChange={handleFileChange} /><ImagePlus className="h-7 w-7 text-[#ad6335]" /><span className="mt-2 text-xs font-medium text-[#80543d]">{cameraEnabled ? (files.length ? "继续拍摄或添加照片" : "拍摄或选择 JPG、PNG 影像") : "影像采集连接器已停用"}</span><span className="mt-1 text-[11px] text-[#765544]">单张不超过 8MB，单次最多 12 张</span></label>{previewUrls.length ? <div className="mt-3 grid grid-cols-3 gap-2">{previewUrls.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待归档现场影像 ${index + 1}`} className="aspect-square w-full rounded-xl object-cover" />)}</div> : null}<Button className="mt-4 w-full bg-[#9a5128] text-white hover:bg-[#7e3d1c]" disabled={upload.isPending || captureConfig.isError || !cameraEnabled || !files.length || (locationRequired && !coordinates)} onClick={submitEvidence}>{upload.isPending ? "正在逐张安全归档…" : `归档 ${files.length || ""} 张现场影像`}</Button></CardContent></Card>
             <section>

@@ -215,6 +215,7 @@ export default function MobileMachineryPage() {
   const monthlyStatementPreview = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const reverseGeocode = trpc.location.reverseGeocode.useMutation();
 
   /** 相机流仅用于当前费用凭证直拍；关闭、取消或离开页面时立即关闭设备摄像头。 */
   function stopCostCamera() {
@@ -343,6 +344,7 @@ export default function MobileMachineryPage() {
       if (costPhotoFile) {
         const location = await getCurrentLocation();
         if (captureConfig.data?.location.required && !location) throw new Error("当前项目要求费用照片上传时读取现场定位");
+        const locationAddress = location ? (await reverseGeocode.mutateAsync({ latitude: location.latitude, longitude: location.longitude })).address : null;
         const capturedAt = new Date();
         const template = captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
         const projectName = projectOptions.data?.find(item => item.id === selectedProjectId)?.name ?? `项目 #${selectedProjectId}`;
@@ -353,8 +355,8 @@ export default function MobileMachineryPage() {
           capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
           principal: `费用录入人：${user?.name || "当前管理员"}`,
           weather: `费用类别：${categoryLabel}`,
-          location: `地点：${location ? "现场定位已获取" : "未取得定位"}`,
-          coordinates: `经纬度：${location ? `${location.longitude.toFixed(6)}°E，${location.latitude.toFixed(6)}°N` : "未取得"}`,
+          location: `详细地点：${locationAddress || "未取得"}`,
+          coordinates: `详细地点：${locationAddress || "未取得"}`,
           organization: `施工单位：${template.organizationLabel}`,
           project: `项目名称：${projectName}`,
           antiCounterfeit: `防伪编号：${antiCounterfeit}`,

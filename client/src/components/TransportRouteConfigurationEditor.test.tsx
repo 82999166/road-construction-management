@@ -4,10 +4,13 @@ import { describe, expect, it } from "vitest";
 describe("装卸土点与路线编辑", () => {
   it("为既有装卸土点提供坐标补录和编辑入口", () => {
     const source = readFileSync(new URL("./TransportRouteConfigurationEditor.tsx", import.meta.url), "utf8");
-    expect(source).toContain("补录坐标");
+    expect(source).toContain("补录详细地址");
     expect(source).toContain("编辑装土点");
     expect(source).toContain("编辑卸土点");
     expect(source).toContain("saveSite.mutate");
+    expect(source).toContain("中文详细地址");
+    expect(source).not.toContain("纬度 Latitude");
+    expect(source).not.toContain("经度 Longitude");
   });
 
   it("为既有路线提供线路与安全参数编辑入口", () => {

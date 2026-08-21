@@ -760,6 +760,7 @@ export default function AdminPage() {
     await Promise.all([dieselGuidelinePrices.refetch(), dieselRefuelRecords.refetch(), dieselDailySummary.refetch(), dieselPriceAlertRule.refetch(), dieselSupplierReconciliation.refetch(), financeSummary.refetch(), audits.refetch()]);
   };
   const uploadDieselReceipt = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const reverseGeocode = trpc.location.reverseGeocode.useMutation();
   const saveDieselPriceAlertRule = trpc.admin.diesel.savePriceAlertRule.useMutation({
     onSuccess: async () => { toast.success("柴油油价异常预警阈值已保存"); await refreshDieselLedger(); },
     onError: error => toast.error(error.message),
@@ -793,6 +794,7 @@ export default function AdminPage() {
           return;
         }
         const capturedLocation = await captureWatermarkLocation();
+        const locationAddress = (await reverseGeocode.mutateAsync({ latitude: capturedLocation.latitude, longitude: capturedLocation.longitude })).address;
         const capturedAt = new Date(dieselRefuelForm.refueledAt);
         if (Number.isNaN(capturedAt.getTime())) throw new Error("请填写有效加油时间后再生成工程水印");
         const projectName = projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? `项目 #${dieselRefuelForm.projectId}`;
@@ -800,8 +802,8 @@ export default function AdminPage() {
         const watermarkValues: Record<string, string> = {
           capturedAt: `加油时间：${capturedAt.toLocaleString("zh-CN", { hour12: false })}`,
           principal: `操作人：${user?.name || "超级管理员"}`,
-          location: `现场定位：${capturedLocation.latitude.toFixed(6)}, ${capturedLocation.longitude.toFixed(6)}（精度±${Math.round(capturedLocation.accuracyMeters)}m）`,
-          coordinates: `经纬度：${capturedLocation.longitude.toFixed(6)}°E，${capturedLocation.latitude.toFixed(6)}°N`,
+          location: `详细地点：${locationAddress}`,
+          coordinates: `详细地点：${locationAddress}`,
           organization: `施工单位：${watermarkTemplateForm.organizationLabel}`,
           project: `项目名称：${projectName}`,
           antiCounterfeit: `防伪编号：${antiCounterfeitNo}`,
@@ -2325,7 +2327,7 @@ export default function AdminPage() {
               })}</div></div>
               <Button className="bg-[#2177d3] hover:bg-[#185fae]" disabled={saveEvidenceWatermarkTemplate.isPending || watermarkTemplateForm.fields.length < 2 || !watermarkTemplateForm.title.trim() || !watermarkTemplateForm.organizationLabel.trim() || !watermarkTemplateForm.footerLabel.trim()} onClick={() => saveEvidenceWatermarkTemplate.mutate({ title: watermarkTemplateForm.title, organizationLabel: watermarkTemplateForm.organizationLabel, footerLabel: watermarkTemplateForm.footerLabel, fields: watermarkTemplateForm.fields })}>{saveEvidenceWatermarkTemplate.isPending ? "正在发布水印模板…" : "保存并发布水印模板"}</Button>
             </div>
-            <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "地点：现场定位已获取", coordinates: "经纬度：113.035345°E，28.162564°N", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "工程云管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和定位信息逐张写入像素水印，并同步保存审计元数据。</p></div>
+            <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "工程云管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
         </Card>
         <Card>

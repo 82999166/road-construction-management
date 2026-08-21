@@ -135,6 +135,7 @@ export default function MobileConstructionPage() {
   const [pendingEvidencePreviews, setPendingEvidencePreviews] = useState<string[]>([]);
   const [reportCapturedAt, setReportCapturedAt] = useState(() => new Date());
   const [weatherCoordinates, setWeatherCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [weatherAddress, setWeatherAddress] = useState("");
   const [weatherStatus, setWeatherStatus] = useState("打开新建日报后将自动获取当前天气；您仍可手动调整。");
   const [reviewTarget, setReviewTarget] = useState<NonNullable<typeof reports.data>[number] | null>(null);
   const [reviewReply, setReviewReply] = useState("");
@@ -155,6 +156,10 @@ export default function MobileConstructionPage() {
   const resolvedWeather = trpc.construction.resolveCurrentWeather.useQuery(weatherCoordinates ?? { latitude: 0, longitude: 0 }, { enabled: isAuthenticated && dialogOpen && !editingId && Boolean(weatherCoordinates), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const reverseGeocode = trpc.location.reverseGeocode.useMutation({
+    onSuccess: result => setWeatherAddress(result.address),
+    onError: () => setWeatherStatus("已读取现场定位，但暂未解析中文详细地址；请稍后重新打开日报。"),
+  });
 
   useEffect(() => {
     if (!resolvedWeather.data) return;
@@ -175,14 +180,15 @@ export default function MobileConstructionPage() {
       try {
         if (files.length) {
           if (locationRequired && !weatherCoordinates) throw new Error("当前项目要求上传现场照片时读取定位");
+          if (weatherCoordinates && !weatherAddress) throw new Error("正在解析中文详细地址，请稍候再提交日报照片");
           const capturedAt = new Date();
           const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}`;
           const watermarkValues: Record<string, string> = {
             capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
             principal: `施工负责人：${user?.name || "当前管理员"}`,
             weather: `天气：${getWeatherLabel(draft.weather)}`,
-            location: `地点：${weatherCoordinates ? "现场定位已获取" : "未取得定位"}`,
-            coordinates: `经纬度：${weatherCoordinates ? `${weatherCoordinates.longitude.toFixed(6)}°E，${weatherCoordinates.latitude.toFixed(6)}°N` : "未取得"}`,
+            location: `详细地点：${weatherAddress || "未取得"}`,
+            coordinates: `详细地点：${weatherAddress || "未取得"}`,
             organization: `施工单位：${watermarkTemplate.organizationLabel}`,
             project: `项目名称：${selectedProject?.name || `项目 #${selectedProjectId}`}`,
             antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
@@ -238,6 +244,7 @@ export default function MobileConstructionPage() {
     setDraft({ ...emptyDraft, reportDate: getTodayText() });
     setReportCapturedAt(new Date());
     setWeatherCoordinates(null);
+    setWeatherAddress("");
     pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
     setPendingEvidenceFiles([]);
     setPendingEvidencePreviews([]);
@@ -248,7 +255,12 @@ export default function MobileConstructionPage() {
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      position => setWeatherCoordinates({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+      position => {
+        const next = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+        setWeatherCoordinates(next);
+        setWeatherAddress("");
+        reverseGeocode.mutate(next);
+      },
       () => setWeatherStatus("未取得定位，无法自动获取天气，请手动选择。"),
       { enableHighAccuracy: false, timeout: 8_000, maximumAge: 10 * 60_000 },
     );
