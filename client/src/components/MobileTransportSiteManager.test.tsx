@@ -7,6 +7,9 @@ describe("手机端装卸土点管理", () => {
     expect(source).toContain("新增装土点");
     expect(source).toContain("新增卸土点");
     expect(source).toContain("编辑");
+    expect(source).toContain("装土点名称");
+    expect(source).toContain("卸土点名称");
+    expect(source).toContain("自动获取定位不会修改此名称");
     expect(source).toContain("transport.saveSite");
     expect(source).toContain("utils.transport.listSites.invalidate()");
     expect(source).toContain("utils.transport.listRoutePresets.invalidate()");
