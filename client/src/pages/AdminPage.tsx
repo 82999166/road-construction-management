@@ -18,6 +18,7 @@ import { trpc } from "@/lib/trpc";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
+import { filterPayrollRows, getPayrollTeams } from "@/lib/payrollLedgerFilters";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -2658,17 +2659,14 @@ export default function AdminPage() {
     const payrolls = payrollStatements.data ?? [];
     const dailyWages = laborDailyWages.data ?? [];
     const checkIns = laborCheckIns.data ?? [];
-    const visiblePayrolls = payrolls.filter(item => {
-      const keyword = laborPayrollSearch.trim().toLowerCase();
-      return (!keyword || [item.workerName, item.teamName, item.period, item.status].some(value => String(value ?? "").toLowerCase().includes(keyword))) && (laborPayrollTeam === "all" || (item.teamName || "未设置班组") === laborPayrollTeam) && (laborPayrollStatus === "all" || item.status === laborPayrollStatus);
-    });
+    const visiblePayrolls = filterPayrollRows(payrolls, { search: laborPayrollSearch, team: laborPayrollTeam, status: laborPayrollStatus });
     const payrollSummary = summarizePayrollAmounts(visiblePayrolls);
     const payrollCategories = summarizeLaborPayrollCategories(visiblePayrolls, new Map(workers.map(worker => [worker.id, worker.workerCategory])));
     const companyPayrollSummary = payrollCategories.company;
     const laborTeamPayrollSummary = payrollCategories.laborTeam;
     const temporaryDailySummary = summarizePayrollAmounts(dailyWages);
     const laborTeamAuditRows = payrollCategories.laborTeamRows;
-    const payrollTeams = Array.from(new Set(payrolls.map(item => item.teamName || "未设置班组"))).sort();
+    const payrollTeams = getPayrollTeams(payrolls);
     const dailyWageSummary = dailyWages.reduce((summary, item) => ({ actual: summary.actual + Number(item.actualAmount || 0), reviewing: summary.reviewing + (item.status === "reviewing" ? 1 : 0), approved: summary.approved + (item.status === "approved" ? 1 : 0), paid: summary.paid + (item.status === "paid" ? 1 : 0) }), { actual: 0, reviewing: 0, approved: 0, paid: 0 });
     const laborWorkspaceQueryEnabled = canQuery && isLabor && hasBusinessWorkspaceProject;
     const laborWorkspaceLoading = laborWorkspaceQueryEnabled && (laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading || laborDailyWages.isLoading);
