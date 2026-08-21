@@ -159,6 +159,7 @@ describe("统一后台业务工作区范围保护", () => {
 
   it("将高频业务台账统一提供响应式表格式总览，保留详情入口和既有状态操作", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const payrollSource = readFileSync(new URL("../components/PayrollStatementLedger.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("function LedgerTable");
     expect(source).toContain("台账列表 · 可筛选 / 可导出");
@@ -166,7 +167,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("员工档案、薪资与保险");
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("施工日报、现场影像与审核台账");
-    expect(source).toContain("工资条详细台账");
+    expect(source).toContain('lazy(() => import("@/components/PayrollStatementLedger"))');
+    expect(source).toContain("<PayrollStatementLedger");
+    expect(payrollSource).toContain("工资条详细台账");
     expect(source).toContain("机械资源、维修与会计计价台账");
     expect(source).toContain("车辆趟次、异常与结算台账");
     expect(source).toContain("发票、成本与审计台账");
