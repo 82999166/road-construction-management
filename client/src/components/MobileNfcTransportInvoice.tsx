@@ -71,6 +71,18 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   }, [initialToken, open]);
 
   useEffect(() => {
+    if (!open || !successResult) return;
+    const resetTimer = window.setTimeout(() => {
+      scanTokenRef.current = "";
+      setSuccessResult(null);
+      setToken("");
+      setRoutePresetId("");
+      setScanStatus("本次开票已完成，请贴下一张已启用车辆卡…");
+    }, 3_000);
+    return () => window.clearTimeout(resetTimer);
+  }, [open, successResult]);
+
+  useEffect(() => {
     if (!open) return;
     const Reader = (window as NdefReaderWindow).NDEFReader;
     if (!Reader) {

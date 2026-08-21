@@ -15,5 +15,9 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
     expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");
     expect(source).not.toContain("if (!open || initialToken) return");
+    expect(source).toContain("本次开票已完成，请贴下一张已启用车辆卡");
+    expect(source).toContain("}, 3_000)");
+    expect(source).toContain("setToken(\"\")");
+    expect(source).toContain("setRoutePresetId(\"\")");
   });
 });
