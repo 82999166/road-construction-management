@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
 import BusinessStatusBadge from "@/components/BusinessStatusBadge";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
+import { useLaborWorkspaceFilters } from "@/hooks/useLaborWorkspaceFilters";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -538,12 +539,7 @@ export default function AdminPage() {
   const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: new Date().toISOString().slice(0, 7), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
-  const [laborPeriod, setLaborPeriod] = useState("");
-  const [laborAttendanceDate, setLaborAttendanceDate] = useState(() => toLocalDateInput(new Date()));
-  const [laborPayrollSearch, setLaborPayrollSearch] = useState("");
-  const [laborPayrollTeam, setLaborPayrollTeam] = useState("all");
-  const [laborPayrollStatus, setLaborPayrollStatus] = useState("all");
-  const [laborAttendanceFilter, setLaborAttendanceFilter] = useState({ workerName: "", team: "all", category: "all", status: "all" });
+  const { laborPeriod, setLaborPeriod, laborAttendanceDate, setLaborAttendanceDate, laborPayrollSearch, setLaborPayrollSearch, laborPayrollTeam, setLaborPayrollTeam, laborPayrollStatus, setLaborPayrollStatus, laborAttendanceFilter, setLaborAttendanceFilter } = useLaborWorkspaceFilters(toLocalDateInput(new Date()));
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
   const [dailyWagePaymentForm, setDailyWagePaymentForm] = useState({ paidAt: toLocalDateInput(), paymentReference: "" });
   const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
