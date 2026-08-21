@@ -948,6 +948,51 @@ export const machineMonthlyStatements = mysqlTable(
 );
 
 /**
+ * 外租机械按月结算后的付款台账。
+ * 月度明细保留成本和分成计算快照，本表只承载收款人、审核、实际付款和不可逆审计，
+ * 避免把“已生成结算”误当作“已经付款”。每份月结快照最多生成一张付款结算单。
+ */
+export const machinePaymentSettlements = mysqlTable(
+  "machine_payment_settlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementNo: varchar("settlementNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    machineId: int("machineId").notNull(),
+    monthlyStatementId: bigint("monthlyStatementId", { mode: "number" }).notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    /** 机械月结快照中的应付机械分成；油料与维修仅作结算依据展示，不自动重复扣减。 */
+    grossPayableAmount: decimal("grossPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    fuelCostAmount: decimal("fuelCostAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    repairCostAmount: decimal("repairCostAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    manualDeductionAmount: decimal("manualDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    payeeName: varchar("payeeName", { length: 128 }).notNull(),
+    payeeAccount: varchar("payeeAccount", { length: 160 }),
+    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentDate: date("paymentDate"),
+    paymentReference: varchar("paymentReference", { length: 128 }),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    submittedBy: int("submittedBy"),
+    submittedAt: datetime("submittedAt"),
+    approvedBy: int("approvedBy"),
+    approvedAt: datetime("approvedAt"),
+    paidBy: int("paidBy"),
+    paidAt: datetime("paidAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    settlementNoUnique: uniqueIndex("machine_payment_settlements_no_unique").on(table.settlementNo),
+    statementUnique: uniqueIndex("machine_payment_settlements_statement_unique").on(table.monthlyStatementId),
+    projectMachinePeriodIndex: index("machine_payment_settlements_project_machine_period_index").on(table.projectId, table.machineId, table.period),
+    projectStatusIndex: index("machine_payment_settlements_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
+/**
  * 单台机械每日作业与收益记录。日度收益、司机工资与工时在此受控留痕；
  * 维修、保养、油料仍分别读取原始成本及柴油台账，避免用前端汇总替代审计凭据。
  */

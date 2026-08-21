@@ -15,6 +15,10 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("司机总工资");
     expect(source).toContain("机械分成");
     expect(source).toContain("提交会计审核");
+    expect(source).toContain("trpc.machinery.listPaymentSettlements.useQuery");
+    expect(source).toContain("机械付款状态");
+    expect(source).toContain("请在PC付款台账生成结算并登记付款");
+    expect(source).not.toContain('transitionMonthlyStatement.mutate({ id: item.id, projectId: selectedProjectId, nextStatus: "settled" })');
   });
 
   it("提供移动月结打印页、完整费用录入与真实设备联系人摘要", () => {

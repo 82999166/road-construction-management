@@ -1,0 +1,61 @@
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { trpc } from "@/lib/trpc";
+import { Landmark, ReceiptText, WalletCards } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+
+type PaymentMethod = "bank_transfer" | "corporate_account" | "cash" | "wechat" | "alipay" | "other";
+
+const paymentMethodLabel: Record<PaymentMethod, string> = { bank_transfer: "银行卡转账", corporate_account: "对公账户", cash: "现金", wechat: "微信收款", alipay: "支付宝收款", other: "其他方式" };
+const statusLabel: Record<string, string> = { draft: "草稿", submitted: "待会计审核", approved: "待付款", paid: "已付款", void: "已作废" };
+const money = (value: unknown) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const today = () => new Date().toISOString().slice(0, 10);
+const currentPeriod = () => today().slice(0, 7);
+
+/**
+ * 外租机械月结付款台账。机械月结只负责计算和审核快照，本组件负责实际的收款账户、付款日期与付款锁定。
+ * 公司自有机械不生成虚构的外部付款单，工资和采购费用仍走各自已受控流程。
+ */
+export default function MachinePaymentSettlementManager({ projectId }: { projectId: number }) {
+  const [period, setPeriod] = useState(currentPeriod);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [selectedSettlement, setSelectedSettlement] = useState<any | null>(null);
+  const [statementId, setStatementId] = useState("");
+  const [form, setForm] = useState<{ payeeName: string; payeeAccount: string; paymentMethod: PaymentMethod; manualDeductionAmount: string; remarks: string }>({ payeeName: "", payeeAccount: "", paymentMethod: "bank_transfer", manualDeductionAmount: "0", remarks: "" });
+  const [paymentDate, setPaymentDate] = useState(today);
+  const utils = trpc.useUtils();
+  const machines = trpc.machinery.listMachines.useQuery({ projectId }, { enabled: Boolean(projectId) });
+  const statements = trpc.machinery.listMonthlyStatements.useQuery({ projectId, period }, { enabled: Boolean(projectId) && /^\d{4}-(0[1-9]|1[0-2])$/.test(period) });
+  const settlements = trpc.machinery.listPaymentSettlements.useQuery({ projectId }, { enabled: Boolean(projectId) });
+  const refresh = () => Promise.all([utils.machinery.listPaymentSettlements.invalidate(), utils.machinery.listMonthlyStatements.invalidate(), utils.machinery.listMachines.invalidate()]);
+  const create = trpc.machinery.createPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成机械付款结算草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
+  const transition = trpc.machinery.transitionPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`机械结算状态已更新为：${statusLabel[data.status] ?? data.status}`); setPayOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
+  const machineById = useMemo(() => new Map((machines.data ?? []).map(item => [item.id, item])), [machines.data]);
+  const candidates = useMemo(() => (statements.data ?? []).filter(item => item.status === "approved" && machineById.get(item.machineId)?.ownership === "leased"), [machineById, statements.data]);
+  const openCreate = () => {
+    const first = candidates[0];
+    if (!first) { toast.error("当前期间没有可付款的已审核外租机械月结，请先完成月结提交和会计审核"); return; }
+    const machine = machineById.get(first.machineId);
+    setStatementId(String(first.id));
+    setForm({ payeeName: machine?.supplierName || first.ownerNameSnapshot || "", payeeAccount: "", paymentMethod: "bank_transfer", manualDeductionAmount: "0", remarks: "" });
+    setCreateOpen(true);
+  };
+  const selectedStatement = candidates.find(item => String(item.id) === statementId);
+
+  return <>
+    <Card className="border-[#d8e3e0] shadow-sm">
+      <CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">机械管理 · 费用结算</p><CardTitle className="mt-1 text-base">外租机械月结与付款台账</CardTitle><CardDescription className="mt-1">以已审核的机械月结为付款依据，展示租赁/台班产值、柴油、维修、人工扣款和净应付。收款方式属于本次付款，不固定写入机械档案；付款完成后不可作废。</CardDescription></div><Button size="sm" onClick={openCreate}><WalletCards className="mr-1.5 h-4 w-4" />生成机械付款结算</Button></div><div className="max-w-[220px]"><Label>月结期间</Label><Input className="mt-1" type="month" value={period} onChange={event => setPeriod(event.target.value)} /></div></CardHeader>
+      <CardContent className="space-y-4"><div className="rounded-xl border border-[#d8e3e0] bg-[#f8fcfb] p-3"><div className="mb-3 flex flex-wrap items-start justify-between gap-2"><div><p className="text-sm font-semibold text-[#203c48]">机械付款结算与收款台账</p><p className="mt-1 text-xs text-slate-500">流程：机械月结审核 → 生成付款草稿 → 提交会计审核 → 会计审核通过 → 登记付款日期。已付款单据不可作废。</p></div><Badge variant="outline">{settlements.data?.length ?? 0} 单</Badge></div><div className="overflow-x-auto"><Table className="min-w-[1200px] text-xs"><TableHeader><TableRow><TableHead>结算单 / 机械</TableHead><TableHead>期间 / 计费方式</TableHead><TableHead>应付 / 油料 / 维修 / 扣款 / 净额</TableHead><TableHead>收款人 / 方式</TableHead><TableHead>账户</TableHead><TableHead>状态</TableHead><TableHead>付款日期</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{settlements.isLoading ? <TableRow><TableCell colSpan={8} className="py-8 text-center text-slate-500">正在读取机械付款台账…</TableCell></TableRow> : settlements.data?.length ? settlements.data.map((item: any) => <TableRow key={item.id}><TableCell><p className="font-semibold">{item.settlementNo}</p><p className="mt-1 text-slate-500">{item.machine?.name || `机械 #${item.machineId}`} · {item.machine?.code || "编号待补"}</p></TableCell><TableCell>{item.period}<p className="mt-1 text-slate-500">{item.statement?.leaseBillingType || "月结快照"}</p></TableCell><TableCell>{money(item.grossPayableAmount)} / {money(item.fuelCostAmount)} / {money(item.repairCostAmount)} / {money(item.manualDeductionAmount)} / <b>{money(item.netPayableAmount)}</b></TableCell><TableCell>{item.payeeName}<p className="mt-1 text-slate-500">{paymentMethodLabel[item.paymentMethod as PaymentMethod] || item.paymentMethod}</p></TableCell><TableCell>{item.payeeAccount || "未填写"}{item.accountMasked ? <p className="mt-1 text-amber-700">仅财务可查看完整账户</p> : null}</TableCell><TableCell><Badge className={item.status === "paid" ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-50" : item.status === "void" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" : "bg-amber-50 text-amber-700 hover:bg-amber-50"}>{statusLabel[item.status] ?? item.status}</Badge></TableCell><TableCell>{item.paymentDate ? String(item.paymentDate).slice(0, 10) : "待付款"}</TableCell><TableCell className="text-right"><div className="flex justify-end gap-1">{item.status === "draft" ? <Button size="sm" onClick={() => transition.mutate({ id: item.id, projectId, action: "submit" })} disabled={transition.isPending}>提交审核</Button> : null}{item.status === "submitted" ? <Button size="sm" onClick={() => transition.mutate({ id: item.id, projectId, action: "approve" })} disabled={transition.isPending}>会计审核</Button> : null}{item.status === "approved" ? <Button size="sm" onClick={() => { setSelectedSettlement(item); setPaymentDate(today()); setPayOpen(true); }} disabled={transition.isPending}>登记付款</Button> : null}{["draft", "submitted", "approved"].includes(item.status) ? <Button size="sm" variant="outline" onClick={() => transition.mutate({ id: item.id, projectId, action: "void" })} disabled={transition.isPending}>作废</Button> : null}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={8} className="py-8 text-center text-slate-500">尚未生成机械付款结算单。</TableCell></TableRow>}</TableBody></Table></div></div></CardContent>
+    </Card>
+    <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>生成外租机械付款结算</DialogTitle><DialogDescription>仅可选择当期已审核的外租机械月结；应付金额由服务端月结快照计算，油料和维修作为审计依据展示，人工扣款需明确记录。</DialogDescription></DialogHeader><div className="grid gap-3 py-2 sm:grid-cols-2"><div className="sm:col-span-2"><Label>已审核机械月结</Label><Select value={statementId} onValueChange={value => { setStatementId(value); const statement = candidates.find(item => String(item.id) === value); const machine = statement ? machineById.get(statement.machineId) : undefined; setForm(current => ({ ...current, payeeName: machine?.supplierName || statement?.ownerNameSnapshot || current.payeeName })); }}><SelectTrigger className="mt-1"><SelectValue placeholder="选择已审核外租机械月结" /></SelectTrigger><SelectContent>{candidates.map(item => { const machine = machineById.get(item.machineId); return <SelectItem key={item.id} value={String(item.id)}>{machine?.name || `机械 #${item.machineId}`} · {item.period} · 应付 {money(item.machineShareAmount)}</SelectItem>; })}</SelectContent></Select></div><div><Label>收款方式</Label><Select value={form.paymentMethod} onValueChange={value => setForm(current => ({ ...current, paymentMethod: value as PaymentMethod }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(paymentMethodLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div><Label>人工扣款</Label><Input className="mt-1" inputMode="decimal" value={form.manualDeductionAmount} onChange={event => setForm(current => ({ ...current, manualDeductionAmount: event.target.value }))} placeholder="没有则填 0" /></div><div><Label>收款人</Label><Input className="mt-1" value={form.payeeName} placeholder="出租方或收款单位" onChange={event => setForm(current => ({ ...current, payeeName: event.target.value }))} /></div><div><Label>收款账户</Label><Input className="mt-1" value={form.payeeAccount} placeholder="银行卡/对公账号/收款账号" onChange={event => setForm(current => ({ ...current, payeeAccount: event.target.value }))} /></div><div className="sm:col-span-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">{selectedStatement ? <>本次月结：应付 {money(selectedStatement.machineShareAmount)}，油料 {money(selectedStatement.fuelAmount)}，维修 {money(selectedStatement.repairAmount)}。实际净付以服务端校验为准。</> : "请选择已审核机械月结。"}</div><div className="sm:col-span-2"><Label>备注（可选）</Label><Input className="mt-1" value={form.remarks} placeholder="扣款依据、付款用途等" onChange={event => setForm(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button><Button disabled={!statementId || !form.payeeName.trim() || create.isPending} onClick={() => create.mutate({ projectId, monthlyStatementId: Number(statementId), payeeName: form.payeeName, payeeAccount: form.payeeAccount || null, paymentMethod: form.paymentMethod, manualDeductionAmount: Number(form.manualDeductionAmount || 0), remarks: form.remarks || null })}><ReceiptText className="mr-1.5 h-4 w-4" />{create.isPending ? "生成中…" : "生成结算草稿"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={payOpen} onOpenChange={setPayOpen}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>登记机械付款</DialogTitle><DialogDescription>付款日期必填，不要求上传转账记录。确认后进入已付款状态，不能作废。</DialogDescription></DialogHeader><div className="py-2"><Label>付款日期</Label><Input className="mt-1" type="date" value={paymentDate} onChange={event => setPaymentDate(event.target.value)} /></div><DialogFooter><Button variant="outline" onClick={() => setPayOpen(false)}>取消</Button><Button disabled={!selectedSettlement || transition.isPending} onClick={() => selectedSettlement && transition.mutate({ id: selectedSettlement.id, projectId, action: "pay", paymentDate })}><Landmark className="mr-1.5 h-4 w-4" />{transition.isPending ? "登记中…" : "确认已付款"}</Button></DialogFooter></DialogContent></Dialog>
+  </>;
+}

@@ -12,6 +12,7 @@ import {
   machineDailyOperations,
   machineLeaseRules,
   machineMonthlyStatements,
+  machinePaymentSettlements,
   machines,
   projects,
   rfidCardWriteJobs,
@@ -342,6 +343,30 @@ const transportVehicleSettlementActionInput = z.object({
   if (value.action === "pay" && !value.paymentDate) issue.addIssue({ code: "custom", path: ["paymentDate"], message: "登记付款必须填写付款日期" });
 });
 
+/** 外租机械只能从已审核的月结快照创建付款结算，金额由月结快照和受控扣款组成。 */
+const machinePaymentSettlementDraftInput = z.object({
+  projectId: z.number().int().positive(),
+  monthlyStatementId: z.number().int().positive(),
+  payeeName: z.string().trim().min(2, "请填写收款人姓名或单位名称").max(128),
+  payeeAccount: z.string().trim().max(160).nullable().optional(),
+  paymentMethod: transportSettlementPaymentMethodSchema.default("bank_transfer"),
+  manualDeductionAmount: z.number().min(0).max(999999999999.99).default(0),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, issue) => {
+  if (["bank_transfer", "corporate_account", "wechat", "alipay"].includes(value.paymentMethod) && !value.payeeAccount?.trim()) issue.addIssue({ code: "custom", path: ["payeeAccount"], message: "该收款方式必须填写收款账户或收款账号" });
+});
+
+const machinePaymentSettlementActionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  action: z.enum(["submit", "approve", "pay", "void"]),
+  paymentDate: businessDateSchema.optional(),
+  paymentReference: z.string().trim().max(128).nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, issue) => {
+  if (value.action === "pay" && !value.paymentDate) issue.addIssue({ code: "custom", path: ["paymentDate"], message: "登记付款必须填写付款日期" });
+});
+
 /** 写卡器型号先以台账方式预留，未接入硬件协议时仅允许生成并人工确认受控写卡任务。 */
 const rfidWriterDeviceInput = z.object({
   id: z.number().int().positive().optional(),
@@ -470,6 +495,12 @@ function createTransportTripNo(projectId: number, occurredAt = new Date()) {
 function createTransportVehicleSettlementNo(projectId: number, occurredAt = new Date()) {
   const date = getChinaBusinessDate(occurredAt).replaceAll("-", "");
   return `TS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+/** 机械付款结算号独立于月结快照编号，区分已生成结算和实际付款终态。 */
+function createMachinePaymentSettlementNo(projectId: number, occurredAt = new Date()) {
+  const date = getChinaBusinessDate(occurredAt).replaceAll("-", "");
+  return `MS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
 /** 非财务角色只查看账户尾号；付款执行与导出由财务角色读取完整受控账户信息。 */
@@ -1374,15 +1405,95 @@ export const machineryRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [record] = await db.select().from(machineMonthlyStatements).where(eq(machineMonthlyStatements.id, input.id)).limit(1);
     if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械月度明细不存在或不属于当前项目" });
-    const allowed: Record<typeof record.status, readonly string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["settled", "void"], settled: [], void: [] };
+    const allowed: Record<typeof record.status, readonly string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["void"], settled: [], void: [] };
     if (!allowed[record.status].includes(input.nextStatus)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前月度机械明细状态不允许执行该操作" });
-    if (["approved", "settled"].includes(input.nextStatus) && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可审核、结算机械月度明细" });
-    if (!["approved", "settled"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械月度明细" });
+    if (input.nextStatus === "settled") throw new TRPCError({ code: "BAD_REQUEST", message: "机械月结不得直接标记为已结算，请创建机械付款结算单并按会计审核、付款流程完成" });
+    if (input.nextStatus === "approved" && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅财务负责人或会计可审核机械月度明细" });
+    if (input.nextStatus !== "approved" && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械月度明细" });
     const result = await db.update(machineMonthlyStatements).set({ status: input.nextStatus }).where(and(eq(machineMonthlyStatements.id, input.id), eq(machineMonthlyStatements.status, record.status)));
     assertConditionalStatusWrite(result, "机械月度明细");
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_monthly_statement", targetType: "machine_monthly_statement", targetId: String(input.id), summary: `机械月度明细状态变更为：${input.nextStatus}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "machinery", eventCode: `machine_monthly_statement_${input.nextStatus}`, targetType: "machine_monthly_statement", targetId: String(input.id), title: `机械月度明细已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
     return { success: true };
+  }),
+
+  /** 外租机械付款结算台账；账户仅向财务岗位返回完整值，其他岗位仅可查看掩码。 */
+  listPaymentSettlements: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), machineId: z.number().int().positive().optional(), status: transportSettlementStatusSchema.optional() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    let rows = await db.select().from(machinePaymentSettlements).where(eq(machinePaymentSettlements.projectId, input.projectId)).orderBy(desc(machinePaymentSettlements.createdAt));
+    if (input.machineId) rows = rows.filter(item => item.machineId === input.machineId);
+    if (input.status) rows = rows.filter(item => item.status === input.status);
+    const [machineRows, statementRows] = await Promise.all([
+      db.select({ id: machines.id, code: machines.code, name: machines.name, model: machines.model, ownership: machines.ownership, supplierName: machines.supplierName }).from(machines).where(eq(machines.projectId, input.projectId)),
+      rows.length ? db.select({ id: machineMonthlyStatements.id, machineShareAmount: machineMonthlyStatements.machineShareAmount, totalOutput: machineMonthlyStatements.totalOutput, driverTotalWage: machineMonthlyStatements.driverTotalWage }).from(machineMonthlyStatements).where(inArray(machineMonthlyStatements.id, rows.map(item => item.monthlyStatementId))) : Promise.resolve([]),
+    ]);
+    const machineById = new Map(machineRows.map(item => [item.id, item]));
+    const statementById = new Map(statementRows.map(item => [item.id, item]));
+    const canReadFullAccount = canSettleFinancialRecord(roleCodes);
+    return rows.map(item => ({ ...item, machine: machineById.get(item.machineId) ?? null, statement: statementById.get(item.monthlyStatementId) ?? null, payeeAccount: canReadFullAccount ? item.payeeAccount : maskPaymentAccount(item.payeeAccount), accountMasked: !canReadFullAccount }));
+  }),
+
+  /** 从已审核外租机械月结生成付款结算草稿；公司自有机械不虚构外部收款人。 */
+  createPaymentSettlement: protectedProcedure.input(machinePaymentSettlementDraftInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMachineryAccess(ctx);
+    if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权创建机械付款结算单" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [statement] = await db.select().from(machineMonthlyStatements).where(eq(machineMonthlyStatements.id, input.monthlyStatementId)).limit(1);
+    if (!statement || statement.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械月结明细不存在或不属于当前项目" });
+    if (!["approved", "settled"].includes(statement.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "仅已审核的机械月结明细可以创建付款结算单" });
+    const { machine } = await getScopedMachine(ctx, statement.machineId, input.projectId);
+    if (machine.ownership !== "leased") throw new TRPCError({ code: "BAD_REQUEST", message: "公司自有机械不生成对外付款结算单；其工资和采购费用仍按各自财务流程办理" });
+    const grossPayableAmount = roundMoney(Number(statement.machineShareAmount));
+    const manualDeductionAmount = roundMoney(input.manualDeductionAmount);
+    const netPayableAmount = roundMoney(grossPayableAmount - manualDeductionAmount);
+    if (grossPayableAmount <= 0 || netPayableAmount < 0) throw new TRPCError({ code: "BAD_REQUEST", message: "机械应付金额必须大于等于人工扣款，请核对已审核月结明细和扣款金额" });
+    const [existing] = await db.select().from(machinePaymentSettlements).where(eq(machinePaymentSettlements.monthlyStatementId, statement.id)).limit(1);
+    if (existing && existing.status !== "void") throw new TRPCError({ code: "CONFLICT", message: "该机械月结已生成付款结算单，不能重复创建" });
+    const settlementNo = existing?.settlementNo ?? createMachinePaymentSettlementNo(input.projectId);
+    const values = { projectId: input.projectId, machineId: machine.id, monthlyStatementId: statement.id, period: statement.period, grossPayableAmount: String(grossPayableAmount), fuelCostAmount: String(roundMoney(Number(statement.fuelAmount))), repairCostAmount: String(roundMoney(Number(statement.repairAmount))), manualDeductionAmount: String(manualDeductionAmount), netPayableAmount: String(netPayableAmount), payeeName: input.payeeName.trim(), payeeAccount: input.payeeAccount?.trim() || null, paymentMethod: input.paymentMethod, paymentDate: null, paymentReference: null, remarks: input.remarks?.trim() || null, status: "draft" as const, submittedBy: null, submittedAt: null, approvedBy: null, approvedAt: null, paidBy: null, paidAt: null };
+    await db.transaction(async tx => {
+      if (existing) await tx.update(machinePaymentSettlements).set(values).where(and(eq(machinePaymentSettlements.id, existing.id), eq(machinePaymentSettlements.status, "void")));
+      else await tx.insert(machinePaymentSettlements).values({ settlementNo, ...values, createdBy: user.id });
+      if (statement.status === "approved") await tx.update(machineMonthlyStatements).set({ status: "settled" }).where(and(eq(machineMonthlyStatements.id, statement.id), eq(machineMonthlyStatements.status, "approved")));
+    });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "recreate_payment_settlement" : "create_payment_settlement", targetType: "machine_payment_settlement", targetId: settlementNo, summary: `${existing ? "重新生成" : "创建"}机械付款结算单：${machine.name} ${statement.period}，净应付 ¥${netPayableAmount.toFixed(2)}` });
+    return { success: true, settlementNo, netPayableAmount };
+  }),
+
+  /** 机械付款结算严格依次提交、会计审核、付款登记；付款完成后禁止作废或回退。 */
+  transitionPaymentSettlement: protectedProcedure.input(machinePaymentSettlementActionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [settlement] = await db.select().from(machinePaymentSettlements).where(eq(machinePaymentSettlements.id, input.id)).limit(1);
+    if (!settlement || settlement.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "机械付款结算单不存在或不属于当前项目" });
+    if (settlement.status === "paid") throw new TRPCError({ code: "BAD_REQUEST", message: "该机械结算单已完成付款，依据业务规则不能作废或回退" });
+    const expectedStatus = input.action === "submit" ? "draft" : input.action === "approve" ? "submitted" : input.action === "pay" ? "approved" : settlement.status;
+    if (input.action === "void" && !["draft", "submitted", "approved"].includes(settlement.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前机械结算状态不允许作废" });
+    if (["submit", "void"].includes(input.action) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械付款结算单" });
+    if (["approve", "pay"].includes(input.action) && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅会计、财务负责人或系统管理员可审核与付款" });
+    const nextStatus: "submitted" | "approved" | "paid" | "void" = input.action === "submit" ? "submitted" : input.action === "approve" ? "approved" : input.action === "pay" ? "paid" : "void";
+    await db.transaction(async tx => {
+      const values: Partial<typeof machinePaymentSettlements.$inferInsert> = input.action === "submit" ? { status: nextStatus, submittedBy: user.id, submittedAt: new Date() }
+        : input.action === "approve" ? { status: nextStatus, approvedBy: user.id, approvedAt: new Date() }
+          : input.action === "pay" ? { status: nextStatus, paymentDate: toBusinessDate(input.paymentDate!), paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
+            : { status: nextStatus, remarks: input.remarks?.trim() || settlement.remarks };
+      const result = await tx.update(machinePaymentSettlements).set(values).where(and(eq(machinePaymentSettlements.id, settlement.id), eq(machinePaymentSettlements.status, expectedStatus)));
+      assertConditionalStatusWrite(result, "机械付款结算单");
+      if (input.action === "void") await tx.update(machineMonthlyStatements).set({ status: "approved" }).where(and(eq(machineMonthlyStatements.id, settlement.monthlyStatementId), eq(machineMonthlyStatements.status, "settled")));
+    });
+    const actionLabel = input.action === "submit" ? "提交会计审核" : input.action === "approve" ? "审核通过" : input.action === "pay" ? "完成付款登记" : "作废";
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: `payment_settlement_${input.action}`, targetType: "machine_payment_settlement", targetId: settlement.settlementNo, summary: `机械付款结算单已${actionLabel}：净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "machinery", eventCode: `machine_payment_settlement_${input.action}`, targetType: "machine_payment_settlement", targetId: settlement.settlementNo, title: "机械费用结算状态更新", content: `${settlement.settlementNo} 已${actionLabel}，净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}。`, deepLink: "/mobile/machinery" }).catch(() => undefined);
+    return { success: true, status: nextStatus };
   }),
 
   /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */

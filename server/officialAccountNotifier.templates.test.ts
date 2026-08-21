@@ -25,6 +25,9 @@ describe("服务号业务通知模板矩阵", () => {
     expect(eventCodes.has("transport_daily_vehicle_settlement_summary")).toBe(true);
     expect(eventCodes.has("transport_vehicle_settlement_approve")).toBe(true);
     expect(eventCodes.has("transport_vehicle_settlement_pay")).toBe(true);
+    expect(eventCodes.has("machine_payment_settlement_submit")).toBe(true);
+    expect(eventCodes.has("machine_payment_settlement_approve")).toBe(true);
+    expect(eventCodes.has("machine_payment_settlement_pay")).toBe(true);
     expect(eventCodes.has("construction_daily_report_updated")).toBe(true);
     expect(eventCodes.has("diesel_price_alert")).toBe(true);
     expect(eventCodes.has("outsource_contract_created")).toBe(true);
