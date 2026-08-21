@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
-import { getBusinessWorkspaceProjectState } from "./AdminPage";
+import { getBusinessWorkspaceProjectState } from "@/lib/adminWorkspaceState";
 
 describe("统一后台业务工作区范围保护", () => {
   it("仅接受正整数项目号作为真实业务台账查询范围", () => {

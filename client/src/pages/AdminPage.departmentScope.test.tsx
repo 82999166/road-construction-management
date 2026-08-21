@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getDepartmentScopePickerState } from "./AdminPage";
+import { getDepartmentScopePickerState } from "@/lib/adminWorkspaceState";
 
 describe("权限页部门或项目部选择器", () => {
   it("在组织节点加载期间禁用选择并显示加载提示", () => {
