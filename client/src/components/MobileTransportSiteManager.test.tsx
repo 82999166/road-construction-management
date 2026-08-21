@@ -11,5 +11,9 @@ describe("手机端装卸土点管理", () => {
     expect(source).toContain("utils.transport.listSites.invalidate()");
     expect(source).toContain("utils.transport.listRoutePresets.invalidate()");
     expect(source).toContain("中文详细地址");
+    expect(source).toContain("自动获取定位");
+    expect(source).toContain("navigator.geolocation.getCurrentPosition");
+    expect(source).toContain("trpc.location.reverseGeocode.useMutation");
+    expect(source).toContain("enableHighAccuracy: true");
   });
 });
