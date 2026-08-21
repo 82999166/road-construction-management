@@ -11,3 +11,13 @@ describe("移动业务页个人中心导航", () => {
     }
   });
 });
+
+describe("应用级路由性能", () => {
+  it("移动业务页面按路由懒加载，并由统一加载边界承接加载状态", async () => {
+    const source = await readFile(new URL("../App.tsx", import.meta.url), "utf8");
+    expect(source).toContain('const MobileTransportPage = lazy(() => import("./pages/MobileTransportPage"))');
+    expect(source).toContain('const MobileFinancePage = lazy(() => import("./pages/MobileFinancePage"))');
+    expect(source).toContain("<Suspense fallback=");
+    expect(source).not.toContain('import MobileTransportPage from "./pages/MobileTransportPage"');
+  });
+});

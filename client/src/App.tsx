@@ -6,30 +6,32 @@ import { createAdminLoginPath } from "@/lib/authNavigation";
 import { resolveManagementAccessMode } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
 import { ShieldAlert } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { MobileBottomNavigation } from "./components/MobileBottomNavigation";
 import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import AdminPage from "./pages/AdminPage";
-import Home from "./pages/Home";
-import LoginPage from "./pages/LoginPage";
-import ManagementPortal from "./pages/ManagementPortal";
-import MobileConstructionPage from "./pages/MobileConstructionPage";
-import MobileAttendancePage from "./pages/MobileAttendancePage";
-import MobileEvidencePage from "./pages/MobileEvidencePage";
-import MobileFinancePage from "./pages/MobileFinancePage";
-import MobileLaborPage from "./pages/MobileLaborPage";
-import MobileMeasurementPage from "./pages/MobileMeasurementPage";
-import MobileSubcontractPage from "./pages/MobileSubcontractPage";
-import MobileMessagesPage from "./pages/MobileMessagesPage";
-import MobileMachineryPage from "./pages/MobileMachineryPage";
-import MobilePurchasingPage from "./pages/MobilePurchasingPage";
-import MobileProfilePage from "./pages/MobileProfilePage";
-import MobileTransportPage from "./pages/MobileTransportPage";
-import MobileWorkbench from "./pages/MobileWorkbench";
 import { useAuth } from "./_core/hooks/useAuth";
+
+/** 页面按路由加载，避免首次进入任一端时下载另一端所有业务模块。 */
+const AdminPage = lazy(() => import("./pages/AdminPage"));
+const Home = lazy(() => import("./pages/Home"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const ManagementPortal = lazy(() => import("./pages/ManagementPortal"));
+const MobileWorkbench = lazy(() => import("./pages/MobileWorkbench"));
+const MobileAttendancePage = lazy(() => import("./pages/MobileAttendancePage"));
+const MobileConstructionPage = lazy(() => import("./pages/MobileConstructionPage"));
+const MobileLaborPage = lazy(() => import("./pages/MobileLaborPage"));
+const MobileMachineryPage = lazy(() => import("./pages/MobileMachineryPage"));
+const MobileTransportPage = lazy(() => import("./pages/MobileTransportPage"));
+const MobilePurchasingPage = lazy(() => import("./pages/MobilePurchasingPage"));
+const MobileMeasurementPage = lazy(() => import("./pages/MobileMeasurementPage"));
+const MobileSubcontractPage = lazy(() => import("./pages/MobileSubcontractPage"));
+const MobileFinancePage = lazy(() => import("./pages/MobileFinancePage"));
+const MobileMessagesPage = lazy(() => import("./pages/MobileMessagesPage"));
+const MobileEvidencePage = lazy(() => import("./pages/MobileEvidencePage"));
+const MobileProfilePage = lazy(() => import("./pages/MobileProfilePage"));
 
 /**
  * 统一管理入口前端路由守卫。
@@ -77,6 +79,7 @@ function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <>
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在加载业务工作区…</div>}>
     <Switch>
       <Route path={"/login"} component={UnifiedLoginRoute} />
       <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
@@ -100,6 +103,7 @@ function Router() {
       {/* Final fallback route */}
       <Route component={NotFound} />
     </Switch>
+    </Suspense>
     <MobileEvidenceShortcut />
     <MobileBottomNavigation />
     </>
