@@ -76,6 +76,7 @@ const LaborEntryActionCard = lazy(() => import("@/components/LaborEntryActionCar
 const LaborPayrollHeadline = lazy(() => import("@/components/LaborPayrollHeadline").then(module => ({ default: module.LaborPayrollHeadline })));
 const DailyWagePaymentDialog = lazy(() => import("@/components/DailyWagePaymentDialog").then(module => ({ default: module.DailyWagePaymentDialog })));
 const PayrollPaymentDialog = lazy(() => import("@/components/PayrollPaymentDialog").then(module => ({ default: module.PayrollPaymentDialog })));
+const OperatingCommandCenter = lazy(() => import("@/components/OperatingCommandCenter"));
 
 /**
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
@@ -2884,24 +2885,7 @@ export default function AdminPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-[#d8e3e0]" id="operating-dashboard">
-        <CardHeader><CardTitle className="text-base">经营数据大屏</CardTitle><CardDescription>仅汇总当前筛选范围内的真实财务、发票、计量、施工日报、工资与运输台账。金额单位：元；结算比＝已结算计量÷核定计量，付款比＝已付支出÷有效支出。</CardDescription></CardHeader>
-        <CardContent>
-          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取经营数据。" /> : operatingDashboard.isLoading ? <EmptyState text="正在汇总真实经营数据…" /> : operatingDashboard.isError || !operatingDashboard.data ? <EmptyState text="暂无法读取经营数据，请确认超级管理员权限与真实台账连接。" /> : <>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {[
-                ["总收入", operatingDashboard.data.finance.totalIncome, "/admin/finance"], ["已开发票", operatingDashboard.data.finance.invoiceAmount, "/admin/finance"], ["总欠款（应收+应付）", operatingDashboard.data.finance.receivable + operatingDashboard.data.finance.payable, "/admin/finance"], ["各类已付", operatingDashboard.data.finance.paidAmount, "/admin/finance"],
-                ["结算比", operatingDashboard.data.finance.settlementRatio === null ? "—" : `${operatingDashboard.data.finance.settlementRatio}%`, "/admin/measurement-tools"], ["付款比", operatingDashboard.data.finance.paymentRatio === null ? "—" : `${operatingDashboard.data.finance.paymentRatio}%`, "/admin/finance"], ["项目进度", operatingDashboard.data.progress.averageProgressPercent === null ? "未提交" : `${operatingDashboard.data.progress.averageProgressPercent}%`, "/admin/construction"], ["运输趟次", operatingDashboard.data.resources.transportTripCount, "/admin/transport"],
-              ].map(([label, value, path]) => <button key={String(label)} type="button" onClick={() => setLocation(String(path))} className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-[#3e746a] hover:shadow"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-[#203c48]">{typeof value === "number" && !String(label).includes("趟次") ? `¥${displayMoney(value)}` : value}</p><p className="mt-1 text-xs text-[#3e746a]">点击查看明细</p></button>)}
-            </div>
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
-              <div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">计量、产值与施工日报</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>申报计量：<b>¥{displayMoney(operatingDashboard.data.measurement.declaredAmount)}</b></p><p>核定计量：<b>¥{displayMoney(operatingDashboard.data.measurement.approvedAmount)}</b></p><p>已结算：<b>¥{displayMoney(operatingDashboard.data.measurement.settledAmount)}</b></p><p>待处理：<b>{operatingDashboard.data.measurement.pendingCount} 笔</b></p><p>施工日报：<b>{operatingDashboard.data.progress.reportCount} 条</b></p><p>已审核日报：<b>{operatingDashboard.data.progress.approvedReportCount} 条</b></p></div></div>
-              <div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">劳务与资源投入</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>月度工资实发：<b>¥{displayMoney(operatingDashboard.data.resources.payrollActualAmount)}</b></p><p>临时日结实发：<b>¥{displayMoney(operatingDashboard.data.resources.dailyWageActualAmount)}</b></p><p>运输趟次：<b>{operatingDashboard.data.resources.transportTripCount} 趟</b></p><p>当前范围：<b>{businessFilterLabel}</b></p></div></div>
-            </div>
-            <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200"><Table><TableHeader><TableRow><TableHead>支出类别</TableHead><TableHead className="text-right">有效支出</TableHead><TableHead className="text-right">待付</TableHead><TableHead className="text-right">已付</TableHead></TableRow></TableHeader><TableBody>{operatingDashboard.data.finance.categories.length ? operatingDashboard.data.finance.categories.map(item => <TableRow key={item.category}><TableCell>{item.category}</TableCell><TableCell className="text-right">¥{displayMoney(item.amount)}</TableCell><TableCell className="text-right text-amber-700">¥{displayMoney(item.unpaid)}</TableCell><TableCell className="text-right text-emerald-700">¥{displayMoney(item.paid)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={4} className="h-20 text-center text-slate-500">当前范围暂无有效支出分类记录。</TableCell></TableRow>}</TableBody></Table></div>
-          </>}
-        </CardContent>
-      </Card>
+      {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取交通施工指挥数据。" /> : operatingDashboard.isLoading ? <EmptyState text="正在汇总真实交通施工台账…" /> : operatingDashboard.isError || !operatingDashboard.data ? <EmptyState text="暂无法读取交通施工指挥数据，请确认超级管理员权限与真实台账连接。" /> : <Suspense fallback={<EmptyState text="正在加载交通施工指挥大屏…" />}><OperatingCommandCenter data={operatingDashboard.data} scopeLabel={businessFilterLabel} isRefreshing={operatingDashboard.isFetching} onRefresh={() => void operatingDashboard.refetch()} onNavigate={setLocation} /></Suspense>}
 
       <Card>
         <CardHeader>

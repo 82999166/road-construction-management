@@ -1,15 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-describe("后台经营数据大屏", () => {
-  it("复用项目和期间筛选，展示资金、票据、进度与分类应付明细", () => {
+describe("后台交通施工指挥大屏", () => {
+  it("复用项目和期间筛选并懒加载道路铁路施工指挥中心", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     expect(source).toContain("admin.business.operatingDashboard.useQuery(businessStatisticsInput");
-    expect(source).toContain("经营数据大屏");
-    expect(source).toContain("总欠款（应收+应付）");
-    expect(source).toContain("已开发票");
-    expect(source).toContain("结算比");
-    expect(source).toContain("项目进度");
-    expect(source).toContain("支出类别");
+    expect(source).toContain('lazy(() => import("@/components/OperatingCommandCenter"))');
+    expect(source).toContain("交通施工指挥数据");
+    expect(source).toContain("<OperatingCommandCenter");
   });
 });
