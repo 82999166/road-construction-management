@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Calculator, CheckCircle2, CircleHelp, FilePlus2, HardHat, UsersRound } from "lucide-react";
+import { ArrowLeft, Calculator, CheckCircle2, CircleHelp, FilePlus2, HardHat, UsersRound, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -41,6 +41,7 @@ export default function MobileSubcontractPage() {
     quantity: "",
     upstreamUnitPrice: "",
     subcontractUnitPrice: "",
+    priceExceptionReason: "",
     remarks: "",
   });
 
@@ -51,9 +52,12 @@ export default function MobileSubcontractPage() {
 
   const selectedProjectId = projectId ?? 0;
   const projectInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
-  const capabilities = trpc.subcontract.capabilities.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const subcontractCapabilitiesQuery = trpc.subcontract.capabilities.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  /** 手机端可录入草稿和现场复核，但审核、付款与最终结算必须回到PC应付付款台账。 */
+  const capabilities = { ...subcontractCapabilitiesQuery, data: subcontractCapabilitiesQuery.data ? { ...subcontractCapabilitiesQuery.data, canSettle: false, canPay: false } : undefined };
   const teams = trpc.subcontract.listTeams.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const packages = trpc.subcontract.listPackages.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+  const paymentSettlements = trpc.subcontract.listPaymentSettlements.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.subcontract.summary.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const takeoffs = trpc.measurement.listTakeoffs.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && packageOpen, retry: false });
 
@@ -68,6 +72,7 @@ export default function MobileSubcontractPage() {
     await Promise.all([
       utils.subcontract.listTeams.invalidate(),
       utils.subcontract.listPackages.invalidate(),
+      utils.subcontract.listPaymentSettlements.invalidate(),
       utils.subcontract.summary.invalidate(),
       utils.measurement.listTakeoffs.invalidate(),
     ]);
@@ -87,7 +92,7 @@ export default function MobileSubcontractPage() {
     onSuccess: async result => {
       toast.success(`分包批次草稿已保存，测算差额 ${money(result.marginAmount)}`);
       setPackageOpen(false);
-      setPackageDraft({ subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", remarks: "" });
+      setPackageDraft({ subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", priceExceptionReason: "", remarks: "" });
       await refreshData();
     },
     onError: error => toast.error(error.message),
@@ -146,7 +151,8 @@ export default function MobileSubcontractPage() {
             <Button size="sm" variant="outline" className="mt-3 w-full border-[#d1ad77] bg-white text-[#7a4024] hover:bg-[#fffaf4]" onClick={() => navigate("/mobile/measurement")}><FilePlus2 className="mr-1 h-4 w-4" />返回项目部收方录入</Button>
           </section>
 
-          <section className="grid grid-cols-2 gap-3"><Metric label="上游金额" value={money(summary.data?.upstreamAmount)} /><Metric label="分包金额" value={money(summary.data?.subcontractAmount)} /><Metric label="测算差额" value={money(summary.data?.marginAmount)} tone="text-emerald-700" /><Metric label="待财务结算" value={String(summary.data?.byStatus.find(item => item.status === "confirmed")?.packageCount ?? 0)} tone="text-amber-700" /></section>
+          <section className="grid grid-cols-2 gap-3"><Metric label="上游金额" value={money(summary.data?.upstreamAmount)} /><Metric label="分包金额" value={money(summary.data?.subcontractAmount)} /><Metric label="测算差额" value={money(summary.data?.marginAmount)} tone="text-emerald-700" /><Metric label="待建立应付单" value={String(summary.data?.byStatus.find(item => item.status === "confirmed")?.packageCount ?? 0)} tone="text-amber-700" /></section>
+          <section className="rounded-2xl border border-[#d8b781] bg-white p-4 shadow-sm"><div className="flex items-start gap-3"><WalletCards className="mt-0.5 h-5 w-5 shrink-0 text-[#8b4a29]" /><div><p className="text-sm font-semibold text-[#683a24]">分包应付付款状态（手机只读）</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">已确认包件须在 PC“分包应付结算与付款台账”建立应付单、会计审核并登记付款。手机端只查看状态，不提供审核、付款或导出操作。</p></div></div><div className="mt-3 space-y-2">{paymentSettlements.isLoading ? <p className="text-xs text-[#8f7566]">正在读取应付付款状态…</p> : paymentSettlements.data?.length ? paymentSettlements.data.slice(0, 5).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-[#fff7ed] px-3 py-2 text-xs"><div><p className="font-medium">{item.settlementNo}</p><p className="mt-0.5 text-[#8f7566]">{money(item.netPayableAmount)} · {item.payeeName}</p></div><span className={item.status === "paid" ? "font-medium text-emerald-700" : "font-medium text-amber-700"}>{({ draft: "草稿", submitted: "待会计审核", approved: "待付款", paid: "已付款", void: "已作废" } as Record<string, string>)[item.status] || item.status}</span></div>) : <p className="rounded-lg bg-[#fff7ed] px-3 py-2 text-xs text-[#8f7566]">当前项目尚未建立分包应付结算单。</p>}</div></section>
 
           <section className="rounded-2xl bg-[#f0dfc7] px-4 py-3">
             <div className="flex items-start justify-between gap-3"><div><p className="font-semibold">施工队与分包批次录入</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">先建立施工队。录入批次时选择已审核收方即可自动带入工程量与上游单价。</p></div><div className="flex shrink-0 gap-1">{canMaintainDraft ? <Button size="sm" variant="ghost" className="text-[#8b3f20] hover:bg-[#e8cda9]" onClick={() => setTeamOpen(true)}><UsersRound className="mr-1 h-4 w-4" />施工队</Button> : null}{canMaintainDraft ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" disabled={!activeTeams.length} onClick={() => setPackageOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />录入批次</Button> : null}</div></div>

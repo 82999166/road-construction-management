@@ -38,14 +38,17 @@ describe("工程结算与分包路由", () => {
     vi.clearAllMocks();
   });
 
-  it("按职责分离投影分包草稿、复核确认和最终结算能力", async () => {
+  it("按职责分离投影分包草稿、复核确认、应付结算和付款能力", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CONSTRUCTION_MANAGER"]);
-    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: true, canConfirm: false, canSettle: false });
+    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: true, canConfirm: false, canSettle: false, canPay: false, canViewFullAccount: false });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
-    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: false, canConfirm: true, canSettle: false });
+    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: false, canConfirm: true, canSettle: false, canPay: false, canViewFullAccount: false });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
-    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: false, canConfirm: false, canSettle: true });
+    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: false, canConfirm: false, canSettle: true, canPay: false, canViewFullAccount: true });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
+    await expect(subcontractRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canMaintainDraft: false, canConfirm: false, canSettle: false, canPay: true, canViewFullAccount: true });
   });
 });

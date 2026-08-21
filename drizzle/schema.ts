@@ -1735,6 +1735,12 @@ export const subcontractPackages = mysqlTable(
     upstreamAmount: decimal("upstreamAmount", { precision: 16, scale: 2 }).notNull(),
     subcontractAmount: decimal("subcontractAmount", { precision: 16, scale: 2 }).notNull(),
     marginAmount: decimal("marginAmount", { precision: 16, scale: 2 }).notNull(),
+    /** 分包单价高于上游单价时必须留存业务原因，并在确认与付款前完成双岗复核。 */
+    priceExceptionReason: varchar("priceExceptionReason", { length: 500 }),
+    confirmedBy: int("confirmedBy"),
+    confirmedAt: datetime("confirmedAt"),
+    priceExceptionReviewedBy: int("priceExceptionReviewedBy"),
+    priceExceptionReviewedAt: datetime("priceExceptionReviewedAt"),
     status: mysqlEnum("status", ["draft", "allocated", "confirmed", "settled", "void"]).default("draft").notNull(),
     allocatedAt: datetime("allocatedAt"),
     settledAt: datetime("settledAt"),
@@ -1748,6 +1754,56 @@ export const subcontractPackages = mysqlTable(
     projectStatusIndex: index("subcontract_packages_project_status_index").on(table.projectId, table.status),
     teamIndex: index("subcontract_packages_team_index").on(table.subcontractTeamId),
     takeoffIndex: index("subcontract_packages_takeoff_index").on(table.measurementTakeoffId),
+  }),
+);
+
+/**
+ * 分包包件的应付付款结算单。
+ * 包件确认只代表工程量与单价复核；本表才承载收款人、发票/税票、会计审核与实际付款。
+ * 每个包件仅允许一张结算单，实际付款后不可作废，避免将“分包结算”错误等同于“已付款”。
+ */
+export const subcontractPaymentSettlements = mysqlTable(
+  "subcontract_payment_settlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementNo: varchar("settlementNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    packageId: bigint("packageId", { mode: "number" }).notNull(),
+    subcontractTeamId: bigint("subcontractTeamId", { mode: "number" }).notNull(),
+    packageNoSnapshot: varchar("packageNoSnapshot", { length: 64 }).notNull(),
+    workItemSnapshot: varchar("workItemSnapshot", { length: 200 }).notNull(),
+    quantitySnapshot: decimal("quantitySnapshot", { precision: 16, scale: 3 }).notNull(),
+    unitSnapshot: varchar("unitSnapshot", { length: 16 }).notNull(),
+    grossPayableAmount: decimal("grossPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    manualDeductionAmount: decimal("manualDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    invoiceStatus: mysqlEnum("invoiceStatus", ["missing", "attached", "verified", "rejected"]).default("missing").notNull(),
+    invoiceNo: varchar("invoiceNo", { length: 128 }),
+    invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
+    payeeName: varchar("payeeName", { length: 128 }).notNull(),
+    payeeAccount: varchar("payeeAccount", { length: 160 }),
+    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentDate: date("paymentDate"),
+    paymentReference: varchar("paymentReference", { length: 128 }),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    submittedBy: int("submittedBy"),
+    submittedAt: datetime("submittedAt"),
+    approvedBy: int("approvedBy"),
+    approvedAt: datetime("approvedAt"),
+    paidBy: int("paidBy"),
+    paidAt: datetime("paidAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    settlementNoUnique: uniqueIndex("subcontract_payment_settlements_no_unique").on(table.settlementNo),
+    packageUnique: uniqueIndex("subcontract_payment_settlements_package_unique").on(table.packageId),
+    projectStatusIndex: index("subcontract_payment_settlements_project_status_index").on(table.projectId, table.status),
+    teamIndex: index("subcontract_payment_settlements_team_index").on(table.subcontractTeamId),
+    packageForeignKey: foreignKey({ columns: [table.packageId], foreignColumns: [subcontractPackages.id], name: "subcontract_payment_settlements_package_fk" }).onDelete("restrict").onUpdate("cascade"),
+    teamForeignKey: foreignKey({ columns: [table.subcontractTeamId], foreignColumns: [subcontractTeams.id], name: "subcontract_payment_settlements_team_fk" }).onDelete("restrict").onUpdate("cascade"),
   }),
 );
 
