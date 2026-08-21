@@ -36,6 +36,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Megaphone,
+  Monitor,
   Printer,
   Camera,
   ScrollText,
@@ -81,6 +82,7 @@ const PayrollPaymentDialog = lazy(() => import("@/components/PayrollPaymentDialo
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
  */
 const ADMIN_MENU: DashboardMenuItem[] = [
+  { icon: Monitor, label: "数据大屏", path: "/", section: "决策总览" },
   { icon: LayoutDashboard, label: "运营概览", path: "/admin", section: "决策总览" },
   { icon: Building2, label: "组织与项目", path: "/admin/organization", section: "项目执行" },
   { icon: FolderKanban, label: "施工管理", path: "/admin/construction", section: "项目执行" },
