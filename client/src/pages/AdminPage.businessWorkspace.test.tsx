@@ -487,3 +487,11 @@ describe("后台全员上下班考勤定位展示", () => {
     expect(source).not.toContain("formatAttendanceLocation(item.checkoutLongitude");
   });
 });
+
+describe("后台导出性能", () => {
+  it("仅在生成Excel时按需加载XLSX，不将其作为首屏静态依赖", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('const XLSX = await import("xlsx")');
+    expect(source).not.toContain('import * as XLSX from "xlsx"');
+  });
+});

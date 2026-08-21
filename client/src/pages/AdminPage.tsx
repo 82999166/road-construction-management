@@ -14,7 +14,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import * as XLSX from "xlsx";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -56,6 +55,7 @@ const TransportVehicleSettlementManager = lazy(() => import("@/components/Transp
 const MachinePaymentSettlementManager = lazy(() => import("@/components/MachinePaymentSettlementManager"));
 const SubcontractPaymentSettlementManager = lazy(() => import("@/components/SubcontractPaymentSettlementManager"));
 const TaxAccountingHandoffManager = lazy(() => import("@/components/TaxAccountingHandoffManager"));
+const AdminAuditWorkspace = lazy(() => import("@/components/AdminAuditWorkspace"));
 
 /**
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
@@ -327,7 +327,8 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
 }
 
 /** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间，避免分类工资报表脱离项目与期间语境。 */
-function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+  const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
   const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", scope.module], ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...sheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);
@@ -2471,19 +2472,7 @@ export default function AdminPage() {
     </div>
   );
 
-  const renderAudit = () => (
-    <div className="space-y-6">
-      <div><p className="text-sm font-medium text-[#203c48]">治理留痕</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">配置发布与审计日志</h1><p className="mt-2 text-sm text-slate-500">所有组织、角色、授权和系统设置的关键操作都会写入服务端审计记录。敏感数据利用与审计链仅限超级管理员在本页受控复核。</p></div>
-      <section className="grid gap-3 md:grid-cols-3"><MetricCard title="审计链状态" value={auditIntegrity.isLoading ? "校验中" : auditIntegrity.data?.valid ? "完整" : "待核验"} description={auditIntegrity.data?.valid ? `已封存 ${auditIntegrity.data.eventCount} 条事件` : auditIntegrity.data?.errors?.[0] || "尚未取得校验结果"} icon={ShieldCheck} /><MetricCard title="本次补链" value={auditIntegrity.data?.sealedCount ?? 0} description={auditIntegrity.data?.completeSeal === false ? "达到单次上限，请刷新继续补链" : "未发现待补链事件或已完成"} icon={ScrollText} /><MetricCard title="近期敏感访问" value={sensitiveAccesses.data?.length ?? 0} description="仅记录用途、模块、范围与数量，不展示敏感原文" icon={KeyRound} /></section>
-      <Card><CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0"><div><CardTitle className="text-base">敏感数据访问利用</CardTitle><CardDescription>完整收款账户、原始定位等受控读取均必须保留用途与项目范围留痕。</CardDescription></div><Button size="sm" variant="outline" onClick={() => { void auditIntegrity.refetch(); void sensitiveAccesses.refetch(); }} disabled={auditIntegrity.isFetching || sensitiveAccesses.isFetching}>刷新核验</Button></CardHeader><CardContent>{sensitiveAccesses.data?.length ? <div className="space-y-2">{sensitiveAccesses.data.map(item => <div key={item.id} className="grid gap-1 rounded-xl border border-slate-100 p-3 md:grid-cols-[1fr_auto]"><div><p className="text-sm font-medium text-slate-700">{item.dataCategory} · {item.result}</p><p className="mt-1 text-xs text-slate-500">{item.module} · {item.accessPurpose} · 返回 {item.recordCount} 条</p></div><p className="text-xs text-slate-400">{displayDate(item.createdAt)}</p></div>)}</div> : <EmptyState text="近期暂无受控敏感数据访问记录。" />}</CardContent></Card>
-      <Card>
-        <CardHeader><CardTitle className="text-base">最近操作</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {audits.data?.length ? audits.data.map(item => <div key={item.id} className="grid gap-1 rounded-xl border border-slate-100 p-3 md:grid-cols-[1fr_auto]"><div><p className="text-sm font-medium text-slate-700">{item.summary}</p><p className="mt-1 text-xs text-slate-400">{item.module} · {item.action} · 操作人 #{item.userId ?? "系统"}</p></div><p className="text-xs text-slate-400">{displayDate(item.createdAt)}</p></div>) : <EmptyState text="尚无审计记录；首次保存组织、角色或配置后将自动生成。" />}
-        </CardContent>
-      </Card>
-    </div>
-  );
+  const renderAudit = () => <AdminAuditWorkspace audits={audits.data ?? []} integrity={auditIntegrity.data} isIntegrityLoading={auditIntegrity.isLoading} isRefreshing={auditIntegrity.isFetching || sensitiveAccesses.isFetching} sensitiveAccesses={sensitiveAccesses.data ?? []} onRefresh={() => { void auditIntegrity.refetch(); void sensitiveAccesses.refetch(); }} />;
 
   /** 微信登录台账只展示可读状态和业务范围；OpenID、令牌及设备原始指纹始终不进入浏览器。 */
   const renderWechatLogin = () => {
