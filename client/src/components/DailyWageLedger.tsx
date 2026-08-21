@@ -1,0 +1,39 @@
+import { BarChart3, ScrollText, ShieldCheck, UsersRound, type LucideIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+import BusinessStatusBadge from "./BusinessStatusBadge";
+
+export type DailyWageLedgerSummary = {
+  actual: string | number;
+  reviewing: string | number;
+  approved: string | number;
+  paid: string | number;
+};
+
+export type DailyWageLedgerRow = {
+  id: number;
+  workerName: string;
+  teamName: string | null;
+  settlementDate: Date | string;
+  payableAmount: string | number;
+  deductionAmount: string | number;
+  actualAmount: string | number;
+  status: string;
+  reviewedAt: Date | string | null;
+  paidAt: Date | string | null;
+};
+
+function SummaryMetric({ title, value, description, icon: Icon }: { title: string; value: string | number; description: string; icon: LucideIcon }) {
+  return <div className="rounded-2xl border border-[#d8e3e0] bg-white/90 p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-medium text-slate-500">{title}</p><p className="mt-2 text-xl font-semibold text-[#203c48]">{value}</p><p className="mt-1 text-xs text-slate-500">{description}</p></div><div className="rounded-full bg-[#eef3f1] p-2 text-[#3e746a]"><Icon className="h-4 w-4" /></div></div></div>;
+}
+
+/**
+ * 临时日结审核、付款与分类导出展示组件。
+ * 实际项目范围、角色权限、付款终态和付款对话框仍由父级与服务端统一控制。
+ */
+export default function DailyWageLedger({ summary, rows, refreshing, workbookPending, paymentListPending, submitPending, reviewPending, payPending, formatMoney, displayDate, toBusinessDateInput, onRefresh, onExportWorkbook, onExportPaymentList, onSubmit, onReturnDraft, onApprove, onRegisterPayment }: { summary: DailyWageLedgerSummary; rows: DailyWageLedgerRow[]; refreshing: boolean; workbookPending: boolean; paymentListPending: boolean; submitPending: boolean; reviewPending: boolean; payPending: boolean; formatMoney: (value: string | number) => string; displayDate: (value: Date | string) => string; toBusinessDateInput: (value: Date | string) => string; onRefresh: () => void; onExportWorkbook: () => void; onExportPaymentList: () => void; onSubmit: (id: number) => void; onReturnDraft: (id: number) => void; onApprove: (id: number) => void; onRegisterPayment: (row: Pick<DailyWageLedgerRow, "id" | "workerName">) => void }) {
+  return <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">临时日结审核与付款台账</CardTitle><CardDescription>当天录入后按“草稿→审核中→已审核→已付款”办理；已审核未付款可退回草稿修改重审，付款后为最终结算状态。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={onRefresh} disabled={refreshing}>刷新日结</Button><Button size="sm" variant="outline" disabled={workbookPending} onClick={onExportWorkbook}>导出分类 Excel</Button><Button size="sm" className="bg-[#203c48] hover:bg-[#17313b]" disabled={paymentListPending} onClick={onExportPaymentList}>生成付款专用 Excel</Button></div></CardHeader><CardContent><section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><SummaryMetric title="日结实发总额" value={`¥${formatMoney(summary.actual)}`} description="当前项目全部日结记录" icon={BarChart3} /><SummaryMetric title="待审核" value={summary.reviewing} description="会计/财务待处理" icon={ScrollText} /><SummaryMetric title="待付款" value={summary.approved} description="审核通过，未登记付款" icon={ShieldCheck} /><SummaryMetric title="已付款" value={summary.paid} description="最终结算状态" icon={UsersRound} /></section><div className="mt-4 overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1100px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>人员 / 班组</TableHead><TableHead>日结日期</TableHead><TableHead>应发 / 扣款 / 实发</TableHead><TableHead>状态</TableHead><TableHead>审核 / 付款</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{rows.length ? rows.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.workerName}</p><p className="mt-1 text-slate-500">{item.teamName || "临时日结"}</p></TableCell><TableCell>{toBusinessDateInput(item.settlementDate)}</TableCell><TableCell>¥{formatMoney(item.payableAmount)} / ¥{formatMoney(item.deductionAmount)} / <span className="font-semibold">¥{formatMoney(item.actualAmount)}</span></TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{item.reviewedAt ? `审核：${displayDate(item.reviewedAt)}` : "待审核"}{item.paidAt ? <p className="mt-1 text-emerald-700">付款：{displayDate(item.paidAt)}</p> : null}</TableCell><TableCell className="text-right"><div className="flex justify-end gap-2">{item.status === "draft" ? <Button size="sm" variant="outline" onClick={() => onSubmit(item.id)} disabled={submitPending}>提交审核</Button> : null}{item.status === "reviewing" ? <><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => onReturnDraft(item.id)} disabled={reviewPending}>退回草稿</Button><Button size="sm" onClick={() => onApprove(item.id)} disabled={reviewPending}>审核通过</Button></> : null}{item.status === "approved" ? <Button size="sm" className="bg-[#3e746a] hover:bg-[#315f57]" onClick={() => onRegisterPayment({ id: item.id, workerName: item.workerName })} disabled={payPending}>登记付款</Button> : null}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="h-24 text-center text-slate-500">当前项目暂无临时日结记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>;
+}
