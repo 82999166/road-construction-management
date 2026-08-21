@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -2693,12 +2694,12 @@ export default function AdminPage() {
       const keyword = laborPayrollSearch.trim().toLowerCase();
       return (!keyword || [item.workerName, item.teamName, item.period, item.status].some(value => String(value ?? "").toLowerCase().includes(keyword))) && (laborPayrollTeam === "all" || (item.teamName || "未设置班组") === laborPayrollTeam) && (laborPayrollStatus === "all" || item.status === laborPayrollStatus);
     });
-    const payrollSummary = visiblePayrolls.reduce((summary, item) => ({ payable: summary.payable + Number(item.payableAmount || 0), deduction: summary.deduction + Number(item.deductionAmount || 0), actual: summary.actual + Number(item.actualAmount || 0), approved: summary.approved + (item.status === "approved" ? Number(item.actualAmount || 0) : 0), paid: summary.paid + (item.status === "paid" ? Number(item.actualAmount || 0) : 0), pending: summary.pending + (["draft", "reviewing"].includes(item.status) ? Number(item.actualAmount || 0) : 0) }), { payable: 0, deduction: 0, actual: 0, approved: 0, paid: 0, pending: 0 });
-    const summarizeAmounts = (records: Array<{ payableAmount: string | number; deductionAmount: string | number; actualAmount: string | number; status: string }>) => records.reduce((summary, item) => ({ payable: summary.payable + Number(item.payableAmount || 0), deduction: summary.deduction + Number(item.deductionAmount || 0), actual: summary.actual + Number(item.actualAmount || 0), approved: summary.approved + (item.status === "approved" ? Number(item.actualAmount || 0) : 0), paid: summary.paid + (item.status === "paid" ? Number(item.actualAmount || 0) : 0) }), { payable: 0, deduction: 0, actual: 0, approved: 0, paid: 0 });
-    const companyPayrollSummary = summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "company_admin"));
-    const laborTeamPayrollSummary = summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team"));
-    const temporaryDailySummary = summarizeAmounts(dailyWages);
-    const laborTeamAuditRows = Array.from(new Set(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team").map(item => item.teamName || "未设置班组"))).sort().map(teamName => ({ teamName, summary: summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team" && (item.teamName || "未设置班组") === teamName)) }));
+    const payrollSummary = summarizePayrollAmounts(visiblePayrolls);
+    const payrollCategories = summarizeLaborPayrollCategories(visiblePayrolls, new Map(workers.map(worker => [worker.id, worker.workerCategory])));
+    const companyPayrollSummary = payrollCategories.company;
+    const laborTeamPayrollSummary = payrollCategories.laborTeam;
+    const temporaryDailySummary = summarizePayrollAmounts(dailyWages);
+    const laborTeamAuditRows = payrollCategories.laborTeamRows;
     const payrollTeams = Array.from(new Set(payrolls.map(item => item.teamName || "未设置班组"))).sort();
     const dailyWageSummary = dailyWages.reduce((summary, item) => ({ actual: summary.actual + Number(item.actualAmount || 0), reviewing: summary.reviewing + (item.status === "reviewing" ? 1 : 0), approved: summary.approved + (item.status === "approved" ? 1 : 0), paid: summary.paid + (item.status === "paid" ? 1 : 0) }), { actual: 0, reviewing: 0, approved: 0, paid: 0 });
     return (
