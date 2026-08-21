@@ -18,6 +18,7 @@ import { trpc } from "@/lib/trpc";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
+import { filterAttendanceRows, getAttendanceTeams } from "@/lib/laborAttendanceFilters";
 import { filterPayrollRows, getPayrollTeams } from "@/lib/payrollLedgerFilters";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
@@ -2650,12 +2651,8 @@ export default function AdminPage() {
     const workers = laborWorkers.data ?? [];
     const attendance = laborAttendance.data ?? [];
     const workerById = new Map(workers.map(worker => [worker.id, worker]));
-    const attendanceTeams = Array.from(new Set(attendance.map(item => item.teamName || "未设置班组"))).sort();
-    const visibleAttendance = attendance.filter(item => {
-      const worker = workerById.get(item.workerId);
-      const keyword = laborAttendanceFilter.workerName.trim().toLowerCase();
-      return (!keyword || [item.workerName, item.teamName, worker?.realName].some(value => String(value ?? "").toLowerCase().includes(keyword))) && (laborAttendanceFilter.team === "all" || (item.teamName || "未设置班组") === laborAttendanceFilter.team) && (laborAttendanceFilter.category === "all" || worker?.workerCategory === laborAttendanceFilter.category) && (laborAttendanceFilter.status === "all" || item.status === laborAttendanceFilter.status);
-    });
+    const attendanceTeams = getAttendanceTeams(attendance);
+    const visibleAttendance = filterAttendanceRows(attendance, workerById, laborAttendanceFilter);
     const payrolls = payrollStatements.data ?? [];
     const dailyWages = laborDailyWages.data ?? [];
     const checkIns = laborCheckIns.data ?? [];
