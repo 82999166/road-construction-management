@@ -3,6 +3,7 @@ import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardL
 import BusinessStatusBadge from "@/components/BusinessStatusBadge";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 import { useLaborWorkspaceFilters } from "@/hooks/useLaborWorkspaceFilters";
+import { useLaborWorkspaceQueries } from "@/hooks/useLaborWorkspaceQueries";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -637,13 +638,7 @@ export default function AdminPage() {
     (constructionReportEvidence.data ?? []).forEach(item => grouped.set(item.reportId, [...(grouped.get(item.reportId) ?? []), item]));
     return grouped;
   }, [constructionReportEvidence.data]);
-  const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborAttendance = trpc.labor.attendance.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborCheckIns = trpc.labor.attendance.listCheckIns.useQuery(laborCheckInWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const payrollStatements = trpc.labor.payroll.list.useQuery(payrollWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborDailyWages = trpc.labor.dailyWage.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const payrollWorkbookExport = trpc.labor.dailyWage.exportWorkbookData.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
-  const payrollPaymentListExport = trpc.labor.dailyWage.exportPaymentList.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
+  const { laborWorkers, laborAttendance, laborCheckIns, payrollStatements, laborDailyWages, payrollWorkbookExport, payrollPaymentListExport } = useLaborWorkspaceQueries({ enabled: canQuery && isLabor && hasBusinessWorkspaceProject, workspaceProjectInput, laborWorkspaceInput, payrollWorkspaceInput, laborCheckInWorkspaceInput });
   const machineryLedger = trpc.machinery.listMachines.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
   const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
   const machineCostSummaries = trpc.machinery.listCostSummaries.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
