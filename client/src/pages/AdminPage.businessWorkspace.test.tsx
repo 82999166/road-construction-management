@@ -475,9 +475,11 @@ describe("后台服务号绑定状态映射", () => {
 
 describe("后台全员上下班考勤定位展示", () => {
   it("分别展示上班和下班中文地址并纳入 CSV 导出，默认不再呈现原始坐标", () => {
-    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../components/LaborCheckInLedger.tsx", import.meta.url), "utf8");
+    const adminSource = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("function formatAttendanceLocation");
+    expect(adminSource).toContain('lazy(() => import("@/components/LaborCheckInLedger"))');
+    expect(adminSource).toContain("<LaborCheckInLedger");
     expect(source).toContain("上班打卡位置");
     expect(source).toContain("下班打卡位置");
     expect(source).toContain("上班位置");
@@ -494,5 +496,20 @@ describe("后台导出性能", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     expect(source).toContain('const XLSX = await import("xlsx")');
     expect(source).not.toContain('import * as XLSX from "xlsx"');
+  });
+});
+
+describe("后台劳务台账独立懒加载", () => {
+  it("将上下班打卡、人员档案和考勤记录交给独立组件，父页面继续保留受控详情和导出回调", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('lazy(() => import("@/components/LaborCheckInLedger"))');
+    expect(source).toContain('lazy(() => import("@/components/LaborWorkerRoster"))');
+    expect(source).toContain('lazy(() => import("@/components/LaborAttendanceLedger"))');
+    expect(source).toContain("<LaborCheckInLedger");
+    expect(source).toContain("<LaborWorkerRoster");
+    expect(source).toContain("<LaborAttendanceLedger");
+    expect(source).toContain('module: "劳务考勤高级筛选导出"');
+    expect(source).toContain("setDesktopRecordDetail");
   });
 });
