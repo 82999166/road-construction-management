@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
+import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
 import { LaborPayrollHeadline } from "@/components/LaborPayrollHeadline";
 import { DailyWagePaymentDialog } from "@/components/DailyWagePaymentDialog";
@@ -382,22 +383,6 @@ export function getBusinessWorkspaceProjectState(value: string) {
 /** 投递审计仅在当前被点击的通知卡片内展开，避免跳转至页面下方的独立区域。 */
 export function isInlineBroadcastDeliveryExpanded(selectedBroadcastId: number | undefined, broadcastId: number) {
   return selectedBroadcastId === broadcastId;
-}
-
-/**
- * 人员角色授权只能按“部门范围”或“具体项目范围”二选一保存。
- * 若选择具体项目，项目范围始终优先，以防历史双范围组合被误投影为部门授权。
- */
-export function getAssignmentScopeSaveInput(input: { organizationId: string; projectId: string }) {
-  const projectId = Number(input.projectId);
-  if (Number.isSafeInteger(projectId) && projectId > 0) {
-    return { organizationId: null, projectId };
-  }
-  const organizationId = Number(input.organizationId);
-  return {
-    organizationId: Number.isSafeInteger(organizationId) && organizationId > 0 ? organizationId : null,
-    projectId: null,
-  };
 }
 
 function displayMoney(value: string | number | null | undefined) {
