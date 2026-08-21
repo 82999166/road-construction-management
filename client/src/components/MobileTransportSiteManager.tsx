@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { LocateFixed, MapPin, Pencil, Plus, Route } from "lucide-react";
+import { LocateFixed, MapPin, Pencil, Plus, Route, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -15,6 +15,10 @@ type SiteDraft = {
   name: string;
   address: string;
   administratorUserId: string;
+  minimumTransitMinutes: string;
+  minimumTransitEnabled: boolean;
+  unloadGeofenceMeters: string;
+  unloadGeofenceEnabled: boolean;
   status: "active" | "disabled";
 };
 
@@ -38,17 +42,21 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
 
   const openNew = (siteType: SiteDraft["siteType"]) => {
     setLocationStatus("");
-    setDraft({ id: null, siteType, name: "", address: "", administratorUserId: "", status: "active" });
+    setDraft({ id: null, siteType, name: "", address: "", administratorUserId: "", minimumTransitMinutes: "10", minimumTransitEnabled: true, unloadGeofenceMeters: "300", unloadGeofenceEnabled: true, status: "active" });
   };
   const openEdit = (site: NonNullable<typeof sites.data>[number]) => {
     setLocationStatus("");
-    setDraft({ id: site.id, siteType: site.siteType, name: site.name, address: site.address ?? "", administratorUserId: site.administratorUserId ? String(site.administratorUserId) : "", status: site.status });
+    setDraft({ id: site.id, siteType: site.siteType, name: site.name, address: site.address ?? "", administratorUserId: site.administratorUserId ? String(site.administratorUserId) : "", minimumTransitMinutes: String(site.minimumTransitMinutes), minimumTransitEnabled: site.minimumTransitEnabled, unloadGeofenceMeters: String(site.unloadGeofenceMeters), unloadGeofenceEnabled: site.unloadGeofenceEnabled, status: site.status });
   };
   const persist = () => {
     if (!draft) return;
     if (!draft.name.trim()) return toast.error(`请填写${draft.siteType === "load" ? "装土点" : "卸土点"}名称`);
     if (!draft.address.trim()) return toast.error("请填写可定位的中文详细地址");
-    saveSite.mutate({ id: draft.id ?? undefined, projectId, siteType: draft.siteType, name: draft.name.trim(), address: draft.address.trim(), administratorUserId: draft.administratorUserId ? Number(draft.administratorUserId) : null, status: draft.status });
+    const minimumTransitMinutes = Number(draft.minimumTransitMinutes);
+    const unloadGeofenceMeters = Number(draft.unloadGeofenceMeters);
+    if (draft.siteType === "unload" && (!Number.isInteger(minimumTransitMinutes) || minimumTransitMinutes < 1)) return toast.error("最短运输时间至少为 1 分钟");
+    if (draft.siteType === "unload" && (!Number.isInteger(unloadGeofenceMeters) || unloadGeofenceMeters < 30)) return toast.error("卸土定位容差至少为 30 米");
+    saveSite.mutate({ id: draft.id ?? undefined, projectId, siteType: draft.siteType, name: draft.name.trim(), address: draft.address.trim(), administratorUserId: draft.administratorUserId ? Number(draft.administratorUserId) : null, minimumTransitMinutes, minimumTransitEnabled: draft.minimumTransitEnabled, unloadGeofenceMeters, unloadGeofenceEnabled: draft.unloadGeofenceEnabled, status: draft.status });
   };
   const autoFillCurrentAddress = () => {
     if (!("geolocation" in navigator)) return setLocationStatus("当前浏览器不支持定位，请手工填写中文详细地址");
@@ -94,6 +102,7 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
             <p className="text-sm font-semibold text-slate-800">{site.siteType === "load" ? "装土点" : "卸土点"} · {site.name}</p>
             <p className="mt-1 truncate text-xs text-slate-600">详细地址：{site.address || "未填写"}</p>
             <p className={`mt-1 text-[11px] ${site.addressResolved ? "text-[#30756d]" : "font-medium text-[#ad632c]"}`}>{site.addressResolved ? "详细地址已完成地图校验" : "详细地址待校验，不能用于安全卸土"}</p>
+            {site.siteType === "unload" ? <p className="mt-1 text-[11px] leading-5 text-[#32665d]">统一安全阈值：最短 {site.minimumTransitMinutes} 分钟（{site.minimumTransitEnabled ? "硬拦截" : "仅提示"}）· 容差 {site.unloadGeofenceMeters} 米（{site.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}）</p> : null}
           </div>
           <Button size="sm" variant="outline" className="shrink-0" onClick={() => openEdit(site)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑</Button>
         </div>)}
@@ -103,7 +112,7 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
       <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{draft?.id ? (draft.siteType === "load" ? "编辑装土点" : "编辑卸土点") : (draft?.siteType === "load" ? "新增装土点" : "新增卸土点")}</DialogTitle>
-          <DialogDescription>请依次填写地点名称和中文详细地址。系统会在后台校验地址并保存围栏计算数据，页面不显示经纬度。</DialogDescription>
+          <DialogDescription>{draft?.siteType === "unload" ? "请维护中文详细地址和本卸土点统一安全阈值；所有驶向本点的路线自动使用。" : "请依次填写地点名称和中文详细地址。系统会在后台校验地址并保存围栏计算数据，页面不显示经纬度。"}</DialogDescription>
         </DialogHeader>
         {draft ? <div className="grid gap-4 py-2">
           <div className="grid grid-cols-2 gap-3">
@@ -121,6 +130,7 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
             {locationStatus ? <p className="mt-1 text-xs leading-5 text-[#5a766f]">{locationStatus}</p> : <p className="mt-1 text-xs leading-5 text-[#5a766f]">点击“自动获取定位”后会回填中文详细地址；可继续手工补充道路、桩号或场地名称。</p>}
           </div>
           <div><Label>现场管理员用户 ID（可选）</Label><Input className="mt-1" inputMode="numeric" value={draft.administratorUserId} placeholder="例如：18" onChange={event => setDraft(current => current ? { ...current, administratorUserId: event.target.value } : current)} /></div>
+          {draft.siteType === "unload" ? <section className="rounded-xl border border-[#b9d9d2] bg-[#f0faf7] p-3"><p className="flex items-center gap-1.5 text-sm font-semibold text-[#245e56]"><ShieldCheck className="h-4 w-4" />本卸土点统一安全阈值</p><p className="mt-1 text-xs leading-5 text-[#5a766f]">修改后，所有驶向本卸土点的路线立即使用同一规则；不影响历史运单。</p><div className="mt-3 grid gap-3"><label className="text-xs font-medium text-slate-700"><span className="flex items-center gap-2"><input type="checkbox" checked={draft.minimumTransitEnabled} onChange={event => setDraft(current => current ? { ...current, minimumTransitEnabled: event.target.checked } : current)} />最短运输时间：{draft.minimumTransitEnabled ? "硬拦截" : "仅提示"}</span><Input className="mt-2" type="number" min="1" value={draft.minimumTransitMinutes} onChange={event => setDraft(current => current ? { ...current, minimumTransitMinutes: event.target.value } : current)} /></label><label className="text-xs font-medium text-slate-700"><span className="flex items-center gap-2"><input type="checkbox" checked={draft.unloadGeofenceEnabled} onChange={event => setDraft(current => current ? { ...current, unloadGeofenceEnabled: event.target.checked } : current)} />卸土定位范围：{draft.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}</span><Input className="mt-2" type="number" min="30" value={draft.unloadGeofenceMeters} onChange={event => setDraft(current => current ? { ...current, unloadGeofenceMeters: event.target.value } : current)} /></label></div></section> : null}
         </div> : null}
         <DialogFooter><Button variant="outline" onClick={() => setDraft(null)}>取消</Button><Button className="bg-[#2d6f67] hover:bg-[#245a54]" disabled={saveSite.isPending} onClick={persist}>{saveSite.isPending ? "正在校验地址…" : draft?.id ? "保存地点" : "新增地点"}</Button></DialogFooter>
       </DialogContent>

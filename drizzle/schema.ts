@@ -1252,6 +1252,11 @@ export const transportSites = mysqlTable(
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     administratorUserId: int("administratorUserId"),
+    /** 卸土点统一安全规则；装土点保留默认值但不参与卸土校验。 */
+    minimumTransitMinutes: int("minimumTransitMinutes").default(10).notNull(),
+    minimumTransitEnabled: boolean("minimumTransitEnabled").default(true).notNull(),
+    unloadGeofenceMeters: int("unloadGeofenceMeters").default(300).notNull(),
+    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled").default(true).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

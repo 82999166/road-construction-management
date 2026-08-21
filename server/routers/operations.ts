@@ -278,6 +278,10 @@ const transportSiteInput = z.object({
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
   administratorUserId: z.number().int().positive().nullable().optional(),
+  minimumTransitMinutes: z.number().int().min(1, "最短运输时间至少 1 分钟").max(1440, "最短运输时间不能超过 24 小时").default(10),
+  minimumTransitEnabled: z.boolean().default(true),
+  unloadGeofenceMeters: z.number().int().min(30, "卸土点定位容差至少 30 米").max(5000, "卸土点定位容差不能超过 5000 米").default(300),
+  unloadGeofenceEnabled: z.boolean().default(true),
   status: z.enum(["active", "disabled"]).default("active"),
 });
 
@@ -678,22 +682,22 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     const safetyNotices: string[] = [];
     const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
     const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(transitStartAt).getTime()) / 60_000));
-    if (elapsedMinutes < route.minimumTransitMinutes) {
-      const reason = `卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本路线最短运输时间为 ${route.minimumTransitMinutes} 分钟`;
-      if (route.minimumTransitEnabled) return markNeedsReview(`${reason}；未达到时间不能完成卸土`);
+    if (elapsedMinutes < unloadSite.minimumTransitMinutes) {
+      const reason = `卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本卸土点最短运输时间为 ${unloadSite.minimumTransitMinutes} 分钟`;
+      if (unloadSite.minimumTransitEnabled) return markNeedsReview(`${reason}；未达到时间不能完成卸土`);
       safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
     }
     const hasMobileCoordinates = input.latitude !== null && input.latitude !== undefined && input.longitude !== null && input.longitude !== undefined;
     const hasUnloadSiteCoordinates = unloadSite.latitude !== null && unloadSite.latitude !== undefined && unloadSite.longitude !== null && unloadSite.longitude !== undefined;
     if (!hasMobileCoordinates || !hasUnloadSiteCoordinates) {
       const reason = !hasMobileCoordinates ? "卸土异常：未取得现场定位" : "卸土点中文详细地址尚未完成地图定位校验";
-      if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
+      if (unloadSite.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
       safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
     } else {
       const distanceMeters = Math.round(calculateCoordinateDistanceMeters(Number(input.latitude), Number(input.longitude), Number(unloadSite.latitude), Number(unloadSite.longitude)));
-      if (distanceMeters > route.unloadGeofenceMeters) {
-        const reason = `卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${route.unloadGeofenceMeters} 米`;
-        if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能完成卸土`);
+      if (distanceMeters > unloadSite.unloadGeofenceMeters) {
+        const reason = `卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${unloadSite.unloadGeofenceMeters} 米`;
+        if (unloadSite.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能完成卸土`);
         safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
       }
     }
@@ -1996,6 +2000,10 @@ export const transportRouter = router({
       latitude: addressResolution ? String(addressResolution.latitude) : (input.latitude === null || input.latitude === undefined ? null : String(input.latitude)),
       longitude: addressResolution ? String(addressResolution.longitude) : (input.longitude === null || input.longitude === undefined ? null : String(input.longitude)),
       administratorUserId: input.administratorUserId ?? null,
+      minimumTransitMinutes: input.siteType === "unload" ? input.minimumTransitMinutes : 10,
+      minimumTransitEnabled: input.siteType === "unload" ? input.minimumTransitEnabled : true,
+      unloadGeofenceMeters: input.siteType === "unload" ? input.unloadGeofenceMeters : 300,
+      unloadGeofenceEnabled: input.siteType === "unload" ? input.unloadGeofenceEnabled : true,
       status: input.status,
     };
     if (input.id) {
@@ -2005,7 +2013,10 @@ export const transportRouter = router({
     } else {
       await db.insert(transportSites).values({ ...values, createdBy: user.id });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_transport_site" : "create_transport_site", targetType: "transport_site", targetId: String(input.id ?? input.name), summary: `${input.id ? "维护" : "配置"}${input.siteType === "load" ? "装土" : "卸土"}点：${input.name}` });
+    const unloadSafetySummary = input.siteType === "unload"
+      ? `；最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "硬拦截" : "仅提示"}），定位容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}）`
+      : "";
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_transport_site" : "create_transport_site", targetType: "transport_site", targetId: String(input.id ?? input.name), summary: `${input.id ? "维护" : "配置"}${input.siteType === "load" ? "装土" : "卸土"}点：${input.name}${unloadSafetySummary}` });
     const siteId = input.id ?? (await db.select({ id: transportSites.id }).from(transportSites).where(and(eq(transportSites.projectId, input.projectId), eq(transportSites.siteType, input.siteType), eq(transportSites.name, input.name))).limit(1))[0]?.id;
     return { success: true, id: siteId ?? null };
   }),
