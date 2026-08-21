@@ -2217,6 +2217,11 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       return getBusinessModuleStatistics(input ?? {});
     }),
+    operatingDashboard: protectedProcedure.input(businessStatisticsInput).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const { getOperatingDashboardStatistics } = await import("../services/adminBusinessBackup");
+      return getOperatingDashboardStatistics(input ?? {});
+    }),
   }),
 
   /** 业务数据逻辑备份只允许超级管理员发起；不提供在线恢复，避免误覆盖生产数据。 */

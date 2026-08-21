@@ -586,6 +586,7 @@ export default function AdminPage() {
     period: businessFilter.period || undefined,
   }), [businessFilter.period, businessFilter.projectId]);
   const businessStatistics = trpc.admin.business.statistics.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
+  const operatingDashboard = trpc.admin.business.operatingDashboard.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
   const backups = trpc.admin.backup.list.useQuery(undefined, { enabled: canQuery && isBusiness });
   const workspaceProjectState = getBusinessWorkspaceProjectState(businessWorkspaceProjectId);
   const workspaceProjectId = workspaceProjectState.projectId;
@@ -2857,7 +2858,7 @@ export default function AdminPage() {
           <p className="mt-2 max-w-3xl text-sm text-slate-500">超级管理员可从本页进入各业务模块维护真实数据。原有审批、状态流转、项目范围与敏感字段保护仍由服务端执行，不因后台入口而放宽。</p>
         </div>
         <div className="flex gap-2 print:hidden">
-          <Button size="sm" variant="outline" onClick={() => businessStatistics.refetch()} disabled={businessStatistics.isFetching}>刷新统计</Button>
+          <Button size="sm" variant="outline" onClick={() => { void businessStatistics.refetch(); void operatingDashboard.refetch(); }} disabled={businessStatistics.isFetching || operatingDashboard.isFetching}>刷新统计</Button>
           <Button size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>
         </div>
       </div>
@@ -2880,6 +2881,25 @@ export default function AdminPage() {
           </div>
           <Button className="print:hidden" size="sm" variant="outline" onClick={() => setBusinessFilter({ projectId: "all", period: "" })} disabled={businessFilter.projectId === "all" && !businessFilter.period}>清除筛选</Button>
           <p className="w-full text-xs text-slate-500">当前统计与打印口径：{businessFilterLabel}。基础档案按创建时间、业务单据按发生日期或结算期间统计。</p>
+        </CardContent>
+      </Card>
+
+      <Card className="border-[#d8e3e0]" id="operating-dashboard">
+        <CardHeader><CardTitle className="text-base">经营数据大屏</CardTitle><CardDescription>仅汇总当前筛选范围内的真实财务、发票、计量、施工日报、工资与运输台账。金额单位：元；结算比＝已结算计量÷核定计量，付款比＝已付支出÷有效支出。</CardDescription></CardHeader>
+        <CardContent>
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取经营数据。" /> : operatingDashboard.isLoading ? <EmptyState text="正在汇总真实经营数据…" /> : operatingDashboard.isError || !operatingDashboard.data ? <EmptyState text="暂无法读取经营数据，请确认超级管理员权限与真实台账连接。" /> : <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                ["总收入", operatingDashboard.data.finance.totalIncome, "/admin/finance"], ["已开发票", operatingDashboard.data.finance.invoiceAmount, "/admin/finance"], ["总欠款（应收+应付）", operatingDashboard.data.finance.receivable + operatingDashboard.data.finance.payable, "/admin/finance"], ["各类已付", operatingDashboard.data.finance.paidAmount, "/admin/finance"],
+                ["结算比", operatingDashboard.data.finance.settlementRatio === null ? "—" : `${operatingDashboard.data.finance.settlementRatio}%`, "/admin/measurement-tools"], ["付款比", operatingDashboard.data.finance.paymentRatio === null ? "—" : `${operatingDashboard.data.finance.paymentRatio}%`, "/admin/finance"], ["项目进度", operatingDashboard.data.progress.averageProgressPercent === null ? "未提交" : `${operatingDashboard.data.progress.averageProgressPercent}%`, "/admin/construction"], ["运输趟次", operatingDashboard.data.resources.transportTripCount, "/admin/transport"],
+              ].map(([label, value, path]) => <button key={String(label)} type="button" onClick={() => setLocation(String(path))} className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-[#3e746a] hover:shadow"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-[#203c48]">{typeof value === "number" && !String(label).includes("趟次") ? `¥${displayMoney(value)}` : value}</p><p className="mt-1 text-xs text-[#3e746a]">点击查看明细</p></button>)}
+            </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">计量、产值与施工日报</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>申报计量：<b>¥{displayMoney(operatingDashboard.data.measurement.declaredAmount)}</b></p><p>核定计量：<b>¥{displayMoney(operatingDashboard.data.measurement.approvedAmount)}</b></p><p>已结算：<b>¥{displayMoney(operatingDashboard.data.measurement.settledAmount)}</b></p><p>待处理：<b>{operatingDashboard.data.measurement.pendingCount} 笔</b></p><p>施工日报：<b>{operatingDashboard.data.progress.reportCount} 条</b></p><p>已审核日报：<b>{operatingDashboard.data.progress.approvedReportCount} 条</b></p></div></div>
+              <div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">劳务与资源投入</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>月度工资实发：<b>¥{displayMoney(operatingDashboard.data.resources.payrollActualAmount)}</b></p><p>临时日结实发：<b>¥{displayMoney(operatingDashboard.data.resources.dailyWageActualAmount)}</b></p><p>运输趟次：<b>{operatingDashboard.data.resources.transportTripCount} 趟</b></p><p>当前范围：<b>{businessFilterLabel}</b></p></div></div>
+            </div>
+            <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200"><Table><TableHeader><TableRow><TableHead>支出类别</TableHead><TableHead className="text-right">有效支出</TableHead><TableHead className="text-right">待付</TableHead><TableHead className="text-right">已付</TableHead></TableRow></TableHeader><TableBody>{operatingDashboard.data.finance.categories.length ? operatingDashboard.data.finance.categories.map(item => <TableRow key={item.category}><TableCell>{item.category}</TableCell><TableCell className="text-right">¥{displayMoney(item.amount)}</TableCell><TableCell className="text-right text-amber-700">¥{displayMoney(item.unpaid)}</TableCell><TableCell className="text-right text-emerald-700">¥{displayMoney(item.paid)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={4} className="h-20 text-center text-slate-500">当前范围暂无有效支出分类记录。</TableCell></TableRow>}</TableBody></Table></div>
+          </>}
         </CardContent>
       </Card>
 
