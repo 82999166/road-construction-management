@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
 import { LaborPayrollHeadline } from "@/components/LaborPayrollHeadline";
 import { DailyWagePaymentDialog } from "@/components/DailyWagePaymentDialog";
@@ -86,14 +87,6 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Settings2, label: "系统设置", path: "/admin/settings", section: "平台治理" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit", section: "平台治理" },
 ];
-
-/** 超级管理员从业务治理页进入时，优先落在 PC 端受控台账；其他模块仍使用已部署的既有工作台。 */
-export const ADMIN_BUSINESS_ROUTE_BY_MODULE: Record<string, string> = {
-  CONSTRUCTION: "/admin/construction",
-  LABOR: "/admin/labor",
-  MACHINERY: "/admin/machinery",
-  TRANSPORT: "/admin/transport",
-};
 
 type OrganizationType = "group" | "company" | "project_department" | "department" | "team";
 type DepartmentModuleCode = "CONSTRUCTION" | "LABOR" | "MACHINERY" | "TRANSPORT" | "PURCHASING" | "MEASUREMENT" | "FINANCE" | "EVIDENCE";
