@@ -11,6 +11,8 @@ describe("DailyWageLedger", () => {
     expect(source).toContain("全部班组");
     expect(source).toContain("全部状态");
     expect(source).toContain("onExportWorkbook(exportFilter)");
+    expect(source).toContain("__roadConstructionDailyWageExportFilter");
+    expect(source).toContain("useEffect");
     expect(source).toContain("生成付款专用 Excel");
     expect(source).toContain("退回草稿");
     expect(source).toContain("审核通过");

@@ -310,11 +310,17 @@ type CsvExportScope = {
   filters: Array<[label: string, value: string | number | null | undefined]>;
 };
 
-type ExportScopeWindow = Window & { __roadConstructionExportScope?: CsvExportScope };
+type DailyWageWorkbookFilter = { dateFrom: string; dateTo: string; keyword: string; team: string; status: string };
+type ExportScopeWindow = Window & { __roadConstructionExportScope?: CsvExportScope; __roadConstructionDailyWageExportFilter?: DailyWageWorkbookFilter };
 
 function getActiveCsvExportScope(): CsvExportScope {
   if (typeof window === "undefined") return { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
   return (window as ExportScopeWindow).__roadConstructionExportScope ?? { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
+}
+
+function getActiveDailyWageWorkbookFilter(): DailyWageWorkbookFilter | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as ExportScopeWindow).__roadConstructionDailyWageExportFilter;
 }
 
 /** 浏览器端仅导出当前已授权且已筛选的台账数据；CSV 可直接由 Excel 打开，不额外暴露下载接口。 */
@@ -339,15 +345,30 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
   URL.revokeObjectURL(href);
 }
 
-/** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间，避免分类工资报表脱离项目与期间语境。 */
+/** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间；日结分类表在浏览器端再次按当前筛选收敛，防止工作表和筛选栏不一致。 */
 async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+  const dailyFilter = getActiveDailyWageWorkbookFilter();
+  const matchesDailyWageFilter = (row: Array<string | number | null | undefined>) => {
+    if (!dailyFilter) return true;
+    const [workerName, teamName, settlementDate, , , , , , status] = row.map(value => String(value ?? ""));
+    const keyword = dailyFilter.keyword.trim().toLocaleLowerCase();
+    const normalizedTeam = teamName || "未设置班组";
+    return (!dailyFilter.dateFrom || settlementDate >= dailyFilter.dateFrom)
+      && (!dailyFilter.dateTo || settlementDate <= dailyFilter.dateTo)
+      && (!keyword || `${workerName} ${teamName}`.toLocaleLowerCase().includes(keyword))
+      && (dailyFilter.team === "all" || normalizedTeam === dailyFilter.team)
+      && (dailyFilter.status === "all" || status === dailyFilter.status);
+  };
+  const scopedSheets = sheets.map(sheet => sheet.name === "临时日结" && dailyFilter ? { ...sheet, rows: sheet.rows.filter(matchesDailyWageFilter) } : sheet);
+  const scopedFilters: CsvExportScope["filters"] = dailyFilter ? [...scope.filters, ["日结日期起", dailyFilter.dateFrom || "全部"], ["日结日期止", dailyFilter.dateTo || "全部"], ["日结人员/班组", dailyFilter.keyword || "全部"], ["日结班组", dailyFilter.team === "all" ? "全部" : dailyFilter.team], ["日结状态", dailyFilter.status === "all" ? "全部" : dailyFilter.status]] : scope.filters;
+  const exportScope = { ...scope, filters: scopedFilters };
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
-  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", scope.module], ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...sheets.map(sheet => [sheet.name, sheet.rows.length])];
+  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);
   overview["!cols"] = [{ wch: 22 }, { wch: 48 }];
   XLSX.utils.book_append_sheet(workbook, overview, "汇总说明");
-  sheets.forEach(sheet => {
+  scopedSheets.forEach(sheet => {
     const worksheet = XLSX.utils.aoa_to_sheet([sheet.headers, ...sheet.rows]);
     worksheet["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(sheet.rows.length, 1), c: Math.max(sheet.headers.length - 1, 0) } }) };
     worksheet["!cols"] = sheet.headers.map(header => ({ wch: Math.min(Math.max(header.length + 4, 12), 28) }));
