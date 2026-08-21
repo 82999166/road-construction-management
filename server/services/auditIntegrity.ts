@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, isNull } from "drizzle-orm";
 import { auditLogChainState, auditLogIntegrityEvents, auditLogs, sensitiveDataAccessLogs } from "../../drizzle/schema";
 
 type AuditEntryInput = {
@@ -25,6 +25,18 @@ function buildAuditChainHash(previousHash: string, auditLogId: number, input: Au
   return createHash("sha256").update(payload).digest("hex");
 }
 
+async function appendAuditLogChainEntry(tx: TransactionClient, auditLogId: number, input: AuditEntryInput, createdAt: Date) {
+  const [state] = await tx.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1);
+  if (!state) throw new Error("审计链锚点不存在，已拒绝写入关键业务审计事件");
+  const sequenceNo = Number(state.lastSequence) + 1;
+  const entryHash = buildAuditChainHash(state.lastHash, auditLogId, input, createdAt);
+  await tx.insert(auditLogIntegrityEvents).values({ auditLogId, sequenceNo, previousHash: state.lastHash, entryHash, integrityVersion: "audit-chain-v1" });
+  const result = await tx.update(auditLogChainState).set({ lastSequence: sequenceNo, lastHash: entryHash }).where(eq(auditLogChainState.id, 1));
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) throw new Error("审计链并发推进冲突，请重试");
+  return { sequenceNo, entryHash };
+}
+
 /**
  * 仅供包含关键财务、敏感访问、定位争议与证据删除的事务调用。
  * 业务端没有更新或删除审计日志的接口；本服务用条件写推进单行链状态，冲突即回滚整个业务事务。
@@ -34,15 +46,23 @@ export async function appendIntegrityProtectedAudit(tx: TransactionClient, input
   const [created] = await tx.insert(auditLogs).values({ ...input, createdAt }).$returningId();
   const auditLogId = Number(created?.id ?? 0);
   if (!auditLogId) throw new Error("审计事件写入失败，未返回标识");
-  const [state] = await tx.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1);
-  if (!state) throw new Error("审计链锚点不存在，已拒绝写入关键业务审计事件");
-  const sequenceNo = Number(state.lastSequence) + 1;
-  const entryHash = buildAuditChainHash(state.lastHash, auditLogId, input, createdAt);
-  await tx.insert(auditLogIntegrityEvents).values({ auditLogId, sequenceNo, previousHash: state.lastHash, entryHash, integrityVersion: "audit-chain-v1" });
-  const result = await tx.update(auditLogChainState).set({ lastSequence: sequenceNo, lastHash: entryHash }).where(eq(auditLogChainState.id, 1));
-  const header = Array.isArray(result) ? result[0] : result;
-  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) throw new Error("审计链并发推进冲突，请重试");
-  return { auditLogId, sequenceNo, entryHash };
+  const chain = await appendAuditLogChainEntry(tx, auditLogId, input, createdAt);
+  return { auditLogId, ...chain };
+}
+
+/**
+ * 对迁移前历史日志及仍使用旧写入点的新增日志进行追加式补链。
+ * 只写入链条事件和链末锚点，绝不更新或删除任何审计主日志。
+ */
+export async function sealUnchainedAuditLogs(db: { transaction: (callback: (tx: TransactionClient) => Promise<{ sealedCount: number; mayHaveMore: boolean }>) => Promise<{ sealedCount: number; mayHaveMore: boolean }> }, limit = 2_000) {
+  return db.transaction(async tx => {
+    const rows = await tx.select({ log: auditLogs }).from(auditLogs).leftJoin(auditLogIntegrityEvents, eq(auditLogIntegrityEvents.auditLogId, auditLogs.id)).where(isNull(auditLogIntegrityEvents.id)).orderBy(asc(auditLogs.id)).limit(limit);
+    for (const row of rows as Array<{ log: typeof auditLogs.$inferSelect }>) {
+      const log = row.log;
+      await appendAuditLogChainEntry(tx, Number(log.id), log, new Date(log.createdAt));
+    }
+    return { sealedCount: rows.length, mayHaveMore: rows.length === limit };
+  });
 }
 
 /** 校验序号连续性、前序哈希和末端锚点；不自动修复任何异常，避免覆盖审计证据。 */

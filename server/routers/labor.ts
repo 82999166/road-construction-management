@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, isNull, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects, temporaryDailyWageSettlements, users } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
@@ -11,7 +12,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { storageGet, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
-import { recordSensitiveDataAccess } from "../services/auditIntegrity";
+import { appendIntegrityProtectedAudit, recordSensitiveDataAccess } from "../services/auditIntegrity";
 
 /** 工资结算期间统一使用 YYYY-MM，避免将时区信息混入按月结算的业务口径。 */
 const payrollPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "工资期间格式应为 YYYY-MM");
@@ -397,19 +398,14 @@ export const laborRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "证照文件格式校验失败" });
       }
       const safeFileName = getSafeStorageFileName(input.fileName);
+      const contentSha256 = createHash("sha256").update(bytes).digest("hex");
       const upload = await storagePut(`labor-certificates/project-${input.projectId}/worker-${input.workerId}/${safeFileName}`, bytes, input.mimeType);
-      const result = await db.insert(evidenceRecords).values({
-        projectId: input.projectId,
-        sourceType: LABOR_CERTIFICATE_SOURCE_TYPE,
-        sourceId: String(input.workerId),
-        fileKey: upload.key,
-        fileName: safeFileName,
-        mimeType: input.mimeType,
-        ocrResultJson: JSON.stringify({ certificateName: input.certificateName.trim() }),
-        uploadedBy: user.id,
+      let insertId = 0;
+      await db.transaction(async tx => {
+        const result = await tx.insert(evidenceRecords).values({ projectId: input.projectId, sourceType: LABOR_CERTIFICATE_SOURCE_TYPE, sourceId: String(input.workerId), fileKey: upload.key, fileName: safeFileName, mimeType: input.mimeType, contentSha256, contentBytes: bytes.length, ocrResultJson: JSON.stringify({ certificateName: input.certificateName.trim() }), retentionUntil: null, status: "active", uploadedBy: user.id });
+        insertId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+        await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "labor", action: "upload_worker_certificate", targetType: "evidence_record", targetId: String(insertId || `${input.workerId}-${safeFileName}`), summary: `上传劳务人员证照：${worker.realName} · ${input.certificateName.trim()}`, afterJson: JSON.stringify({ projectId: input.projectId, workerId: input.workerId, contentSha256, contentBytes: bytes.length, mimeType: input.mimeType }) });
       });
-      const insertId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
-      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "upload_worker_certificate", targetType: "evidence_record", targetId: String(insertId || `${input.workerId}-${safeFileName}`), summary: `上传劳务人员证照：${worker.realName} · ${input.certificateName.trim()}` });
       try {
         const messageResult = await createInAppMessage({
           eventCode: "WORKER_CERTIFICATE_ARCHIVED",

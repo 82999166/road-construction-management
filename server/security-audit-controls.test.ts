@@ -43,8 +43,22 @@ describe("敏感数据、证据留存与审计完整性控制", () => {
     expect(operations).toContain("recordSensitiveDataAccess");
     expect(operations).toContain('dataCategory: "full_payment_account"');
     expect(auditService).toContain("appendIntegrityProtectedAudit");
+    expect(auditService).toContain("sealUnchainedAuditLogs");
     expect(auditService).toContain("verifyAuditIntegrityChain");
     expect(admin).toContain("integrity: protectedProcedure.query");
+    expect(admin).toContain("completeSeal");
     expect(admin).toContain("sensitiveAccesses: protectedProcedure");
+  });
+
+  it("采购、电子发票与劳务证照上传均保留服务端内容指纹、字节数和完整性审计", () => {
+    const finance = readProjectFile("server/routers/finance.ts");
+    const labor = readProjectFile("server/routers/labor.ts");
+    expect(finance).toContain('sourceType: "purchase"');
+    expect(finance).toContain('sourceType: "financial_invoice"');
+    expect(finance).toContain("contentSha256, contentBytes: bytes.length");
+    expect(labor).toContain("sourceType: LABOR_CERTIFICATE_SOURCE_TYPE");
+    expect(labor).toContain("contentSha256, contentBytes: bytes.length");
+    expect(finance).toContain("appendIntegrityProtectedAudit(tx");
+    expect(labor).toContain("appendIntegrityProtectedAudit(tx");
   });
 });

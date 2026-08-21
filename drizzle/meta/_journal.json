@@ -484,6 +484,13 @@
       "when": 1787296802869,
       "tag": "0068_sad_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "5",
+      "when": 1787298274921,
+      "tag": "0069_modern_leopardon",
+      "breakpoints": true
     }
   ]
 }

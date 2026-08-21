@@ -812,7 +812,10 @@ export const payrollStatements = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period) }),
+  table => ({
+    workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period),
+    projectPeriodStatusIndex: index("payroll_statements_project_period_status_index").on(table.projectId, table.period, table.status),
+  }),
 );
 
 /** 临时人员按日结算：审核通过不代表付款，只有登记实际付款后才结算完毕。 */
@@ -1470,6 +1473,7 @@ export const transportTrips = mysqlTable(
    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
     projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
+    projectStatusStartIndex: index("transport_trips_project_status_start_index").on(table.projectId, table.status, table.startAt),
     projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
     projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(table.projectId, table.nfcTransitKey),
     projectActiveVehicleTransitUnique: uniqueIndex("transport_trips_project_active_vehicle_transit_unique").on(table.projectId, table.activeVehicleTransitKey),
@@ -2179,7 +2183,10 @@ export const financialRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo) }),
+  table => ({
+    recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo),
+    projectSettlementOccurredIndex: index("financial_records_project_settlement_occurred_index").on(table.projectId, table.settlementStatus, table.occurredAt),
+  }),
 );
 
 /**

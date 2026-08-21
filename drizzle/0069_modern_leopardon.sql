@@ -1,0 +1,3 @@
+CREATE INDEX `financial_records_project_settlement_occurred_index` ON `financial_records` (`projectId`,`settlementStatus`,`occurredAt`);--> statement-breakpoint
+CREATE INDEX `payroll_statements_project_period_status_index` ON `payroll_statements` (`projectId`,`period`,`status`);--> statement-breakpoint
+CREATE INDEX `transport_trips_project_status_start_index` ON `transport_trips` (`projectId`,`status`,`startAt`);

@@ -10,6 +10,10 @@ vi.mock("./services/secretVault", () => ({
 vi.mock("./services/businessNotifier", () => ({
   notifyOfficialAccountBusinessEventSafely: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("./services/auditIntegrity", () => ({
+  appendIntegrityProtectedAudit: vi.fn().mockResolvedValue({ auditLogId: 1, sequenceNo: 1, entryHash: "test" }),
+  recordSensitiveDataAccess: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("./routers/messages", () => ({
   createInAppMessage: vi.fn().mockResolvedValue({ created: true }),
 }));
@@ -175,7 +179,9 @@ describe("labor tRPC 路由", () => {
     const db = {
       ...createSelectDb([worker]),
       insert: vi.fn(() => ({ values: vi.fn(async () => [{ insertId: 44 }]) })),
+      transaction: vi.fn(),
     };
+    db.transaction.mockImplementation(async callback => callback(db));
     vi.mocked(getDb).mockResolvedValue(db as never);
     vi.mocked(storagePut).mockResolvedValue({ key: "labor-certificates/project-10/worker-7/id-card.jpg", url: "https://storage.example/certificate.jpg" } as never);
 

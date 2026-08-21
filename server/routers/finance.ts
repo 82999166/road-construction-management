@@ -43,6 +43,7 @@ import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSupe
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
 import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
 import { storageGet, storagePut } from "../storage";
 
@@ -950,23 +951,15 @@ export const purchasingRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const bytes = decodePurchaseDocumentBase64(input.base64Data, input.mimeType);
     const capturedAt = new Date();
+    const contentSha256 = createHash("sha256").update(bytes).digest("hex");
     const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "purchase-document.jpg";
     const storedFile = await storagePut(`purchase-documents/${input.projectId}/${capturedAt.toISOString().slice(0, 10)}/${user.id}-${safeFileName}`, bytes, input.mimeType);
-    const result = await db.insert(evidenceRecords).values({
-      projectId: input.projectId,
-      sourceType: "purchase",
-      sourceId: input.attachmentKind === "invoice" ? "small_direct_invoice" : "small_direct_document",
-      fileKey: storedFile.key,
-      fileName: input.fileName,
-      mimeType: input.mimeType,
-      watermarkJson: JSON.stringify({ description: input.description, attachmentKind: input.attachmentKind, captureMode: "purchase_document_upload", capturedAt: capturedAt.toISOString(), version: 2 }),
-      longitude: null,
-      latitude: null,
-      capturedAt,
-      uploadedBy: user.id,
+    let evidenceId = 0;
+    await db.transaction(async tx => {
+      const result = await tx.insert(evidenceRecords).values({ projectId: input.projectId, sourceType: "purchase", sourceId: input.attachmentKind === "invoice" ? "small_direct_invoice" : "small_direct_document", fileKey: storedFile.key, fileName: input.fileName, mimeType: input.mimeType, contentSha256, contentBytes: bytes.length, watermarkJson: JSON.stringify({ description: input.description, attachmentKind: input.attachmentKind, captureMode: "purchase_document_upload", capturedAt: capturedAt.toISOString(), version: 2 }), longitude: null, latitude: null, capturedAt, retentionUntil: null, status: "active", uploadedBy: user.id });
+      evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "purchasing", action: input.attachmentKind === "invoice" ? "upload_purchase_invoice" : "upload_purchase_document", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档采购${input.attachmentKind === "invoice" ? "发票" : "单据"}附件：${input.description.slice(0, 80)}（非水印影像）`, afterJson: JSON.stringify({ projectId: input.projectId, contentSha256, contentBytes: bytes.length, mimeType: input.mimeType }) });
     });
-    const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: input.attachmentKind === "invoice" ? "upload_purchase_invoice" : "upload_purchase_document", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档采购${input.attachmentKind === "invoice" ? "发票" : "单据"}附件：${input.description.slice(0, 80)}（非水印影像）` });
     return { success: true, id: evidenceId, fileName: input.fileName };
   }),
 
@@ -1725,24 +1718,16 @@ export const financeRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const bytes = decodePurchaseDocumentBase64(input.base64Data, input.mimeType);
     const uploadedAt = new Date();
+    const contentSha256 = createHash("sha256").update(bytes).digest("hex");
     const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "financial-invoice.pdf";
     const stored = await storagePut(`financial-invoices/${input.projectId}/${uploadedAt.toISOString().slice(0, 10)}/${user.id}-${safeFileName}`, bytes, input.mimeType);
-    const result = await db.insert(evidenceRecords).values({
-      projectId: input.projectId,
-      sourceType: "financial_invoice",
-      sourceId: "invoice_original_upload",
-      fileKey: stored.key,
-      fileName: input.fileName,
-      mimeType: input.mimeType,
-      watermarkJson: JSON.stringify({ description: input.description, attachmentKind: "financial_invoice_original", captureMode: "financial_invoice_upload", uploadedAt: uploadedAt.toISOString(), version: 1 }),
-      longitude: null,
-      latitude: null,
-      capturedAt: uploadedAt,
-      uploadedBy: user.id,
+    let evidenceId = 0;
+    await db.transaction(async tx => {
+      const result = await tx.insert(evidenceRecords).values({ projectId: input.projectId, sourceType: "financial_invoice", sourceId: "invoice_original_upload", fileKey: stored.key, fileName: input.fileName, mimeType: input.mimeType, contentSha256, contentBytes: bytes.length, watermarkJson: JSON.stringify({ description: input.description, attachmentKind: "financial_invoice_original", captureMode: "financial_invoice_upload", uploadedAt: uploadedAt.toISOString(), version: 1 }), longitude: null, latitude: null, capturedAt: uploadedAt, retentionUntil: null, status: "active", uploadedBy: user.id });
+      evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "finance", action: "upload_invoice_original", targetType: "evidence", targetId: String(evidenceId || stored.key), summary: `归档财务发票原件：${input.description.slice(0, 80)}`, afterJson: JSON.stringify({ projectId: input.projectId, contentSha256, contentBytes: bytes.length, mimeType: input.mimeType }) });
     });
-    const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
     if (!Number.isInteger(evidenceId) || evidenceId <= 0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "发票原件归档失败，请稍后重试" });
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "upload_invoice_original", targetType: "evidence", targetId: String(evidenceId), summary: `归档财务发票原件：${input.description.slice(0, 80)}` });
     return { success: true, evidenceId, fileName: input.fileName, mimeType: input.mimeType };
   }),
 

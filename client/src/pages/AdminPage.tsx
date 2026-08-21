@@ -561,6 +561,8 @@ export default function AdminPage() {
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
+  const auditIntegrity = trpc.admin.audit.integrity.useQuery(undefined, { enabled: canQuery && isAudit, retry: false });
+  const sensitiveAccesses = trpc.admin.audit.sensitiveAccesses.useQuery({ limit: 50 }, { enabled: canQuery && isAudit, retry: false });
   const broadcastOptions = trpc.broadcast.formOptions.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const broadcasts = trpc.broadcast.list.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const wechatLogins = trpc.admin.wechatLogin.list.useQuery(undefined, { enabled: canQuery && isWechatLogin });
@@ -2471,7 +2473,9 @@ export default function AdminPage() {
 
   const renderAudit = () => (
     <div className="space-y-6">
-      <div><p className="text-sm font-medium text-[#203c48]">治理留痕</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">配置发布与审计日志</h1><p className="mt-2 text-sm text-slate-500">所有组织、角色、授权和系统设置的关键操作都会写入服务端审计记录。</p></div>
+      <div><p className="text-sm font-medium text-[#203c48]">治理留痕</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">配置发布与审计日志</h1><p className="mt-2 text-sm text-slate-500">所有组织、角色、授权和系统设置的关键操作都会写入服务端审计记录。敏感数据利用与审计链仅限超级管理员在本页受控复核。</p></div>
+      <section className="grid gap-3 md:grid-cols-3"><MetricCard title="审计链状态" value={auditIntegrity.isLoading ? "校验中" : auditIntegrity.data?.valid ? "完整" : "待核验"} description={auditIntegrity.data?.valid ? `已封存 ${auditIntegrity.data.eventCount} 条事件` : auditIntegrity.data?.errors?.[0] || "尚未取得校验结果"} icon={ShieldCheck} /><MetricCard title="本次补链" value={auditIntegrity.data?.sealedCount ?? 0} description={auditIntegrity.data?.completeSeal === false ? "达到单次上限，请刷新继续补链" : "未发现待补链事件或已完成"} icon={ScrollText} /><MetricCard title="近期敏感访问" value={sensitiveAccesses.data?.length ?? 0} description="仅记录用途、模块、范围与数量，不展示敏感原文" icon={KeyRound} /></section>
+      <Card><CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0"><div><CardTitle className="text-base">敏感数据访问利用</CardTitle><CardDescription>完整收款账户、原始定位等受控读取均必须保留用途与项目范围留痕。</CardDescription></div><Button size="sm" variant="outline" onClick={() => { void auditIntegrity.refetch(); void sensitiveAccesses.refetch(); }} disabled={auditIntegrity.isFetching || sensitiveAccesses.isFetching}>刷新核验</Button></CardHeader><CardContent>{sensitiveAccesses.data?.length ? <div className="space-y-2">{sensitiveAccesses.data.map(item => <div key={item.id} className="grid gap-1 rounded-xl border border-slate-100 p-3 md:grid-cols-[1fr_auto]"><div><p className="text-sm font-medium text-slate-700">{item.dataCategory} · {item.result}</p><p className="mt-1 text-xs text-slate-500">{item.module} · {item.accessPurpose} · 返回 {item.recordCount} 条</p></div><p className="text-xs text-slate-400">{displayDate(item.createdAt)}</p></div>)}</div> : <EmptyState text="近期暂无受控敏感数据访问记录。" />}</CardContent></Card>
       <Card>
         <CardHeader><CardTitle className="text-base">最近操作</CardTitle></CardHeader>
         <CardContent className="space-y-2">
