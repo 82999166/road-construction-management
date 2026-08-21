@@ -23,14 +23,18 @@ function createContext(userId = 9): TrpcContext {
 function createDeleteDb(rows: unknown[][]) {
   let index = 0;
   const limitedRows = () => rows[index++] ?? [];
-  return {
+  const db = {
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => limitedRows()) })) })) })),
     delete: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
-    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })) })),
+    insert: vi.fn(() => ({ values: vi.fn(() => ({ $returningId: vi.fn(async () => [{ id: 701 }]) })) })),
+    transaction: vi.fn(),
   };
+  db.transaction.mockImplementation(async callback => callback(db));
+  return db;
 }
 
-const baseEvidence = { id: 28, projectId: 2, uploadedBy: 9, fileName: "现场水印.jpg", fileKey: "evidence/2/现场水印.jpg", sourceType: "site_photo" };
+const baseEvidence = { id: 28, projectId: 2, uploadedBy: 9, fileName: "现场水印.jpg", fileKey: "evidence/2/现场水印.jpg", sourceType: "site_photo", status: "active", contentSha256: "a".repeat(64), contentBytes: 1024 };
 
 describe("现场影像受控删除", () => {
   beforeEach(() => {
@@ -41,13 +45,14 @@ describe("现场影像受控删除", () => {
   });
 
   it("允许提交人删除未关联业务单据的照片，并保留审计记录", async () => {
-    const db = createDeleteDb([[baseEvidence], [], [], [], [], [], [], [], []]);
+    const db = createDeleteDb([[baseEvidence], [], [], [], [], [], [], [], [], [{ id: 1, lastSequence: 0, lastHash: "9".repeat(64) }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28 })).resolves.toEqual({ success: true });
+    await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28, deletionReason: "重复上传，保留正确影像" })).resolves.toEqual({ success: true });
 
-    expect(db.delete).toHaveBeenCalledTimes(1);
-    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalledTimes(2);
+    expect(db.insert).toHaveBeenCalledTimes(2);
     expect(assertDepartmentBusinessAccess).toHaveBeenCalledWith(expect.anything(), "EVIDENCE");
     expect(assertDepartmentBusinessAccess).not.toHaveBeenCalledWith(expect.anything(), "EVIDENCE", "void");
   });
@@ -56,7 +61,7 @@ describe("现场影像受控删除", () => {
     const db = createDeleteDb([[baseEvidence], [{ id: 1 }], [], [], [], [], [], [], []]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不能删除") });
+    await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28, deletionReason: "关联业务单据的影像不可删除" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不能删除") });
     expect(db.delete).not.toHaveBeenCalled();
   });
 });

@@ -45,6 +45,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
+import { recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { runProjectRiskScan } from "./projectRisk";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
@@ -1419,6 +1420,7 @@ export const machineryRouter = router({
 
   /** 外租机械付款结算台账；账户仅向财务岗位返回完整值，其他岗位仅可查看掩码。 */
   listPaymentSettlements: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), machineId: z.number().int().positive().optional(), status: transportSettlementStatusSchema.optional() })).query(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertMachineryAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
@@ -1433,6 +1435,9 @@ export const machineryRouter = router({
     const machineById = new Map(machineRows.map(item => [item.id, item]));
     const statementById = new Map(statementRows.map(item => [item.id, item]));
     const canReadFullAccount = canSettleFinancialRecord(roleCodes);
+    if (canReadFullAccount && rows.some(item => Boolean(item.payeeAccount))) {
+      await recordSensitiveDataAccess(db, { userId: user.id, projectId: input.projectId, module: "machinery", dataCategory: "full_payment_account", accessPurpose: "机械付款结算台账核对与人工转账准备", targetType: "machine_payment_settlement", targetId: input.machineId ? String(input.machineId) : null, recordCount: rows.filter(item => Boolean(item.payeeAccount)).length, result: "granted" });
+    }
     return rows.map(item => ({ ...item, machine: machineById.get(item.machineId) ?? null, statement: statementById.get(item.monthlyStatementId) ?? null, payeeAccount: canReadFullAccount ? item.payeeAccount : maskPaymentAccount(item.payeeAccount), accountMasked: !canReadFullAccount }));
   }),
 
@@ -2585,6 +2590,9 @@ export const transportRouter = router({
     const itemBySettlement = new Map<number, { tripId: number; tripNo: string }[]>();
     items.forEach(item => itemBySettlement.set(Number(item.settlementId), [...(itemBySettlement.get(Number(item.settlementId)) ?? []), { tripId: Number(item.tripId), tripNo: item.tripNo }]));
     const canReadFullAccount = canSettleFinancialRecord(roleCodes);
+    if (canReadFullAccount && rows.some(item => Boolean(item.payeeAccount))) {
+      await recordSensitiveDataAccess(db, { userId: user.id, projectId: input.projectId, module: "transport", dataCategory: "full_payment_account", accessPurpose: "渣土车按趟结算台账核对与人工转账准备", targetType: "transport_vehicle_settlement", targetId: input.vehicleId ? String(input.vehicleId) : null, recordCount: rows.filter(item => Boolean(item.payeeAccount)).length, result: "granted" });
+    }
     return rows.map(item => ({ ...item, vehicle: vehicleById.get(item.vehicleId) ?? null, payeeAccount: canReadFullAccount ? item.payeeAccount : maskPaymentAccount(item.payeeAccount), accountMasked: !canReadFullAccount, itemCount: itemBySettlement.get(item.id)?.length ?? 0, tripNos: itemBySettlement.get(item.id)?.map(detail => detail.tripNo) ?? [] }));
   }),
 

@@ -473,7 +473,7 @@ describe("后台服务号绑定状态映射", () => {
 });
 
 describe("后台全员上下班考勤定位展示", () => {
-  it("分别展示上班和下班的精确定位，并将两段坐标纳入 CSV 导出", () => {
+  it("分别展示上班和下班中文地址并纳入 CSV 导出，默认不再呈现原始坐标", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("function formatAttendanceLocation");
@@ -481,7 +481,9 @@ describe("后台全员上下班考勤定位展示", () => {
     expect(source).toContain("下班打卡位置");
     expect(source).toContain("上班位置");
     expect(source).toContain("下班位置");
-    expect(source).toContain("item.checkoutLongitude");
-    expect(source).toContain("item.checkoutLocationAccuracyMeters");
+    expect(source).toContain("item.checkInAddress");
+    expect(source).toContain("item.checkoutAddress");
+    expect(source).toContain("中文地址");
+    expect(source).not.toContain("formatAttendanceLocation(item.checkoutLongitude");
   });
 });

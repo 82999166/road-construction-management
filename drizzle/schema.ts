@@ -285,6 +285,63 @@ export const auditLogs = mysqlTable(
 );
 
 /**
+ * 敏感数据访问利用日志。完整账户、原始定位等高风险信息即使允许依法业务使用，
+ * 也必须单独记录访问者、项目范围、业务目的、返回记录数和结果，不依赖浏览器端日志。
+ */
+export const sensitiveDataAccessLogs = mysqlTable(
+  "sensitive_data_access_logs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    projectId: int("projectId"),
+    module: varchar("module", { length: 64 }).notNull(),
+    dataCategory: mysqlEnum("dataCategory", ["full_payment_account", "raw_location_coordinate", "identity_document", "other"]).notNull(),
+    accessPurpose: varchar("accessPurpose", { length: 300 }).notNull(),
+    targetType: varchar("targetType", { length: 64 }),
+    targetId: varchar("targetId", { length: 128 }),
+    recordCount: int("recordCount").default(0).notNull(),
+    result: mysqlEnum("result", ["granted", "denied", "exported", "reviewed"]).default("granted").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    userTimeIndex: index("sensitive_data_access_logs_user_time_index").on(table.userId, table.createdAt),
+    projectCategoryTimeIndex: index("sensitive_data_access_logs_project_category_time_index").on(table.projectId, table.dataCategory, table.createdAt),
+    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "sensitive_data_access_logs_user_fk" }).onDelete("restrict"),
+  }),
+);
+
+/** 追加式审计链的单行状态；数据库触发器在每条审计日志写入时原子推进，不允许业务端更新。 */
+export const auditLogChainState = mysqlTable(
+  "audit_log_chain_state",
+  {
+    id: int("id").primaryKey(),
+    lastSequence: bigint("lastSequence", { mode: "number" }).default(0).notNull(),
+    lastHash: varchar("lastHash", { length: 64 }).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+
+/** 每条业务审计日志的前序哈希和当前哈希；与日志主表保持一对一，支持后续校验与异常告警。 */
+export const auditLogIntegrityEvents = mysqlTable(
+  "audit_log_integrity_events",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    auditLogId: bigint("auditLogId", { mode: "number" }).notNull(),
+    sequenceNo: bigint("sequenceNo", { mode: "number" }).notNull(),
+    previousHash: varchar("previousHash", { length: 64 }).notNull(),
+    entryHash: varchar("entryHash", { length: 64 }).notNull(),
+    integrityVersion: varchar("integrityVersion", { length: 32 }).default("audit-chain-v1").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    auditLogUnique: uniqueIndex("audit_log_integrity_events_log_unique").on(table.auditLogId),
+    sequenceUnique: uniqueIndex("audit_log_integrity_events_sequence_unique").on(table.sequenceNo),
+    entryHashUnique: uniqueIndex("audit_log_integrity_events_hash_unique").on(table.entryHash),
+    auditLogFk: foreignKey({ columns: [table.auditLogId], foreignColumns: [auditLogs.id], name: "audit_log_integrity_events_log_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
  * 超级管理员主动发起的业务数据备份索引。
  * 文件本体位于受控对象存储；本表不保存数据库凭据、密码摘要或可直接访问的外链。
  */
@@ -691,10 +748,13 @@ export const attendanceCheckIns = mysqlTable(
     checkedOutAt: datetime("checkedOutAt"),
     deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
     deviceLabel: varchar("deviceLabel", { length: 160 }),
+    /** 打卡时反查得到的中文详细地址；反查失败不阻断打卡，但业务列表绝不改为展示坐标。 */
+    checkInAddress: varchar("checkInAddress", { length: 500 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     locationAccuracyMeters: decimal("locationAccuracyMeters", { precision: 10, scale: 2 }),
     status: mysqlEnum("status", ["normal", "location_missing"]).default("normal").notNull(),
+    checkoutAddress: varchar("checkoutAddress", { length: 500 }),
     checkoutLongitude: decimal("checkoutLongitude", { precision: 10, scale: 7 }),
     checkoutLatitude: decimal("checkoutLatitude", { precision: 10, scale: 7 }),
     checkoutLocationAccuracyMeters: decimal("checkoutLocationAccuracyMeters", { precision: 10, scale: 2 }),
@@ -2275,15 +2335,29 @@ export const evidenceRecords = mysqlTable(
     fileKey: varchar("fileKey", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 255 }),
     mimeType: varchar("mimeType", { length: 128 }),
+    /** 上传时以服务端读取的真实字节计算，供归档完整性校验；不信任客户端的文件名或 MIME 声明。 */
+    contentSha256: varchar("contentSha256", { length: 64 }),
+    contentBytes: int("contentBytes"),
     ocrResultJson: text("ocrResultJson"),
     watermarkJson: text("watermarkJson"),
     longitude: decimal("longitude", { precision: 11, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     capturedAt: datetime("capturedAt"),
+    /** 保留期限由经授权的资料政策设置；为空代表尚未确定，不得被系统解释为可删除。 */
+    retentionUntil: date("retentionUntil"),
+    status: mysqlEnum("status", ["active", "deleted"]).default("active").notNull(),
+    deletedAt: datetime("deletedAt"),
+    deletedBy: int("deletedBy"),
+    deletionReason: varchar("deletionReason", { length: 500 }),
     uploadedBy: int("uploadedBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ sourceIndex: index("evidence_records_source_index").on(table.sourceType, table.sourceId) }),
+  table => ({
+    sourceIndex: index("evidence_records_source_index").on(table.sourceType, table.sourceId),
+    projectStatusCreatedIndex: index("evidence_records_project_status_created_index").on(table.projectId, table.status, table.createdAt),
+    contentHashIndex: index("evidence_records_content_hash_index").on(table.contentSha256),
+    deletedByFk: foreignKey({ columns: [table.deletedBy], foreignColumns: [users.id], name: "evidence_records_deleted_by_fk" }).onDelete("restrict"),
+  }),
 );
 
 export type User = typeof users.$inferSelect;

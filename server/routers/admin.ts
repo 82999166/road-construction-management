@@ -32,6 +32,7 @@ import {
   purchaseRequests,
   projects,
   rolePermissions,
+  sensitiveDataAccessLogs,
   systemPermissions,
   systemRoles,
   systemSettings,
@@ -52,6 +53,7 @@ import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
+import { verifyAuditIntegrityChain } from "../services/auditIntegrity";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
@@ -2255,6 +2257,19 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(200);
+    }),
+    integrity: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用，无法校验审计链" });
+      return verifyAuditIntegrityChain(db);
+    }),
+    sensitiveAccesses: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(300).default(100) })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(sensitiveDataAccessLogs).orderBy(desc(sensitiveDataAccessLogs.createdAt)).limit(input.limit);
+      return input.projectId ? rows.filter(row => row.projectId === input.projectId) : rows;
     }),
   }),
 });
