@@ -2703,11 +2703,16 @@ export default function AdminPage() {
     const laborTeamAuditRows = payrollCategories.laborTeamRows;
     const payrollTeams = Array.from(new Set(payrolls.map(item => item.teamName || "未设置班组"))).sort();
     const dailyWageSummary = dailyWages.reduce((summary, item) => ({ actual: summary.actual + Number(item.actualAmount || 0), reviewing: summary.reviewing + (item.status === "reviewing" ? 1 : 0), approved: summary.approved + (item.status === "approved" ? 1 : 0), paid: summary.paid + (item.status === "paid" ? 1 : 0) }), { actual: 0, reviewing: 0, approved: 0, paid: 0 });
+    const laborWorkspaceQueryEnabled = canQuery && isLabor && hasBusinessWorkspaceProject;
+    const laborWorkspaceLoading = laborWorkspaceQueryEnabled && (laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading || laborDailyWages.isLoading);
+    const laborWorkspaceHasError = laborWorkspaceQueryEnabled && (laborWorkers.isError || laborAttendance.isError || laborCheckIns.isError || payrollStatements.isError || laborDailyWages.isError);
+    const retryLaborWorkspace = () => Promise.all([laborWorkers.refetch(), laborAttendance.refetch(), laborCheckIns.refetch(), payrollStatements.refetch(), laborDailyWages.refetch()]);
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">劳务工资 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">实名制、考勤与工资条</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">人员证件、手机号和银行卡均由服务端脱敏后返回；工资发放只保存付款凭证引用，不会在系统内发起转账。档案和工资条详情均在当前 PC 台账中查看。</p></div></div>
         {renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")}
-        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实劳务工资台账。" /> : laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading ? <EmptyState text="正在读取实名制、上下班考勤和工资条数据…" /> : laborWorkers.isError || laborAttendance.isError || laborCheckIns.isError || payrollStatements.isError ? <EmptyState text="暂无法读取劳务工资数据，请确认当前账号的服务端授权后重试。" /> : (
+        {hasBusinessWorkspaceProject && (laborWorkspaceLoading || laborWorkspaceHasError) ? <div className="flex justify-end"><Button size="sm" variant="outline" onClick={() => void retryLaborWorkspace()} disabled={laborWorkers.isFetching || laborAttendance.isFetching || laborCheckIns.isFetching || payrollStatements.isFetching || laborDailyWages.isFetching}>重新读取劳务台账</Button></div> : null}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实劳务工资台账。" /> : !laborWorkspaceQueryEnabled ? <EmptyState text="劳务台账查询尚未就绪，请刷新当前项目后重试。" /> : laborWorkspaceLoading ? <EmptyState text="正在读取实名制、上下班考勤、工资条和临时日结数据…" /> : laborWorkspaceHasError ? <EmptyState text="暂无法读取劳务工资数据，请确认当前账号的服务端授权后重试。" /> : (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="实名制人员" value={workers.length} description="已按敏感字段脱敏" icon={UsersRound} /><MetricCard title="在场人员" value={workers.filter(item => item.attendanceStatus === "active").length} description="可计入当前项目考勤" icon={ShieldCheck} /><MetricCard title="今日已上班" value={checkIns.length} description={`${checkIns.filter(item => item.checkedOutAt).length} 人已完成下班打卡`} icon={ScrollText} /><MetricCard title="待会计处理" value={payrolls.filter(item => item.status === "reviewing").length} description="审核中工资条" icon={BarChart3} /></section>
             <Card className="border-[#d8e3e0]">
