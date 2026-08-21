@@ -1966,6 +1966,139 @@ export const taxHandoffBatches = mysqlTable(
   }),
 );
 
+/**
+ * 工资薪金累计预扣辅助测算快照。收入来源由已审核/已付款工资事实重新汇总，
+ * 专项扣除、累计已扣税额和外部实际扣缴额必须由会计按真实资料录入；本表不构成申报记录。
+ */
+export const payrollTaxWithholdingEntries = mysqlTable(
+  "payroll_tax_withholding_entries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    workerId: int("workerId").notNull(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    incomeType: mysqlEnum("incomeType", ["resident_wage_salary", "labor_remuneration", "nonresident_wage_salary", "manual_review"]).notNull(),
+    sourceGrossIncome: decimal("sourceGrossIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    sourceDocumentCount: int("sourceDocumentCount").default(0).notNull(),
+    cumulativeGrossIncome: decimal("cumulativeGrossIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeExemptIncome: decimal("cumulativeExemptIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    employmentMonths: int("employmentMonths").default(0).notNull(),
+    cumulativeBasicDeduction: decimal("cumulativeBasicDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeSocialInsuranceDeduction: decimal("cumulativeSocialInsuranceDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeSpecialAdditionalDeduction: decimal("cumulativeSpecialAdditionalDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeOtherDeduction: decimal("cumulativeOtherDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeTaxableIncome: decimal("cumulativeTaxableIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    applicableRate: decimal("applicableRate", { precision: 7, scale: 4 }),
+    quickDeduction: decimal("quickDeduction", { precision: 16, scale: 2 }),
+    calculatedCumulativeTax: decimal("calculatedCumulativeTax", { precision: 16, scale: 2 }),
+    cumulativeTaxWithheldBefore: decimal("cumulativeTaxWithheldBefore", { precision: 16, scale: 2 }).default("0").notNull(),
+    calculatedCurrentWithholding: decimal("calculatedCurrentWithholding", { precision: 16, scale: 2 }),
+    externallyWithheldThisPeriod: decimal("externallyWithheldThisPeriod", { precision: 16, scale: 2 }),
+    externalReference: varchar("externalReference", { length: 200 }),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    calculationSnapshotJson: text("calculationSnapshotJson").notNull(),
+    status: mysqlEnum("status", ["draft", "reviewed", "handed_off", "receipt_recorded", "void"]).default("draft").notNull(),
+    reviewNote: varchar("reviewNote", { length: 1000 }),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    workerEntityPeriodUnique: uniqueIndex("payroll_tax_withholding_worker_entity_period_unique").on(table.workerId, table.taxEntityId, table.period, table.incomeType),
+    projectPeriodIndex: index("payroll_tax_withholding_project_period_index").on(table.projectId, table.period, table.status),
+    workerFk: foreignKey({ columns: [table.workerId], foreignColumns: [laborWorkers.id], name: "payroll_tax_withholding_worker_fk" }).onDelete("restrict"),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "payroll_tax_withholding_entity_fk" }).onDelete("restrict"),
+    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "payroll_tax_withholding_evidence_fk" }).onDelete("restrict"),
+    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "payroll_tax_withholding_reviewer_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "payroll_tax_withholding_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
+ * 合同印花税资料登记。合同金额快照来自真实外包合同，但计税依据、税目、税率和实际税额必须经专业人员确认。
+ */
+export const contractTaxRegistrations = mysqlTable(
+  "contract_tax_registrations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    contractId: bigint("contractId", { mode: "number" }).notNull(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    contractNoSnapshot: varchar("contractNoSnapshot", { length: 64 }).notNull(),
+    contractTypeSnapshot: varchar("contractTypeSnapshot", { length: 64 }).notNull(),
+    counterpartyNameSnapshot: varchar("counterpartyNameSnapshot", { length: 200 }).notNull(),
+    contractDate: date("contractDate"),
+    contractAmountSnapshot: decimal("contractAmountSnapshot", { precision: 16, scale: 2 }).default("0").notNull(),
+    contractEvidenceId: bigint("contractEvidenceId", { mode: "number" }),
+    taxItem: varchar("taxItem", { length: 100 }),
+    taxBaseAmount: decimal("taxBaseAmount", { precision: 16, scale: 2 }),
+    referenceTaxRate: decimal("referenceTaxRate", { precision: 7, scale: 4 }),
+    professionallyConfirmedTaxAmount: decimal("professionallyConfirmedTaxAmount", { precision: 16, scale: 2 }),
+    paymentReference: varchar("paymentReference", { length: 200 }),
+    paymentEvidenceId: bigint("paymentEvidenceId", { mode: "number" }),
+    status: mysqlEnum("status", ["pending_review", "confirmed", "handed_off", "receipt_recorded", "not_applicable", "void"]).default("pending_review").notNull(),
+    reviewNote: varchar("reviewNote", { length: 1000 }),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    contractUnique: uniqueIndex("contract_tax_registrations_contract_unique").on(table.contractId),
+    projectStatusIndex: index("contract_tax_registrations_project_status_index").on(table.projectId, table.status),
+    contractFk: foreignKey({ columns: [table.contractId], foreignColumns: [outsourceContracts.id], name: "contract_tax_registrations_contract_fk" }).onDelete("restrict"),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "contract_tax_registrations_entity_fk" }).onDelete("restrict"),
+    contractEvidenceFk: foreignKey({ columns: [table.contractEvidenceId], foreignColumns: [evidenceRecords.id], name: "contract_tax_registrations_contract_evidence_fk" }).onDelete("restrict"),
+    paymentEvidenceFk: foreignKey({ columns: [table.paymentEvidenceId], foreignColumns: [evidenceRecords.id], name: "contract_tax_registrations_payment_evidence_fk" }).onDelete("restrict"),
+    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "contract_tax_registrations_reviewer_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "contract_tax_registrations_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
+/**
+ * 跨地区建筑服务预缴资料台账，按项目和期间记录真实登记号、分包扣除凭证和实际完税信息；
+ * 金额为空或待复核时不得被解释为零税额或已完成预缴。
+ */
+export const crossRegionConstructionTaxLedgers = mysqlTable(
+  "cross_region_construction_tax_ledgers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    projectLocationSnapshot: varchar("projectLocationSnapshot", { length: 300 }).notNull(),
+    taxMethodSnapshot: mysqlEnum("taxMethodSnapshot", ["general", "small_scale", "simplified", "other"]).notNull(),
+    projectRegistrationReference: varchar("projectRegistrationReference", { length: 200 }),
+    revenueIncludingTaxAmount: decimal("revenueIncludingTaxAmount", { precision: 16, scale: 2 }),
+    subcontractDeductionAmount: decimal("subcontractDeductionAmount", { precision: 16, scale: 2 }),
+    subcontractDeductionReference: varchar("subcontractDeductionReference", { length: 200 }),
+    deductionEvidenceId: bigint("deductionEvidenceId", { mode: "number" }),
+    prepaidVatAmount: decimal("prepaidVatAmount", { precision: 16, scale: 2 }),
+    taxPaymentReference: varchar("taxPaymentReference", { length: 200 }),
+    taxPaymentEvidenceId: bigint("taxPaymentEvidenceId", { mode: "number" }),
+    status: mysqlEnum("status", ["pending_review", "ready_for_handoff", "receipt_recorded", "not_applicable", "void"]).default("pending_review").notNull(),
+    reviewNote: varchar("reviewNote", { length: 1000 }),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: datetime("reviewedAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    projectPeriodUnique: uniqueIndex("cross_region_construction_tax_project_period_unique").on(table.projectId, table.period),
+    entityPeriodIndex: index("cross_region_construction_tax_entity_period_index").on(table.taxEntityId, table.period, table.status),
+    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "cross_region_construction_tax_entity_fk" }).onDelete("restrict"),
+    deductionEvidenceFk: foreignKey({ columns: [table.deductionEvidenceId], foreignColumns: [evidenceRecords.id], name: "cross_region_construction_tax_deduction_evidence_fk" }).onDelete("restrict"),
+    paymentEvidenceFk: foreignKey({ columns: [table.taxPaymentEvidenceId], foreignColumns: [evidenceRecords.id], name: "cross_region_construction_tax_payment_evidence_fk" }).onDelete("restrict"),
+    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "cross_region_construction_tax_reviewer_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "cross_region_construction_tax_creator_fk" }).onDelete("restrict"),
+  }),
+);
+
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
 export const financialRecords = mysqlTable(
   "financial_records",

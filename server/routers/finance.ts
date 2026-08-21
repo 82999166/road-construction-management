@@ -1,10 +1,12 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
-import { inArray } from "drizzle-orm";
+import { inArray, lte } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
+  contractTaxRegistrations,
+  crossRegionConstructionTaxLedgers,
   dailyAccountingClosureEvents,
   dailyAccountingClosures,
   financialInvoiceOriginals,
@@ -15,8 +17,10 @@ import {
   measurementClaims,
   measurementTakeoffEvidences,
   measurementTakeoffRecords,
+  laborWorkers,
   outsourceContracts,
   payrollStatements,
+  payrollTaxWithholdingEntries,
   projectTaxProfiles,
   projects,
   purchaseCategories,
@@ -306,6 +310,67 @@ async function buildTaxHandoffManifest(
     columns: ["资料类别", "来源表", "来源单号/ID", "业务日期/期间", "摘要", "性质", "金额", "原始税额/已确认税额", "业务状态", "凭证/交接参考"],
     rows,
   };
+}
+
+const RESIDENT_WAGE_WITHHOLDING_BRACKETS = [
+  { ceiling: 36_000, rate: 0.03, quickDeduction: 0 },
+  { ceiling: 144_000, rate: 0.1, quickDeduction: 2_520 },
+  { ceiling: 300_000, rate: 0.2, quickDeduction: 16_920 },
+  { ceiling: 420_000, rate: 0.25, quickDeduction: 31_920 },
+  { ceiling: 660_000, rate: 0.3, quickDeduction: 52_920 },
+  { ceiling: 960_000, rate: 0.35, quickDeduction: 85_920 },
+  { ceiling: Number.POSITIVE_INFINITY, rate: 0.45, quickDeduction: 181_920 },
+] as const;
+
+function getResidentWageWithholdingBracket(taxableIncome: number) {
+  return RESIDENT_WAGE_WITHHOLDING_BRACKETS.find(bracket => taxableIncome <= bracket.ceiling) ?? RESIDENT_WAGE_WITHHOLDING_BRACKETS.at(-1)!;
+}
+
+/**
+ * 按国家税务总局公告2018年第56号的累计预扣公式生成“待复核”辅助测算。
+ * 本函数不读取或猜测专项附加扣除，相关数值必须由会计根据员工实际申报资料录入。
+ */
+async function buildPayrollTaxWithholdingSnapshot(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  input: z.infer<typeof payrollTaxWithholdingInput>,
+) {
+  const [profile, worker] = await Promise.all([
+    db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1).then(rows => rows[0]),
+    db.select().from(laborWorkers).where(eq(laborWorkers.id, input.workerId)).limit(1).then(rows => rows[0]),
+  ]);
+  if (!profile || profile.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "请先维护有效项目税务辅助档案" });
+  if (!worker || worker.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的劳务人员" });
+  const yearStart = toBusinessDate(`${input.period.slice(0, 4)}-01-01`);
+  const currentRange = getMonthRange(input.period);
+  const [monthlyPayroll, dailyPayroll] = await Promise.all([
+    db.select({ id: payrollStatements.id, period: payrollStatements.period, payableAmount: payrollStatements.payableAmount, status: payrollStatements.status })
+      .from(payrollStatements)
+      .where(and(eq(payrollStatements.workerId, input.workerId), eq(payrollStatements.projectId, input.projectId), gte(payrollStatements.period, `${input.period.slice(0, 4)}-01`), lte(payrollStatements.period, input.period), inArray(payrollStatements.status, ["approved", "paid"]))),
+    db.select({ id: temporaryDailyWageSettlements.id, settlementDate: temporaryDailyWageSettlements.settlementDate, payableAmount: temporaryDailyWageSettlements.payableAmount, status: temporaryDailyWageSettlements.status })
+      .from(temporaryDailyWageSettlements)
+      .where(and(eq(temporaryDailyWageSettlements.workerId, input.workerId), eq(temporaryDailyWageSettlements.projectId, input.projectId), gte(temporaryDailyWageSettlements.settlementDate, yearStart), lt(temporaryDailyWageSettlements.settlementDate, currentRange.endExclusive), inArray(temporaryDailyWageSettlements.status, ["approved", "paid"]))),
+  ]);
+  const currentMonthly = monthlyPayroll.filter(item => item.period === input.period);
+  const currentDaily = dailyPayroll.filter(item => item.settlementDate >= currentRange.start && item.settlementDate < currentRange.endExclusive);
+  const sourceGrossIncome = roundMoney([...currentMonthly, ...currentDaily].reduce((sum, item) => sum + Number(item.payableAmount), 0));
+  const cumulativeGrossIncome = roundMoney([...monthlyPayroll, ...dailyPayroll].reduce((sum, item) => sum + Number(item.payableAmount), 0));
+  const sourceDocumentCount = currentMonthly.length + currentDaily.length;
+  const cumulativeBasicDeduction = input.incomeType === "resident_wage_salary" ? roundMoney(input.employmentMonths * 5_000) : 0;
+  const cumulativeTaxableIncome = roundMoney(Math.max(0, cumulativeGrossIncome - input.cumulativeExemptIncome - cumulativeBasicDeduction - input.cumulativeSocialInsuranceDeduction - input.cumulativeSpecialAdditionalDeduction - input.cumulativeOtherDeduction));
+  const canCalculateResidentWage = input.incomeType === "resident_wage_salary";
+  const bracket = canCalculateResidentWage ? getResidentWageWithholdingBracket(cumulativeTaxableIncome) : null;
+  const calculatedCumulativeTax = bracket ? roundMoney(Math.max(0, cumulativeTaxableIncome * bracket.rate - bracket.quickDeduction)) : null;
+  const calculatedCurrentWithholding = calculatedCumulativeTax === null ? null : roundMoney(Math.max(0, calculatedCumulativeTax - input.cumulativeTaxWithheldBefore));
+  const snapshot = {
+    formulaVersion: "resident-wage-cumulative-withholding-v1",
+    regulationReference: "国家税务总局公告2018年第56号；个人所得税预扣率表一",
+    createdAt: new Date().toISOString(),
+    source: { payrollStatementCount: currentMonthly.length, temporaryDailySettlementCount: currentDaily.length, currentPeriodGrossIncome: sourceGrossIncome, cumulativeGrossIncome },
+    declaredCumulativeDeductions: { exemptIncome: input.cumulativeExemptIncome, basicDeduction: cumulativeBasicDeduction, socialInsuranceDeduction: input.cumulativeSocialInsuranceDeduction, specialAdditionalDeduction: input.cumulativeSpecialAdditionalDeduction, otherDeduction: input.cumulativeOtherDeduction },
+    result: { cumulativeTaxableIncome, rate: bracket?.rate ?? null, quickDeduction: bracket?.quickDeduction ?? null, calculatedCumulativeTax, cumulativeTaxWithheldBefore: input.cumulativeTaxWithheldBefore, calculatedCurrentWithholding },
+    boundary: canCalculateResidentWage ? "辅助测算，须由持证人员结合居民身份、任职月份及扣除资料复核后申报" : "该收入类别不适用本系统居民工资薪金累计预扣自动测算；仅归集真实来源，须由专业人员复核",
+  };
+  return { profile, worker, sourceGrossIncome, sourceDocumentCount, cumulativeGrossIncome, cumulativeBasicDeduction, cumulativeTaxableIncome, applicableRate: bracket?.rate ?? null, quickDeduction: bracket?.quickDeduction ?? null, calculatedCumulativeTax, calculatedCurrentWithholding, snapshot };
 }
 
 /** 采购申请审批权仅限项目负责人、财务负责人和系统管理员。 */
@@ -603,6 +668,82 @@ const taxHandoffTransitionInput = z.object({
   receiptReference: z.string().trim().max(200).nullable().optional(),
   receiptEvidenceId: z.number().int().positive().nullable().optional(),
   notes: z.string().trim().max(500).nullable().optional(),
+});
+
+/** 累计预扣辅助测算的可变资料项；工资收入必须由已审核/已付款的工资事实在服务端重算。 */
+const payrollTaxWithholdingInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  workerId: z.number().int().positive(),
+  period: periodSchema,
+  incomeType: z.enum(["resident_wage_salary", "labor_remuneration", "nonresident_wage_salary", "manual_review"]),
+  cumulativeExemptIncome: moneySchema,
+  employmentMonths: z.number().int().min(0).max(12),
+  cumulativeSocialInsuranceDeduction: moneySchema,
+  cumulativeSpecialAdditionalDeduction: moneySchema,
+  cumulativeOtherDeduction: moneySchema,
+  cumulativeTaxWithheldBefore: moneySchema,
+  externallyWithheldThisPeriod: moneySchema.nullable().optional(),
+  externalReference: z.string().trim().max(200).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
+});
+
+const payrollTaxWithholdingTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["reviewed", "handed_off", "receipt_recorded", "void"]),
+  externalReference: z.string().trim().max(200).nullable().optional(),
+  evidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
+});
+
+/** 合同印花税资料只从真实合同快照读取；税目、计税依据、税率和实际税额均须人工专业确认。 */
+const contractTaxRegistrationInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  contractId: z.number().int().positive(),
+  taxItem: z.string().trim().max(100).nullable().optional(),
+  taxBaseAmount: moneySchema.nullable().optional(),
+  referenceTaxRate: z.number().min(0).max(1).nullable().optional(),
+  professionallyConfirmedTaxAmount: moneySchema.nullable().optional(),
+  paymentReference: z.string().trim().max(200).nullable().optional(),
+  paymentEvidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
+});
+
+const contractTaxRegistrationTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["confirmed", "handed_off", "receipt_recorded", "not_applicable", "void"]),
+  paymentReference: z.string().trim().max(200).nullable().optional(),
+  paymentEvidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
+});
+
+/** 跨地区预缴资料项按项目/期间唯一，字段只承载实际业务资料与完税凭证引用。 */
+const crossRegionConstructionTaxInput = z.object({
+  id: z.number().int().positive().optional(),
+  projectId: z.number().int().positive(),
+  period: periodSchema,
+  projectRegistrationReference: z.string().trim().max(200).nullable().optional(),
+  revenueIncludingTaxAmount: moneySchema.nullable().optional(),
+  subcontractDeductionAmount: moneySchema.nullable().optional(),
+  subcontractDeductionReference: z.string().trim().max(200).nullable().optional(),
+  deductionEvidenceId: z.number().int().positive().nullable().optional(),
+  prepaidVatAmount: moneySchema.nullable().optional(),
+  taxPaymentReference: z.string().trim().max(200).nullable().optional(),
+  taxPaymentEvidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
+});
+
+const crossRegionConstructionTaxTransitionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  targetStatus: z.enum(["ready_for_handoff", "receipt_recorded", "not_applicable", "void"]),
+  taxPaymentReference: z.string().trim().max(200).nullable().optional(),
+  taxPaymentEvidenceId: z.number().int().positive().nullable().optional(),
+  reviewNote: z.string().trim().max(1000).nullable().optional(),
 });
 
 /** 项目部收方草稿，工程量与单价由服务端重新计算申报金额。 */
@@ -1256,16 +1397,26 @@ export const financeRouter = router({
     const db = await getDb();
     if (!db) return { projectProfile: null, entityOptions: [], entries: [], handoffBatches: [], disclaimer: "数据库暂不可用，无法读取财税辅助资料。" };
     const [projectProfile] = await db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1);
-    const [entityOptions, entries, batches] = await Promise.all([
+    const [entityOptions, entries, batches, workers, payrollTaxEntries, contracts, contractTaxEntries, crossRegionLedger] = await Promise.all([
       db.select().from(taxEntityProfiles).where(inArray(taxEntityProfiles.status, ["active", "suspended"])).orderBy(taxEntityProfiles.entityName),
       db.select().from(taxAuxiliaryEntries).where(and(eq(taxAuxiliaryEntries.projectId, input.projectId), eq(taxAuxiliaryEntries.period, input.period))).orderBy(desc(taxAuxiliaryEntries.updatedAt), desc(taxAuxiliaryEntries.id)),
       db.select({ id: taxHandoffBatches.id, batchNo: taxHandoffBatches.batchNo, period: taxHandoffBatches.period, handoffType: taxHandoffBatches.handoffType, format: taxHandoffBatches.format, recordCount: taxHandoffBatches.recordCount, snapshotHash: taxHandoffBatches.snapshotHash, receiptReference: taxHandoffBatches.receiptReference, receiptEvidenceId: taxHandoffBatches.receiptEvidenceId, status: taxHandoffBatches.status, generatedAt: taxHandoffBatches.generatedAt, receiptRecordedAt: taxHandoffBatches.receiptRecordedAt, notes: taxHandoffBatches.notes }).from(taxHandoffBatches).where(and(eq(taxHandoffBatches.projectId, input.projectId), eq(taxHandoffBatches.period, input.period))).orderBy(desc(taxHandoffBatches.generatedAt)),
+      db.select({ id: laborWorkers.id, realName: laborWorkers.realName, workerCategory: laborWorkers.workerCategory, teamName: laborWorkers.teamName, attendanceStatus: laborWorkers.attendanceStatus }).from(laborWorkers).where(eq(laborWorkers.projectId, input.projectId)).orderBy(laborWorkers.realName),
+      db.select().from(payrollTaxWithholdingEntries).where(and(eq(payrollTaxWithholdingEntries.projectId, input.projectId), eq(payrollTaxWithholdingEntries.period, input.period))).orderBy(payrollTaxWithholdingEntries.workerId, payrollTaxWithholdingEntries.incomeType),
+      db.select().from(outsourceContracts).where(eq(outsourceContracts.projectId, input.projectId)).orderBy(outsourceContracts.contractNo),
+      db.select().from(contractTaxRegistrations).where(eq(contractTaxRegistrations.projectId, input.projectId)).orderBy(desc(contractTaxRegistrations.updatedAt)),
+      db.select().from(crossRegionConstructionTaxLedgers).where(and(eq(crossRegionConstructionTaxLedgers.projectId, input.projectId), eq(crossRegionConstructionTaxLedgers.period, input.period))).limit(1).then(rows => rows[0] ?? null),
     ]);
     return {
       projectProfile: projectProfile ?? null,
       entityOptions,
       entries,
       handoffBatches: batches,
+      workers,
+      payrollTaxEntries,
+      contracts,
+      contractTaxEntries,
+      crossRegionLedger,
       disclaimer: "本区仅归集真实项目业务资料、人工确认的辅助事项及外部系统回执引用；不自动计算税额、不生成纳税申报结果，也不替代持证会计师或税务师。",
     };
   }),
@@ -1395,6 +1546,162 @@ export const financeRouter = router({
     const result = await db.update(taxHandoffBatches).set({ status: input.targetStatus, receiptReference: input.receiptReference ?? batch.receiptReference, receiptEvidenceId: input.receiptEvidenceId ?? batch.receiptEvidenceId, receiptRecordedBy: input.targetStatus === "receipt_recorded" ? user.id : batch.receiptRecordedBy, receiptRecordedAt: input.targetStatus === "receipt_recorded" ? new Date() : batch.receiptRecordedAt, notes: input.notes ?? batch.notes }).where(and(eq(taxHandoffBatches.id, input.id), eq(taxHandoffBatches.status, batch.status)));
     assertConditionalBusinessWrite(result, "财税交接批次已被其他用户更新，请刷新后重试");
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_handoff_${input.targetStatus}`, targetType: "tax_handoff_batch", targetId: batch.batchNo, summary: `财税交接批次状态变更为：${input.targetStatus}` });
+    return { success: true };
+  }),
+
+  /** 依据真实工资单和临时日结生成居民工资薪金累计预扣辅助测算，扣除资料和外部实际扣缴额必须由会计确认。 */
+  savePayrollTaxWithholdingEntry: protectedProcedure.input(payrollTaxWithholdingInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "薪税辅助测算仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const calculated = await buildPayrollTaxWithholdingSnapshot(db, input);
+    const values = {
+      workerId: input.workerId,
+      projectId: input.projectId,
+      taxEntityId: calculated.profile.taxEntityId,
+      period: input.period,
+      incomeType: input.incomeType,
+      sourceGrossIncome: String(calculated.sourceGrossIncome),
+      sourceDocumentCount: calculated.sourceDocumentCount,
+      cumulativeGrossIncome: String(calculated.cumulativeGrossIncome),
+      cumulativeExemptIncome: String(roundMoney(input.cumulativeExemptIncome)),
+      employmentMonths: input.employmentMonths,
+      cumulativeBasicDeduction: String(calculated.cumulativeBasicDeduction),
+      cumulativeSocialInsuranceDeduction: String(roundMoney(input.cumulativeSocialInsuranceDeduction)),
+      cumulativeSpecialAdditionalDeduction: String(roundMoney(input.cumulativeSpecialAdditionalDeduction)),
+      cumulativeOtherDeduction: String(roundMoney(input.cumulativeOtherDeduction)),
+      cumulativeTaxableIncome: String(calculated.cumulativeTaxableIncome),
+      applicableRate: calculated.applicableRate === null ? null : String(calculated.applicableRate),
+      quickDeduction: calculated.quickDeduction === null ? null : String(calculated.quickDeduction),
+      calculatedCumulativeTax: calculated.calculatedCumulativeTax === null ? null : String(calculated.calculatedCumulativeTax),
+      cumulativeTaxWithheldBefore: String(roundMoney(input.cumulativeTaxWithheldBefore)),
+      calculatedCurrentWithholding: calculated.calculatedCurrentWithholding === null ? null : String(calculated.calculatedCurrentWithholding),
+      externallyWithheldThisPeriod: input.externallyWithheldThisPeriod === null || input.externallyWithheldThisPeriod === undefined ? null : String(roundMoney(input.externallyWithheldThisPeriod)),
+      externalReference: input.externalReference ?? null,
+      evidenceId: input.evidenceId ?? null,
+      calculationSnapshotJson: JSON.stringify(calculated.snapshot),
+      reviewNote: input.reviewNote ?? null,
+    };
+    if (input.id) {
+      const [existing] = await db.select().from(payrollTaxWithholdingEntries).where(eq(payrollTaxWithholdingEntries.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目薪税辅助测算" });
+      if (existing.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "已复核、已交接、已登记回执或已作废的测算不可直接修改" });
+      await db.update(payrollTaxWithholdingEntries).set(values).where(and(eq(payrollTaxWithholdingEntries.id, input.id), eq(payrollTaxWithholdingEntries.status, "draft")));
+    } else {
+      await db.insert(payrollTaxWithholdingEntries).values({ ...values, status: "draft", createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_payroll_tax_withholding" : "create_payroll_tax_withholding", targetType: "payroll_tax_withholding", targetId: String(input.id ?? `${input.workerId}:${input.period}`), summary: `生成${input.period}工资薪金累计预扣辅助测算：${calculated.worker.realName}` });
+    return { success: true, calculation: { sourceGrossIncome: calculated.sourceGrossIncome, cumulativeGrossIncome: calculated.cumulativeGrossIncome, calculatedCurrentWithholding: calculated.calculatedCurrentWithholding, isResidentWageCalculation: input.incomeType === "resident_wage_salary" } };
+  }),
+
+  /** 薪税测算状态不能回退；登记回执只接受真实外部扣缴或交接引用。 */
+  transitionPayrollTaxWithholdingEntry: protectedProcedure.input(payrollTaxWithholdingTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "薪税辅助测算状态仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [entry] = await db.select().from(payrollTaxWithholdingEntries).where(eq(payrollTaxWithholdingEntries.id, input.id)).limit(1);
+    if (!entry || entry.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目薪税辅助测算" });
+    const allowedTargets: Record<string, string[]> = { draft: ["reviewed", "void"], reviewed: ["handed_off", "void"], handed_off: ["receipt_recorded", "void"], receipt_recorded: [], void: [] };
+    if (!allowedTargets[entry.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前薪税辅助测算状态不允许该操作" });
+    if (input.targetStatus === "receipt_recorded" && !input.externalReference && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部扣缴/申报回执时至少填写外部引用或关联受控证据" });
+    const result = await db.update(payrollTaxWithholdingEntries).set({ status: input.targetStatus, externalReference: input.externalReference ?? entry.externalReference, evidenceId: input.evidenceId ?? entry.evidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: input.targetStatus === "reviewed" ? user.id : entry.reviewedBy, reviewedAt: input.targetStatus === "reviewed" ? new Date() : entry.reviewedAt }).where(and(eq(payrollTaxWithholdingEntries.id, input.id), eq(payrollTaxWithholdingEntries.status, entry.status)));
+    assertConditionalBusinessWrite(result, "薪税辅助测算已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_payroll_tax_${input.targetStatus}`, targetType: "payroll_tax_withholding", targetId: String(input.id), summary: `薪税辅助测算状态变更为：${input.targetStatus}` });
+    return { success: true };
+  }),
+
+  /** 合同印花税资料必须从真实外包合同快照创建，避免在税务台账二次录入或伪造合同金额。 */
+  saveContractTaxRegistration: protectedProcedure.input(contractTaxRegistrationInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "合同税费资料仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [[profile], [contract]] = await Promise.all([
+      db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1),
+      db.select().from(outsourceContracts).where(eq(outsourceContracts.id, input.contractId)).limit(1),
+    ]);
+    if (!profile || profile.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "请先维护有效项目税务辅助档案" });
+    if (!contract || contract.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目外包合同" });
+    const values = { contractId: input.contractId, projectId: input.projectId, taxEntityId: profile.taxEntityId, contractNoSnapshot: contract.contractNo, contractTypeSnapshot: contract.contractType, counterpartyNameSnapshot: contract.counterpartyName, contractDate: contract.startDate ?? null, contractAmountSnapshot: String(contract.contractAmount), contractEvidenceId: contract.attachmentEvidenceId ?? null, taxItem: input.taxItem ?? null, taxBaseAmount: input.taxBaseAmount === null || input.taxBaseAmount === undefined ? null : String(roundMoney(input.taxBaseAmount)), referenceTaxRate: input.referenceTaxRate === null || input.referenceTaxRate === undefined ? null : String(input.referenceTaxRate), professionallyConfirmedTaxAmount: input.professionallyConfirmedTaxAmount === null || input.professionallyConfirmedTaxAmount === undefined ? null : String(roundMoney(input.professionallyConfirmedTaxAmount)), paymentReference: input.paymentReference ?? null, paymentEvidenceId: input.paymentEvidenceId ?? null, reviewNote: input.reviewNote ?? null };
+    if (input.id) {
+      const [existing] = await db.select().from(contractTaxRegistrations).where(eq(contractTaxRegistrations.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目合同税费资料" });
+      if (existing.status !== "pending_review") throw new TRPCError({ code: "CONFLICT", message: "已确认、已交接、已登记回执或已作废的合同税费资料不可直接修改" });
+      await db.update(contractTaxRegistrations).set(values).where(and(eq(contractTaxRegistrations.id, input.id), eq(contractTaxRegistrations.status, "pending_review")));
+    } else {
+      await db.insert(contractTaxRegistrations).values({ ...values, status: "pending_review", createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_contract_tax_registration" : "create_contract_tax_registration", targetType: "contract_tax_registration", targetId: String(input.id ?? input.contractId), summary: `维护合同税费辅助资料：${contract.contractNo}` });
+    return { success: true };
+  }),
+
+  transitionContractTaxRegistration: protectedProcedure.input(contractTaxRegistrationTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "合同税费资料状态仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [entry] = await db.select().from(contractTaxRegistrations).where(eq(contractTaxRegistrations.id, input.id)).limit(1);
+    if (!entry || entry.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目合同税费资料" });
+    const allowedTargets: Record<string, string[]> = { pending_review: ["confirmed", "not_applicable", "void"], confirmed: ["handed_off", "void"], handed_off: ["receipt_recorded", "void"], receipt_recorded: [], not_applicable: [], void: [] };
+    if (!allowedTargets[entry.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前合同税费资料状态不允许该操作" });
+    if (input.targetStatus === "confirmed" && !entry.taxItem && entry.professionallyConfirmedTaxAmount === null) throw new TRPCError({ code: "BAD_REQUEST", message: "确认合同税费资料前请至少记录税目或专业确认税额" });
+    if (input.targetStatus === "receipt_recorded" && !input.paymentReference && !input.paymentEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记合同税费回执时至少填写支付/回执引用或关联受控证据" });
+    const result = await db.update(contractTaxRegistrations).set({ status: input.targetStatus, paymentReference: input.paymentReference ?? entry.paymentReference, paymentEvidenceId: input.paymentEvidenceId ?? entry.paymentEvidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: ["confirmed", "not_applicable"].includes(input.targetStatus) ? user.id : entry.reviewedBy, reviewedAt: ["confirmed", "not_applicable"].includes(input.targetStatus) ? new Date() : entry.reviewedAt }).where(and(eq(contractTaxRegistrations.id, input.id), eq(contractTaxRegistrations.status, entry.status)));
+    assertConditionalBusinessWrite(result, "合同税费资料已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_contract_tax_${input.targetStatus}`, targetType: "contract_tax_registration", targetId: String(input.id), summary: `合同税费资料状态变更为：${input.targetStatus}` });
+    return { success: true };
+  }),
+
+  /** 跨地区建筑服务预缴资料按项目和期间唯一；金额与凭证均由会计根据真实登记和完税资料登记。 */
+  saveCrossRegionConstructionTaxLedger: protectedProcedure.input(crossRegionConstructionTaxInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "跨地区预缴资料仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [profile] = await db.select().from(projectTaxProfiles).where(eq(projectTaxProfiles.projectId, input.projectId)).limit(1);
+    if (!profile || profile.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "请先维护有效项目税务辅助档案" });
+    if (!profile.crossRegionConstruction) throw new TRPCError({ code: "CONFLICT", message: "当前项目未标记跨地区建筑服务；如确有业务，请先由会计维护项目税务档案" });
+    const values = { projectId: input.projectId, taxEntityId: profile.taxEntityId, period: input.period, projectLocationSnapshot: profile.projectLocation, taxMethodSnapshot: profile.taxMethod, projectRegistrationReference: input.projectRegistrationReference ?? null, revenueIncludingTaxAmount: input.revenueIncludingTaxAmount === null || input.revenueIncludingTaxAmount === undefined ? null : String(roundMoney(input.revenueIncludingTaxAmount)), subcontractDeductionAmount: input.subcontractDeductionAmount === null || input.subcontractDeductionAmount === undefined ? null : String(roundMoney(input.subcontractDeductionAmount)), subcontractDeductionReference: input.subcontractDeductionReference ?? null, deductionEvidenceId: input.deductionEvidenceId ?? null, prepaidVatAmount: input.prepaidVatAmount === null || input.prepaidVatAmount === undefined ? null : String(roundMoney(input.prepaidVatAmount)), taxPaymentReference: input.taxPaymentReference ?? null, taxPaymentEvidenceId: input.taxPaymentEvidenceId ?? null, reviewNote: input.reviewNote ?? null };
+    if (input.id) {
+      const [existing] = await db.select().from(crossRegionConstructionTaxLedgers).where(eq(crossRegionConstructionTaxLedgers.id, input.id)).limit(1);
+      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目跨地区预缴资料" });
+      if (existing.status !== "pending_review") throw new TRPCError({ code: "CONFLICT", message: "已交接、已登记回执或已作废的跨地区预缴资料不可直接修改" });
+      await db.update(crossRegionConstructionTaxLedgers).set(values).where(and(eq(crossRegionConstructionTaxLedgers.id, input.id), eq(crossRegionConstructionTaxLedgers.status, "pending_review")));
+    } else {
+      await db.insert(crossRegionConstructionTaxLedgers).values({ ...values, status: "pending_review", createdBy: user.id });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_cross_region_construction_tax" : "create_cross_region_construction_tax", targetType: "cross_region_construction_tax", targetId: String(input.id ?? `${input.projectId}:${input.period}`), summary: `维护${input.period}跨地区建筑服务预缴辅助资料` });
+    return { success: true };
+  }),
+
+  transitionCrossRegionConstructionTaxLedger: protectedProcedure.input(crossRegionConstructionTaxTransitionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "跨地区预缴资料状态仅限会计或财务负责人维护" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [entry] = await db.select().from(crossRegionConstructionTaxLedgers).where(eq(crossRegionConstructionTaxLedgers.id, input.id)).limit(1);
+    if (!entry || entry.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目跨地区预缴资料" });
+    const allowedTargets: Record<string, string[]> = { pending_review: ["ready_for_handoff", "not_applicable", "void"], ready_for_handoff: ["receipt_recorded", "void"], receipt_recorded: [], not_applicable: [], void: [] };
+    if (!allowedTargets[entry.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前跨地区预缴资料状态不允许该操作" });
+    if (input.targetStatus === "ready_for_handoff" && !entry.projectRegistrationReference) throw new TRPCError({ code: "BAD_REQUEST", message: "交接跨地区预缴资料前请填写项目登记/报验引用" });
+    if (input.targetStatus === "receipt_recorded" && !input.taxPaymentReference && !input.taxPaymentEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记实际预缴回执时至少填写完税/回执引用或关联受控证据" });
+    const result = await db.update(crossRegionConstructionTaxLedgers).set({ status: input.targetStatus, taxPaymentReference: input.taxPaymentReference ?? entry.taxPaymentReference, taxPaymentEvidenceId: input.taxPaymentEvidenceId ?? entry.taxPaymentEvidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: ["ready_for_handoff", "not_applicable"].includes(input.targetStatus) ? user.id : entry.reviewedBy, reviewedAt: ["ready_for_handoff", "not_applicable"].includes(input.targetStatus) ? new Date() : entry.reviewedAt }).where(and(eq(crossRegionConstructionTaxLedgers.id, input.id), eq(crossRegionConstructionTaxLedgers.status, entry.status)));
+    assertConditionalBusinessWrite(result, "跨地区预缴资料已被其他用户更新，请刷新后重试");
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_cross_region_tax_${input.targetStatus}`, targetType: "cross_region_construction_tax", targetId: String(input.id), summary: `跨地区预缴资料状态变更为：${input.targetStatus}` });
     return { success: true };
   }),
 
