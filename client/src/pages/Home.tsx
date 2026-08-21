@@ -26,7 +26,7 @@ export default function Home() {
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-6 lg:px-8">
         <div className="flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#203c48] text-white shadow-sm"><HardHat className="h-5 w-5" /></div>
-          <div><p className="text-sm font-semibold tracking-tight">工程云管</p><p className="text-xs text-slate-500">施工承包一体化管理平台</p></div>
+          <div><p className="text-sm font-semibold tracking-tight">悦信云智管</p><p className="text-xs text-slate-500">工程承包一体化管理平台</p></div>
         </div>
         <div className="flex items-center gap-2">
           {isAuthenticated ? <span className="hidden text-sm text-slate-500 sm:inline">您好，{user?.name || "用户"}</span> : null}

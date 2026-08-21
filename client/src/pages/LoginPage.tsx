@@ -92,13 +92,13 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   }
 
   return (
-    <main className="min-h-screen bg-[#2c1712] px-5 py-8 text-[#fff8ed] sm:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-5xl items-center justify-center">
+    <main className="min-h-screen bg-[#2c1712] px-4 py-4 text-[#fff8ed] sm:px-8 sm:py-8">
+      <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-5xl items-center justify-center sm:min-h-[calc(100vh-4rem)]">
         <section className="grid w-full overflow-hidden rounded-[32px] border border-white/10 bg-[#3a2119] shadow-[0_30px_90px_rgba(12,4,2,.38)] lg:grid-cols-[1.05fr_.95fr]">
-          <div className="relative overflow-hidden bg-[radial-gradient(circle_at_22%_18%,rgba(201,133,74,.34),transparent_35%),linear-gradient(145deg,#6a3c28_0%,#2b1813_72%)] p-8 sm:p-12">
+          <div className="relative hidden overflow-hidden bg-[radial-gradient(circle_at_22%_18%,rgba(201,133,74,.34),transparent_35%),linear-gradient(145deg,#6a3c28_0%,#2b1813_72%)] p-12 lg:block">
             <div className="flex items-center gap-3">
               <div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#f4dfc3] text-[#3b2118]"><HardHat className="h-5 w-5" /></div>
-              <div><p className="font-semibold tracking-tight">工程云管</p><p className="text-xs text-[#e6cdb0]">施工承包一体化管理平台</p></div>
+              <div><p className="font-semibold tracking-tight">悦信云智管</p><p className="text-xs text-[#e6cdb0]">工程承包一体化管理平台</p></div>
             </div>
             <div className="mt-16 max-w-md">
               <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />{localAdminOnly ? "全局治理专属入口" : "业务管理身份认证"}</span>
@@ -106,10 +106,10 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
             <p className="mt-5 text-sm leading-7 text-[#ead4bc]">{localAdminOnly ? "此入口仅供超级管理员进行组织、权限、接口与审计治理。普通管理人员请返回业务登录入口。" : "此入口供普通管理员和业务人员登录。系统仅展示您已获授权的角色、部门、组织和项目业务版块。"}</p>
             </div>
           </div>
-          <div className="flex flex-col justify-center bg-[#fffaf3] p-8 text-[#3b2118] sm:p-12">
-            <p className="text-sm font-medium text-[#9a6036]">欢迎使用</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight">{localAdminOnly ? "超级管理员登录" : "普通管理员登录"}</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-600">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "使用管理人员账号或已绑定微信完成登录。系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
+          <div className="flex flex-col justify-center bg-[#fffaf3] p-6 text-[#3b2118] sm:p-12">
+            <p className="text-sm font-semibold text-[#9a6036]">悦信云智管</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:mt-3 sm:text-3xl">{localAdminOnly ? "超级管理员登录" : "管理员登录"}</h2>
+            <p className="mt-4 hidden text-sm leading-6 text-slate-600 lg:block">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "使用管理人员账号或已绑定微信完成登录。系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
             {!localAdminOnly ? <div className="mt-7 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><MessageCircle className="h-4 w-4" />微信授权登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-600">请在已关注服务号且已完成系统绑定的微信内打开。微信只验证您已有的系统账号，不会自动创建账号或扩大权限。</p>
@@ -157,7 +157,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               </Button>
             </form> : <a href="/admin/login" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#bd8a66] bg-[#fff8f2] px-4 py-3 text-sm font-semibold text-[#653b26] transition-colors hover:bg-[#f2e0cf]"><ShieldCheck className="h-4 w-4" />进入超级管理员登录</a>}
             </>}
-            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />返回普通管理员登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 text-center text-xs leading-5 text-slate-500">如需帮助，请联系超级管理员重置管理人员账号或在移动端完成微信绑定；全局治理请使用独立的超级管理员入口。</p></>}
+            {localAdminOnly ? <a href="/login" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><ArrowRight className="h-4 w-4" />返回普通管理员登录</a> : <><a href="/api/identity-recovery" className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-[#365560] transition-colors hover:border-[#8ba4aa] hover:bg-[#f4f8f8]"><KeyRound className="h-4 w-4" />账号恢复与密码重置</a><p className="mt-5 hidden text-center text-xs leading-5 text-slate-500 sm:block">如需帮助，请联系超级管理员重置管理人员账号或在移动端完成微信绑定；全局治理请使用独立的超级管理员入口。</p></>}
           </div>
         </section>
       </div>

@@ -25,7 +25,7 @@ export type EvidenceWatermarkTemplate = {
 export const DEFAULT_EVIDENCE_WATERMARK_TEMPLATE: EvidenceWatermarkTemplate = {
   style: "engineering_card",
   title: "工程水印",
-  organizationLabel: "工程云管",
+  organizationLabel: "悦信云智管",
   footerLabel: "防伪水印 · 真实时间",
   fields: ["capturedAt", "principal", "weather", "location", "coordinates", "organization", "project", "antiCounterfeit"],
 };

@@ -29,6 +29,9 @@ import LoginPage from "./LoginPage";
 describe("独立登录页", () => {
   it("普通管理员入口保留微信和本地管理登录，不展示企业身份或超级管理员口令表单", () => {
     const markup = renderToStaticMarkup(<LoginPage />);
+    expect(markup).toContain("悦信云智管");
+    expect(markup).toContain("hidden overflow-hidden");
+    expect(markup).toContain("text-slate-600 lg:block");
     expect(markup).toContain("微信授权登录");
     expect(markup).toContain("使用已绑定微信授权登录");
     expect(markup).toContain("不会自动创建账号或扩大权限");

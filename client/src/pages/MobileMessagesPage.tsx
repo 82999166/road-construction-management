@@ -56,7 +56,7 @@ export default function MobileMessagesPage() {
       <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
         <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-7 pt-6 text-[#fff7ea]">
           <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-[#c9854a]/20 blur-2xl" />
-          <div className="relative flex items-center gap-3"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div><p className="text-sm font-semibold">工程云管</p><h1 className="mt-0.5 text-xl font-semibold">消息中心</h1></div></div>
+          <div className="relative flex items-center gap-3"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div><p className="text-sm font-semibold">悦信云智管</p><h1 className="mt-0.5 text-xl font-semibold">消息中心</h1></div></div>
           <p className="relative mt-4 text-xs leading-5 text-[#e8cfb2]">工资审核、实名核验与业务办理状态将以站内消息形式留痕提醒。</p>
         </header>
 

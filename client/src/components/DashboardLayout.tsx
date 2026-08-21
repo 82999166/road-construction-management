@@ -193,7 +193,7 @@ function DashboardLayoutContent({
               {!isCollapsed ? (
                 <div className="min-w-0">
                     <span className="block truncate text-sm font-semibold tracking-wide text-white">{title}</span>
-                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">ROAD · COMMAND · OS</span>
+                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">YUEXIN · SMART · MANAGEMENT</span>
                 </div>
               ) : null}
             </div>
