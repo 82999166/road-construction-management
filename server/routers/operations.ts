@@ -288,7 +288,9 @@ const transportRoutePresetInput = z.object({
   freightRuleId: z.number().int().positive(),
   presetDistanceKm: z.number().gt(0).max(9999),
   minimumTransitMinutes: z.number().int().min(1, "最短运输时间至少 1 分钟").max(1440, "最短运输时间不能超过 24 小时").default(10),
+  minimumTransitEnabled: z.boolean().default(true),
   unloadGeofenceMeters: z.number().int().min(30, "卸土点定位容差至少 30 米").max(5000, "卸土点定位容差不能超过 5000 米").default(300),
+  unloadGeofenceEnabled: z.boolean().default(true),
   isDefault: z.boolean().default(false),
   status: z.enum(["active", "disabled"]),
 }).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
@@ -650,13 +652,32 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       expectedSiteId ? db.select().from(transportSites).where(eq(transportSites.id, expectedSiteId)).limit(1) : Promise.resolve([]),
     ]);
     if (!route || !unloadSite) return markNeedsReview("当前卸土路线或地点配置已失效，不能直接确认卸土，请人工核验");
+    const safetyNotices: string[] = [];
     const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
     const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(transitStartAt).getTime()) / 60_000));
-    if (elapsedMinutes < route.minimumTransitMinutes) return markNeedsReview(`卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本路线最短运输时间为 ${route.minimumTransitMinutes} 分钟；未达到时间不能完成卸土`);
-    if (input.latitude === null || input.latitude === undefined || input.longitude === null || input.longitude === undefined) return markNeedsReview("卸土异常：未取得定位信息，不能确认已到达卸土点");
-    if (unloadSite.latitude === null || unloadSite.latitude === undefined || unloadSite.longitude === null || unloadSite.longitude === undefined) return markNeedsReview("卸土点未配置定位坐标，不能直接确认卸土，请人工核验");
-    const distanceMeters = Math.round(calculateCoordinateDistanceMeters(Number(input.latitude), Number(input.longitude), Number(unloadSite.latitude), Number(unloadSite.longitude)));
-    if (distanceMeters > route.unloadGeofenceMeters) return markNeedsReview(`卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${route.unloadGeofenceMeters} 米，不能完成卸土`);
+    if (elapsedMinutes < route.minimumTransitMinutes) {
+      const reason = `卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本路线最短运输时间为 ${route.minimumTransitMinutes} 分钟`;
+      if (route.minimumTransitEnabled) return markNeedsReview(`${reason}；未达到时间不能完成卸土`);
+      safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
+    }
+    const hasMobileCoordinates = input.latitude !== null && input.latitude !== undefined && input.longitude !== null && input.longitude !== undefined;
+    const hasUnloadSiteCoordinates = unloadSite.latitude !== null && unloadSite.latitude !== undefined && unloadSite.longitude !== null && unloadSite.longitude !== undefined;
+    if (!hasMobileCoordinates || !hasUnloadSiteCoordinates) {
+      const reason = !hasMobileCoordinates ? "卸土异常：未取得定位信息" : "卸土点未配置定位坐标";
+      if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
+      safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
+    } else {
+      const distanceMeters = Math.round(calculateCoordinateDistanceMeters(Number(input.latitude), Number(input.longitude), Number(unloadSite.latitude), Number(unloadSite.longitude)));
+      if (distanceMeters > route.unloadGeofenceMeters) {
+        const reason = `卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${route.unloadGeofenceMeters} 米`;
+        if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能完成卸土`);
+        safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
+      }
+    }
+    if (safetyNotices.length) {
+      await db.update(transportCardEvents).set({ validationReason: safetyNotices.join("；") }).where(eq(transportCardEvents.id, event.id));
+      await db.update(transportTrips).set({ exceptionStatus: "open" }).where(eq(transportTrips.id, trip.id));
+    }
   }
 
   const updateResult = eventType === "load"
@@ -2020,11 +2041,11 @@ export const transportRouter = router({
     if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线装土点不存在或未启用" });
     if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或未启用" });
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
-    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, unloadGeofenceMeters: input.unloadGeofenceMeters, isDefault: input.isDefault, status: input.status };
+    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, minimumTransitEnabled: input.minimumTransitEnabled, unloadGeofenceMeters: input.unloadGeofenceMeters, unloadGeofenceEnabled: input.unloadGeofenceEnabled, isDefault: input.isDefault, status: input.status };
     if (input.isDefault) await db.update(transportRoutePresets).set({ isDefault: false }).where(eq(transportRoutePresets.projectId, input.projectId));
     if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));
     else await db.insert(transportRoutePresets).values({ ...values, createdBy: user.id });
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟，卸土容差 ${input.unloadGeofenceMeters} 米` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "拦截" : "提示"}），卸土容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "拦截" : "提示"}）` });
     return { success: true };
   }),
 

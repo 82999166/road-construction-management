@@ -1297,8 +1297,12 @@ export const transportRoutePresets = mysqlTable(
     presetDistanceKm: decimal("presetDistanceKm", { precision: 10, scale: 3 }).notNull(),
     /** 车辆装土确认后达到该时间才允许在卸土点闭环；默认 10 分钟，按线路由运输负责人调整。 */
     minimumTransitMinutes: int("minimumTransitMinutes").default(10).notNull(),
+    /** 是否将最短运输时间作为卸土硬拦截；关闭后仅留待核验提示。 */
+    minimumTransitEnabled: boolean("minimumTransitEnabled").default(true).notNull(),
     /** 卸土手机定位与预设卸土点坐标的最大允许偏差，单位米；默认 300 米。 */
     unloadGeofenceMeters: int("unloadGeofenceMeters").default(300).notNull(),
+    /** 是否将卸土点定位范围作为卸土硬拦截；关闭后仅留待核验提示。 */
+    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled").default(true).notNull(),
     isDefault: boolean("isDefault").default(false).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     createdBy: int("createdBy").notNull(),

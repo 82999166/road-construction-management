@@ -400,6 +400,13 @@
       "when": 1787238013699,
       "tag": "0056_big_multiple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "5",
+      "when": 1787272182687,
+      "tag": "0057_narrow_slipstream",
+      "breakpoints": true
     }
   ]
 }

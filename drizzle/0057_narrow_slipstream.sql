@@ -1,0 +1,2 @@
+ALTER TABLE `transport_route_presets` ADD `minimumTransitEnabled` boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE `transport_route_presets` ADD `unloadGeofenceEnabled` boolean DEFAULT true NOT NULL;
