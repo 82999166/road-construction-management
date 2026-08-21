@@ -446,32 +446,38 @@ export const laborRouter = router({
       if (input.punchType === "in" && existing) return { success: true, duplicate: true, punchType: "in" as const, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
       if (input.punchType === "out" && !existing) throw new TRPCError({ code: "BAD_REQUEST", message: "请先完成今日上班打卡后再进行下班打卡" });
       if (input.punchType === "out" && existing?.checkedOutAt) return { success: true, duplicate: true, punchType: "out" as const, id: existing.id, checkedOutAt: existing.checkedOutAt, businessDate: businessDateText, status: existing.checkoutStatus ?? "normal" };
-      const [binding] = await db.select().from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.deviceFingerprintHash, input.deviceFingerprintHash.toLowerCase()))).limit(1);
-      if (binding?.status === "disabled") throw new TRPCError({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
       let newlyBound = false;
-      if (!binding) {
-        const activeDevices = await db.select({ id: attendanceDeviceBindings.id }).from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.status, "active")));
-        if (activeDevices.length >= 3) throw new TRPCError({ code: "CONFLICT", message: "当前账号已绑定 3 台考勤设备，请联系管理员停用旧设备后再绑定" });
-        try {
-          await db.insert(attendanceDeviceBindings).values({ userId: user.id, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, status: "active", firstBoundAt: now, lastUsedAt: now });
-          newlyBound = true;
-        } catch {
-          // 并发首次打卡可能已插入相同绑定，后续打卡唯一键仍可作为最终保护。
-        }
-      } else {
-        await db.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
-      }
-      if (input.punchType === "out" && existing) {
-        await db.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate), isNull(attendanceCheckIns.checkedOutAt)));
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
-        return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
-      }
+      let createdCheckInId = 0;
       try {
-        const [created] = await db.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
-        const id = Number(created?.id);
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(id), summary: `移动一键打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
-        return { success: true, duplicate: false, punchType: "in" as const, id, checkedInAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
-      } catch {
+        await db.transaction(async tx => {
+          const [binding] = await tx.select().from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.deviceFingerprintHash, input.deviceFingerprintHash.toLowerCase()))).limit(1);
+          if (binding?.status === "disabled") throw new TRPCError({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
+          if (!binding) {
+            const activeDevices = await tx.select({ id: attendanceDeviceBindings.id }).from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.status, "active")));
+            if (activeDevices.length >= 3) throw new TRPCError({ code: "CONFLICT", message: "当前账号已绑定 3 台考勤设备，请联系管理员停用旧设备后再绑定" });
+            try {
+              await tx.insert(attendanceDeviceBindings).values({ userId: user.id, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, status: "active", firstBoundAt: now, lastUsedAt: now });
+              newlyBound = true;
+            } catch {
+              const [concurrentBinding] = await tx.select({ status: attendanceDeviceBindings.status }).from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.deviceFingerprintHash, input.deviceFingerprintHash.toLowerCase()))).limit(1);
+              if (!concurrentBinding || concurrentBinding.status === "disabled") throw new TRPCError({ code: "CONFLICT", message: "考勤设备绑定并发冲突，请重试" });
+            }
+          } else {
+            await tx.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
+          }
+          if (input.punchType === "out" && existing) {
+            await tx.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate), isNull(attendanceCheckIns.checkedOutAt)));
+            await tx.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
+            return;
+          }
+          const [created] = await tx.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
+          createdCheckInId = Number(created?.id);
+          await tx.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(createdCheckInId), summary: `移动一键打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
+        });
+        if (input.punchType === "out" && existing) return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
+        return { success: true, duplicate: false, punchType: "in" as const, id: createdCheckInId, checkedInAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
+      } catch (error) {
+        if (input.punchType === "out") throw error;
         const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
         if (concurrent) return { success: true, duplicate: true, punchType: "in" as const, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡保存失败，请稍后重试" });

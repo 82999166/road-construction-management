@@ -432,6 +432,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("采购订单应付与实际现金结算继续分开处理");
   });
 
+  it("在财务工作区提供封存日期锁定、授权反结账原因与版本快照显示", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("日结封存、授权反结账与版本快照");
+    expect(source).toContain("trpc.finance.reopenDailyAccount.useMutation");
+    expect(source).toContain("financeReopenReason");
+    expect(source).toContain("授权反结账");
+    expect(source).toContain("旧快照与反结账原因永久保留");
+    expect(source).toContain("第 {dailyAccountingReport.data.closure.revision ?? 1} 版");
+  });
+
   it("提供项目容量完备度、整改责任人期限和逾期升级验收闭环", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

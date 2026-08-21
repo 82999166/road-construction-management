@@ -175,6 +175,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       insert: vi.fn(() => ({ values })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
     };
+    Object.assign(db, { transaction: vi.fn(async callback => callback(db)) });
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(purchasingRouter.createCaller(createAuthContext()).saveInventoryTransaction({ projectId: 10, requestId: 37, purchaseOrderId: null, transactionType: "inbound", itemName: "水泥", unit: "袋", quantity: 2.5, unitCost: 12.34, occurredAt: "2026-07-25T08:00:00.000Z", remarks: null })).resolves.toEqual({ success: true, amount: 30.85 });
@@ -186,6 +187,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     const values = vi.fn(async () => undefined);
     const db = {
       ...createSelectDbSequence(
+        [],
         [{ id: 38, projectId: 10, status: "received", amount: "1000.00" }],
         [{ amount: "300.00", settlementStatus: "partial" }],
       ),
@@ -199,6 +201,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
+        [],
         [{ id: 39, projectId: 10, status: "received", amount: "1000.00" }],
         [{ amount: "950.00", settlementStatus: "partial" }],
       ),
@@ -206,7 +209,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     } as never);
     await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 39, projectId: 10, amount: 100, settledAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "本次结算超过采购订单待结算余额" });
 
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 40, projectId: 10, status: "confirmed", amount: "1000.00" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([], [{ id: 40, projectId: 10, status: "confirmed", amount: "1000.00" }]) as never);
     await expect(purchasingRouter.createCaller(createAuthContext()).recordSettlement({ orderId: 40, projectId: 10, amount: 100, settledAt: "2026-07-25T08:00:00.000Z", remarks: null })).rejects.toMatchObject({ code: "CONFLICT", message: "采购订单须已收货后才能登记结算" });
   });
 
@@ -351,7 +354,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("财务流水由服务端审计并投递固定的财务深链", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+    vi.mocked(getDb).mockResolvedValue({ ...createSelectDb([]), insert: vi.fn(() => ({ values })) } as never);
 
     await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
       projectId: 10,
@@ -373,7 +376,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("会计和财务负责人可登记待结清资料，但只有出纳可执行资金结清", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+    vi.mocked(getDb).mockResolvedValue({ ...createSelectDb([]), insert: vi.fn(() => ({ values })) } as never);
 
     await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
       projectId: 10,
@@ -422,7 +425,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("系统应急管理身份可创建需要立即确认的财务流水", async () => {
     const values = vi.fn(async () => undefined);
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
-    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values })) } as never);
+    vi.mocked(getDb).mockResolvedValue({ ...createSelectDb([]), insert: vi.fn(() => ({ values })) } as never);
 
     await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
       projectId: 10,
@@ -440,7 +443,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   });
 
   it("人工财务流水仅可在支付前由会计审查作废，已支付冲销仅限财务负责人", async () => {
-    const manualPaidRecord = { id: 71, recordNo: "FIN-20260725-AAAA", projectId: 10, direction: "expense", category: "临时材料款", amount: "800.00", settlementStatus: "paid", sourceType: null };
+    const manualPaidRecord = { id: 71, recordNo: "FIN-20260725-AAAA", projectId: 10, direction: "expense", category: "临时材料款", amount: "800.00", occurredAt: new Date("2026-07-25T08:00:00.000Z"), settlementStatus: "paid", sourceType: null };
     const insertValues = vi.fn(async () => undefined);
     const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
     const db = {
@@ -480,7 +483,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     const auditValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 721, recordNo: "FIN-20260725-CCCC", projectId: 10, settlementStatus: "unpaid", sourceType: null }]),
+      ...createSelectDb([{ id: 721, recordNo: "FIN-20260725-CCCC", projectId: 10, occurredAt: new Date("2026-07-25T08:00:00.000Z"), settlementStatus: "unpaid", sourceType: null }]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values: auditValues })),
     } as never);
@@ -489,6 +492,50 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
+  });
+
+  it("已日结日期拒绝服务端补录财务流水，不能仅靠隐藏前端入口绕过", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const values = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ status: "closed", closingNo: "DAY-20260725-001" }]),
+      insert: vi.fn(() => ({ values })),
+    } as never);
+
+    await expect(financeRouter.createCaller(createAuthContext()).saveRecord({
+      projectId: 10,
+      direction: "expense",
+      category: "封存日补录",
+      amount: 1,
+      occurredAt: "2026-07-25T08:00:00.000Z",
+      settlementStatus: "unpaid",
+      sourceType: null,
+      sourceId: null,
+      evidenceId: null,
+      remarks: null,
+    })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("授权反结账") });
+    expect(values).not.toHaveBeenCalled();
+  });
+
+  it("反结账只允许财务负责人，并写入版本事件和前后状态审计", async () => {
+    const closure = { id: 91, projectId: 10, closingNo: "DAY-20260725-001", closingDate: new Date("2026-07-25T00:00:00.000Z"), status: "closed", revision: 1, snapshotHash: "hash-v1", snapshotJson: "{}" };
+    const eventValues = vi.fn(async () => undefined);
+    const auditValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const db = {
+      ...createSelectDb([closure]),
+      transaction: vi.fn(async callback => callback(db)),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: (...args: unknown[]) => eventValues(...args).then(() => auditValues(...args)) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+    await expect(financeRouter.createCaller(createAuthContext()).reopenDailyAccount({ projectId: 10, closingDate: "2026-07-25", reason: "补充已核实的采购结算凭证" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    await expect(financeRouter.createCaller(createAuthContext()).reopenDailyAccount({ projectId: 10, closingDate: "2026-07-25", reason: "补充已核实的采购结算凭证" })).resolves.toMatchObject({ success: true, status: "reopened", revision: 1 });
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "reopened", reopenReason: "补充已核实的采购结算凭证" }));
+    expect(eventValues).toHaveBeenCalled();
   });
 
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {

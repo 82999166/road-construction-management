@@ -314,6 +314,7 @@ describe("labor tRPC 路由", () => {
       update: vi.fn(() => ({ set: checkoutSet })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
+    Object.assign(db, { transaction: vi.fn(async callback => callback(db)) });
     vi.mocked(getDb).mockResolvedValue(db as never);
     await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 12 })).resolves.toMatchObject({ success: true, duplicate: false, punchType: "out", id: 44, status: "normal" });
     expect(checkoutSet).toHaveBeenCalledWith(expect.objectContaining({ checkedOutAt: expect.any(Date), checkoutLongitude: "120.1", checkoutLatitude: "30.2", checkoutStatus: "normal" }));

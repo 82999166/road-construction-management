@@ -5,6 +5,7 @@ import { inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
+  dailyAccountingClosureEvents,
   dailyAccountingClosures,
   financialInvoices,
   financialRecords,
@@ -190,6 +191,32 @@ function canCreateFinancialRecord(roleCodes: readonly string[]) {
 /** 资金收付属于执行动作，仅出纳或系统应急管理身份可确认。 */
 function canExecutePayment(roleCodes: readonly string[]) {
   return roleCodes.includes("ALL") || roleCodes.includes("CASHIER");
+}
+
+/** 财务期间调整属于高影响会计控制：仅财务负责人或系统应急角色可授权反结账。 */
+function canReopenFinancialPeriod(roleCodes: readonly string[]) {
+  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
+}
+
+/**
+ * 日结使用与既有流水汇总一致的 UTC 业务日口径。服务端在所有会改变财务事实的入口前调用，
+ * 防止仅依赖前端按钮导致封存日期仍可被后端接口补录或改写。
+ */
+async function assertFinancialDayWritable(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  projectId: number,
+  occurredAt: Date,
+  actionLabel: string,
+) {
+  const businessDate = toBusinessDate(occurredAt.toISOString().slice(0, 10));
+  const [closure] = await db
+    .select({ status: dailyAccountingClosures.status, closingNo: dailyAccountingClosures.closingNo })
+    .from(dailyAccountingClosures)
+    .where(and(eq(dailyAccountingClosures.projectId, projectId), eq(dailyAccountingClosures.closingDate, businessDate)))
+    .limit(1);
+  if (closure && ["closed", "archived"].includes(closure.status)) {
+    throw new TRPCError({ code: "CONFLICT", message: `${businessDate.toISOString().slice(0, 10)} 已完成日结（${closure.closingNo}），不可${actionLabel}；请由财务负责人先授权反结账。` });
+  }
 }
 
 /** 采购申请审批权仅限项目负责人、财务负责人和系统管理员。 */
@@ -398,6 +425,10 @@ const financialInvoiceTransitionInput = z.object({
 const dailyClosingInput = z.object({
   projectId: z.number().int().positive(),
   closingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日结日期格式应为 YYYY-MM-DD"),
+});
+
+const dailyClosingReopenInput = dailyClosingInput.extend({
+  reason: z.string().trim().min(5, "请填写不少于 5 个字的反结账原因").max(500),
 });
 
 /** 项目部收方草稿，工程量与单价由服务端重新计算申报金额。 */
@@ -731,6 +762,7 @@ export const purchasingRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    await assertFinancialDayWritable(db, input.projectId, new Date(input.settledAt), "登记采购结算");
     const [order] = await db.select().from(purchaseOrders).where(and(eq(purchaseOrders.id, input.orderId), eq(purchaseOrders.projectId, input.projectId))).limit(1);
     if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的采购订单" });
     if (!["received", "closed"].includes(order.status)) throw new TRPCError({ code: "CONFLICT", message: "采购订单须已收货后才能登记结算" });
@@ -775,9 +807,11 @@ export const purchasingRouter = router({
     if (input.requestId) await getScopedPurchaseRequest(ctx, input.requestId, input.projectId);
     if (input.purchaseOrderId) await getScopedPurchaseOrder(ctx, input.purchaseOrderId, input.projectId);
     const amount = roundMoney(input.quantity * input.unitCost);
-    await db.insert(inventoryTransactions).values({ projectId: input.projectId, requestId: input.requestId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, transactionNo: createBusinessNo("INV"), transactionType: input.transactionType, itemName: input.itemName, unit: input.unit, quantity: String(input.quantity), unitCost: String(roundMoney(input.unitCost)), amount: String(amount), occurredAt: new Date(input.occurredAt), operatorId: user.id, remarks: input.remarks ?? null });
-    if (input.transactionType === "inbound" && input.requestId) await db.update(purchaseRequests).set({ status: "stocked", stockedBy: user.id, stockedAt: new Date() }).where(eq(purchaseRequests.id, input.requestId));
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.itemName, summary: `登记库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用" : "退库"}：${input.itemName}` });
+    await db.transaction(async tx => {
+      await tx.insert(inventoryTransactions).values({ projectId: input.projectId, requestId: input.requestId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, transactionNo: createBusinessNo("INV"), transactionType: input.transactionType, itemName: input.itemName, unit: input.unit, quantity: String(input.quantity), unitCost: String(roundMoney(input.unitCost)), amount: String(amount), occurredAt: new Date(input.occurredAt), operatorId: user.id, remarks: input.remarks ?? null });
+      if (input.transactionType === "inbound" && input.requestId) await tx.update(purchaseRequests).set({ status: "stocked", stockedBy: user.id, stockedAt: new Date() }).where(eq(purchaseRequests.id, input.requestId));
+      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.itemName, summary: `登记库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用" : "退库"}：${input.itemName}` });
+    });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.purchaseOrderId ? String(input.purchaseOrderId) : `${input.transactionType}:${input.itemName}`, title: `库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用出库" : "退库"}已登记`, content: "一笔采购仓储收发记录已登记，请进入系统查看受控台账。", deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, amount };
   }),
@@ -1093,8 +1127,11 @@ export const financeRouter = router({
       const [existing] = await db.select().from(financialInvoices).where(eq(financialInvoices.id, input.id)).limit(1);
       if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
       if (existing.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "已认证、作废或红冲发票不可直接修改" });
+      await assertFinancialDayWritable(db, input.projectId, existing.issuedAt, "修改已封存日期的发票");
+      await assertFinancialDayWritable(db, input.projectId, values.issuedAt, "迁移发票日期");
       await db.update(financialInvoices).set(values).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
     } else {
+      await assertFinancialDayWritable(db, input.projectId, values.issuedAt, "登记发票");
       await db.insert(financialInvoices).values({ ...values, status: "issued", createdBy: user.id });
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_invoice" : "create_invoice", targetType: "financial_invoice", targetId: input.invoiceNo, summary: `${input.id ? "维护" : "登记"}${input.direction === "expense" ? "成本" : "收入"}发票：${input.invoiceNo}` });
@@ -1112,6 +1149,7 @@ export const financeRouter = router({
     if (!invoice || invoice.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
     if (invoice.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "当前发票状态不允许再次操作" });
     if (["void", "red_flushed"].includes(input.targetStatus) && !input.reason) throw new TRPCError({ code: "BAD_REQUEST", message: "作废或红冲必须填写原因" });
+    await assertFinancialDayWritable(db, input.projectId, invoice.issuedAt, "变更已封存日期的发票状态");
     await db.update(financialInvoices).set({ status: input.targetStatus, verifiedAt: input.targetStatus === "verified" ? new Date() : null, voidReason: input.reason ?? null }).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票 ${invoice.invoiceNo} 状态变更为：${input.targetStatus}` });
     return { success: true };
@@ -1126,23 +1164,56 @@ export const financeRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const closingDate = toBusinessDate(input.closingDate);
     const endExclusive = new Date(closingDate.getTime() + 86_400_000);
-    const [existing] = await db.select({ id: dailyAccountingClosures.id }).from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, closingDate))).limit(1);
-    if (existing) throw new TRPCError({ code: "CONFLICT", message: "该项目日期已完成日结，不可重复封存" });
-    const records = await db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive))).orderBy(financialRecords.occurredAt, financialRecords.id);
-    const invoices = await db.select().from(financialInvoices).where(and(eq(financialInvoices.projectId, input.projectId), eq(financialInvoices.issuedAt, closingDate))).orderBy(financialInvoices.id);
-    const activeRecords = records.filter(record => record.settlementStatus !== "void");
-    const snapshot = { projectId: input.projectId, closingDate: input.closingDate, records: activeRecords.map(record => ({ id: record.id, recordNo: record.recordNo, direction: record.direction, category: record.category, amount: record.amount, settlementStatus: record.settlementStatus })), invoices: invoices.map(invoice => ({ id: invoice.id, invoiceNo: invoice.invoiceNo, invoiceType: invoice.invoiceType, amount: invoice.amount, status: invoice.status })) };
-    const snapshotJson = JSON.stringify(snapshot);
-    const snapshotHash = createHash("sha256").update(snapshotJson).digest("hex");
-    const totalIncome = roundMoney(activeRecords.filter(record => record.direction === "income").reduce((sum, record) => sum + Number(record.amount), 0));
-    const totalExpense = roundMoney(activeRecords.filter(record => record.direction === "expense").reduce((sum, record) => sum + Number(record.amount), 0));
-    const activeInvoices = invoices.filter(invoice => !["void", "red_flushed"].includes(invoice.status));
-    const closingNo = createBusinessNo("DAY");
-    await db.insert(dailyAccountingClosures).values({ closingNo, projectId: input.projectId, closingDate, totalIncome: String(totalIncome), totalExpense: String(totalExpense), recordCount: activeRecords.length, invoiceCount: activeInvoices.length, invoiceAmount: String(roundMoney(activeInvoices.reduce((sum, invoice) => sum + Number(invoice.amount), 0))), snapshotHash, snapshotJson, status: "closed", closedBy: user.id, closedAt: new Date() });
-    const [closing] = await db.select({ id: dailyAccountingClosures.id }).from(dailyAccountingClosures).where(eq(dailyAccountingClosures.closingNo, closingNo)).limit(1);
-    if (closing && activeRecords.length) await db.update(financialRecords).set({ dailyClosingId: closing.id }).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive)));
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "close_daily_account", targetType: "daily_accounting_closure", targetId: closingNo, summary: `完成项目日结：${input.closingDate}，支出 ${totalExpense}` });
-    return { success: true, closingNo, totalIncome, totalExpense, recordCount: activeRecords.length };
+    return db.transaction(async tx => {
+      const [existing] = await tx.select().from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, closingDate))).limit(1);
+      if (existing && existing.status !== "reopened") throw new TRPCError({ code: "CONFLICT", message: "该项目日期已完成日结，不可重复封存；如需调整，请先由财务负责人授权反结账。" });
+      const records = await tx.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive))).orderBy(financialRecords.occurredAt, financialRecords.id);
+      const invoices = await tx.select().from(financialInvoices).where(and(eq(financialInvoices.projectId, input.projectId), eq(financialInvoices.issuedAt, closingDate))).orderBy(financialInvoices.id);
+      const activeRecords = records.filter(record => record.settlementStatus !== "void");
+      const activeInvoices = invoices.filter(invoice => !["void", "red_flushed"].includes(invoice.status));
+      const revision = existing ? existing.revision + 1 : 1;
+      const snapshot = { projectId: input.projectId, closingDate: input.closingDate, revision, records: activeRecords.map(record => ({ id: record.id, recordNo: record.recordNo, direction: record.direction, category: record.category, amount: record.amount, settlementStatus: record.settlementStatus })), invoices: invoices.map(invoice => ({ id: invoice.id, invoiceNo: invoice.invoiceNo, invoiceType: invoice.invoiceType, amount: invoice.amount, status: invoice.status })) };
+      const snapshotJson = JSON.stringify(snapshot);
+      const snapshotHash = createHash("sha256").update(snapshotJson).digest("hex");
+      const totalIncome = roundMoney(activeRecords.filter(record => record.direction === "income").reduce((sum, record) => sum + Number(record.amount), 0));
+      const totalExpense = roundMoney(activeRecords.filter(record => record.direction === "expense").reduce((sum, record) => sum + Number(record.amount), 0));
+      const closingNo = existing?.closingNo ?? createBusinessNo("DAY");
+      const now = new Date();
+      let closureId = existing?.id;
+      if (existing) {
+        await tx.update(dailyAccountingClosures).set({ totalIncome: String(totalIncome), totalExpense: String(totalExpense), recordCount: activeRecords.length, invoiceCount: activeInvoices.length, invoiceAmount: String(roundMoney(activeInvoices.reduce((sum, invoice) => sum + Number(invoice.amount), 0))), snapshotHash, snapshotJson, status: "closed", revision, closedBy: user.id, closedAt: now, reopenedBy: null, reopenedAt: null, reopenReason: null }).where(eq(dailyAccountingClosures.id, existing.id));
+      } else {
+        await tx.insert(dailyAccountingClosures).values({ closingNo, projectId: input.projectId, closingDate, totalIncome: String(totalIncome), totalExpense: String(totalExpense), recordCount: activeRecords.length, invoiceCount: activeInvoices.length, invoiceAmount: String(roundMoney(activeInvoices.reduce((sum, invoice) => sum + Number(invoice.amount), 0))), snapshotHash, snapshotJson, status: "closed", revision, closedBy: user.id, closedAt: now });
+        const [created] = await tx.select({ id: dailyAccountingClosures.id }).from(dailyAccountingClosures).where(eq(dailyAccountingClosures.closingNo, closingNo)).limit(1);
+        closureId = created?.id;
+      }
+      if (!closureId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "日结封存单创建失败，请重试" });
+      await tx.insert(dailyAccountingClosureEvents).values({ closureId, projectId: input.projectId, revision, eventType: "closed", snapshotHash, snapshotJson, reason: existing ? "授权反结账后重新封存" : "首次日结封存", performedBy: user.id, performedAt: now });
+      if (activeRecords.length) await tx.update(financialRecords).set({ dailyClosingId: closureId }).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, closingDate), lt(financialRecords.occurredAt, endExclusive)));
+      await tx.insert(auditLogs).values({ userId: user.id, module: "finance", action: existing ? "reclose_daily_account" : "close_daily_account", targetType: "daily_accounting_closure", targetId: closingNo, summary: `${existing ? "重新" : "完成"}项目日结：${input.closingDate}，支出 ${totalExpense}`, beforeJson: existing ? JSON.stringify({ status: existing.status, revision: existing.revision, snapshotHash: existing.snapshotHash }) : null, afterJson: JSON.stringify({ status: "closed", revision, snapshotHash }) });
+      return { success: true, closingNo, revision, totalIncome, totalExpense, recordCount: activeRecords.length };
+    });
+  }),
+
+  reopenDailyAccount: protectedProcedure.input(dailyClosingReopenInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canReopenFinancialPeriod(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "反结账仅限财务负责人或系统应急管理身份授权" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const closingDate = toBusinessDate(input.closingDate);
+    return db.transaction(async tx => {
+      const [closure] = await tx.select().from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, closingDate))).limit(1);
+      if (!closure) throw new TRPCError({ code: "NOT_FOUND", message: "该日期尚未日结，不能反结账" });
+      if (closure.status === "archived") throw new TRPCError({ code: "CONFLICT", message: "已归档日结不可直接反结账，请按档案调整流程处理" });
+      if (closure.status !== "closed") throw new TRPCError({ code: "CONFLICT", message: "当前日结不处于可反结账状态" });
+      const now = new Date();
+      await tx.update(dailyAccountingClosures).set({ status: "reopened", reopenedBy: user.id, reopenedAt: now, reopenReason: input.reason }).where(and(eq(dailyAccountingClosures.id, closure.id), eq(dailyAccountingClosures.status, "closed")));
+      await tx.insert(dailyAccountingClosureEvents).values({ closureId: closure.id, projectId: input.projectId, revision: closure.revision, eventType: "reopened", snapshotHash: closure.snapshotHash, snapshotJson: closure.snapshotJson, reason: input.reason, performedBy: user.id, performedAt: now });
+      await tx.insert(auditLogs).values({ userId: user.id, module: "finance", action: "reopen_daily_account", targetType: "daily_accounting_closure", targetId: closure.closingNo, summary: `授权反结账：${input.closingDate}；原因：${input.reason}`, beforeJson: JSON.stringify({ status: "closed", revision: closure.revision, snapshotHash: closure.snapshotHash }), afterJson: JSON.stringify({ status: "reopened", reason: input.reason }) });
+      return { success: true, closingNo: closure.closingNo, revision: closure.revision, status: "reopened" as const };
+    });
   }),
 
   getDailyPrintableReport: protectedProcedure.input(dailyClosingInput).query(async ({ ctx, input }) => {
@@ -1166,6 +1237,7 @@ export const financeRouter = router({
     if (input.settlementStatus !== "unpaid" && !canExecutePayment(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "资金结清状态仅可由出纳执行确认" });
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    await assertFinancialDayWritable(db, input.projectId, new Date(input.occurredAt), "登记财务流水");
     await db.insert(financialRecords).values({ recordNo: createBusinessNo("FIN"), projectId: input.projectId, direction: input.direction, category: input.category, amount: String(roundMoney(input.amount)), occurredAt: new Date(input.occurredAt), settlementStatus: input.settlementStatus, sourceType: input.sourceType ?? null, sourceId: input.sourceId ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null });
     await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "create_record", targetType: "financial_record", targetId: input.category, summary: `登记项目${input.direction === "income" ? "收入" : "支出"}流水：${input.category}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: `financial_${input.direction}`, targetType: "financial_record", targetId: input.category, title: `项目${input.direction === "income" ? "收入" : "支出"}流水已登记`, deepLink: "/mobile/finance" }).catch(() => undefined);
@@ -1182,6 +1254,7 @@ export const financeRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [record] = await db.select().from(financialRecords).where(eq(financialRecords.id, input.id)).limit(1);
     if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
+    await assertFinancialDayWritable(db, input.projectId, record.occurredAt, "作废已封存日期的财务流水");
     if (record.sourceType) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接作废" });
     if (record.settlementStatus === "paid") throw new TRPCError({ code: "CONFLICT", message: "已支付流水不可作废，请使用冲销流程" });
     if (record.settlementStatus === "void") throw new TRPCError({ code: "CONFLICT", message: "该财务流水已作废" });
@@ -1206,6 +1279,7 @@ export const financeRouter = router({
     if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
     if (record.sourceType) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接冲销" });
     if (record.settlementStatus !== "paid") throw new TRPCError({ code: "CONFLICT", message: "仅已支付的人工财务流水可以冲销；未支付流水请使用作废流程" });
+    await assertFinancialDayWritable(db, input.projectId, new Date(input.reversedAt), "登记冲销调整");
     const existingReversal = await db
       .select({ id: financialRecords.id })
       .from(financialRecords)

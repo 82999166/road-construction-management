@@ -1,0 +1,5 @@
+ALTER TABLE `machine_payment_settlements` ADD CONSTRAINT `machine_payment_settlements_machine_fk` FOREIGN KEY (`machineId`) REFERENCES `machines`(`id`) ON DELETE restrict ON UPDATE cascade;--> statement-breakpoint
+ALTER TABLE `machine_payment_settlements` ADD CONSTRAINT `machine_payment_settlements_statement_fk` FOREIGN KEY (`monthlyStatementId`) REFERENCES `machine_monthly_statements`(`id`) ON DELETE restrict ON UPDATE cascade;--> statement-breakpoint
+ALTER TABLE `transport_vehicle_settlement_items` ADD CONSTRAINT `transport_vehicle_settlement_items_settlement_fk` FOREIGN KEY (`settlementId`) REFERENCES `transport_vehicle_settlements`(`id`) ON DELETE restrict ON UPDATE cascade;--> statement-breakpoint
+ALTER TABLE `transport_vehicle_settlement_items` ADD CONSTRAINT `transport_vehicle_settlement_items_trip_fk` FOREIGN KEY (`tripId`) REFERENCES `transport_trips`(`id`) ON DELETE restrict ON UPDATE cascade;--> statement-breakpoint
+ALTER TABLE `transport_vehicle_settlements` ADD CONSTRAINT `transport_vehicle_settlements_vehicle_fk` FOREIGN KEY (`vehicleId`) REFERENCES `transport_vehicles`(`id`) ON DELETE restrict ON UPDATE cascade;

@@ -4,6 +4,7 @@ import {
   date,
   datetime,
   decimal,
+  foreignKey,
   index,
   int,
   json,
@@ -989,6 +990,8 @@ export const machinePaymentSettlements = mysqlTable(
     statementUnique: uniqueIndex("machine_payment_settlements_statement_unique").on(table.monthlyStatementId),
     projectMachinePeriodIndex: index("machine_payment_settlements_project_machine_period_index").on(table.projectId, table.machineId, table.period),
     projectStatusIndex: index("machine_payment_settlements_project_status_index").on(table.projectId, table.status),
+    machineForeignKey: foreignKey({ columns: [table.machineId], foreignColumns: [machines.id], name: "machine_payment_settlements_machine_fk" }).onDelete("restrict").onUpdate("cascade"),
+    monthlyStatementForeignKey: foreignKey({ columns: [table.monthlyStatementId], foreignColumns: [machineMonthlyStatements.id], name: "machine_payment_settlements_statement_fk" }).onDelete("restrict").onUpdate("cascade"),
   }),
 );
 
@@ -1453,6 +1456,7 @@ export const transportVehicleSettlements = mysqlTable(
     settlementNoUnique: uniqueIndex("transport_vehicle_settlements_no_unique").on(table.settlementNo),
     projectVehiclePeriodIndex: index("transport_vehicle_settlements_project_vehicle_period_index").on(table.projectId, table.vehicleId, table.periodStart, table.periodEnd),
     projectStatusIndex: index("transport_vehicle_settlements_project_status_index").on(table.projectId, table.status),
+    vehicleForeignKey: foreignKey({ columns: [table.vehicleId], foreignColumns: [transportVehicles.id], name: "transport_vehicle_settlements_vehicle_fk" }).onDelete("restrict").onUpdate("cascade"),
   }),
 );
 
@@ -1474,6 +1478,8 @@ export const transportVehicleSettlementItems = mysqlTable(
   table => ({
     settlementTripUnique: uniqueIndex("transport_vehicle_settlement_items_trip_unique").on(table.tripId),
     settlementIndex: index("transport_vehicle_settlement_items_settlement_index").on(table.settlementId),
+    settlementForeignKey: foreignKey({ columns: [table.settlementId], foreignColumns: [transportVehicleSettlements.id], name: "transport_vehicle_settlement_items_settlement_fk" }).onDelete("restrict").onUpdate("cascade"),
+    tripForeignKey: foreignKey({ columns: [table.tripId], foreignColumns: [transportTrips.id], name: "transport_vehicle_settlement_items_trip_fk" }).onDelete("restrict").onUpdate("cascade"),
   }),
 );
 
@@ -1845,9 +1851,14 @@ export const dailyAccountingClosures = mysqlTable(
     invoiceAmount: decimal("invoiceAmount", { precision: 16, scale: 2 }).default("0").notNull(),
     snapshotHash: varchar("snapshotHash", { length: 64 }).notNull(),
     snapshotJson: text("snapshotJson").notNull(),
-    status: mysqlEnum("status", ["closed", "archived", "void"]).default("closed").notNull(),
+    /** 反结账期间明确标识为 reopened，禁止把允许调整误记为作废。 */
+    status: mysqlEnum("status", ["closed", "archived", "void", "reopened"]).default("closed").notNull(),
+    revision: int("revision").default(1).notNull(),
     closedBy: int("closedBy").notNull(),
     closedAt: datetime("closedAt").notNull(),
+    reopenedBy: int("reopenedBy"),
+    reopenedAt: datetime("reopenedAt"),
+    reopenReason: varchar("reopenReason", { length: 500 }),
     archivedBy: int("archivedBy"),
     archivedAt: datetime("archivedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -1856,6 +1867,31 @@ export const dailyAccountingClosures = mysqlTable(
   table => ({
     closingNoUnique: uniqueIndex("daily_accounting_closures_no_unique").on(table.closingNo),
     projectDateUnique: uniqueIndex("daily_accounting_closures_project_date_unique").on(table.projectId, table.closingDate),
+  }),
+);
+
+/**
+ * 日结每次封存、授权反结账均留存独立版本快照；主表只保存当前版本，事件表保存不可覆盖的历史审计链。
+ */
+export const dailyAccountingClosureEvents = mysqlTable(
+  "daily_accounting_closure_events",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    closureId: bigint("closureId", { mode: "number" }).notNull(),
+    projectId: int("projectId").notNull(),
+    revision: int("revision").notNull(),
+    eventType: mysqlEnum("eventType", ["closed", "reopened"]).notNull(),
+    snapshotHash: varchar("snapshotHash", { length: 64 }),
+    snapshotJson: text("snapshotJson"),
+    reason: varchar("reason", { length: 500 }),
+    performedBy: int("performedBy").notNull(),
+    performedAt: datetime("performedAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    closureRevisionEventUnique: uniqueIndex("daily_closure_events_revision_unique").on(table.closureId, table.revision, table.eventType),
+    projectPerformedIndex: index("daily_closure_events_project_performed_index").on(table.projectId, table.performedAt),
+    closureFk: foreignKey({ columns: [table.closureId], foreignColumns: [dailyAccountingClosures.id], name: "daily_closure_events_closure_fk" }).onDelete("restrict").onUpdate("cascade"),
   }),
 );
 
