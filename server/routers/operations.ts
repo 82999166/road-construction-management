@@ -568,6 +568,16 @@ function assertCanManageTransportResources(roleCodes: readonly string[]) {
   }
 }
 
+/** 装卸土点属于现场调度基础资料：运输负责人可维护，项目管理员也可通过明确的运输创建/编辑授权办理。 */
+async function canManageTransportSites(ctx: Parameters<typeof requireAuthenticatedUser>[0], roleCodes: readonly string[]) {
+  if (roleCodes.includes("ALL") || roleCodes.some(role => ["TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) return true;
+  const [createDecision, editDecision] = await Promise.all([
+    getRoleOperationPermissionDecision(ctx, "TRANSPORT", "create"),
+    getRoleOperationPermissionDecision(ctx, "TRANSPORT", "edit"),
+  ]);
+  return createDecision.allowed || editDecision.allowed;
+}
+
 /** 手机首次发卡可由超级管理员、运输管理岗位或具备明确运输新增/维护权限的项目管理员办理；只读专属权限不得签发车辆卡。 */
 async function assertCanIssueMobileNfcCards(ctx: Parameters<typeof requireAuthenticatedUser>[0], roleCodes: readonly string[]) {
   if (roleCodes.includes("ALL") || roleCodes.some(role => ["TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role))) return;
@@ -1957,10 +1967,18 @@ export const transportRouter = router({
     }));
   }),
 
+  /** 供手机端在项目范围内收敛地点维护入口；写入过程仍会重复执行相同校验。 */
+  siteManagementAccess: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    return { canManage: await canManageTransportSites(ctx, roleCodes) };
+  }),
+
   /** 现场地点和刷卡管理员只允许运输负责人、项目负责人或系统管理员维护。 */
   saveSite: protectedProcedure.input(transportSiteInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertTransportAccess(ctx);
+    if (!await canManageTransportSites(ctx, roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予运输地点新增或编辑权限，请联系超级管理员配置运输创建/编辑权限" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });

@@ -8,6 +8,8 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(source).not.toContain("<MobileNfcCardIssuer");
     expect(source).toContain("MobileNfcTransportInvoice");
     expect(source).toContain("MobileTransportSiteManager");
+    expect(source).toContain("transport.siteManagementAccess.useQuery");
+    expect(source).toContain("transportSiteManagementAccess.data?.canManage");
     expect(source).toContain("setMobileNfcInvoiceOpen(true)");
     expect(source).toContain("拍照车牌发票");
   });
