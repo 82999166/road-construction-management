@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
@@ -349,6 +350,24 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["AUDIT_VIEWER"]);
     await expect(financeRouter.createCaller(createAuthContext()).invoiceCapabilities()).resolves.toMatchObject({ canMaintain: false, canExecutePayment: false, canReverse: false, readOnly: true });
+  });
+
+  it("发票原件与项目分摊必须保留全局指纹、电子归档、分摊限额、验真与红冲链控制", () => {
+    const source = readFileSync(new URL("./routers/finance.ts", import.meta.url), "utf8");
+    const schema = readFileSync(new URL("../drizzle/schema.ts", import.meta.url), "utf8");
+
+    expect(schema).toContain("export const financialInvoiceOriginals");
+    expect(schema).toContain('originalFingerprint: varchar("originalFingerprint", { length: 128 }).notNull()');
+    expect(schema).toContain('fingerprintUnique: uniqueIndex("financial_invoice_originals_fingerprint_unique").on(table.originalFingerprint)');
+    expect(schema).toContain('originalId: bigint("originalId", { mode: "number" })');
+    expect(schema).toContain('allocatedAmount: decimal("allocatedAmount", { precision: 16, scale: 2 })');
+    expect(schema).toContain('allocationStatus: mysqlEnum("allocationStatus", ["active", "void", "red_flushed", "legacy_review"])');
+    expect(source).toContain("createInvoiceOriginalFingerprint");
+    expect(source).toContain("电子发票必须归档原始 PDF、OFD 或受控影像后才能登记");
+    expect(source).toContain("该发票原件已被其它项目分摊，新增分摊会超过原件金额");
+    expect(source).toContain("uploadInvoiceEvidence:");
+    expect(source).toContain("verificationReference");
+    expect(source).toContain("redFlushOriginalId");
   });
 
   it("财务流水由服务端审计并投递固定的财务深链", async () => {

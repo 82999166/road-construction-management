@@ -7,6 +7,7 @@ import {
   auditLogs,
   dailyAccountingClosureEvents,
   dailyAccountingClosures,
+  financialInvoiceOriginals,
   financialInvoices,
   financialRecords,
   evidenceRecords,
@@ -60,6 +61,14 @@ function getMonthRange(period: string) {
 /** 金额仅在服务端以两位小数落库，避免客户端浮点误差污染成本报表。 */
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/** 同一张原始发票无论被分摊到多少项目，均使用完全相同的服务端规范化指纹。 */
+function createInvoiceOriginalFingerprint(input: Pick<z.infer<typeof financialInvoiceInput>, "invoiceNo" | "invoiceCode" | "counterpartyName" | "direction" | "issuedAt" | "amount" | "taxAmount">) {
+  const normalizedCounterparty = input.counterpartyName.trim().replace(/\s+/g, " ").toLowerCase();
+  return createHash("sha256")
+    .update([input.invoiceCode?.trim() ?? "", input.invoiceNo.trim(), normalizedCounterparty, input.direction, input.issuedAt, roundMoney(input.amount).toFixed(2), roundMoney(input.taxAmount).toFixed(2)].join("|"))
+    .digest("hex");
 }
 
 /** 生成具有日期和随机后缀的单据号，避免并发录入时使用客户端编号发生冲突。 */
@@ -315,6 +324,15 @@ const purchaseDocumentUploadInput = z.object({
   attachmentKind: z.enum(["document", "invoice"]).default("document"),
 });
 
+/** 财务发票原件必须先受控归档；验真结果和项目分摊均只引用该证据记录。 */
+const financialInvoiceEvidenceUploadInput = z.object({
+  projectId: z.number().int().positive(),
+  fileName: z.string().trim().min(1).max(200),
+  mimeType: z.enum(["image/jpeg", "image/png", "application/pdf"]),
+  base64Data: z.string().min(16).max(22_000_000),
+  description: z.string().trim().min(2).max(300).default("财务发票原件"),
+});
+
 function decodePurchaseDocumentBase64(value: string, mimeType: "image/jpeg" | "image/png" | "application/pdf") {
   const normalized = value.includes(",") ? value.slice(value.indexOf(",") + 1) : value;
   const bytes = Buffer.from(normalized, "base64");
@@ -412,6 +430,13 @@ const financialInvoiceInput = z.object({
   taxRate: z.number().min(0).max(1),
   issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "开票日期格式应为 YYYY-MM-DD"),
   evidenceId: z.number().int().positive().nullable().optional(),
+  /** 同一原件可合法分摊，但分摊总额、报销与抵扣均由服务端统一校验。 */
+  allocatedAmount: moneySchema.refine(value => value > 0, "项目分摊金额必须大于 0").optional(),
+  allocationPurpose: z.enum(["expense_deduction", "reimbursement", "income_collection", "reference_only"]).default("expense_deduction"),
+  structuredPayloadJson: z.string().trim().max(200_000).nullable().optional(),
+  verificationReference: z.string().trim().max(200).nullable().optional(),
+  /** 红字电子凭证仅允许关联已存在的原始蓝字凭证。 */
+  redFlushOriginalId: z.number().int().positive().nullable().optional(),
 });
 
 const financialInvoiceTransitionInput = z.object({
@@ -419,6 +444,7 @@ const financialInvoiceTransitionInput = z.object({
   projectId: z.number().int().positive(),
   targetStatus: z.enum(["verified", "void", "red_flushed"]),
   reason: z.string().trim().max(500).nullable().optional(),
+  verificationReference: z.string().trim().max(200).nullable().optional(),
 });
 
 /** 每日会计日结只允许财务负责人或会计执行，服务端重新汇总当日流水而不信任客户端金额。 */
@@ -1085,7 +1111,38 @@ export const financeRouter = router({
     return db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(desc(financialRecords.occurredAt));
   }),
 
-  /** 发票台账按项目受控读取，统计口径与财务流水分离，避免把发票金额重复记入成本。 */
+  /** 电子凭证、扫描件或影像先进入受控证据库；保存发票原件时再以 evidenceId 关联。 */
+  uploadInvoiceEvidence: protectedProcedure.input(financialInvoiceEvidenceUploadInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertFinanceAccess(ctx);
+    if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票原件归档仅限会计或财务负责人" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const bytes = decodePurchaseDocumentBase64(input.base64Data, input.mimeType);
+    const uploadedAt = new Date();
+    const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "financial-invoice.pdf";
+    const stored = await storagePut(`financial-invoices/${input.projectId}/${uploadedAt.toISOString().slice(0, 10)}/${user.id}-${safeFileName}`, bytes, input.mimeType);
+    const result = await db.insert(evidenceRecords).values({
+      projectId: input.projectId,
+      sourceType: "financial_invoice",
+      sourceId: "invoice_original_upload",
+      fileKey: stored.key,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      watermarkJson: JSON.stringify({ description: input.description, attachmentKind: "financial_invoice_original", captureMode: "financial_invoice_upload", uploadedAt: uploadedAt.toISOString(), version: 1 }),
+      longitude: null,
+      latitude: null,
+      capturedAt: uploadedAt,
+      uploadedBy: user.id,
+    });
+    const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+    if (!Number.isInteger(evidenceId) || evidenceId <= 0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "发票原件归档失败，请稍后重试" });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: "upload_invoice_original", targetType: "evidence", targetId: String(evidenceId), summary: `归档财务发票原件：${input.description.slice(0, 80)}` });
+    return { success: true, evidenceId, fileName: input.fileName, mimeType: input.mimeType };
+  }),
+
+  /** 发票台账按项目受控读取；原件状态来自全局电子凭证主档，项目仅保留合法分摊。 */
   listInvoices: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema.optional() })).query(async ({ ctx, input }) => {
     await assertFinanceAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -1097,14 +1154,18 @@ export const financeRouter = router({
       conditions.push(gte(financialInvoices.issuedAt, range.start), lt(financialInvoices.issuedAt, range.endExclusive));
     }
     const invoices = await db.select().from(financialInvoices).where(and(...conditions)).orderBy(desc(financialInvoices.issuedAt), desc(financialInvoices.id));
-    const active = invoices.filter(invoice => !["void", "red_flushed"].includes(invoice.status));
+    const originalIds = Array.from(new Set(invoices.map(invoice => invoice.originalId).filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0)));
+    const originals = originalIds.length ? await db.select().from(financialInvoiceOriginals).where(inArray(financialInvoiceOriginals.id, originalIds)) : [];
+    const originalById = new Map(originals.map(original => [original.id, original]));
+    const projected = invoices.map(invoice => ({ ...invoice, original: invoice.originalId ? originalById.get(invoice.originalId) ?? null : null }));
+    const active = projected.filter(invoice => invoice.allocationStatus === "active" && !["void", "red_flushed"].includes(invoice.status));
     const byType = active.reduce<Record<string, number>>((summary, invoice) => { summary[invoice.invoiceType] = roundMoney((summary[invoice.invoiceType] ?? 0) + Number(invoice.amount)); return summary; }, {});
     return {
-      invoices,
+      invoices: projected,
       summary: {
-        totalAmount: roundMoney(active.reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
-        verifiedAmount: roundMoney(active.filter(invoice => invoice.status === "verified").reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
-        pendingAmount: roundMoney(active.filter(invoice => invoice.status === "issued").reduce((sum, invoice) => sum + Number(invoice.amount), 0)),
+        totalAmount: roundMoney(active.reduce((sum, invoice) => sum + Number(invoice.allocatedAmount), 0)),
+        verifiedAmount: roundMoney(active.filter(invoice => invoice.original?.verificationStatus === "external_verified" || invoice.original?.verificationStatus === "manual_verified").reduce((sum, invoice) => sum + Number(invoice.allocatedAmount), 0)),
+        pendingAmount: roundMoney(active.filter(invoice => !["external_verified", "manual_verified", "not_required"].includes(invoice.original?.verificationStatus ?? "pending")).reduce((sum, invoice) => sum + Number(invoice.allocatedAmount), 0)),
         byType,
       },
     };
@@ -1116,25 +1177,49 @@ export const financeRouter = router({
     if (!canMaintainFinancialLedger(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "发票台账维护仅限会计或财务负责人" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     if (input.taxAmount > input.amount) throw new TRPCError({ code: "BAD_REQUEST", message: "税额不得高于价税合计金额" });
+    if (input.invoiceType === "electronic" && !input.evidenceId && !input.id) throw new TRPCError({ code: "BAD_REQUEST", message: "电子发票必须归档原始 PDF、OFD 或受控影像后才能登记" });
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     if (input.financialRecordId) {
       const [record] = await db.select({ projectId: financialRecords.projectId }).from(financialRecords).where(eq(financialRecords.id, input.financialRecordId)).limit(1);
       if (!record || record.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目关联的财务流水" });
     }
-    const values = { projectId: input.projectId, financialRecordId: input.financialRecordId ?? null, invoiceNo: input.invoiceNo, invoiceCode: input.invoiceCode ?? null, counterpartyName: input.counterpartyName, invoiceType: input.invoiceType, direction: input.direction, amount: String(roundMoney(input.amount)), taxAmount: String(roundMoney(input.taxAmount)), taxRate: String(input.taxRate), issuedAt: toBusinessDate(input.issuedAt), evidenceId: input.evidenceId ?? null };
+    const originalFingerprint = createInvoiceOriginalFingerprint(input);
+    const allocationAmount = roundMoney(input.allocatedAmount ?? input.amount);
+    if (allocationAmount > input.amount) throw new TRPCError({ code: "BAD_REQUEST", message: "项目分摊金额不得超过发票原件价税合计" });
+    const baseValues = { projectId: input.projectId, financialRecordId: input.financialRecordId ?? null, invoiceNo: input.invoiceNo, invoiceCode: input.invoiceCode ?? null, counterpartyName: input.counterpartyName, invoiceType: input.invoiceType, direction: input.direction, amount: String(roundMoney(input.amount)), taxAmount: String(roundMoney(input.taxAmount)), taxRate: String(input.taxRate), issuedAt: toBusinessDate(input.issuedAt), evidenceId: input.evidenceId ?? null, allocatedAmount: String(allocationAmount), allocationPurpose: input.allocationPurpose };
     if (input.id) {
       const [existing] = await db.select().from(financialInvoices).where(eq(financialInvoices.id, input.id)).limit(1);
       if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
-      if (existing.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "已认证、作废或红冲发票不可直接修改" });
+      if (existing.status !== "issued" || existing.allocationStatus !== "active") throw new TRPCError({ code: "CONFLICT", message: "已认证、作废、红冲或待复核的发票分摊不可直接修改" });
+      const [original] = existing.originalId ? await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.id, existing.originalId)).limit(1) : [];
+      if (!original || original.originalFingerprint !== originalFingerprint) throw new TRPCError({ code: "CONFLICT", message: "原件代码、号码、销方、日期或金额变更会破坏电子凭证链；请作废原分摊后重新登记" });
       await assertFinancialDayWritable(db, input.projectId, existing.issuedAt, "修改已封存日期的发票");
-      await assertFinancialDayWritable(db, input.projectId, values.issuedAt, "迁移发票日期");
-      await db.update(financialInvoices).set(values).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
+      await assertFinancialDayWritable(db, input.projectId, baseValues.issuedAt, "迁移发票日期");
+      const activeAllocations = await db.select({ id: financialInvoices.id, allocatedAmount: financialInvoices.allocatedAmount }).from(financialInvoices).where(and(eq(financialInvoices.originalId, original.id), eq(financialInvoices.allocationStatus, "active")));
+      const totalOtherAllocations = activeAllocations.filter(allocation => allocation.id !== existing.id).reduce((sum, allocation) => sum + Number(allocation.allocatedAmount), 0);
+      if (roundMoney(totalOtherAllocations + allocationAmount) > Number(original.totalAmount)) throw new TRPCError({ code: "CONFLICT", message: "修改后会导致同一原件跨项目分摊超过原件金额，请先调整其它项目分摊" });
+      await db.update(financialInvoices).set(baseValues).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued"), eq(financialInvoices.allocationStatus, "active")));
     } else {
-      await assertFinancialDayWritable(db, input.projectId, values.issuedAt, "登记发票");
-      await db.insert(financialInvoices).values({ ...values, status: "issued", createdBy: user.id });
+      await assertFinancialDayWritable(db, input.projectId, baseValues.issuedAt, "登记发票");
+      let [original] = await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.originalFingerprint, originalFingerprint)).limit(1);
+      if (!original) {
+        if (input.redFlushOriginalId) {
+          const [blueOriginal] = await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.id, input.redFlushOriginalId)).limit(1);
+          if (!blueOriginal || ["void", "red_flushed"].includes(blueOriginal.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效的蓝字原件建立红冲关联" });
+        }
+        const [created] = await db.insert(financialInvoiceOriginals).values({ originalFingerprint, invoiceNo: input.invoiceNo, invoiceCode: input.invoiceCode ?? null, counterpartyName: input.counterpartyName, invoiceType: input.invoiceType, direction: input.direction, totalAmount: String(roundMoney(input.amount)), totalTaxAmount: String(roundMoney(input.taxAmount)), taxRate: String(input.taxRate), issuedAt: baseValues.issuedAt, evidenceId: input.evidenceId ?? null, structuredPayloadJson: input.structuredPayloadJson ?? null, verificationStatus: input.invoiceType === "receipt" ? "not_required" : "pending", verificationReference: input.verificationReference ?? null, redFlushOriginalId: input.redFlushOriginalId ?? null, status: "issued", createdBy: user.id }).$returningId();
+        const originalId = Number(created?.id);
+        if (!Number.isInteger(originalId) || originalId <= 0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "发票原件主档创建失败" });
+        [original] = await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.id, originalId)).limit(1);
+      }
+      if (!original || ["void", "red_flushed"].includes(original.status)) throw new TRPCError({ code: "CONFLICT", message: "该发票原件已作废或红冲，不可继续分摊" });
+      const activeAllocations = await db.select({ allocatedAmount: financialInvoices.allocatedAmount }).from(financialInvoices).where(and(eq(financialInvoices.originalId, original.id), eq(financialInvoices.allocationStatus, "active")));
+      const totalAllocated = activeAllocations.reduce((sum, allocation) => sum + Number(allocation.allocatedAmount), 0);
+      if (roundMoney(totalAllocated + allocationAmount) > Number(original.totalAmount)) throw new TRPCError({ code: "CONFLICT", message: "该发票原件已被其它项目分摊，新增分摊会超过原件金额" });
+      await db.insert(financialInvoices).values({ ...baseValues, originalId: original.id, allocationStatus: "active", status: original.status === "verified" ? "verified" : "issued", createdBy: user.id });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_invoice" : "create_invoice", targetType: "financial_invoice", targetId: input.invoiceNo, summary: `${input.id ? "维护" : "登记"}${input.direction === "expense" ? "成本" : "收入"}发票：${input.invoiceNo}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: input.id ? "update_invoice_allocation" : "create_invoice_allocation", targetType: "financial_invoice", targetId: input.invoiceNo, summary: `${input.id ? "维护" : "登记"}${input.direction === "expense" ? "成本" : "收入"}发票项目分摊：${input.invoiceNo}，金额 ${allocationAmount.toFixed(2)}` });
     return { success: true };
   }),
 
@@ -1147,11 +1232,25 @@ export const financeRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [invoice] = await db.select().from(financialInvoices).where(eq(financialInvoices.id, input.id)).limit(1);
     if (!invoice || invoice.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目发票" });
-    if (invoice.status !== "issued") throw new TRPCError({ code: "CONFLICT", message: "当前发票状态不允许再次操作" });
+    if (invoice.status !== "issued" || invoice.allocationStatus !== "active" || !invoice.originalId) throw new TRPCError({ code: "CONFLICT", message: "当前发票分摊状态不允许再次操作" });
     if (["void", "red_flushed"].includes(input.targetStatus) && !input.reason) throw new TRPCError({ code: "BAD_REQUEST", message: "作废或红冲必须填写原因" });
     await assertFinancialDayWritable(db, input.projectId, invoice.issuedAt, "变更已封存日期的发票状态");
-    await db.update(financialInvoices).set({ status: input.targetStatus, verifiedAt: input.targetStatus === "verified" ? new Date() : null, voidReason: input.reason ?? null }).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票 ${invoice.invoiceNo} 状态变更为：${input.targetStatus}` });
+    const [original] = await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.id, invoice.originalId)).limit(1);
+    if (!original) throw new TRPCError({ code: "CONFLICT", message: "发票原件主档缺失，需先执行电子凭证数据健康检查" });
+    if (input.targetStatus === "verified") {
+      await db.update(financialInvoiceOriginals).set({ status: "verified", verificationStatus: input.verificationReference ? "external_verified" : "manual_verified", verificationReference: input.verificationReference ?? original.verificationReference, verificationCheckedAt: new Date() }).where(eq(financialInvoiceOriginals.id, original.id));
+      await db.update(financialInvoices).set({ status: "verified", verifiedAt: new Date() }).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued")));
+    } else if (input.targetStatus === "void") {
+      await db.update(financialInvoices).set({ status: "void", allocationStatus: "void", voidReason: input.reason ?? null }).where(and(eq(financialInvoices.id, input.id), eq(financialInvoices.status, "issued"), eq(financialInvoices.allocationStatus, "active")));
+    } else {
+      const activeAllocations = await db.select({ id: financialInvoices.id }).from(financialInvoices).where(and(eq(financialInvoices.originalId, original.id), eq(financialInvoices.allocationStatus, "active")));
+      if (activeAllocations.length > 1) throw new TRPCError({ code: "CONFLICT", message: "该原件已分摊到多个项目，红冲前须先逐项作废或登记关联红字原件，防止跨项目账实不一致" });
+      await db.transaction(async tx => {
+        await tx.update(financialInvoiceOriginals).set({ status: "red_flushed", redFlushReason: input.reason ?? null }).where(eq(financialInvoiceOriginals.id, original.id));
+        await tx.update(financialInvoices).set({ status: "red_flushed", allocationStatus: "red_flushed", voidReason: input.reason ?? null }).where(eq(financialInvoices.originalId, original.id));
+      });
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票原件 ${invoice.invoiceNo} 的项目分摊状态变更为：${input.targetStatus}` });
     return { success: true };
   }),
 

@@ -1861,12 +1861,58 @@ export const financialRecords = mysqlTable(
   table => ({ recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo) }),
 );
 
-/** 成本、收入和付款凭证的发票台账；金额、税额和状态均由服务端校验并保留原始审计链。 */
+/**
+ * 发票原件主档是全公司范围唯一的电子凭证事实。
+ * 项目台账只能通过下方的 financialInvoices 分摊该原件，不能复制一张原票进行跨项目报销或抵扣。
+ */
+export const financialInvoiceOriginals = mysqlTable(
+  "financial_invoice_originals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** 发票代码、号码、销方、方向、日期、价税金额组成的服务端规范化指纹。 */
+    originalFingerprint: varchar("originalFingerprint", { length: 128 }).notNull(),
+    invoiceNo: varchar("invoiceNo", { length: 64 }).notNull(),
+    invoiceCode: varchar("invoiceCode", { length: 64 }),
+    counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
+    invoiceType: mysqlEnum("invoiceType", ["vat_special", "vat_normal", "electronic", "receipt", "other"]).notNull(),
+    direction: mysqlEnum("direction", ["income", "expense"]).notNull(),
+    totalAmount: decimal("totalAmount", { precision: 16, scale: 2 }).notNull(),
+    totalTaxAmount: decimal("totalTaxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    taxRate: decimal("taxRate", { precision: 7, scale: 4 }).default("0").notNull(),
+    issuedAt: date("issuedAt").notNull(),
+    /** 原始 PDF、OFD 或影像归档；旧数据允许为空，但新建电子凭证必须关联受控证据。 */
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    structuredPayloadJson: text("structuredPayloadJson"),
+    verificationStatus: mysqlEnum("verificationStatus", ["pending", "manual_verified", "external_verified", "failed", "not_required"]).default("pending").notNull(),
+    verificationReference: varchar("verificationReference", { length: 200 }),
+    verificationCheckedAt: datetime("verificationCheckedAt"),
+    /** 红冲只关联同一原件链，不允许用自由文本伪造红冲关系。 */
+    redFlushOriginalId: bigint("redFlushOriginalId", { mode: "number" }),
+    redFlushReason: varchar("redFlushReason", { length: 500 }),
+    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"]).default("issued").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    fingerprintUnique: uniqueIndex("financial_invoice_originals_fingerprint_unique").on(table.originalFingerprint),
+    statusDateIndex: index("financial_invoice_originals_status_date_index").on(table.status, table.issuedAt),
+    evidenceIndex: index("financial_invoice_originals_evidence_index").on(table.evidenceId),
+    redFlushIndex: index("financial_invoice_originals_red_flush_index").on(table.redFlushOriginalId),
+    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "financial_invoice_originals_evidence_fk" }).onDelete("restrict"),
+    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "financial_invoice_originals_creator_fk" }).onDelete("restrict"),
+    redFlushFk: foreignKey({ columns: [table.redFlushOriginalId], foreignColumns: [table.id], name: "financial_invoice_originals_red_flush_fk" }).onDelete("restrict"),
+  }),
+);
+
+/** 成本、收入和付款凭证的项目分摊台账；金额、税额和状态均由服务端校验并保留原始审计链。 */
 export const financialInvoices = mysqlTable(
   "financial_invoices",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
+    /** 指向全局原件主档；历史记录由迁移回填，待复核记录不得继续用于抵扣或报销。 */
+    originalId: bigint("originalId", { mode: "number" }),
     financialRecordId: bigint("financialRecordId", { mode: "number" }),
     invoiceNo: varchar("invoiceNo", { length: 64 }).notNull(),
     invoiceCode: varchar("invoiceCode", { length: 64 }),
@@ -1880,6 +1926,10 @@ export const financialInvoices = mysqlTable(
     verifiedAt: datetime("verifiedAt"),
     status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"]).default("issued").notNull(),
     evidenceId: bigint("evidenceId", { mode: "number" }),
+    /** 本项目实际分摊金额；同一原件全部有效分摊累计不得超过原件价税合计。 */
+    allocatedAmount: decimal("allocatedAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    allocationPurpose: mysqlEnum("allocationPurpose", ["expense_deduction", "reimbursement", "income_collection", "reference_only"]).default("expense_deduction").notNull(),
+    allocationStatus: mysqlEnum("allocationStatus", ["active", "void", "red_flushed", "legacy_review"]).default("active").notNull(),
     voidReason: varchar("voidReason", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -1889,6 +1939,8 @@ export const financialInvoices = mysqlTable(
     projectInvoiceNoUnique: uniqueIndex("financial_invoices_project_no_unique").on(table.projectId, table.invoiceNo),
     projectStatusDateIndex: index("financial_invoices_project_status_date_index").on(table.projectId, table.status, table.issuedAt),
     financialRecordIndex: index("financial_invoices_financial_record_index").on(table.financialRecordId),
+    originalIndex: index("financial_invoices_original_index").on(table.originalId, table.allocationStatus),
+    originalFk: foreignKey({ columns: [table.originalId], foreignColumns: [financialInvoiceOriginals.id], name: "financial_invoices_original_fk" }).onDelete("restrict"),
   }),
 );
 
