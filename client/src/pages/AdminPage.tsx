@@ -17,9 +17,6 @@ import { trpc } from "@/lib/trpc";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
-import { LaborPayrollHeadline } from "@/components/LaborPayrollHeadline";
-import { DailyWagePaymentDialog } from "@/components/DailyWagePaymentDialog";
-import { PayrollPaymentDialog } from "@/components/PayrollPaymentDialog";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -62,6 +59,9 @@ const MachinePaymentSettlementManager = lazy(() => import("@/components/MachineP
 const SubcontractPaymentSettlementManager = lazy(() => import("@/components/SubcontractPaymentSettlementManager"));
 const TaxAccountingHandoffManager = lazy(() => import("@/components/TaxAccountingHandoffManager"));
 const AdminAuditWorkspace = lazy(() => import("@/components/AdminAuditWorkspace"));
+const LaborPayrollHeadline = lazy(() => import("@/components/LaborPayrollHeadline").then(module => ({ default: module.LaborPayrollHeadline })));
+const DailyWagePaymentDialog = lazy(() => import("@/components/DailyWagePaymentDialog").then(module => ({ default: module.DailyWagePaymentDialog })));
+const PayrollPaymentDialog = lazy(() => import("@/components/PayrollPaymentDialog").then(module => ({ default: module.PayrollPaymentDialog })));
 
 /**
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
