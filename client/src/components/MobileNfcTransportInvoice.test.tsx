@@ -24,7 +24,7 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("重新启动读卡");
     expect(source).toContain("scanAttempt");
     expect(source).toContain("卸土点中文详细地址尚未完成地图定位校验");
-    expect(source).toContain("装卸土点详细地址与既有路线编辑");
+    expect(source).toContain("装卸土点与运输路线配置");
     expect(source).toContain("补录详细地址");
   });
 });

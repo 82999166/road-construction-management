@@ -63,7 +63,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     },
     onError: error => {
       const guidance = error.message.includes("卸土点中文详细地址尚未完成地图定位校验")
-        ? "该卸土点的中文详细地址尚未完成地图定位校验，当前不能安全确认卸土。请由 PC 超级管理员进入“运输管理 → 装卸土点详细地址与既有路线编辑”，点击对应卸土点的“补录详细地址”，补全省、市、区县、道路/桩号或地标后保存，再重新刷卡确认。"
+        ? "该卸土点的中文详细地址尚未完成地图定位校验，当前不能安全确认卸土。请由 PC 超级管理员进入“运输管理 → 装卸土点与运输路线配置”，点击对应卸土点的“补录详细地址”，补全省、市、区县、道路/桩号或地标后保存，再重新刷卡确认。"
         : error.message;
       setOperationError(guidance);
       toast.error(guidance);

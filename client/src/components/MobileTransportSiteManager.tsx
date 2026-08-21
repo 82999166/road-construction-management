@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { LocateFixed, MapPin, Pencil, Plus } from "lucide-react";
+import { LocateFixed, MapPin, Pencil, Plus, Route } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -19,7 +19,7 @@ type SiteDraft = {
 };
 
 /** 手机端与PC端共用 transport.saveSite / transport.listSites，避免跨端地点与路线数据漂移。 */
-export function MobileTransportSiteManager({ projectId, canManage }: { projectId: number; canManage: boolean }) {
+export function MobileTransportSiteManager({ projectId, canManage, onConfigureRoutes }: { projectId: number; canManage: boolean; onConfigureRoutes?: () => void }) {
   const utils = trpc.useUtils();
   const sites = trpc.transport.listSites.useQuery({ projectId }, { enabled: Boolean(projectId) && canManage, retry: false });
   const [draft, setDraft] = useState<SiteDraft | null>(null);
@@ -78,13 +78,14 @@ export function MobileTransportSiteManager({ projectId, canManage }: { projectId
   return <Card className="border border-[#c8ddd9] bg-[#f7fcfb] shadow-[0_6px_18px_rgba(43,91,83,.08)] print:hidden">
     <CardContent className="p-4">
       <div>
-        <p className="flex items-center gap-1.5 text-sm font-semibold text-[#245e56]"><MapPin className="h-4 w-4" />装卸土点管理</p>
-        <p className="mt-1 text-xs leading-5 text-[#5a766f]">手机端与PC后台使用同一套地点和路线数据；仅填写中文详细地址。</p>
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-[#245e56]"><MapPin className="h-4 w-4" />装卸土点与运输路线配置</p>
+        <p className="mt-1 text-xs leading-5 text-[#5a766f]">在此维护地点、中文详细地址和路线；手机端与PC后台使用同一套数据。</p>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Button size="sm" variant="outline" className="border-[#3d776f] text-[#235d55]" onClick={() => openNew("load")}><Plus className="mr-1 h-3.5 w-3.5" />新增装土点</Button>
         <Button size="sm" className="bg-[#2d6f67] text-white hover:bg-[#245a54]" onClick={() => openNew("unload")}><Plus className="mr-1 h-3.5 w-3.5" />新增卸土点</Button>
       </div>
+      {onConfigureRoutes ? <Button size="sm" variant="outline" className="mt-2 w-full border-[#3d776f] text-[#235d55]" onClick={onConfigureRoutes}><Route className="mr-1 h-3.5 w-3.5" />配置运输路线、公里数与运价</Button> : null}
       <div className="mt-3 space-y-2">
         {sites.isLoading ? <p className="rounded-lg bg-white p-3 text-center text-xs text-slate-500">正在读取现场地点…</p> : null}
         {!sites.isLoading && !sites.data?.length ? <p className="rounded-lg border border-dashed border-[#b9d0cb] bg-white p-3 text-center text-xs text-slate-500">暂无装卸土点。请使用上方按钮分别新增装土点和卸土点。</p> : null}
