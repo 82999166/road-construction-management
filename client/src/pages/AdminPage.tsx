@@ -7,6 +7,7 @@ import RoadRailKnowledgeBase from "@/components/RoadRailKnowledgeBase";
 import RfidLocalWriterPanel from "@/components/RfidLocalWriterPanel";
 import TransportTripLedger, { type TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { TransportRouteSafetySettings } from "@/components/TransportRouteSafetySettings";
+import { TransportRouteConfigurationEditor } from "@/components/TransportRouteConfigurationEditor";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -2797,6 +2798,7 @@ export default function AdminPage() {
       <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">运输调度 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">车辆、趟次与结算状态</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">展示真实车辆资源与指定自然日趟次。运价快照、理论方量、异常检测、核验、详情查看和结算均在当前 PC 台账中完成。</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={!hasBusinessWorkspaceProject} onClick={() => { setVehicleForm({ ...EMPTY_VEHICLE_FORM, projectId: String(workspaceProjectId) }); setVehicleEditorOpen(true); setLocation("/admin/vehicles"); }}><Truck className="mr-1.5 h-4 w-4" />录入车辆档案</Button><Button size="sm" variant="outline" onClick={() => setLocation("/admin/vehicles")}>单车柴油分析</Button></div></div>
         {renderWorkspaceProjectFilter("运输项目范围", "选择项目后读取车辆台账和实际运输趟次。司机、运输管理和财务操作由服务端按角色、项目和状态分别校验。")}
+        {hasBusinessWorkspaceProject ? <TransportRouteConfigurationEditor projectId={workspaceProjectId} /> : null}
         {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实运输调度台账。" /> : transportVehicleLedger.isLoading || transportTrips.isLoading ? <EmptyState text="正在读取车辆和运输趟次…" /> : transportVehicleLedger.isError || transportTrips.isError ? <EmptyState text="暂无法读取运输调度数据，请确认当前账号的服务端授权后重试。" /> : (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="可见车辆" value={vehiclesForProject.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Truck} /><MetricCard title="可调度车辆" value={vehiclesForProject.filter(item => item.status === "active").length} description="车辆状态来自真实台账" icon={ShieldCheck} /><MetricCard title="当日有效趟次" value={activeTrips.length} description={transportDate || "全部日期"} icon={ScrollText} /><MetricCard title="可结算金额" value={Math.round(totalAmount * 100) / 100} description="非作废趟次金额合计" icon={BarChart3} /></section>
