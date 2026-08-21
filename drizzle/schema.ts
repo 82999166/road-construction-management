@@ -1368,6 +1368,70 @@ export const transportTrips = mysqlTable(
   }),
 );
 
+/**
+ * 渣土车按趟费用结算单。结算周期可覆盖单日或指定日期范围，付款完成后进入不可逆 paid 状态。
+ * 收款方式属于本次付款安排而非车辆固定属性，避免同一车主因不同结算要求产生错误历史覆盖。
+ */
+export const transportVehicleSettlements = mysqlTable(
+  "transport_vehicle_settlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementNo: varchar("settlementNo", { length: 64 }).notNull(),
+    projectId: int("projectId").notNull(),
+    vehicleId: int("vehicleId").notNull(),
+    periodStart: date("periodStart").notNull(),
+    periodEnd: date("periodEnd").notNull(),
+    tripCount: int("tripCount").notNull(),
+    totalVolumeCubicMeters: decimal("totalVolumeCubicMeters", { precision: 14, scale: 3 }).default("0").notNull(),
+    grossFreightAmount: decimal("grossFreightAmount", { precision: 16, scale: 2 }).notNull(),
+    fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    payeeName: varchar("payeeName", { length: 128 }).notNull(),
+    /** 人工付款需要原文账户信息以便制作银行导入表；仅受运输/财务权限和项目范围保护。 */
+    payeeAccount: varchar("payeeAccount", { length: 160 }),
+    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentDate: date("paymentDate"),
+    paymentReference: varchar("paymentReference", { length: 128 }),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    submittedBy: int("submittedBy"),
+    submittedAt: datetime("submittedAt"),
+    approvedBy: int("approvedBy"),
+    approvedAt: datetime("approvedAt"),
+    paidBy: int("paidBy"),
+    paidAt: datetime("paidAt"),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    settlementNoUnique: uniqueIndex("transport_vehicle_settlements_no_unique").on(table.settlementNo),
+    projectVehiclePeriodIndex: index("transport_vehicle_settlements_project_vehicle_period_index").on(table.projectId, table.vehicleId, table.periodStart, table.periodEnd),
+    projectStatusIndex: index("transport_vehicle_settlements_project_status_index").on(table.projectId, table.status),
+  }),
+);
+
+/** 结算单逐趟快照。一个运输趟次只能归属一张非历史迁移结算单，避免重复付款。 */
+export const transportVehicleSettlementItems = mysqlTable(
+  "transport_vehicle_settlement_items",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+    tripId: bigint("tripId", { mode: "number" }).notNull(),
+    tripNo: varchar("tripNo", { length: 64 }).notNull(),
+    tripDate: date("tripDate").notNull(),
+    volumeCubicMeters: decimal("volumeCubicMeters", { precision: 14, scale: 3 }).default("0").notNull(),
+    grossFreightAmount: decimal("grossFreightAmount", { precision: 16, scale: 2 }).notNull(),
+    fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    settlementTripUnique: uniqueIndex("transport_vehicle_settlement_items_trip_unique").on(table.tripId),
+    settlementIndex: index("transport_vehicle_settlement_items_settlement_index").on(table.settlementId),
+  }),
+);
+
 /** 装土与卸土刷卡原子事件；设备重传和乱序均留痕并进入人工复核。 */
 export const transportCardEvents = mysqlTable(
   "transport_card_events",

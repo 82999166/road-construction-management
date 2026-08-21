@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -23,6 +23,8 @@ import {
   transportTrips,
   transportVehicleLeaseRules,
   transportVehicleRfidCards,
+  transportVehicleSettlementItems,
+  transportVehicleSettlements,
   transportVehicles,
   users,
 } from "../../drizzle/schema";
@@ -48,6 +50,8 @@ import { runProjectRiskScan } from "./projectRisk";
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const isoDateTimeSchema = z.string().datetime({ offset: true, message: "时间必须使用 ISO 8601 格式" });
+const transportSettlementPaymentMethodSchema = z.enum(["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]);
+const transportSettlementStatusSchema = z.enum(["draft", "submitted", "approved", "paid", "void"]);
 
 /** 业务人员维护中文详细地址；服务端仅为围栏计算解析并保存内部坐标，不向页面返回。 */
 async function resolveTransportSiteAddress(address: string) {
@@ -312,6 +316,32 @@ const transportRoutePresetInput = z.object({
   status: z.enum(["active", "disabled"]),
 }).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
 
+/** 渣土车按趟结算从已核验运单生成，金额只能由服务端快照汇总，浏览器不能传入金额。 */
+const transportVehicleSettlementDraftInput = z.object({
+  projectId: z.number().int().positive(),
+  vehicleId: z.number().int().positive(),
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  payeeName: z.string().trim().min(2, "请填写收款人姓名或单位名称").max(128),
+  payeeAccount: z.string().trim().max(160).nullable().optional(),
+  paymentMethod: transportSettlementPaymentMethodSchema.default("bank_transfer"),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, issue) => {
+  if (value.periodEnd < value.periodStart) issue.addIssue({ code: "custom", path: ["periodEnd"], message: "结束日期不能早于开始日期" });
+  if (["bank_transfer", "corporate_account", "wechat", "alipay"].includes(value.paymentMethod) && !value.payeeAccount?.trim()) issue.addIssue({ code: "custom", path: ["payeeAccount"], message: "该收款方式必须填写收款账户或收款账号" });
+});
+
+const transportVehicleSettlementActionInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  action: z.enum(["submit", "approve", "pay", "void"]),
+  paymentDate: businessDateSchema.optional(),
+  paymentReference: z.string().trim().max(128).nullable().optional(),
+  remarks: z.string().trim().max(500).nullable().optional(),
+}).superRefine((value, issue) => {
+  if (value.action === "pay" && !value.paymentDate) issue.addIssue({ code: "custom", path: ["paymentDate"], message: "登记付款必须填写付款日期" });
+});
+
 /** 写卡器型号先以台账方式预留，未接入硬件协议时仅允许生成并人工确认受控写卡任务。 */
 const rfidWriterDeviceInput = z.object({
   id: z.number().int().positive().optional(),
@@ -434,6 +464,20 @@ function createTransportTripNo(projectId: number, occurredAt = new Date()) {
   latestTripSecondSequence = latestTripSecond === secondKey ? latestTripSecondSequence + 1 : 1;
   latestTripSecond = secondKey;
   return `TR-${projectId}-${secondKey}-${String(latestTripSecondSequence).padStart(2, "0")}`;
+}
+
+/** 渣土车结算号与运单号分离，避免付款单因重算或补审混同运输票据。 */
+function createTransportVehicleSettlementNo(projectId: number, occurredAt = new Date()) {
+  const date = getChinaBusinessDate(occurredAt).replaceAll("-", "");
+  return `TS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+/** 非财务角色只查看账户尾号；付款执行与导出由财务角色读取完整受控账户信息。 */
+function maskPaymentAccount(account: string | null) {
+  if (!account) return null;
+  const compact = account.replace(/\s/g, "");
+  if (compact.length <= 4) return "****";
+  return `${"*".repeat(Math.max(4, compact.length - 4))}${compact.slice(-4)}`;
 }
 
 /** 所有开票方式共用的车辆在途锁；卡片会话键仍仅用于 NFC 卸土闭环匹配。 */
@@ -2341,6 +2385,183 @@ export const transportRouter = router({
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
     return { success: true };
+  }),
+
+  /** 按车辆和业务日汇总真实运单，供运输日结、付款候选和服务号通知共同使用。 */
+  dailyVehicleSettlementSummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { date: input.date, vehicleSummaries: [] as { vehicleId: number; plateNo: string; ownership: string; tripCount: number; totalVolumeCubicMeters: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; verifiedTripCount: number; settledTripCount: number; paymentStatus: string }[] };
+    const start = toBusinessDate(input.date);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 1);
+    let trips = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), gte(transportTrips.startAt, start), lt(transportTrips.startAt, end), ne(transportTrips.status, "void")));
+    const user = requireAuthenticatedUser(ctx);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly) {
+      const ownVehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
+      const ownIds = new Set(ownVehicles.map(item => item.id));
+      trips = trips.filter(item => ownIds.has(item.vehicleId));
+    }
+    const tripIds = trips.map(item => item.id);
+    const [vehicles, items] = await Promise.all([
+      db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo, ownership: transportVehicles.ownership }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      tripIds.length ? db.select({ tripId: transportVehicleSettlementItems.tripId, settlementId: transportVehicleSettlementItems.settlementId }).from(transportVehicleSettlementItems).where(inArray(transportVehicleSettlementItems.tripId, tripIds)) : Promise.resolve([]),
+    ]);
+    const settlementIds = Array.from(new Set(items.map(item => item.settlementId)));
+    const settlements = settlementIds.length ? await db.select({ id: transportVehicleSettlements.id, status: transportVehicleSettlements.status }).from(transportVehicleSettlements).where(inArray(transportVehicleSettlements.id, settlementIds)) : [];
+    const settlementStatusByTrip = new Map(items.map(item => [Number(item.tripId), settlements.find(settlement => settlement.id === item.settlementId)?.status ?? "draft"]));
+    const vehicleById = new Map(vehicles.map(vehicle => [vehicle.id, vehicle]));
+    const summaryByVehicle = new Map<number, { vehicleId: number; plateNo: string; ownership: string; tripCount: number; totalVolumeCubicMeters: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; verifiedTripCount: number; settledTripCount: number; paymentStatus: string }>();
+    trips.forEach(trip => {
+      const vehicle = vehicleById.get(trip.vehicleId);
+      const current = summaryByVehicle.get(trip.vehicleId) ?? { vehicleId: trip.vehicleId, plateNo: vehicle?.plateNo ?? `车辆 #${trip.vehicleId}`, ownership: vehicle?.ownership ?? "owned", tripCount: 0, totalVolumeCubicMeters: 0, grossFreightAmount: 0, fuelDeductionAmount: 0, netPayableAmount: 0, verifiedTripCount: 0, settledTripCount: 0, paymentStatus: settlementStatusByTrip.get(trip.id) ?? "未生成结算" };
+      current.tripCount += 1;
+      current.totalVolumeCubicMeters += Number(trip.volumeCubicMeters ?? 0);
+      current.grossFreightAmount += Number(trip.calculatedAmount ?? 0);
+      current.fuelDeductionAmount += Number(trip.fuelDeductionAmount ?? 0);
+      current.netPayableAmount += Number(trip.netSettlementAmount ?? trip.calculatedAmount ?? 0) - (trip.netSettlementAmount ? 0 : Number(trip.fuelDeductionAmount ?? 0));
+      if (trip.status === "verified") current.verifiedTripCount += 1;
+      if (trip.status === "settled") current.settledTripCount += 1;
+      const settlementStatus = settlementStatusByTrip.get(trip.id);
+      if (settlementStatus) current.paymentStatus = settlementStatus;
+      summaryByVehicle.set(trip.vehicleId, current);
+    });
+    return { date: input.date, vehicleSummaries: Array.from(summaryByVehicle.values()).map(item => ({ ...item, totalVolumeCubicMeters: Math.round(item.totalVolumeCubicMeters * 1000) / 1000, grossFreightAmount: roundMoney(item.grossFreightAmount), fuelDeductionAmount: roundMoney(item.fuelDeductionAmount), netPayableAmount: roundMoney(item.netPayableAmount) })).sort((left, right) => right.tripCount - left.tripCount || left.plateNo.localeCompare(right.plateNo, "zh-CN")) };
+  }),
+
+  /** 将某日真实车辆趟次汇总投递给已绑定的项目责任收件人；模板未发布或投递失败不影响汇总查询。 */
+  sendDailyVehicleSettlementSummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), date: businessDateSchema })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权发送运输日结通知" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const start = toBusinessDate(input.date);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 1);
+    const trips = await db.select({ vehicleId: transportTrips.vehicleId, calculatedAmount: transportTrips.calculatedAmount }).from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), gte(transportTrips.startAt, start), lt(transportTrips.startAt, end), ne(transportTrips.status, "void")));
+    const totalAmount = roundMoney(trips.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0));
+    const content = `${input.date} 共 ${trips.length} 趟，涉及 ${new Set(trips.map(trip => trip.vehicleId)).size} 台车，应付总运费 ¥${totalAmount.toFixed(2)}。请在运输管理查看按车牌日结并办理核验、结算与付款。`;
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_daily_vehicle_settlement_summary", targetType: "transport_daily_vehicle_summary", targetId: `${input.projectId}-${input.date}`, title: "渣土车运输日结汇总", content, deepLink: "/mobile/transport" }).catch(() => undefined);
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "send_daily_vehicle_settlement_summary", targetType: "transport_daily_vehicle_summary", targetId: `${input.projectId}-${input.date}`, summary: `发起 ${input.date} 渣土车运单日结通知：${trips.length} 趟，应付总额 ¥${totalAmount.toFixed(2)}` });
+    return { success: true, tripCount: trips.length, totalAmount };
+  }),
+
+  /** 读取车辆结算单；完整收款账户仅向财务负责人、会计或系统管理员返回。 */
+  listVehicleSettlements: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), vehicleId: z.number().int().positive().optional(), status: transportSettlementStatusSchema.optional() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    let rows = await db.select().from(transportVehicleSettlements).where(eq(transportVehicleSettlements.projectId, input.projectId)).orderBy(desc(transportVehicleSettlements.createdAt));
+    if (input.vehicleId) rows = rows.filter(item => item.vehicleId === input.vehicleId);
+    if (input.status) rows = rows.filter(item => item.status === input.status);
+    const user = requireAuthenticatedUser(ctx);
+    const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+    if (isDriverOnly) {
+      const ownVehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), eq(transportVehicles.driverUserId, user.id)));
+      const ids = new Set(ownVehicles.map(item => item.id));
+      rows = rows.filter(item => ids.has(item.vehicleId));
+    }
+    const [vehicles, items] = await Promise.all([
+      db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo, ownership: transportVehicles.ownership, ownerName: transportVehicles.ownerName, driverName: transportVehicles.driverName }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      rows.length ? db.select({ settlementId: transportVehicleSettlementItems.settlementId, tripId: transportVehicleSettlementItems.tripId, tripNo: transportVehicleSettlementItems.tripNo }).from(transportVehicleSettlementItems).where(inArray(transportVehicleSettlementItems.settlementId, rows.map(item => item.id))) : Promise.resolve([]),
+    ]);
+    const vehicleById = new Map(vehicles.map(vehicle => [vehicle.id, vehicle]));
+    const itemBySettlement = new Map<number, { tripId: number; tripNo: string }[]>();
+    items.forEach(item => itemBySettlement.set(Number(item.settlementId), [...(itemBySettlement.get(Number(item.settlementId)) ?? []), { tripId: Number(item.tripId), tripNo: item.tripNo }]));
+    const canReadFullAccount = canSettleFinancialRecord(roleCodes);
+    return rows.map(item => ({ ...item, vehicle: vehicleById.get(item.vehicleId) ?? null, payeeAccount: canReadFullAccount ? item.payeeAccount : maskPaymentAccount(item.payeeAccount), accountMasked: !canReadFullAccount, itemCount: itemBySettlement.get(item.id)?.length ?? 0, tripNos: itemBySettlement.get(item.id)?.map(detail => detail.tripNo) ?? [] }));
+  }),
+
+  /** 由已核验的渣土车真实趟次生成付款前结算草稿；每趟只能进入一张结算单。 */
+  createVehicleSettlement: protectedProcedure.input(transportVehicleSettlementDraftInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权创建渣土车费用结算单" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+    if (!vehicle || vehicle.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或不属于当前项目" });
+    if (vehicle.ownership !== "trip_settlement") throw new TRPCError({ code: "BAD_REQUEST", message: "仅“渣土车（按趟结算）”可使用本费用结算台账，外租车辆请继续使用租金管理" });
+    const start = toBusinessDate(input.periodStart);
+    const endExclusive = new Date(toBusinessDate(input.periodEnd));
+    endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+    const verifiedTrips = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), eq(transportTrips.vehicleId, input.vehicleId), eq(transportTrips.status, "verified"), gte(transportTrips.startAt, start), lt(transportTrips.startAt, endExclusive)));
+    if (!verifiedTrips.length) throw new TRPCError({ code: "BAD_REQUEST", message: "所选期间没有可结算的已核验运输趟次" });
+    const tripIds = verifiedTrips.map(item => item.id);
+    const [existingItems, fuelRecords] = await Promise.all([
+      db.select({ tripId: transportVehicleSettlementItems.tripId }).from(transportVehicleSettlementItems).where(inArray(transportVehicleSettlementItems.tripId, tripIds)),
+      db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.status, "approved"), eq(dieselRefuelRecords.deductFromFreight, true), inArray(dieselRefuelRecords.transportTripId, tripIds))),
+    ]);
+    const existingTripIds = new Set(existingItems.map(item => Number(item.tripId)));
+    const candidates = verifiedTrips.filter(trip => !existingTripIds.has(trip.id));
+    if (!candidates.length) throw new TRPCError({ code: "CONFLICT", message: "所选期间的已核验趟次均已生成结算单，不能重复结算" });
+    const fuelByTrip = new Map<number, number>();
+    fuelRecords.forEach(record => fuelByTrip.set(Number(record.transportTripId), (fuelByTrip.get(Number(record.transportTripId)) ?? 0) + Number(record.amount)));
+    const details = candidates.map(trip => {
+      const grossFreightAmount = roundMoney(Number(trip.calculatedAmount ?? 0));
+      const fuelDeductionAmount = roundMoney(fuelByTrip.get(trip.id) ?? 0);
+      return { trip, tripDate: new Date(trip.startAt).toISOString().slice(0, 10), volumeCubicMeters: Number(trip.volumeCubicMeters ?? 0), grossFreightAmount, fuelDeductionAmount, netPayableAmount: roundMoney(grossFreightAmount - fuelDeductionAmount) };
+    });
+    const settlementNo = createTransportVehicleSettlementNo(input.projectId);
+    const summary = { tripCount: details.length, totalVolumeCubicMeters: Math.round(details.reduce((sum, item) => sum + item.volumeCubicMeters, 0) * 1000) / 1000, grossFreightAmount: roundMoney(details.reduce((sum, item) => sum + item.grossFreightAmount, 0)), fuelDeductionAmount: roundMoney(details.reduce((sum, item) => sum + item.fuelDeductionAmount, 0)), netPayableAmount: roundMoney(details.reduce((sum, item) => sum + item.netPayableAmount, 0)) };
+    let settlementId = 0;
+    try {
+      await db.transaction(async tx => {
+        await tx.insert(transportVehicleSettlements).values({ settlementNo, projectId: input.projectId, vehicleId: input.vehicleId, periodStart: start, periodEnd: toBusinessDate(input.periodEnd), tripCount: summary.tripCount, totalVolumeCubicMeters: String(summary.totalVolumeCubicMeters), grossFreightAmount: String(summary.grossFreightAmount), fuelDeductionAmount: String(summary.fuelDeductionAmount), netPayableAmount: String(summary.netPayableAmount), payeeName: input.payeeName.trim(), payeeAccount: input.payeeAccount?.trim() || null, paymentMethod: input.paymentMethod, remarks: input.remarks?.trim() || null, createdBy: user.id });
+        const [created] = await tx.select({ id: transportVehicleSettlements.id }).from(transportVehicleSettlements).where(eq(transportVehicleSettlements.settlementNo, settlementNo)).limit(1);
+        if (!created) throw new Error("结算单写入后未找到主记录");
+        settlementId = created.id;
+        await tx.insert(transportVehicleSettlementItems).values(details.map(item => ({ settlementId, tripId: item.trip.id, tripNo: item.trip.tripNo, tripDate: toBusinessDate(item.tripDate), volumeCubicMeters: String(item.volumeCubicMeters), grossFreightAmount: String(item.grossFreightAmount), fuelDeductionAmount: String(item.fuelDeductionAmount), netPayableAmount: String(item.netPayableAmount) })));
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("transport_vehicle_settlement_items_trip_unique")) throw new TRPCError({ code: "CONFLICT", message: "部分运单已被其他结算单占用，请刷新后重新生成" });
+      throw error;
+    }
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_vehicle_settlement", targetType: "transport_vehicle_settlement", targetId: settlementNo, summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，净应付 ¥${summary.netPayableAmount.toFixed(2)}` });
+    return { success: true, id: settlementId, settlementNo, ...summary };
+  }),
+
+  /** 结算草稿提交、会计审核、付款登记和作废；paid 为终态，付款完成后绝不允许作废。 */
+  transitionVehicleSettlement: protectedProcedure.input(transportVehicleSettlementActionInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [settlement] = await db.select().from(transportVehicleSettlements).where(eq(transportVehicleSettlements.id, input.id)).limit(1);
+    if (!settlement || settlement.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "渣土车结算单不存在或不属于当前项目" });
+    if (settlement.status === "paid") throw new TRPCError({ code: "BAD_REQUEST", message: "该结算单已完成付款，依据业务规则不能作废或回退" });
+    const expectedStatus = input.action === "submit" ? "draft" : input.action === "approve" ? "submitted" : input.action === "pay" ? "approved" : settlement.status;
+    if (input.action === "void" && !["draft", "submitted", "approved"].includes(settlement.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前结算状态不允许作废" });
+    if (input.action === "submit" || input.action === "void") { if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废渣土车结算单" }); }
+    if (input.action === "approve" || input.action === "pay") { if (!canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅会计、财务负责人或系统管理员可审核与付款" }); }
+    const nextStatus: "submitted" | "approved" | "paid" | "void" = input.action === "submit" ? "submitted" : input.action === "approve" ? "approved" : input.action === "pay" ? "paid" : "void";
+    const items = await db.select().from(transportVehicleSettlementItems).where(eq(transportVehicleSettlementItems.settlementId, settlement.id));
+    await db.transaction(async tx => {
+      const values: Partial<typeof transportVehicleSettlements.$inferInsert> = input.action === "submit" ? { status: nextStatus, submittedBy: user.id, submittedAt: new Date() }
+        : input.action === "approve" ? { status: nextStatus, approvedBy: user.id, approvedAt: new Date() }
+          : input.action === "pay" ? { status: nextStatus, paymentDate: toBusinessDate(input.paymentDate!), paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
+            : { status: nextStatus, remarks: input.remarks?.trim() || settlement.remarks };
+      const result = await tx.update(transportVehicleSettlements).set(values).where(and(eq(transportVehicleSettlements.id, settlement.id), eq(transportVehicleSettlements.status, expectedStatus)));
+      assertConditionalStatusWrite(result, "渣土车结算单");
+      if (input.action === "approve") {
+        for (const item of items) await tx.update(transportTrips).set({ status: "settled", fuelDeductionAmount: item.fuelDeductionAmount, netSettlementAmount: item.netPayableAmount, activeVehicleTransitKey: null }).where(and(eq(transportTrips.id, item.tripId), eq(transportTrips.status, "verified")));
+      }
+      if (input.action === "void") {
+        if (settlement.status === "approved") for (const item of items) await tx.update(transportTrips).set({ status: "verified", fuelDeductionAmount: "0", netSettlementAmount: null }).where(and(eq(transportTrips.id, item.tripId), eq(transportTrips.status, "settled")));
+        await tx.delete(transportVehicleSettlementItems).where(eq(transportVehicleSettlementItems.settlementId, settlement.id));
+      }
+    });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `vehicle_settlement_${input.action}`, targetType: "transport_vehicle_settlement", targetId: settlement.settlementNo, summary: `渣土车结算单${input.action === "submit" ? "已提交会计审核" : input.action === "approve" ? "已审核通过" : input.action === "pay" ? `已登记付款日期 ${input.paymentDate}` : "已作废"}：净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_vehicle_settlement_${input.action}`, targetType: "transport_vehicle_settlement", targetId: settlement.settlementNo, title: "渣土车费用结算状态更新", content: `${settlement.settlementNo} 已${input.action === "submit" ? "提交会计审核" : input.action === "approve" ? "审核通过" : input.action === "pay" ? "完成付款登记" : "作废"}，净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    return { success: true, status: nextStatus };
   }),
 
   /** 按自然日汇总趟次、方量、吨位和可结算运费，供日报与打印视图统一使用。 */
