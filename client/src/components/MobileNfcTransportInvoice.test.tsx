@@ -19,5 +19,9 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("}, 3_000)");
     expect(source).toContain("setToken(\"\")");
     expect(source).toContain("setRoutePresetId(\"\")");
+    expect(source).toContain("当前浏览器不支持页面内读卡");
+    expect(source).toContain("已启动 Android Chrome 页面内读卡");
+    expect(source).toContain("重新启动读卡");
+    expect(source).toContain("scanAttempt");
   });
 });
