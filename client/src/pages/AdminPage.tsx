@@ -2886,7 +2886,7 @@ export default function AdminPage() {
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>绑定车辆射频卡</DialogTitle>
-              <DialogDescription>卡 ID/UID、车牌与驾驶员信息用于本次受控绑定和 RC3 签名写卡。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
+              <DialogDescription>此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -2907,14 +2907,14 @@ export default function AdminPage() {
                 </Field>
               </div>
               <div className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50/60 p-3 sm:grid-cols-2">
-                <Field label="车牌号"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
-                <Field label="驾驶员姓名"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
-                <Field label="驾驶员联系电话"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
-                <Field label="卡 ID / UID"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
+                <Field label="车牌号（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
+                <Field label="驾驶员姓名（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
+                <Field label="驾驶员联系电话（车辆表单预填）"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
+                <Field label="卡 ID / UID（芯片固定标识）"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
                 <Field label="卡片状态"><Input disabled value={rfidCardForm.status === "active" ? "启用" : rfidCardForm.status === "suspended" ? "暂停" : "已停用"} /></Field>
                 <Field label="签名版本"><Input disabled value="RC3 · 服务端签名校验" /></Field>
               </div>
-              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">写入正式卡时，卡内仅包含车牌号、驾驶员姓名、联系电话、卡绑定引用、项目引用、修订号、随机挑战值与签名。路线、方量、单价、金额和结算状态不写入卡片。</p>
+              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">恢复初卡后，NDEF 用户区已经清空；本窗口仍显示的车辆信息只用于准备下一次绑定，不代表卡内残留内容。UID 始终保留为芯片固定标识。写入正式卡时，卡内仅包含车牌号、驾驶员姓名、联系电话、卡绑定引用、项目引用、修订号、随机挑战值与签名。路线、方量、单价、金额和结算状态不写入卡片。</p>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button>

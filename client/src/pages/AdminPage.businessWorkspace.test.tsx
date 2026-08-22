@@ -76,13 +76,21 @@ describe("统一后台业务工作区范围保护", () => {
   it("车辆射频卡绑定窗口展示完整车辆信息，并可在窗口内直接读取卡 ID", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('Field label="车牌号"');
-    expect(source).toContain('Field label="驾驶员姓名"');
-    expect(source).toContain('Field label="驾驶员联系电话"');
-    expect(source).toContain('Field label="卡 ID / UID"');
+    expect(source).toContain('Field label="车牌号（车辆表单预填）"');
+    expect(source).toContain('Field label="驾驶员姓名（车辆表单预填）"');
+    expect(source).toContain('Field label="驾驶员联系电话（车辆表单预填）"');
+    expect(source).toContain('Field label="卡 ID / UID（芯片固定标识）"');
     expect(source).toContain('Field label="签名版本"');
     expect(source).toContain("读取卡 ID");
     expect(source).toContain('"http://127.0.0.1:47601/api/read-uid"');
+  });
+
+  it("车辆卡绑定窗口必须明确区分车辆表单预填、芯片 UID 与已清空的 NDEF 用户区", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("并非从实体卡读取");
+    expect(source).toContain("UID 是芯片出厂标识，不会因恢复初卡而改变");
+    expect(source).toContain("NDEF 用户区已经清空");
   });
 
   it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {
