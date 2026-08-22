@@ -2,6 +2,8 @@
 // Uploads via Forge Server presigned URL to S3 (PUT direct).
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
 
+import fs from "fs/promises";
+import path from "path";
 import { ENV } from "./_core/env";
 
 function getForgeConfig() {
@@ -18,7 +20,20 @@ function getForgeConfig() {
 }
 
 function normalizeKey(relKey: string): string {
-  return relKey.replace(/^\/+/, "");
+  return relKey.replace(/^\/+/, "").replace(/\\/g, "/");
+}
+
+function hasSelfHostStorage() {
+  return Boolean(ENV.selfHostStorageDir.trim());
+}
+
+function resolveSelfHostStoragePath(key: string) {
+  const root = path.resolve(ENV.selfHostStorageDir);
+  const filePath = path.resolve(root, key);
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+    throw new Error("Invalid storage key path");
+  }
+  return filePath;
 }
 
 function appendHashSuffix(relKey: string): string {
@@ -33,8 +48,17 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
   const key = appendHashSuffix(normalizeKey(relKey));
+
+  if (hasSelfHostStorage()) {
+    const filePath = resolveSelfHostStoragePath(key);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, typeof data === "string" ? Buffer.from(data) : Buffer.from(data));
+    await fs.writeFile(`${filePath}.meta.json`, JSON.stringify({ contentType, key, storedAt: new Date().toISOString() }));
+    return { key, url: `/manus-storage/${key}` };
+  }
+
+  const { forgeUrl, forgeKey } = getForgeConfig();
 
   // 1. Get presigned PUT URL from Forge
   const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
@@ -77,6 +101,10 @@ export async function storageGet(relKey: string): Promise<{ key: string; url: st
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
+  if (hasSelfHostStorage()) {
+    return `/manus-storage/${normalizeKey(relKey)}`;
+  }
+
   const { forgeUrl, forgeKey } = getForgeConfig();
   const key = normalizeKey(relKey);
 
