@@ -2107,9 +2107,42 @@ export const transportRouter = router({
     return { success: true };
   }),
 
+  /** 已启用车辆卡恢复初卡前必须先受控停用，避免物理擦除成功后仍有可用卡状态。 */
+  prepareRfidInitialErase: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    cardId: z.number().int().positive(),
+    writerDeviceId: z.number().int().positive().nullable().optional(),
+  })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
+    if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "待恢复初卡的车辆卡不存在或不属于当前项目" });
+    if (input.writerDeviceId) {
+      const [writer] = await db.select().from(rfidWriterDevices).where(eq(rfidWriterDevices.id, input.writerDeviceId)).limit(1);
+      if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "所选写卡器不可用或不属于当前项目" });
+    }
+    const wasActive = card.status === "active";
+    if (wasActive) {
+      await db.update(transportVehicleRfidCards).set({ status: "suspended" }).where(and(eq(transportVehicleRfidCards.id, card.id), eq(transportVehicleRfidCards.status, "active")));
+      await db.insert(auditLogs).values({
+        userId: user.id,
+        module: "transport",
+        action: "rfid_initial_erase_suspended",
+        targetType: "transport_vehicle_rfid_card",
+        targetId: String(card.id),
+        summary: `已停用车辆卡 ${card.cardUidMasked}，准备擦除并恢复初卡；擦除未完成前该卡不得继续用于运输票据。`,
+      });
+    }
+    return { success: true, cardId: card.id, wasActive, cardStatus: wasActive ? "suspended" as const : card.status };
+  }),
+
   /**
    * 初卡擦除的服务端审计终结。物理擦除由本地桥接固定清空 NDEF 用户区完成；
-   * 此处只接受已停用/待重发卡的真实 UID 指纹，禁止把正在使用的 active 卡静默解绑。
+   * 已启用卡须先经 prepareRfidInitialErase 停用，随后才能写入最终已停用状态。
    */
   finalizeRfidInitialErase: protectedProcedure.input(z.object({
     projectId: z.number().int().positive(),
@@ -2125,7 +2158,7 @@ export const transportRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
     if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "待恢复初卡的车辆卡不存在或不属于当前项目" });
-    if (card.status === "active") throw new TRPCError({ code: "BAD_REQUEST", message: "正在使用的车辆卡不能擦除；请先在车辆卡台账执行挂失/停用，再恢复为初卡" });
+    if (card.status === "active") throw new TRPCError({ code: "BAD_REQUEST", message: "正在使用的车辆卡须先执行停用并擦除恢复初卡" });
     if (!["revoked", "suspended"].includes(card.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卡状态不允许恢复初卡，请先停止该卡的业务使用" });
     if (card.cardUidFingerprint !== input.cardUidFingerprint) throw new TRPCError({ code: "CONFLICT", message: "感应卡 UID 与所选车辆卡不一致，已拒绝登记擦除结果" });
     if (input.writerDeviceId) {

@@ -27,9 +27,15 @@ describe("uTrust 本地桥接面板", () => {
 
   it("初卡恢复只能调用固定的本地擦除接口，并要求二次确认且明确不修改锁位或写保护", () => {
     expect(source).toContain('"/api/erase-initial-card"');
-    expect(source).toContain("确认擦除当前 NTAG216 的 NDEF 用户区并恢复为空白初卡");
-    expect(source).toContain("擦除并恢复初卡");
+    expect(source).toContain("确认停用所选车辆卡，并擦除当前 NTAG216 的 NDEF 用户区恢复为空白初卡");
+    expect(source).toContain("停用并擦除恢复初卡");
     expect(source).toContain("不会修改制造商区、锁定位、配置页或写保护口令");
+  });
+
+  it("已启用车辆卡可选择恢复初卡，但必须先调用服务端停用流程", () => {
+    expect(source).toContain("prepareRfidInitialErase");
+    expect(source).toContain('["active", "revoked", "suspended"]');
+    expect(source).toContain("已启用（将停用）");
   });
 
   it("装土点与卸土点读卡设备必须可登记到具体地点，供手机 NFC 双设备闭环选择", () => {
