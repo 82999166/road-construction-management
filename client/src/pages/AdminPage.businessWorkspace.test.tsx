@@ -37,7 +37,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toMatch(/setLocation\(["'`]\/mobile/);
     expect(source).toContain("施工日报查看与编辑");
     expect(source).toContain("劳务人员档案");
-    expect(source).toContain("运输趟次明细");
+    expect(source).toContain("<TransportTripLedger");
   });
 
   it("将受控表单字段包装组件定义在模块作用域，避免状态更新重挂载输入框并导致失焦", () => {
@@ -179,7 +179,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("<PayrollStatementLedger");
     expect(payrollSource).toContain("工资条详细台账");
     expect(source).toContain("机械资源、维修与会计计价台账");
-    expect(source).toContain("车辆趟次、异常与结算台账");
+    expect(source).toContain("<TransportTripLedger");
     expect(source).toContain("发票、成本与审计台账");
     expect(source).toContain("站内通知、投递与确认台账");
   });
@@ -551,6 +551,17 @@ describe("采购订单详情与附件收敛", () => {
     expect(source).not.toContain("alt={`采购单据 ${item.orderNo}`}");
     expect(source).toContain("pending_approval: \"待审核\"");
     expect(source).toContain("closed: \"已结算\"");
+  });
+});
+
+describe("运输台账展示收敛", () => {
+  it("运输页面仅保留完整全台账作为运单筛选、导出与操作入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toContain("车辆趟次、异常与结算台账");
+    expect(source).toContain("<TransportTripLedger");
+    expect(source).toContain("transport-trip-ledger-upgrade");
+    expect(source).toContain("简版车辆趟次卡已移除");
   });
 });
 
