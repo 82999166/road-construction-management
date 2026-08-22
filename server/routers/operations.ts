@@ -251,6 +251,7 @@ const transportCardEventInput = z.object({
 const platePhotoUnloadConfirmationInput = z.object({
   tripId: z.number().int().positive(),
   projectId: z.number().int().positive(),
+  unloadEvidenceId: z.number().int().positive(),
   idempotencyKey: z.string().trim().min(8).max(160),
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
@@ -2496,6 +2497,8 @@ export const transportRouter = router({
     if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });
     if (trip.status === "void" || trip.status === "settled") throw new TRPCError({ code: "BAD_REQUEST", message: "已关闭运单不能再确认卸土" });
     if (!trip.loadConfirmedAt) throw new TRPCError({ code: "BAD_REQUEST", message: "直拍装土开票尚未完成，不能确认卸土" });
+    const [unloadEvidence] = await db.select().from(evidenceRecords).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
+    if (!unloadEvidence || unloadEvidence.sourceType !== "transport") throw new TRPCError({ code: "BAD_REQUEST", message: "请先使用后置相机拍摄并上传卸土现场照片" });
     const occurredAt = new Date(input.occurredAt);
     const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
     if (existing) {
@@ -2518,9 +2521,11 @@ export const transportRouter = router({
     await db.insert(transportCardEvents).values({ tripId: trip.id, vehicleId: trip.vehicleId, projectId: input.projectId, eventType: "unload", siteId: unloadSite.id, operatorUserId: user.id, source: "manual_review", idempotencyKey: input.idempotencyKey, latitude: String(input.latitude), longitude: String(input.longitude), payloadFingerprint, occurredAt, validationStatus: "accepted", validationReason: "车牌直拍票据卸土现场确认" });
     const [event] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
     if (!event) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "卸土确认审计记录创建失败" });
-    const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, activeVehicleTransitKey: null }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+    const routeSnapshot = { ...((trip.routeSnapshot as Record<string, unknown> | null) ?? {}), unloadPhotoEvidenceId: input.unloadEvidenceId, unloadPhotoConfirmedAt: occurredAt.toISOString(), unloadPhotoConfirmedBy: user.id };
+    const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, activeVehicleTransitKey: null, routeSnapshot }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
     if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运单已被其他卸土确认更新，请刷新后查看" });
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场确认：${unloadSite.name}` });
+    await db.update(evidenceRecords).set({ sourceId: `transport-unload-${trip.tripNo}` }).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId)));
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}` });
     const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, unloadSite.administratorUserId].filter((value): value is number => typeof value === "number" && value > 0)));
     await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
     return { success: true, duplicate: false, needsReview: false };

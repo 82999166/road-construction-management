@@ -22,5 +22,7 @@ describe("移动端拍照车牌发票", () => {
     expect(source).toContain("confirmPlatePhotoUnload");
     expect(source).toContain("车牌直拍已作为装土发票并进入在途");
     expect(source).toContain("到达卸土点并确认");
+    expect(source).toContain("拍摄卸土现场后上传");
+    expect(source).toContain("上传照片并确认卸土");
   });
 });
