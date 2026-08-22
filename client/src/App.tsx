@@ -13,6 +13,7 @@ import { MobileBottomNavigation } from "./components/MobileBottomNavigation";
 import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { useAuth } from "./_core/hooks/useAuth";
+import { useIsMobile } from "./hooks/useMobile";
 
 /** 页面按路由加载，避免首次进入任一端时下载另一端所有业务模块。 */
 const AdminPage = lazy(() => import("./pages/AdminPage"));
@@ -41,6 +42,7 @@ const MobileProfilePage = lazy(() => import("./pages/MobileProfilePage"));
 function AdminRouteGuard() {
   const { isAuthenticated, loading } = useAuth();
   const [, navigate] = useLocation();
+  const isMobile = useIsMobile();
   const access = trpc.admin.access.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const mode = resolveManagementAccessMode({
     isAuthenticated,
@@ -54,6 +56,11 @@ function AdminRouteGuard() {
     if (!loading && !isAuthenticated) navigate(createAdminLoginPath("/admin"));
   }, [isAuthenticated, loading, navigate]);
 
+  const isMobileScopedManager = mode === "scoped-manager" && (isMobile || (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches));
+  useEffect(() => {
+    if (isMobileScopedManager) navigate("/mobile");
+  }, [isMobileScopedManager, navigate]);
+
   if (mode === "checking") {
     return <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在核验后台访问权限…</div>;
   }
@@ -62,6 +69,9 @@ function AdminRouteGuard() {
   }
   if (mode === "unavailable") {
     return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50"><ShieldAlert className="h-8 w-8 text-amber-600" /><p className="text-sm text-slate-600">后台权限状态暂时无法核验，请稍后重新进入。</p><Button variant="outline" onClick={() => window.location.reload()}>重新加载</Button></div>;
+  }
+  if (isMobileScopedManager) {
+    return <div className="flex min-h-screen items-center justify-center bg-[#fffaf3] text-sm text-[#76523f]">正在进入工程承包移动工作台…</div>;
   }
   return mode === "super-admin" ? <AdminPage /> : <ManagementPortal />;
 }
