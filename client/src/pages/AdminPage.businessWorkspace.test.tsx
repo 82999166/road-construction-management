@@ -400,7 +400,7 @@ describe("统一后台业务工作区范围保护", () => {
   it("提供可解释的 AI 项目风险扫描、处置与财务分类分析，并要求维护设备核定油箱容量", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('label: "AI 项目风控", path: "/admin/risk"');
+    expect(source).toContain('label: "智能风控", path: "/admin/risk"');
     expect(source).toContain('const isRisk = activeSection === "risk"');
     expect(source).toContain("AI 项目风险预警中心");
     expect(source).toContain("立即扫描并提醒");
