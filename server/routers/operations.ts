@@ -2741,16 +2741,26 @@ export const transportRouter = router({
     const tripIds = verifiedTrips.map(item => item.id);
     const [existingItems, fuelRecords] = await Promise.all([
       db.select({ tripId: transportVehicleSettlementItems.tripId }).from(transportVehicleSettlementItems).where(inArray(transportVehicleSettlementItems.tripId, tripIds)),
-      db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.status, "approved"), eq(dieselRefuelRecords.deductFromFreight, true), inArray(dieselRefuelRecords.transportTripId, tripIds))),
+      db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.status, "approved"), eq(dieselRefuelRecords.deductFromFreight, true), lt(dieselRefuelRecords.refueledAt, endExclusive))),
     ]);
     const existingTripIds = new Set(existingItems.map(item => Number(item.tripId)));
     const candidates = verifiedTrips.filter(trip => !existingTripIds.has(trip.id));
     if (!candidates.length) throw new TRPCError({ code: "CONFLICT", message: "所选期间的已核验趟次均已生成结算单，不能重复结算" });
     const fuelByTrip = new Map<number, number>();
-    fuelRecords.forEach(record => fuelByTrip.set(Number(record.transportTripId), (fuelByTrip.get(Number(record.transportTripId)) ?? 0) + Number(record.amount)));
+    const eligibleFuelRecords = fuelRecords.filter(record => record.transportTripId === null || !tripIds.includes(Number(record.transportTripId)));
+    const pooledFuelRecords = eligibleFuelRecords.filter(record => !record.transportTripId);
+    eligibleFuelRecords.filter(record => record.transportTripId).forEach(record => fuelByTrip.set(Number(record.transportTripId), (fuelByTrip.get(Number(record.transportTripId)) ?? 0) + Number(record.amount)));
+    const pooledFuelDeductionAmount = roundMoney(pooledFuelRecords.reduce((sum, record) => sum + Number(record.amount), 0));
+    const grossFreightTotal = roundMoney(candidates.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0));
+    const linkedFuelDeductionAmount = roundMoney(Array.from(fuelByTrip.values()).reduce((sum, amount) => sum + amount, 0));
+    if (pooledFuelDeductionAmount + linkedFuelDeductionAmount > grossFreightTotal) throw new TRPCError({ code: "BAD_REQUEST", message: `该车辆待扣柴油 ¥${roundMoney(pooledFuelDeductionAmount + linkedFuelDeductionAmount).toFixed(2)} 超过本期可结算运输总额 ¥${grossFreightTotal.toFixed(2)}；请调整结算期间或先核对柴油记录` });
+    let remainingPooledFuelDeduction = pooledFuelDeductionAmount;
     const details = candidates.map(trip => {
       const grossFreightAmount = roundMoney(Number(trip.calculatedAmount ?? 0));
-      const fuelDeductionAmount = roundMoney(fuelByTrip.get(trip.id) ?? 0);
+      const linkedFuelDeduction = roundMoney(fuelByTrip.get(trip.id) ?? 0);
+      const pooledFuelDeduction = roundMoney(Math.min(Math.max(0, grossFreightAmount - linkedFuelDeduction), remainingPooledFuelDeduction));
+      remainingPooledFuelDeduction = roundMoney(remainingPooledFuelDeduction - pooledFuelDeduction);
+      const fuelDeductionAmount = roundMoney(linkedFuelDeduction + pooledFuelDeduction);
       return { trip, tripDate: new Date(trip.startAt).toISOString().slice(0, 10), volumeCubicMeters: Number(trip.volumeCubicMeters ?? 0), grossFreightAmount, fuelDeductionAmount, netPayableAmount: roundMoney(grossFreightAmount - fuelDeductionAmount) };
     });
     const settlementNo = createTransportVehicleSettlementNo(input.projectId);
@@ -2763,13 +2773,14 @@ export const transportRouter = router({
         if (!created) throw new Error("结算单写入后未找到主记录");
         settlementId = created.id;
         await tx.insert(transportVehicleSettlementItems).values(details.map(item => ({ settlementId, tripId: item.trip.id, tripNo: item.trip.tripNo, tripDate: toBusinessDate(item.tripDate), volumeCubicMeters: String(item.volumeCubicMeters), grossFreightAmount: String(item.grossFreightAmount), fuelDeductionAmount: String(item.fuelDeductionAmount), netPayableAmount: String(item.netPayableAmount) })));
+        if (pooledFuelRecords.length) await tx.update(dieselRefuelRecords).set({ status: "settled" }).where(inArray(dieselRefuelRecords.id, pooledFuelRecords.map(record => record.id)));
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("transport_vehicle_settlement_items_trip_unique")) throw new TRPCError({ code: "CONFLICT", message: "部分运单已被其他结算单占用，请刷新后重新生成" });
       throw error;
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_vehicle_settlement", targetType: "transport_vehicle_settlement", targetId: settlementNo, summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，净应付 ¥${summary.netPayableAmount.toFixed(2)}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_vehicle_settlement", targetType: "transport_vehicle_settlement", targetId: settlementNo, summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，车辆归集柴油扣款 ¥${summary.fuelDeductionAmount.toFixed(2)}，净应付 ¥${summary.netPayableAmount.toFixed(2)}` });
     return { success: true, id: settlementId, settlementNo, ...summary };
   }),
 

@@ -19,6 +19,8 @@ describe("渣土车按趟结算与付款闭环", () => {
     expect(source).toContain('eq(transportTrips.status, "verified")');
     expect(source).toContain("transport_vehicle_settlement_items_trip_unique");
     expect(source).toContain("fuelDeductionAmount");
+    expect(source).toContain("pooledFuelRecords");
+    expect(source).toContain("车辆归集柴油扣款");
   });
 
   it("只有会计或财务可审核和登记付款，付款完成后不允许作废或回退", () => {

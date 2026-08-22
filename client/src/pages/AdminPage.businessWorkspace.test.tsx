@@ -261,8 +261,13 @@ describe("统一后台业务工作区范围保护", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("sourceType: \"diesel_receipt\"");
-    expect(source).toContain("加油表照片（JPG/PNG）");
-    expect(source).toContain("自动写入项目、加油时间、定位、操作人和防伪编号");
+    expect(source).toContain("加油表现场照片（必拍）");
+    expect(source).toContain("打开后置相机拍摄加油表");
+    expect(source).toContain("facingMode: { ideal: \"environment\" }");
+    expect(source).not.toContain('accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile');
+    expect(source).toContain("维护指导价");
+    expect(source).toContain("无需选择某一趟");
+    expect(source).toContain("自动写入项目、加油时间、详细地点、操作人与防伪编号");
     expect(source).toContain("captureWatermarkLocation");
     expect(source).toContain("createWatermarkedImage");
     expect(source).toContain("柴油组合筛选");

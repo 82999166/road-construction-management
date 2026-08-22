@@ -47,7 +47,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
-import { lazy, Suspense, type ReactNode, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -498,6 +498,10 @@ export default function AdminPage() {
   const [location, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
   const activeSection = location.split("/")[2] || "overview";
+  const [dieselReceiptPreview, setDieselReceiptPreview] = useState<string | null>(null);
+  const [dieselCameraOpen, setDieselCameraOpen] = useState(false);
+  const [dieselCameraStream, setDieselCameraStream] = useState<MediaStream | null>(null);
+  const dieselCameraVideoRef = useRef<HTMLVideoElement | null>(null);
 
   /**
    * tRPC 会将同一渲染周期内的查询合并为一个批次。后台全部 17 个数据域若在首屏同时请求，任何慢查询都会阻塞运营概览。
@@ -748,6 +752,53 @@ export default function AdminPage() {
   const refreshDieselLedger = async () => {
     await Promise.all([dieselGuidelinePrices.refetch(), dieselRefuelRecords.refetch(), dieselDailySummary.refetch(), dieselPriceAlertRule.refetch(), dieselSupplierReconciliation.refetch(), financeSummary.refetch(), audits.refetch()]);
   };
+  const stopDieselCamera = () => {
+    dieselCameraStream?.getTracks().forEach(track => track.stop());
+    setDieselCameraStream(null);
+    setDieselCameraOpen(false);
+  };
+  const resetDieselReceiptCapture = () => {
+    stopDieselCamera();
+    if (dieselReceiptPreview) URL.revokeObjectURL(dieselReceiptPreview);
+    setDieselReceiptPreview(null);
+    setDieselReceiptFile(null);
+  };
+  const startDieselCamera = async () => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前浏览器不支持后置相机直拍，请使用支持相机授权的手机浏览器");
+      stopDieselCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      setDieselCameraStream(stream);
+      setDieselCameraOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "后置相机无法打开");
+    }
+  };
+  const captureDieselMeterPhoto = () => {
+    const video = dieselCameraVideoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) { toast.error("相机尚未就绪，请稍后重新拍摄"); return; }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) { toast.error("当前浏览器不支持相机照片处理"); return; }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) { toast.error("加油表照片生成失败，请重新拍摄"); return; }
+      if (dieselReceiptPreview) URL.revokeObjectURL(dieselReceiptPreview);
+      const file = new File([blob], `diesel-meter-${Date.now()}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+      setDieselReceiptFile(file);
+      setDieselReceiptPreview(URL.createObjectURL(file));
+      stopDieselCamera();
+    }, "image/jpeg", 0.92);
+  };
+  useEffect(() => {
+    const video = dieselCameraVideoRef.current;
+    if (!dieselCameraOpen || !dieselCameraStream || !video) return;
+    video.srcObject = dieselCameraStream;
+    void video.play().catch(() => undefined);
+    return () => { if (video.srcObject === dieselCameraStream) video.srcObject = null; };
+  }, [dieselCameraOpen, dieselCameraStream]);
   const uploadDieselReceipt = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation();
   const saveDieselPriceAlertRule = trpc.admin.diesel.savePriceAlertRule.useMutation({
@@ -769,7 +820,7 @@ export default function AdminPage() {
       if (result.priceAlert?.isAlert) toast.warning(`油价异常：相对同供应商上一笔波动 ${result.priceAlert.deviationPercent}%`);
       setDieselRefuelDialogOpen(false);
       setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM);
-      setDieselReceiptFile(null);
+      resetDieselReceiptCapture();
       await refreshDieselLedger();
     },
     onError: error => toast.error(error.message),
@@ -777,6 +828,10 @@ export default function AdminPage() {
   const submitDieselRefuel = async () => {
     try {
       let evidenceId: number | null = null;
+      if (!dieselReceiptFile && !dieselRefuelForm.id && dieselRefuelForm.status !== "void") {
+        toast.error("请使用后置相机现场拍摄清晰的加油表照片后再保存");
+        return;
+      }
       if (dieselReceiptFile) {
         if (!["image/jpeg", "image/png"].includes(dieselReceiptFile.type)) {
           toast.error("加油表照片仅支持 JPG 或 PNG 图片");
@@ -822,7 +877,7 @@ export default function AdminPage() {
         assetType: dieselRefuelForm.assetType,
         vehicleId: dieselRefuelForm.assetType === "vehicle" && dieselRefuelForm.vehicleId ? Number(dieselRefuelForm.vehicleId) : null,
         machineId: dieselRefuelForm.assetType === "machine" && dieselRefuelForm.machineId ? Number(dieselRefuelForm.machineId) : null,
-        transportTripId: dieselRefuelForm.deductFromFreight && dieselRefuelForm.transportTripId ? Number(dieselRefuelForm.transportTripId) : null,
+        transportTripId: null,
         supplyMethod: dieselRefuelForm.supplyMethod,
         stationOrSupplierName: dieselRefuelForm.stationOrSupplierName.trim() || null,
         liters: Number(dieselRefuelForm.liters),
@@ -3010,7 +3065,7 @@ export default function AdminPage() {
         <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
           <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
             <div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">项目部供油 · 运输扣款 · 机械油料成本</p><CardTitle className="mt-1 text-base">柴油领用与每日结算</CardTitle><CardDescription className="mt-1">项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。</CardDescription></div>
-            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">可同时按车牌、加油日期区间、月份、供油方式、车辆/机械和供应商筛选；导出内容与当前明细完全一致。</p></div><Button size="sm" variant="ghost" onClick={() => setDieselLedgerFilter({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" })}>清除筛选</Button></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Input value={dieselLedgerFilter.plateNo} aria-label="柴油筛选车牌" placeholder="车牌（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, plateNo: event.target.value.toUpperCase() }))} /><Input type="date" max={dieselLedgerFilter.dateTo || undefined} value={dieselLedgerFilter.dateFrom} aria-label="柴油加油开始日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateFrom: event.target.value }))} /><Input type="date" min={dieselLedgerFilter.dateFrom || undefined} value={dieselLedgerFilter.dateTo} aria-label="柴油加油结束日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateTo: event.target.value }))} /><Input type="month" value={dieselLedgerFilter.month} aria-label="柴油加油月份" onChange={event => setDieselLedgerFilter(current => ({ ...current, month: event.target.value }))} /><Select value={dieselLedgerFilter.supplyMethod} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, supplyMethod: value }))}><SelectTrigger aria-label="柴油供油方式"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部供油方式</SelectItem><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select><Select value={dieselLedgerFilter.assetType} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, assetType: value }))}><SelectTrigger aria-label="柴油车辆机械"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部车辆 / 机械</SelectItem><SelectItem value="vehicle">仅车辆</SelectItem><SelectItem value="machine">仅机械</SelectItem></SelectContent></Select><Input value={dieselLedgerFilter.supplierName} aria-label="柴油筛选供应商" placeholder="供应商 / 加油站（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, supplierName: event.target.value }))} /></div></div>
@@ -3190,15 +3245,15 @@ export default function AdminPage() {
             </form>
           </DialogContent>
         </Dialog>
-        <Dialog open={dieselRefuelDialogOpen} onOpenChange={open => { setDieselRefuelDialogOpen(open); if (!open) { setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM); setDieselReceiptFile(null); } }}>
+        <Dialog open={dieselRefuelDialogOpen} onOpenChange={open => { setDieselRefuelDialogOpen(open); if (!open) { setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM); resetDieselReceiptCapture(); } }}>
           <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；关联车辆趟次并勾选扣油后，结算时从总运费扣减并锁定该记录。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；每笔领用必须后置相机现场直拍加油表并自动归档工程水印。车辆扣油由该车辆运输结算总额统一归集，不再逐趟选择。</DialogDescription></DialogHeader>
             <form className="space-y-4" onSubmit={event => { event.preventDefault(); void submitDieselRefuel(); }}>
               <div className="grid gap-3 sm:grid-cols-2"><Field label="项目"><Input disabled value={projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? "未选择项目"} /></Field><Field label="加油时间"><Input type="datetime-local" value={dieselRefuelForm.refueledAt} onChange={event => setDieselRefuelForm(current => ({ ...current, refueledAt: event.target.value }))} /></Field><Field label="领用对象"><Select value={dieselRefuelForm.assetType} onValueChange={value => setDieselRefuelForm(current => ({ ...current, assetType: value as DieselRefuelForm["assetType"], vehicleId: "", machineId: "", transportTripId: "", deductFromFreight: false }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vehicle">渣土车 / 车辆</SelectItem><SelectItem value="machine">工程机械</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.assetType === "vehicle" ? "车辆" : "机械"}><Select value={(dieselRefuelForm.assetType === "vehicle" ? dieselRefuelForm.vehicleId : dieselRefuelForm.machineId) || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => current.assetType === "vehicle" ? ({ ...current, vehicleId: value === "UNASSIGNED" ? "" : value, transportTripId: "" }) : ({ ...current, machineId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder={dieselRefuelForm.assetType === "vehicle" ? "选择车辆" : "选择机械"} /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择资源</SelectItem>{dieselRefuelForm.assetType === "vehicle" ? (dieselVehicleOptions.data ?? []).filter(vehicle => String(vehicle.projectId) === dieselRefuelForm.projectId).map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>) : (dieselMachineOptions.data ?? []).map(machine => <SelectItem key={machine.id} value={String(machine.id)}>{machine.name} · {machine.code}</SelectItem>)}</SelectContent></Select></Field></div>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field><Field label="加油表照片（JPG/PNG）"><Input type="file" accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile(event.target.files?.[0] ?? null)} /><p className="mt-1 text-xs text-slate-500">{dieselReceiptFile ? `已选择：${dieselReceiptFile.name}。保存时将先获取现场定位并自动添加工程水印。` : "可选但建议上传；保存时会自动写入项目、加油时间、定位、操作人和防伪编号后再受控归档。"}</p></Field></div>
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><div className="flex gap-2"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /><Button type="button" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: dieselRefuelForm.projectId, effectiveFrom: dieselRefuelForm.refueledAt.slice(0, 10), status: "active" }); setDieselPriceDialogOpen(true); }}>维护指导价</Button></div></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field><Field label="加油表现场照片（必拍）"><div className="space-y-2"><p className="text-xs leading-5 text-emerald-700">仅支持后置相机现场直拍，不提供相册选择；保存时自动写入项目、加油时间、详细地点、操作人与防伪编号水印。</p>{dieselCameraOpen ? <div className="overflow-hidden rounded-xl border border-[#79a57f] bg-[#18301d]"><video ref={dieselCameraVideoRef} className="aspect-[4/3] w-full bg-black object-cover" autoPlay playsInline muted /><div className="grid grid-cols-2 gap-2 p-2"><Button type="button" variant="outline" className="border-[#c9dec9] bg-white text-[#47754d]" onClick={stopDieselCamera}>取消拍照</Button><Button type="button" className="bg-[#47754d] text-white hover:bg-[#39623e]" onClick={captureDieselMeterPhoto}><Camera className="mr-1 h-4 w-4" />确认照片</Button></div></div> : <Button type="button" variant="outline" className="h-11 w-full border-dashed border-[#79a57f] bg-[#f4fbf1] text-[#47754d] hover:bg-[#e7f1e5]" onClick={() => void startDieselCamera()}><Camera className="mr-2 h-4 w-4" />打开后置相机拍摄加油表</Button>}{dieselReceiptPreview ? <div className="space-y-1"><img src={dieselReceiptPreview} alt="待归档加油表现场照片" className="max-h-56 w-full rounded-xl border border-[#c6ddc5] object-cover" /><Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#47754d]" onClick={() => void startDieselCamera()}><Camera className="mr-1 h-3.5 w-3.5" />重新拍摄</Button></div> : null}</div></Field></div>
               {dieselRefuelForm.supplyMethod === "external_station" ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950"><span className="font-medium">现金油费预览：</span>{dieselRefuelForm.liters && dieselRefuelForm.actualUnitPrice ? `${Number(dieselRefuelForm.liters).toFixed(3)} L × ¥${displayMoney(Number(dieselRefuelForm.actualUnitPrice))}/L = ¥${displayMoney(Number(dieselRefuelForm.liters) * Number(dieselRefuelForm.actualUnitPrice))}` : "请填写当天现金单价和加油升数；最终金额以服务端保存的油价快照为准。"}</div> : null}
-              {dieselRefuelForm.assetType === "vehicle" ? <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3"><div className="flex items-center gap-2"><Checkbox id="diesel-deduct-freight" checked={dieselRefuelForm.deductFromFreight} onCheckedChange={checked => setDieselRefuelForm(current => ({ ...current, deductFromFreight: Boolean(checked), transportTripId: checked ? current.transportTripId : "" }))} /><Label htmlFor="diesel-deduct-freight" className="cursor-pointer font-medium text-amber-950">本次油款在渣土车运费结算时扣除</Label></div>{dieselRefuelForm.deductFromFreight ? <Field label="关联运输趟次"><Select value={dieselRefuelForm.transportTripId || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => ({ ...current, transportTripId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择未结算趟次" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择运输趟次</SelectItem>{(dieselTripOptions.data ?? []).filter(trip => String(trip.vehicleId) === dieselRefuelForm.vehicleId && !["settled", "void"].includes(trip.status)).map(trip => <SelectItem key={trip.id} value={String(trip.id)}>{trip.tripNo} · 总运费 ¥{displayMoney(trip.calculatedAmount)}</SelectItem>)}</SelectContent></Select></Field> : null}</section> : null}
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="记账状态"><Select value={dieselRefuelForm.status} onValueChange={value => setDieselRefuelForm(current => ({ ...current, status: value as DieselRefuelForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="approved">已直接记账，立即纳入成本/结算</SelectItem>{dieselRefuelForm.id ? <SelectItem value="void">作废（仅限纠错）</SelectItem> : null}</SelectContent></Select><p className="mt-1 text-xs leading-5 text-emerald-700">柴油领用无需上级审核；保存后立即生效。价格异常、影像、项目范围和审计控制继续执行。</p></Field></div><Field label="说明"><Textarea value={dieselRefuelForm.remarks} placeholder="领用用途、油品说明或异常说明；不得填写不必要个人敏感信息" onChange={event => setDieselRefuelForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselRefuelDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselRefuelRecord.isPending || uploadDieselReceipt.isPending || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt || !dieselRefuelForm.liters || (dieselRefuelForm.assetType === "vehicle" && !dieselRefuelForm.vehicleId) || (dieselRefuelForm.assetType === "machine" && !dieselRefuelForm.machineId) || (dieselRefuelForm.supplyMethod === "external_station" && !dieselRefuelForm.actualUnitPrice) || (dieselRefuelForm.deductFromFreight && !dieselRefuelForm.transportTripId)}>{uploadDieselReceipt.isPending ? "正在归档小票…" : saveDieselRefuelRecord.isPending ? "正在直接记账…" : "保存并直接记账"}</Button></DialogFooter>
+              {dieselRefuelForm.assetType === "vehicle" ? <section className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3"><div className="flex items-center gap-2"><Checkbox id="diesel-deduct-freight" checked={dieselRefuelForm.deductFromFreight} onCheckedChange={checked => setDieselRefuelForm(current => ({ ...current, deductFromFreight: Boolean(checked), transportTripId: "" }))} /><Label htmlFor="diesel-deduct-freight" className="cursor-pointer font-medium text-amber-950">本次油款在渣土车运费结算时扣除</Label></div>{dieselRefuelForm.deductFromFreight ? <p className="text-xs leading-5 text-amber-800">无需选择某一趟。系统将在该车辆生成运输结算单时，从本期可结算运输总额中统一归集扣减，并写入结算明细与审计记录。</p> : null}</section> : null}
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="记账状态"><Select value={dieselRefuelForm.status} onValueChange={value => setDieselRefuelForm(current => ({ ...current, status: value as DieselRefuelForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="approved">已直接记账，立即纳入成本/结算</SelectItem>{dieselRefuelForm.id ? <SelectItem value="void">作废（仅限纠错）</SelectItem> : null}</SelectContent></Select><p className="mt-1 text-xs leading-5 text-emerald-700">柴油领用无需上级审核；保存后立即生效。价格异常、影像、项目范围和审计控制继续执行。</p></Field></div><Field label="说明"><Textarea value={dieselRefuelForm.remarks} placeholder="领用用途、油品说明或异常说明；不得填写不必要个人敏感信息" onChange={event => setDieselRefuelForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselRefuelDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselRefuelRecord.isPending || uploadDieselReceipt.isPending || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt || !dieselRefuelForm.liters || (dieselRefuelForm.assetType === "vehicle" && !dieselRefuelForm.vehicleId) || (dieselRefuelForm.assetType === "machine" && !dieselRefuelForm.machineId) || (dieselRefuelForm.supplyMethod === "external_station" && !dieselRefuelForm.actualUnitPrice) || (!dieselRefuelForm.id && dieselRefuelForm.status !== "void" && !dieselReceiptFile)}>{uploadDieselReceipt.isPending ? "正在归档加油表照片…" : saveDieselRefuelRecord.isPending ? "正在直接记账…" : "保存并直接记账"}</Button></DialogFooter>
             </form>
           </DialogContent>
         </Dialog>

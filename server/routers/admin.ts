@@ -143,7 +143,6 @@ const dieselRefuelInput = z.object({
   if (value.assetType === "vehicle" && !value.vehicleId) ctx.addIssue({ code: "custom", path: ["vehicleId"], message: "车辆供油必须选择车辆" });
   if (value.assetType === "machine" && !value.machineId) ctx.addIssue({ code: "custom", path: ["machineId"], message: "机械供油必须选择机械" });
   if (value.assetType === "machine" && value.deductFromFreight) ctx.addIssue({ code: "custom", path: ["deductFromFreight"], message: "机械油料不得扣减运输运费" });
-  if (value.deductFromFreight && !value.transportTripId) ctx.addIssue({ code: "custom", path: ["transportTripId"], message: "扣减运费必须关联具体运输趟次" });
   if (value.supplyMethod === "external_station" && !value.actualUnitPrice) ctx.addIssue({ code: "custom", path: ["actualUnitPrice"], message: "加油站加油必须填写实际单价" });
 });
 
@@ -882,14 +881,17 @@ export const adminRouter = router({
       if (input.supplyMethod === "external_station" && (!input.stationOrSupplierName?.trim() || !input.actualUnitPrice || input.actualUnitPrice <= 0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "加油站加油必须填写加油站/供应商和实际单价" });
       }
-      if (input.deductFromFreight && (input.assetType !== "vehicle" || !input.transportTripId)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "运费扣油必须关联车辆和未结算运输趟次" });
+      if (input.deductFromFreight && input.assetType !== "vehicle") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "运费扣油仅适用于车辆，机械油料不得扣减运输运费" });
       }
       const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
       if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油记录必须归属有效项目" });
+      if (!input.id && input.status !== "void" && !input.evidenceId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "柴油领用必须使用后置相机现场拍摄加油表照片并归档水印凭证" });
+      }
       if (input.evidenceId) {
-        const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
-        if (!evidence || evidence.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "现金小票影像必须归属所选项目" });
+        const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+        if (!evidence || evidence.projectId !== input.projectId || evidence.sourceType !== "diesel_receipt") throw new TRPCError({ code: "BAD_REQUEST", message: "加油表现场影像必须是归属所选项目的柴油水印凭证" });
       }
       if (input.assetType === "vehicle") {
         const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId!)).limit(1);
@@ -915,7 +917,7 @@ export const adminRouter = router({
       const allRefuelRows = input.supplyMethod === "external_station" ? await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt)) : [];
       const [alertRule] = input.supplyMethod === "external_station" ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
       const effectiveStatus = normalizeDieselRefuelStatus(input.status);
-      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: effectiveStatus, createdBy: admin.id, approvedBy: effectiveStatus === "approved" ? admin.id : null, approvedAt: effectiveStatus === "approved" ? new Date() : null };
+      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.deductFromFreight ? null : input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: effectiveStatus, createdBy: admin.id, approvedBy: effectiveStatus === "approved" ? admin.id : null, approvedAt: effectiveStatus === "approved" ? new Date() : null };
       let recordId = input.id;
       if (input.id) {
         const [existing] = await db.select({ id: dieselRefuelRecords.id, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.id, input.id)).limit(1);
