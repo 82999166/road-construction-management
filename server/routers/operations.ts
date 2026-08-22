@@ -14,6 +14,7 @@ import {
   machineMonthlyStatements,
   machinePaymentSettlements,
   machines,
+  notificationRecords,
   projects,
   rfidCardWriteJobs,
   rfidWriterDevices,
@@ -683,6 +684,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   const payloadFingerprint = createCardEventPayloadFingerprint(input, eventType);
   const expectedSiteId = eventType === "load" ? trip.loadSiteId : trip.unloadSiteId;
   let siteName: string | null = null;
+  let siteAdministratorUserId: number | null = null;
   if (expectedSiteId || input.siteId) {
     if (!expectedSiteId || input.siteId !== expectedSiteId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `${eventType === "load" ? "装土" : "卸土"}刷卡地点与运输票据不一致` });
@@ -693,6 +695,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     }
     // 现场管理员仅作可选责任人留档；具备运输模块权限且在项目范围内的用户均可完成刷卡。
     siteName = site.name;
+    siteAdministratorUserId = site.administratorUserId;
   }
   const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
   if (existing) {
@@ -791,6 +794,22 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功${siteName ? `：${siteName}` : ""}` });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
   const tripFinancialSummary = `车辆 ${vehicle.plateNo}${siteName ? `，${siteName}` : ""}，${eventLabel}刷卡已确认；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
+  if (eventType === "unload") {
+    // 站内通知只记录必要的闭环结果，不暴露定位坐标、司机电话或结算账户等敏感字段。
+    const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, siteAdministratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
+    const notificationTime = new Date();
+    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({
+      eventCode: "transport_unload_completed",
+      idempotencyKey: `inapp:transport-unload:${event.id}:${recipientUserId}`,
+      recipientUserId,
+      title: "运输卸土成功",
+      content: `车辆 ${vehicle.plateNo} 已完成卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
+      deepLink: "/mobile/transport",
+      status: "sent",
+      sentAt: notificationTime,
+      channel: "in_app",
+    }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: notificationTime } })));
+  }
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按调度前往卸土点。" : "运输闭环已记录，等待后续核验。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   if (vehicle.driverUserId) {
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
@@ -2327,6 +2346,8 @@ export const transportRouter = router({
         vehicle: vehicle ? { plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, driverName: vehicle.driverName ?? null, ownerName: vehicle.ownerName ?? null, theoreticalVolumeCubicMeters: Math.round(Number(vehicle.boxLengthMeters) * Number(vehicle.boxWidthMeters) * Number(vehicle.boxHeightMeters) * Number(vehicle.loadFactor) * 1000) / 1000 } : null,
         loadLocation: { ...siteAddress(trip.loadSiteId, routeSnapshot.loadSite), administratorName: trip.loadSiteId ? operatorsById.get(sitesById.get(trip.loadSiteId)?.administratorUserId ?? 0) ?? "未指定" : "未指定" },
         unloadLocation: { ...siteAddress(trip.unloadSiteId, routeSnapshot.unloadSite), administratorName: trip.unloadSiteId ? operatorsById.get(sitesById.get(trip.unloadSiteId)?.administratorUserId ?? 0) ?? "未指定" : "未指定" },
+        loadConfirmation: { administratorName: trip.loadConfirmedBy ? operatorsById.get(trip.loadConfirmedBy) ?? "未登记确认人" : "未确认", confirmedAt: trip.loadConfirmedAt },
+        unloadConfirmation: { administratorName: trip.unloadConfirmedBy ? operatorsById.get(trip.unloadConfirmedBy) ?? "未登记确认人" : "未确认", confirmedAt: trip.unloadConfirmedAt },
         cardEvents: events,
         anomalies: calculateTransportAnomalies(trip),
       };

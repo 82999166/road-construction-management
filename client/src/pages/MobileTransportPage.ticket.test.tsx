@@ -31,9 +31,9 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("卸土点设置");
     expect(source).toContain("刷 NFC 卡发票");
     expect(source).toContain("拍照车牌发票");
-    expect(source).toContain("打开后置相机直拍车牌");
+    expect(source).toContain("拍清车牌后上传");
     expect(source).toContain("navigator.mediaDevices.getUserMedia");
-    expect(source).toContain("仅支持现场直拍，不提供本地相册选择");
+    expect(source).toContain("不提供相册选择");
     expect(source).toContain('openTripDialog(false, "plate_photo")');
     expect(source).toContain("vehicleSummaries");
     expect(source).toContain("按车辆日汇总");

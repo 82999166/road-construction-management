@@ -13,6 +13,10 @@ describe("移动运输运单台账", () => {
     expect(source).toContain("运输运单详情");
     expect(source).toContain("loadLocation.address");
     expect(source).toContain("unloadLocation.address");
+    expect(source).toContain("装土发票管理员");
+    expect(source).toContain("卸土确认管理员");
+    expect(source).toContain("装土确认时间");
+    expect(source).toContain("卸土确认时间");
     expect(source).not.toContain("longitude");
     expect(source).not.toContain("latitude");
   });
