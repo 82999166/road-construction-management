@@ -247,6 +247,16 @@ const transportCardEventInput = z.object({
   occurredAt: isoDateTimeSchema,
 });
 
+/** 无 NFC 车辆卡时，直拍车牌票据由卸土现场人员以当前位置完成受控闭环。 */
+const platePhotoUnloadConfirmationInput = z.object({
+  tripId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  idempotencyKey: z.string().trim().min(8).max(160),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  occurredAt: isoDateTimeSchema,
+});
+
 /** 现场读卡设备只提交已派生的卡片指纹；服务端根据设备绑定地点决定本次是装土发车还是卸土闭环。 */
 const transportNfcReaderScanInput = z.object({
   projectId: z.number().int().positive(),
@@ -2438,6 +2448,8 @@ export const transportRouter = router({
       routeSnapshot,
       evidenceId: input.evidenceId ?? null,
         status: input.invoiceMode === "plate_photo" ? "submitted" : "draft",
+        loadConfirmedAt: input.invoiceMode === "plate_photo" ? tripStart : null,
+        loadConfirmedBy: input.invoiceMode === "plate_photo" ? user.id : null,
         activeVehicleTransitKey: input.endAt ? null : createActiveVehicleTransitKey(input.projectId, input.vehicleId),
       });
     } catch (error) {
@@ -2459,6 +2471,48 @@ export const transportRouter = router({
 
   /** 卸土读卡成功后确认运输闭环，并向已绑定服务号的司机发送即时提醒。 */
   recordUnloadEvent: protectedProcedure.input(transportCardEventInput).mutation(async ({ ctx, input }) => recordTransportCardEvent(ctx, input, "unload")),
+
+  /** 车牌直拍在装土时已开票并进入在途；卸土现场通过定位确认，不允许补写 NFC 事件。 */
+  confirmPlatePhotoUnload: protectedProcedure.input(platePhotoUnloadConfirmationInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.tripId)).limit(1);
+    if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "直拍运输票据不存在或不属于当前项目" });
+    if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });
+    if (trip.status === "void" || trip.status === "settled") throw new TRPCError({ code: "BAD_REQUEST", message: "已关闭运单不能再确认卸土" });
+    if (!trip.loadConfirmedAt) throw new TRPCError({ code: "BAD_REQUEST", message: "直拍装土开票尚未完成，不能确认卸土" });
+    const occurredAt = new Date(input.occurredAt);
+    const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+    if (existing) {
+      if (existing.tripId !== trip.id || existing.eventType !== "unload") throw new TRPCError({ code: "CONFLICT", message: "该卸土确认编号已用于其他业务事件" });
+      return { success: existing.validationStatus === "accepted", duplicate: true, needsReview: existing.validationStatus === "needs_review" };
+    }
+    if (trip.unloadConfirmedAt) return { success: true, duplicate: true, needsReview: false };
+    const routePresetId = Number((trip.routeSnapshot as { routePresetId?: number } | null)?.routePresetId || 0);
+    const [[route], [unloadSite]] = await Promise.all([
+      routePresetId ? db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, routePresetId)).limit(1) : Promise.resolve([]),
+      trip.unloadSiteId ? db.select().from(transportSites).where(eq(transportSites.id, trip.unloadSiteId)).limit(1) : Promise.resolve([]),
+    ]);
+    if (!route || !unloadSite || unloadSite.projectId !== input.projectId || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土路线或地点配置无效，不能确认卸土" });
+    const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(trip.loadConfirmedAt).getTime()) / 60_000));
+    if (elapsedMinutes < unloadSite.minimumTransitMinutes && unloadSite.minimumTransitEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: `卸土异常：已运输 ${elapsedMinutes} 分钟，未达到最短运输时间 ${unloadSite.minimumTransitMinutes} 分钟` });
+    if (unloadSite.latitude === null || unloadSite.longitude === null) throw new TRPCError({ code: "BAD_REQUEST", message: "卸土点中文详细地址尚未完成地图定位校验，不能直接确认卸土" });
+    const distanceMeters = Math.round(calculateCoordinateDistanceMeters(input.latitude, input.longitude, Number(unloadSite.latitude), Number(unloadSite.longitude)));
+    if (distanceMeters > unloadSite.unloadGeofenceMeters && unloadSite.unloadGeofenceEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: `未达到卸土点：当前距卸土点约 ${distanceMeters} 米，允许偏差 ${unloadSite.unloadGeofenceMeters} 米` });
+    const payloadFingerprint = createHash("sha256").update(`plate-unload:${trip.id}:${input.latitude.toFixed(6)}:${input.longitude.toFixed(6)}:${input.occurredAt}`).digest("hex");
+    await db.insert(transportCardEvents).values({ tripId: trip.id, vehicleId: trip.vehicleId, projectId: input.projectId, eventType: "unload", siteId: unloadSite.id, operatorUserId: user.id, source: "manual_review", idempotencyKey: input.idempotencyKey, latitude: String(input.latitude), longitude: String(input.longitude), payloadFingerprint, occurredAt, validationStatus: "accepted", validationReason: "车牌直拍票据卸土现场确认" });
+    const [event] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+    if (!event) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "卸土确认审计记录创建失败" });
+    const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, activeVehicleTransitKey: null }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+    if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运单已被其他卸土确认更新，请刷新后查看" });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场确认：${unloadSite.name}` });
+    const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, unloadSite.administratorUserId].filter((value): value is number => typeof value === "number" && value > 0)));
+    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
+    return { success: true, duplicate: false, needsReview: false };
+  }),
 
   /** 装土/卸土现场注册设备统一入口：首次刷卡创建在途票据，第二次刷同卡按路线卸土点闭环。 */
   scanNfcReader: protectedProcedure.input(transportNfcReaderScanInput).mutation(async ({ ctx, input }) => recordTransportNfcReaderScan(ctx, input)),

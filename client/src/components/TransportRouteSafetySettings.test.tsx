@@ -9,4 +9,10 @@ describe("运输路线安全开关", () => {
     expect(source).toContain("硬拦截");
     expect(source).toContain("仅提示");
   });
+
+  it("将明细阈值设置收纳在摘要入口打开的弹窗内", () => {
+    const source = readFileSync(new URL("./TransportRouteSafetySettings.tsx", import.meta.url), "utf8");
+    expect(source).toContain("settingsOpen");
+    expect(source).toContain("<Dialog open={settingsOpen}");
+  });
 });
