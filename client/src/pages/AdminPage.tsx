@@ -2,8 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
 import BusinessStatusBadge from "@/components/BusinessStatusBadge";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
-import { useLaborWorkspaceFilters } from "@/hooks/useLaborWorkspaceFilters";
-import { useLaborWorkspaceQueries } from "@/hooks/useLaborWorkspaceQueries";
+import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -67,6 +66,7 @@ const SubcontractPaymentSettlementManager = lazy(() => import("@/components/Subc
 const TaxAccountingHandoffManager = lazy(() => import("@/components/TaxAccountingHandoffManager"));
 const AdminAuditWorkspace = lazy(() => import("@/components/AdminAuditWorkspace"));
 const LaborWorkspaceShell = lazy(() => import("@/components/LaborWorkspaceShell"));
+const LaborWorkspaceLoader = lazy(() => import("@/components/LaborWorkspaceLoader"));
 const LaborCheckInLedger = lazy(() => import("@/components/LaborCheckInLedger"));
 const LaborWorkerRoster = lazy(() => import("@/components/LaborWorkerRoster"));
 const LaborAttendanceLedger = lazy(() => import("@/components/LaborAttendanceLedger"));
@@ -496,6 +496,7 @@ function LedgerTable({ title, description, columns, rows, loading, titleActions,
 export default function AdminPage() {
   const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
+  const trpcUtils = trpc.useUtils();
   const activeSection = location.split("/")[2] || "overview";
 
   /**
@@ -563,7 +564,6 @@ export default function AdminPage() {
   const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: new Date().toISOString().slice(0, 7), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
-  const { laborPeriod, setLaborPeriod, laborAttendanceDate, setLaborAttendanceDate, laborPayrollSearch, setLaborPayrollSearch, laborPayrollTeam, setLaborPayrollTeam, laborPayrollStatus, setLaborPayrollStatus, laborAttendanceFilter, setLaborAttendanceFilter } = useLaborWorkspaceFilters(toLocalDateInput(new Date()));
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
   const [dailyWagePaymentForm, setDailyWagePaymentForm] = useState({ paidAt: toLocalDateInput(), paymentReference: "" });
   const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
@@ -615,9 +615,6 @@ export default function AdminPage() {
   const workspaceProjectId = workspaceProjectState.projectId;
   const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
   const workspaceProjectInput = useMemo(() => ({ projectId: workspaceProjectId }), [workspaceProjectId]);
-  const laborWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, includeLeft: true }), [workspaceProjectId]);
-  const payrollWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, period: laborPeriod || undefined }), [laborPeriod, workspaceProjectId]);
-  const laborCheckInWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, businessDate: laborAttendanceDate || undefined }), [laborAttendanceDate, workspaceProjectId]);
   const machineCostWorkspaceInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId }), [selectedMachineId, workspaceProjectId]);
   const machineMonthlyStatementsInput = useMemo(() => ({ projectId: workspaceProjectId, period: machineStatementPeriod }), [machineStatementPeriod, workspaceProjectId]);
   const machineAnalysisInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId, period: machineStatementPeriod }), [machineStatementPeriod, selectedMachineId, workspaceProjectId]);
@@ -662,7 +659,6 @@ export default function AdminPage() {
     (constructionReportEvidence.data ?? []).forEach(item => grouped.set(item.reportId, [...(grouped.get(item.reportId) ?? []), item]));
     return grouped;
   }, [constructionReportEvidence.data]);
-  const { laborWorkers, laborAttendance, laborCheckIns, payrollStatements, laborDailyWages, payrollWorkbookExport, payrollPaymentListExport } = useLaborWorkspaceQueries({ enabled: canQuery && isLabor && hasBusinessWorkspaceProject, workspaceProjectInput, laborWorkspaceInput, payrollWorkspaceInput, laborCheckInWorkspaceInput });
   const machineryLedger = trpc.machinery.listMachines.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
   const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
   const machineCostSummaries = trpc.machinery.listCostSummaries.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
@@ -1055,9 +1051,7 @@ export default function AdminPage() {
         module: "劳务考勤与工资台账",
         filters: [
           ["项目范围", workspaceProjectLabel],
-          ["考勤日期", laborAttendanceDate || "全部日期"],
-          ["工资期间", laborPeriod || "全部期间"],
-          ["工资检索", laborPayrollSearch || "未设置"],
+          ["劳务工作区筛选", "以当前劳务菜单内的期间、人员、班组与状态筛选为准"],
         ],
       };
     }
@@ -1090,7 +1084,7 @@ export default function AdminPage() {
       };
     }
     return { module: "后台台账", filters: [["项目范围", workspaceProjectLabel], ["数据范围", "当前管理员已授权数据"]] };
-  }, [activeSection, dieselDate, dieselLedgerFilter, employeeLedgerFilter, financePeriod, financeProjectId, laborAttendanceDate, laborPayrollSearch, laborPeriod, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
+  }, [activeSection, dieselDate, dieselLedgerFilter, employeeLedgerFilter, financePeriod, financeProjectId, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
   useEffect(() => {
     const exportWindow = window as ExportScopeWindow;
     exportWindow.__roadConstructionExportScope = activeCsvExportScope;
@@ -1701,14 +1695,14 @@ export default function AdminPage() {
   const submitPayroll = trpc.labor.payroll.submit.useMutation({
     onSuccess: async () => {
       toast.success("工资条已提交会计审核");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const approvePayroll = trpc.labor.payroll.approve.useMutation({
     onSuccess: async () => {
       toast.success("工资条审核状态已更新");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -1717,21 +1711,21 @@ export default function AdminPage() {
       toast.success("工资条已确认发放");
       setPayrollPaymentTarget(null);
       setPaymentReference("");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
     onSuccess: async () => {
       toast.success("临时日结已提交会计/财务审核");
-      await laborDailyWages.refetch();
+      await trpcUtils.labor.dailyWage.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const reviewDailyWage = trpc.labor.dailyWage.review.useMutation({
     onSuccess: async result => {
       toast.success(result.status === "approved" ? "临时日结已审核通过，待登记付款" : "临时日结已退回草稿，可修改后重新提交");
-      await laborDailyWages.refetch();
+      await trpcUtils.labor.dailyWage.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -1740,7 +1734,7 @@ export default function AdminPage() {
       toast.success("临时日结已登记实际付款并完成结算");
       setDailyWagePaymentTarget(null);
       setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" });
-      await Promise.all([laborDailyWages.refetch(), payrollStatements.refetch()]);
+      await Promise.all([trpcUtils.labor.dailyWage.list.invalidate(), trpcUtils.labor.payroll.list.invalidate()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -2648,7 +2642,9 @@ export default function AdminPage() {
     );
   };
 
-  const renderLabor = () => {
+  const renderLaborContent = ({ filters, queries }: LaborWorkspaceRenderState) => {
+    const { laborPeriod, setLaborPeriod, laborAttendanceDate, setLaborAttendanceDate, laborPayrollSearch, setLaborPayrollSearch, laborPayrollTeam, setLaborPayrollTeam, laborPayrollStatus, setLaborPayrollStatus, laborAttendanceFilter, setLaborAttendanceFilter } = filters;
+    const { laborWorkers, laborAttendance, laborCheckIns, payrollStatements, laborDailyWages, payrollWorkbookExport, payrollPaymentListExport } = queries;
     const workers = laborWorkers.data ?? [];
     const attendance = laborAttendance.data ?? [];
     const workerById = new Map(workers.map(worker => [worker.id, worker]));
@@ -2697,6 +2693,8 @@ export default function AdminPage() {
       </LaborWorkspaceShell>
     );
   };
+
+  const renderLabor = () => <LaborWorkspaceLoader enabled={canQuery && isLabor && hasBusinessWorkspaceProject} projectId={workspaceProjectId} initialAttendanceDate={toLocalDateInput()}>{renderLaborContent}</LaborWorkspaceLoader>;
 
   const renderMachinery = () => {
     const allMachines = machineryLedger.data ?? [];

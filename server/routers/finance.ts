@@ -45,7 +45,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
 import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
-import { storageGet, storagePut } from "../storage";
+import { storageGetSignedUrl, storagePut } from "../storage";
 
 /** 期间一律采用 YYYY-MM，防止浏览器时区导致项目月报跨月统计。 */
 const periodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "期间格式应为 YYYY-MM");
@@ -923,8 +923,8 @@ export const purchasingRouter = router({
     const evidenceIds = Array.from(new Set(orders.flatMap(order => [order.evidenceId, order.invoiceEvidenceId]).filter((id): id is number => id !== null)));
     const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
     const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
-      const stored = await storageGet(evidence.fileKey);
-      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url: stored.url }] as const;
+      const url = await storageGetSignedUrl(evidence.fileKey);
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url }] as const;
     })));
     return orders.map(order => ({ ...order, documentAttachment: order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null, invoiceAttachment: order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null }));
   }),
@@ -937,8 +937,8 @@ export const purchasingRouter = router({
     if (!db) return [];
     const rows = await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, capturedAt: evidenceRecords.capturedAt, ocrResultJson: evidenceRecords.ocrResultJson, watermarkJson: evidenceRecords.watermarkJson }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.sourceType, "purchase"))).orderBy(desc(evidenceRecords.capturedAt)).limit(30);
     return Promise.all(rows.map(async row => {
-      const file = await storageGet(row.fileKey);
-      return { id: row.id, fileName: row.fileName, capturedAt: row.capturedAt, ocrSummary: getPurchaseOcrSummary(row.ocrResultJson), description: (() => { try { return (JSON.parse(row.watermarkJson ?? "{}") as { description?: string }).description ?? "采购影像"; } catch { return "采购影像"; } })(), url: file.url };
+      const url = await storageGetSignedUrl(row.fileKey);
+      return { id: row.id, fileName: row.fileName, capturedAt: row.capturedAt, ocrSummary: getPurchaseOcrSummary(row.ocrResultJson), description: (() => { try { return (JSON.parse(row.watermarkJson ?? "{}") as { description?: string }).description ?? "采购影像"; } catch { return "采购影像"; } })(), url };
     }));
   }),
 

@@ -21,5 +21,7 @@ describe("小额直接采购金额与单据归档边界", () => {
     expect(source).toContain('if (input.hasInvoice && !input.invoiceEvidenceId)');
     expect(source).toContain('invoiceAttachment: order.invoiceEvidenceId');
     expect(source).toContain('documentAttachment: order.evidenceId');
+    expect(source).toContain('storageGetSignedUrl(evidence.fileKey)');
+    expect(source).not.toContain('const stored = await storageGet(evidence.fileKey)');
   });
 });

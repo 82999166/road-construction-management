@@ -529,3 +529,14 @@ describe("采购订单详情与附件收敛", () => {
     expect(source).toContain("closed: \"已结算\"");
   });
 });
+
+
+  it("劳务工资将筛选与查询下沉到仅在劳务菜单挂载的懒加载容器", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const loader = readFileSync(new URL("../components/LaborWorkspaceLoader.tsx", import.meta.url), "utf8");
+    expect(source).toContain("const LaborWorkspaceLoader = lazy");
+    expect(source).toContain("const renderLabor = () => <LaborWorkspaceLoader");
+    expect(source).not.toContain("useLaborWorkspaceQueries({ enabled: canQuery && isLabor");
+    expect(loader).toContain("useLaborWorkspaceFilters(initialAttendanceDate)");
+    expect(loader).toContain("useLaborWorkspaceQueries({ enabled");
+  });
