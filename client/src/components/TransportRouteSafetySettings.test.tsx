@@ -14,5 +14,6 @@ describe("运输路线安全开关", () => {
     const source = readFileSync(new URL("./TransportRouteSafetySettings.tsx", import.meta.url), "utf8");
     expect(source).toContain("settingsOpen");
     expect(source).toContain("<Dialog open={settingsOpen}");
+    expect(source).toContain("compact = false");
   });
 });

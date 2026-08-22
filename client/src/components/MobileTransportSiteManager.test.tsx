@@ -19,5 +19,6 @@ describe("手机端装卸土点管理", () => {
     expect(source).toContain("navigator.geolocation.getCurrentPosition");
     expect(source).toContain("trpc.location.reverseGeocode.useMutation");
     expect(source).toContain("enableHighAccuracy: true");
+    expect(source).toContain("compact = false");
   });
 });

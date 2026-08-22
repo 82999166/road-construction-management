@@ -9,7 +9,7 @@ import { toast } from "sonner";
 
 type SafetyDraft = { minimumTransitMinutes: string; minimumTransitEnabled: boolean; unloadGeofenceMeters: string; unloadGeofenceEnabled: boolean };
 
-export function TransportRouteSafetySettings({ projectId }: { projectId?: number }) {
+export function TransportRouteSafetySettings({ projectId, compact = false }: { projectId?: number; compact?: boolean }) {
   const utils = trpc.useUtils();
   const routes = trpc.transport.listRoutePresets.useQuery({ projectId: projectId ?? 0 }, { enabled: Boolean(projectId) });
   const [drafts, setDrafts] = useState<Record<number, SafetyDraft>>({});
@@ -34,7 +34,7 @@ export function TransportRouteSafetySettings({ projectId }: { projectId?: number
   }, [routes.data]);
 
   if (!projectId || !routes.data?.length) return null;
-  return <><Card className="border border-[#d8bf91] bg-[#fffaf0] print:hidden"><CardContent className="flex items-center justify-between gap-3 p-4"><div className="min-w-0"><p className="flex items-center gap-1.5 text-sm font-semibold text-[#6d4217]"><ShieldCheck className="h-4 w-4" />卸土安全阈值</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-[#805d38]">{routes.data.filter(route => route.status === "active").length} 条启用路线；最短运输时间和定位范围均可单独设置。</p></div><Button size="sm" className="shrink-0 bg-[#8a591f] text-white hover:bg-[#724610]" onClick={() => setSettingsOpen(true)}>配置</Button></CardContent></Card><Dialog open={settingsOpen} onOpenChange={setSettingsOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>卸土安全阈值</DialogTitle><DialogDescription>最短运输时间和卸土定位范围可分别设为“硬拦截”或“仅提示”；关闭开关后仍会留存实际耗时或距离供核验。</DialogDescription></DialogHeader><div className="mt-3 space-y-2">{routes.data.filter(route => route.status === "active").map(route => {
+  return <><Card className="border border-[#d8bf91] bg-[#fffaf0] print:hidden"><CardContent className={`flex items-center justify-between gap-2 ${compact ? "min-h-20 p-2.5" : "p-4"}`}><div className="min-w-0"><p className={`flex items-center gap-1.5 font-semibold text-[#6d4217] ${compact ? "text-xs" : "text-sm"}`}><ShieldCheck className="h-4 w-4 shrink-0" />卸土安全阈值</p><p className={`mt-1 text-[#805d38] ${compact ? "line-clamp-2 text-[10px] leading-4" : "line-clamp-2 text-xs leading-5"}`}>{routes.data.filter(route => route.status === "active").length} 条启用路线；最短运输时间和定位范围均可单独设置。</p></div><Button size="sm" className={`shrink-0 bg-[#8a591f] text-white hover:bg-[#724610] ${compact ? "h-7 px-2 text-[11px]" : ""}`} onClick={() => setSettingsOpen(true)}>配置</Button></CardContent></Card><Dialog open={settingsOpen} onOpenChange={setSettingsOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>卸土安全阈值</DialogTitle><DialogDescription>最短运输时间和卸土定位范围可分别设为“硬拦截”或“仅提示”；关闭开关后仍会留存实际耗时或距离供核验。</DialogDescription></DialogHeader><div className="mt-3 space-y-2">{routes.data.filter(route => route.status === "active").map(route => {
     const draft = drafts[route.id] ?? { minimumTransitMinutes: String(route.minimumTransitMinutes), minimumTransitEnabled: route.minimumTransitEnabled, unloadGeofenceMeters: String(route.unloadGeofenceMeters), unloadGeofenceEnabled: route.unloadGeofenceEnabled };
     const setDraft = (patch: Partial<SafetyDraft>) => setDrafts(current => ({ ...current, [route.id]: { ...draft, ...patch } }));
     const persist = () => {
