@@ -440,6 +440,20 @@ function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+/** 运输现场日按中国标准时间划分；前端“2026-08-22”应覆盖北京时间当天零点至次日零点。 */
+function getChinaBusinessDateRange(value: string) {
+  const start = new Date(`${value}T00:00:00+08:00`);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return { start, end };
+}
+
+function formatChinaBusinessDate(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
+  const fields = Object.fromEntries(parts.filter(part => ["year", "month", "day"].includes(part.type)).map(part => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+}
+
 /** 返回左闭右开的月度区间，确保月结查询不重复计入跨月数据。 */
 function getMonthRange(period: string) {
   const [yearText, monthText] = period.split("-");
@@ -2305,16 +2319,14 @@ export const transportRouter = router({
     if (!db) return [];
     const predicates = [eq(transportTrips.projectId, input.projectId)];
     if (input.date) {
-      const start = toBusinessDate(input.date);
-      const end = new Date(start);
-      end.setUTCDate(end.getUTCDate() + 1);
+      const { start, end } = getChinaBusinessDateRange(input.date);
       predicates.push(gte(transportTrips.startAt, start), lt(transportTrips.startAt, end));
     }
     let rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
     const { month, dateFrom, dateTo, vehicleId, status, routePresetId } = input;
     if (month) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 7) === month);
-    if (dateFrom) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 10) >= dateFrom);
-    if (dateTo) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 10) <= dateTo);
+    if (dateFrom) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) >= dateFrom);
+    if (dateTo) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) <= dateTo);
     if (vehicleId) rows = rows.filter(trip => trip.vehicleId === vehicleId);
     if (status) rows = rows.filter(trip => trip.status === status);
     if (routePresetId) rows = rows.filter(trip => {
