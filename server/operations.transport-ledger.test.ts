@@ -33,3 +33,13 @@ describe("运输趟次完整台账服务端投影", () => {
     expect(source).toContain("unloadSiteEvidence: unloadEvidenceId");
     expect(source).toContain("eq(evidenceRecords.projectId, input.projectId)");
   });
+
+  it("返回单车期间与累计趟次、柴油占比及单位运营成本，且始终由真实聚合数据计算", () => {
+    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    expect(source).toContain("const cumulative = decorate");
+    expect(source).toContain("fuelCostPerTrip");
+    expect(source).toContain("fuelCostPerKm");
+    expect(source).toContain("grossIncomePerTrip");
+    expect(source).toContain("return { vehicle:");
+    expect(source).toContain("cumulative, monthly");
+  });

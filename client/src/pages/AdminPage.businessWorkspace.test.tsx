@@ -210,6 +210,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("录入车辆档案");
     expect(source).toContain("单车柴油分析");
     expect(source).toContain("车辆分析期间");
+    expect(source).toContain("本期 / 累计总趟数");
+    expect(source).toContain("柴油占比 / 每趟油费");
+    expect(source).toContain("max-w-[min(96vw,1320px)]");
   });
 
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {

@@ -1761,7 +1761,25 @@ export const transportRouter = router({
     maintenanceRows.forEach(item => { const row = ensure(dayKey(item.occurredAt)); if (item.costCategory === "repair") row.repairAmount += Number(item.amount); else row.maintenanceAmount += Number(item.amount); row.sourceCounts.maintenance += 1; });
     const decorate = (item: Aggregate) => {
       const totalExpense = roundMoney(item.fuelAmount + item.repairAmount + item.maintenanceAmount);
-      return { ...item, distanceKm: roundMoney(item.distanceKm), grossIncome: roundMoney(item.grossIncome), settlementIncome: roundMoney(item.settlementIncome), fuelLiters: roundMoney(item.fuelLiters), fuelAmount: roundMoney(item.fuelAmount), repairAmount: roundMoney(item.repairAmount), maintenanceAmount: roundMoney(item.maintenanceAmount), totalExpense, netIncome: roundMoney(item.grossIncome - totalExpense), fuelCostRatio: item.grossIncome > 0 ? roundMoney(item.fuelAmount / item.grossIncome * 100) : null };
+      return {
+        ...item,
+        distanceKm: roundMoney(item.distanceKm),
+        grossIncome: roundMoney(item.grossIncome),
+        settlementIncome: roundMoney(item.settlementIncome),
+        fuelLiters: roundMoney(item.fuelLiters),
+        fuelAmount: roundMoney(item.fuelAmount),
+        repairAmount: roundMoney(item.repairAmount),
+        maintenanceAmount: roundMoney(item.maintenanceAmount),
+        totalExpense,
+        netIncome: roundMoney(item.grossIncome - totalExpense),
+        fuelCostRatio: item.grossIncome > 0 ? roundMoney(item.fuelAmount / item.grossIncome * 100) : null,
+        fuelCostPerTrip: item.tripCount > 0 ? roundMoney(item.fuelAmount / item.tripCount) : null,
+        fuelLitersPerTrip: item.tripCount > 0 ? roundMoney(item.fuelLiters / item.tripCount) : null,
+        fuelCostPerKm: item.distanceKm > 0 ? roundMoney(item.fuelAmount / item.distanceKm) : null,
+        fuelLitersPerKm: item.distanceKm > 0 ? roundMoney(item.fuelLiters / item.distanceKm) : null,
+        grossIncomePerTrip: item.tripCount > 0 ? roundMoney(item.grossIncome / item.tripCount) : null,
+        grossIncomePerKm: item.distanceKm > 0 ? roundMoney(item.grossIncome / item.distanceKm) : null,
+      };
     };
     const daily = Array.from(dailyMap.values()).filter(item => item.date >= input.period && item.date < `${input.period}-32`).map(decorate).sort((left, right) => right.date.localeCompare(left.date));
     const monthlyMap = new Map<string, Aggregate>();
@@ -1770,8 +1788,10 @@ export const transportRouter = router({
     const leaseRule = leaseRules.sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
     const daysInPeriod = Math.max(1, Math.round((range.endExclusive.getTime() - range.start.getTime()) / 86_400_000));
     const leaseEstimatedAmount = leaseRule?.billingType === "monthly" ? roundMoney(Number(leaseRule.rate) * daysInPeriod / 30) : leaseRule?.billingType === "daily" ? roundMoney(Number(leaseRule.rate) * daysInPeriod) : 0;
-    const summary = { ...currentSummary, distanceKm: roundMoney(currentSummary.distanceKm), grossIncome: roundMoney(currentSummary.grossIncome), settlementIncome: roundMoney(currentSummary.settlementIncome), fuelLiters: roundMoney(currentSummary.fuelLiters), fuelAmount: roundMoney(currentSummary.fuelAmount), repairAmount: roundMoney(currentSummary.repairAmount), maintenanceAmount: roundMoney(currentSummary.maintenanceAmount), leaseEstimatedAmount, totalExpense: roundMoney(currentSummary.fuelAmount + currentSummary.repairAmount + currentSummary.maintenanceAmount + leaseEstimatedAmount), netIncome: roundMoney(currentSummary.grossIncome - currentSummary.fuelAmount - currentSummary.repairAmount - currentSummary.maintenanceAmount - leaseEstimatedAmount), fuelCostRatio: currentSummary.grossIncome > 0 ? roundMoney(currentSummary.fuelAmount / currentSummary.grossIncome * 100) : null };
-    return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, ownerName: vehicle.ownerName, status: vehicle.status }, period: input.period, leaseRule: leaseRule ? { billingType: leaseRule.billingType, rate: Number(leaseRule.rate), effectiveFrom: leaseRule.effectiveFrom, effectiveTo: leaseRule.effectiveTo, estimatePending: ["hourly", "shift"].includes(leaseRule.billingType) } : null, summary, monthly: Array.from(monthlyMap.values()).map(decorate).sort((left, right) => right.date.localeCompare(left.date)), daily };
+    const operatingSummary = decorate({ date: input.period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0 }, ...currentSummary });
+    const summary = { ...operatingSummary, leaseEstimatedAmount, totalExpense: roundMoney(operatingSummary.totalExpense + leaseEstimatedAmount), netIncome: roundMoney(operatingSummary.grossIncome - operatingSummary.totalExpense - leaseEstimatedAmount) };
+    const cumulative = decorate(Array.from(dailyMap.values()).reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount }), { date: "累计", tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } }));
+    return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, ownerName: vehicle.ownerName, status: vehicle.status }, period: input.period, leaseRule: leaseRule ? { billingType: leaseRule.billingType, rate: Number(leaseRule.rate), effectiveFrom: leaseRule.effectiveFrom, effectiveTo: leaseRule.effectiveTo, estimatePending: ["hourly", "shift"].includes(leaseRule.billingType) } : null, summary, cumulative, monthly: Array.from(monthlyMap.values()).map(decorate).sort((left, right) => right.date.localeCompare(left.date)), daily };
   }),
 
   /** 新建或维护运输车辆档案；司机角色不得修改车辆主数据。 */
