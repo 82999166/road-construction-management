@@ -286,6 +286,14 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("柴油供应商对账-");
   });
 
+  it("将柴油指导价项目选择独占整行，避免与指导单价在窄屏弹窗重叠", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('data-testid="diesel-guideline-project-field"');
+    expect(source).toContain('className="w-full min-w-0"');
+    expect(source).toContain('grid grid-cols-1 gap-3 sm:grid-cols-2');
+  });
+
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
