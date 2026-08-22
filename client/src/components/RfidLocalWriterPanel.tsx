@@ -212,6 +212,16 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
         <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3"><Label className="text-xs font-semibold text-amber-950">恢复初卡对象（已绑定卡可选；无绑定记录可直接恢复实体卡）</Label><Select value={eraseCardId} onValueChange={setEraseCardId}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="请选择需要恢复初卡的车辆卡" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择车辆卡</SelectItem>{(vehicleCards.data ?? []).filter(card => ["active", "revoked", "suspended"].includes(card.status)).map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · {card.cardUidMasked} · {card.status === "active" ? "已启用（将停用）" : card.status === "revoked" ? "已停用" : "待重发"}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-amber-900">已绑定车辆卡会先被停用，随后桥接回读 UID 指纹并仅清空 NDEF 用户区；UID 不匹配会拒绝登记最终擦除结果。绝不操作制造商区、锁定位、配置页或写保护口令。</p>{hasNoBoundCards ? <div className="mt-3 rounded-lg border border-amber-300 bg-white/80 p-3"><p className="text-xs leading-5 text-amber-950">当前没有车辆卡绑定记录。可直接将待恢复的 NTAG216 放到 uTrust 感应区，不选择车辆卡也能恢复初卡；不会写回旧车辆或司机信息。</p><Button type="button" className="mt-2" variant="destructive" onClick={eraseUnboundToInitial} disabled={erasingInitial || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "直接恢复当前未绑定实体卡"}</Button></div> : null}</div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>
         <p className="rounded-lg border border-cyan-200 bg-white/70 px-3 py-2 text-xs leading-5 text-cyan-950">操作顺序：先将可覆盖的测试 NTAG216 放至 <strong>uTrust 4701 F CL Reader</strong> 感应区，点击“检测本地桥接”，再点击“写入测试卡”。桥接会先读取 UID 指纹、写入 `RC3T` 测试 NDEF、回读验证；不触碰锁定页、配置页或写保护口令。</p>
+        <div className="rounded-xl border border-sky-200 bg-sky-50/80 p-3 text-xs leading-5 text-sky-950">
+          <p className="font-semibold">正式车辆卡写入流程</p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5">
+            <li><strong>写入测试卡</strong>只用于验证 uTrust 读写器、NDEF 读写与回读；它写入的是 `RC3T` 测试内容，<strong>不会写入运输页面链接</strong>，也不能作为正式车辆卡。</li>
+            <li>在下方“车辆射频卡”台账先选择已录入司机姓名和手机号的车辆，点击“绑定车辆卡”。</li>
+            <li>在绑定窗口点击“读取卡 ID”，核对芯片 UID 后保存绑定；车牌、司机和电话来自车辆表单预填，不是卡内旧数据。</li>
+            <li>回到该车辆卡台账，点击<strong>“PC 写入车辆卡”</strong>或“PC 补写车辆卡”，保持卡片放在 uTrust 感应区，等待服务端签名、NDEF 深链写入和回读成功。</li>
+            <li>用开启 NFC 的手机触碰已正式写入的卡；系统应打开受控运输刷卡入口。手机不自动跳转时，请从浏览器历史/通知点击链接，不要重复测试写卡。</li>
+          </ol>
+        </div>
         <div className="rounded-xl border border-[#b6d6df] bg-white/70 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#174c60]">装卸点读卡设备</p><p className="mt-0.5 text-xs text-[#577b88]">装土点和卸土点各登记一台设备。手机 NFC 触碰车辆卡后，系统将按所选设备绑定地点自动判断首次发车或二次闭环。</p></div><span className="rounded-full bg-[#e7f4f7] px-2 py-1 text-xs font-medium text-[#23657b]">已登记 {readerDevices.data?.length ?? 0} 台</span></div>
           <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1.1fr)_minmax(0,.8fr)_minmax(0,1fr)_auto]">

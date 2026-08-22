@@ -44,6 +44,13 @@ describe("uTrust 本地桥接面板", () => {
     expect(source).toContain("不会恢复或写入任何旧车辆、司机或运输业务数据");
   });
 
+  it("写卡板块必须明确区分测试卡与正式车辆卡写入，并展示手机触碰验证步骤", () => {
+    expect(source).toContain("正式车辆卡写入流程");
+    expect(source).toContain("不会写入运输页面链接");
+    expect(source).toContain("PC 写入车辆卡");
+    expect(source).toContain("系统应打开受控运输刷卡入口");
+  });
+
   it("装土点与卸土点读卡设备必须可登记到具体地点，供手机 NFC 双设备闭环选择", () => {
     expect(source).toContain("装卸点读卡设备");
     expect(source).toContain("saveReaderDevice.mutate");
