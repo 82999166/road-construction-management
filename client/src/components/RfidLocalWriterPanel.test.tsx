@@ -38,6 +38,12 @@ describe("uTrust 本地桥接面板", () => {
     expect(source).toContain("已启用（将停用）");
   });
 
+  it("业务数据清空且没有车辆卡绑定时，可只在本机桥接中恢复当前实体卡而不写回旧业务数据", () => {
+    expect(source).toContain("hasNoBoundCards");
+    expect(source).toContain("直接恢复当前未绑定实体卡");
+    expect(source).toContain("不会恢复或写入任何旧车辆、司机或运输业务数据");
+  });
+
   it("装土点与卸土点读卡设备必须可登记到具体地点，供手机 NFC 双设备闭环选择", () => {
     expect(source).toContain("装卸点读卡设备");
     expect(source).toContain("saveReaderDevice.mutate");

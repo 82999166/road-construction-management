@@ -162,11 +162,29 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     }
   };
 
+  const eraseUnboundToInitial = async () => {
+    if (!window.confirm("当前项目没有车辆卡绑定记录。确认直接擦除读卡器中这张未绑定 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销；不会恢复或写入任何旧车辆、司机或运输业务数据，也不会修改制造商区、锁定位、配置页或写保护口令。")) return;
+    setErasingInitial(true);
+    try {
+      const result = await requestBridge("/api/erase-initial-card", { confirmErase: "ERASE_NTAG216_USER_AREA" }) as BridgeResult & { initialNdef?: boolean };
+      if (!result.success || !result.initialNdef) throw new Error(result.message || "未绑定实体卡初卡恢复回读校验失败");
+      setBridgeMessage("已直接清空当前未绑定实体卡的 NDEF 用户区并回读确认空白初卡；未恢复或写入任何历史车辆绑定。");
+      toast.success("未绑定实体卡已恢复为空白初卡，未修改锁定位或写保护。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未绑定实体卡恢复初卡失败";
+      toast.error(message === "erase_confirmation_required" ? "本机桥接未收到擦除确认，请刷新页面后重新确认操作" : message);
+    } finally {
+      setErasingInitial(false);
+    }
+  };
+
   const registerReaderDevice = () => {
     if (readerSiteId === "UNSELECTED") return toast.error("请先选择读卡设备所在的装土点或卸土点");
     if (!readerDeviceCode.trim() || !readerDisplayName.trim()) return toast.error("请填写现场设备编号和显示名称");
     saveReaderDevice.mutate({ projectId, siteId: Number(readerSiteId), deviceCode: readerDeviceCode, displayName: readerDisplayName, status: "active" });
   };
+
+  const hasNoBoundCards = projectId <= 0 || (vehicleCards.isSuccess && (vehicleCards.data ?? []).length === 0);
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/40">
@@ -191,7 +209,7 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
           <Button type="button" onClick={runTestWrite} disabled={recordTest.isPending || bridgeStatus !== "ready"}><ShieldCheck className="mr-1.5 h-4 w-4" />{recordTest.isPending ? "正在回读校验…" : "写入测试卡"}</Button>
           <Button type="button" variant="destructive" onClick={eraseToInitial} disabled={erasingInitial || prepareInitialErase.isPending || finalizeInitialErase.isPending || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "停用并擦除恢复初卡"}</Button>
         </div>
-        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3"><Label className="text-xs font-semibold text-amber-950">恢复初卡对象（已启用卡将先停用）</Label><Select value={eraseCardId} onValueChange={setEraseCardId}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="请选择需要恢复初卡的车辆卡" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择车辆卡</SelectItem>{(vehicleCards.data ?? []).filter(card => ["active", "revoked", "suspended"].includes(card.status)).map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · {card.cardUidMasked} · {card.status === "active" ? "已启用（将停用）" : card.status === "revoked" ? "已停用" : "待重发"}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-amber-900">已启用车辆卡会先被停用，随后桥接回读 UID 指纹并仅清空 NDEF 用户区；UID 不匹配会拒绝登记最终擦除结果。绝不操作制造商区、锁定位、配置页或写保护口令。</p></div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3"><Label className="text-xs font-semibold text-amber-950">恢复初卡对象（已绑定卡可选；无绑定记录可直接恢复实体卡）</Label><Select value={eraseCardId} onValueChange={setEraseCardId}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="请选择需要恢复初卡的车辆卡" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择车辆卡</SelectItem>{(vehicleCards.data ?? []).filter(card => ["active", "revoked", "suspended"].includes(card.status)).map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · {card.cardUidMasked} · {card.status === "active" ? "已启用（将停用）" : card.status === "revoked" ? "已停用" : "待重发"}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-amber-900">已绑定车辆卡会先被停用，随后桥接回读 UID 指纹并仅清空 NDEF 用户区；UID 不匹配会拒绝登记最终擦除结果。绝不操作制造商区、锁定位、配置页或写保护口令。</p>{hasNoBoundCards ? <div className="mt-3 rounded-lg border border-amber-300 bg-white/80 p-3"><p className="text-xs leading-5 text-amber-950">当前没有车辆卡绑定记录。可直接将待恢复的 NTAG216 放到 uTrust 感应区，不选择车辆卡也能恢复初卡；不会写回旧车辆或司机信息。</p><Button type="button" className="mt-2" variant="destructive" onClick={eraseUnboundToInitial} disabled={erasingInitial || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "直接恢复当前未绑定实体卡"}</Button></div> : null}</div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>
         <p className="rounded-lg border border-cyan-200 bg-white/70 px-3 py-2 text-xs leading-5 text-cyan-950">操作顺序：先将可覆盖的测试 NTAG216 放至 <strong>uTrust 4701 F CL Reader</strong> 感应区，点击“检测本地桥接”，再点击“写入测试卡”。桥接会先读取 UID 指纹、写入 `RC3T` 测试 NDEF、回读验证；不触碰锁定页、配置页或写保护口令。</p>
         <div className="rounded-xl border border-[#b6d6df] bg-white/70 p-3">
