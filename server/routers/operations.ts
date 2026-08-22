@@ -47,7 +47,7 @@ import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVaul
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
-import { storageGet } from "../storage";
+import { storageGetSignedUrl } from "../storage";
 import { runProjectRiskScan } from "./projectRisk";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
@@ -2359,8 +2359,8 @@ export const transportRouter = router({
     }).filter((id): id is number => typeof id === "number" && id > 0)));
     const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
     const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
-      const stored = await storageGet(evidence.fileKey);
-      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url: stored.url }] as const;
+      const url = await storageGetSignedUrl(evidence.fileKey);
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url }] as const;
     })));
     const eventsByTrip = new Map<number, typeof eventRows>();
     eventRows.filter(event => tripIds.has(Number(event.tripId))).forEach(event => eventsByTrip.set(Number(event.tripId), [...(eventsByTrip.get(Number(event.tripId)) ?? []), event]));
