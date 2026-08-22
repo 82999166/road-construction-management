@@ -84,11 +84,10 @@ describe("移动工作台部门业务投影", () => {
     });
 
     expect(markup).toContain("现场作业指引");
-    expect(markup).toContain("先完成定位考勤");
-    expect(markup).toContain("按岗位录入业务");
-    expect(markup).toContain("同步影像与单据");
-    expect(markup).toContain("处理待办并确认消息");
-    expect(markup).toContain("页面提示不能替代审批");
+    expect(markup).toContain("点击查看完整四步说明");
+    expect(markup).toContain("展开");
+    expect(markup).not.toContain("先完成定位考勤");
+    expect(markup).not.toContain("同步影像与单据");
   });
 
   it("没有部门业务授权时展示受控的空状态而不是猜测菜单", () => {
