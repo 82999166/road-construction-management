@@ -30,3 +30,15 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("净结算");
   });
 });
+
+
+  it("将发票类型列与责任人、受控影像入口收敛到运单详情", () => {
+    const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
+    expect(source).toContain("<TableHead>发票类型</TableHead>");
+    expect(source).toContain("invoiceTypeLabel(item)");
+    expect(source).toContain("查看图片 / 下载文件：{selectedTrip.loadInvoiceEvidence.fileName}");
+    expect(source).toContain("查看图片 / 下载文件：{selectedTrip.unloadSiteEvidence.fileName}");
+    expect(source).toContain("装土发票管理员 / 执行时间");
+    expect(source).toContain("卸土确认管理员 / 执行时间");
+    expect(source).not.toContain("<img");
+  });

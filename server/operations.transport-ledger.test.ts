@@ -22,3 +22,13 @@ describe("运输趟次完整台账服务端投影", () => {
     expect(source).not.toContain("longitude: transportCardEvents.longitude");
   });
 });
+
+
+  it("仅为当前项目内已关联的装土和卸土影像生成短时受控地址", () => {
+    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    expect(source).toContain("storageGet(evidence.fileKey)");
+    expect(source).toContain("inArray(evidenceRecords.id, evidenceIds)");
+    expect(source).toContain("loadInvoiceEvidence: trip.evidenceId");
+    expect(source).toContain("unloadSiteEvidence: unloadEvidenceId");
+    expect(source).toContain("eq(evidenceRecords.projectId, input.projectId)");
+  });

@@ -47,6 +47,7 @@ import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVaul
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
+import { storageGet } from "../storage";
 import { runProjectRiskScan } from "./projectRisk";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
@@ -2351,6 +2352,16 @@ export const transportRouter = router({
     const sitesById = new Map(siteRows.map(site => [site.id, site]));
     const operatorsById = new Map(operatorRows.map(operator => [operator.id, operator.name]));
     const tripIds = new Set(rows.map(trip => trip.id));
+    const evidenceIds = Array.from(new Set(rows.flatMap(trip => {
+      const snapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
+      const unloadEvidenceId = Number(snapshot.unloadPhotoEvidenceId ?? 0) || null;
+      return [trip.evidenceId, unloadEvidenceId];
+    }).filter((id): id is number => typeof id === "number" && id > 0)));
+    const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
+    const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
+      const stored = await storageGet(evidence.fileKey);
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url: stored.url }] as const;
+    })));
     const eventsByTrip = new Map<number, typeof eventRows>();
     eventRows.filter(event => tripIds.has(Number(event.tripId))).forEach(event => eventsByTrip.set(Number(event.tripId), [...(eventsByTrip.get(Number(event.tripId)) ?? []), event]));
     const siteAddress = (siteId: number | null, snapshotSite: unknown) => {
@@ -2362,8 +2373,11 @@ export const transportRouter = router({
       const routeSnapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
       const vehicle = vehiclesById.get(trip.vehicleId);
       const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, siteName: event.siteId ? sitesById.get(event.siteId)?.name ?? "未登记地点" : "未登记地点", operatorName: event.operatorUserId ? operatorsById.get(event.operatorUserId) ?? "未登记确认人" : "未登记确认人", validationStatus: event.validationStatus, validationReason: event.validationReason }));
+      const unloadEvidenceId = Number(routeSnapshot.unloadPhotoEvidenceId ?? 0) || null;
       return {
         ...trip,
+        loadInvoiceEvidence: trip.evidenceId ? evidenceById.get(trip.evidenceId) ?? null : null,
+        unloadSiteEvidence: unloadEvidenceId ? evidenceById.get(unloadEvidenceId) ?? null : null,
         routeSnapshot: { routePresetId: Number(routeSnapshot.routePresetId ?? 0) || null, settlementUnit: routeSnapshot.settlementUnit ?? null, invoiceMode: routeSnapshot.invoiceMode ?? trip.invoiceMode ?? "nfc_card" },
         vehiclePlateNo: vehicle?.plateNo ?? `车辆 #${trip.vehicleId}`,
         vehicle: vehicle ? { plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, driverName: vehicle.driverName ?? null, ownerName: vehicle.ownerName ?? null, theoreticalVolumeCubicMeters: Math.round(Number(vehicle.boxLengthMeters) * Number(vehicle.boxWidthMeters) * Number(vehicle.boxHeightMeters) * Number(vehicle.loadFactor) * 1000) / 1000 } : null,
