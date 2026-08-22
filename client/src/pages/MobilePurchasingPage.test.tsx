@@ -24,3 +24,15 @@ describe("移动采购清单费用录入", () => {
     expect(source).toContain('uploadPurchaseDocumentFile(event.target.files?.[0], "invoice")');
   });
 });
+
+
+describe("移动采购订单详情", () => {
+  it("将订单明细与单据、发票受控入口收敛到订单详情", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("采购订单详情 · {selectedOrder?.orderNo}");
+    expect(source).toContain("查看/下载采购单据：{selectedOrder.documentAttachment.fileName}");
+    expect(source).toContain("查看/下载发票附件：{selectedOrder.invoiceAttachment.fileName}");
+    expect(source).toContain("pending_approval: \"待审核\"");
+    expect(source).toContain("closed: \"已结算\"");
+  });
+});
