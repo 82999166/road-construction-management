@@ -44,11 +44,11 @@ describe("服务号业务通知模板矩阵", () => {
   });
 
   it("按微信关键词类型规范化模板字段，避免 47003 参数格式错误", () => {
-    expect(normalizeTemplateFieldValue("thing4", "设备维护审核结果通知\n项目部")).toBe("设备维护审核结果通知 项目部");
+    expect(normalizeTemplateFieldValue("thing4", "设备维护审核结果通知\n项目部")).toBe("设备维护审核结果通知项目部");
     expect(normalizeTemplateFieldValue("thing4", "一二三四五六七八九十一二三四五六七八九十一")).toHaveLength(20);
     expect(normalizeTemplateFieldValue("character_string1", "123456789012345678901234567890123456")).toHaveLength(32);
     expect(normalizeTemplateFieldValue("time3", "2026-08-16 04:00:00")).toBe("2026-08-16 04:00:00");
-    expect(normalizeTemplateFieldValue("time3", "not-a-time")).toMatch(/^\d{4}\/\d{1,2}\/\d{1,2}/);
+    expect(normalizeTemplateFieldValue("time3", "not-a-time")).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("固定出口仅将微信 API 相对请求经签名网关转发，未配置时保留直接请求降级", async () => {

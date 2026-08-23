@@ -135,14 +135,55 @@ function renderTemplate(value: string, variables: Record<string, string>) {
   return value.replace(/\{(title|content|eventCode|targetType|targetId|operationTime)\}/g, (_match, key: string) => variables[key] ?? "");
 }
 
+function formatWechatTemplateTime(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function normalizeWechatConstValue(value: string) {
+  const compact = value.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").slice(0, 20);
+  if (!compact) return "已处理";
+  if (compact.length <= 8) return compact;
+  if (/异常|预警|告警|失败|错误/.test(compact)) return "异常";
+  if (/拒绝|驳回|退回|作废/.test(compact)) return "未通过";
+  if (/成功|完成|通过|正常|测试/.test(compact)) return "正常";
+  return "已处理";
+}
+
 export function normalizeTemplateFieldValue(fieldKey: string, value: string) {
   const compact = value.replace(/[\r\n]+/g, " ").trim();
   if (/^time\d*$/i.test(fieldKey)) {
-    const timePattern = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?: \d{1,2}:\d{2}(?::\d{2})?)?$/;
-    return timePattern.test(compact) ? compact.slice(0, 32) : new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }).slice(0, 32);
+    const timePattern = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+    const match = compact.match(timePattern);
+    if (match) {
+      const [, year, month, day, hour = "00", minute = "00", second = "00"] = match;
+      return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")} ${hour.padStart(2, "0")}:${minute}:${second}`.slice(0, 32);
+    }
+    return formatWechatTemplateTime();
   }
-  if (/^thing\d*$/i.test(fieldKey) || /^const\d*$/i.test(fieldKey)) return compact.slice(0, 20);
-  if (/^character_string\d*$/i.test(fieldKey)) return compact.slice(0, 32);
+  if (/^thing\d*$/i.test(fieldKey)) {
+    const thing = compact.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").slice(0, 20);
+    return thing || "系统测试";
+  }
+  if (/^const\d*$/i.test(fieldKey)) return normalizeWechatConstValue(compact);
+  if (/^character_string\d*$/i.test(fieldKey)) {
+    const ascii = compact.replace(/[^A-Za-z0-9_\-./:]/g, "").slice(0, 32);
+    return ascii || "SYSTEMTEST";
+  }
+  if (/^amount\d*$/i.test(fieldKey)) {
+    const match = compact.replace(/,/g, "").match(/-?\d+(?:\.\d{1,2})?/);
+    return match ? `¥${Number(match[0]).toFixed(2)}` : "¥0.00";
+  }
   if (/^phone_number\d*$/i.test(fieldKey)) return compact.slice(0, 17);
   if (/^car_number\d*$/i.test(fieldKey)) return compact.slice(0, 8);
   return compact.slice(0, 200);
