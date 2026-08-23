@@ -50,6 +50,15 @@ describe("敏感数据、证据留存与审计完整性控制", () => {
     expect(admin).toContain("sensitiveAccesses: protectedProcedure");
   });
 
+  it("审计链允许空库迁移后的创世锚点自愈，但拒绝非空链缺锚点写入", () => {
+    const auditService = readProjectFile("server/services/auditIntegrity.ts");
+    expect(auditService).toContain('AUDIT_CHAIN_GENESIS_SEED = "audit-chain-v1:genesis:2026-08-21"');
+    expect(auditService).toContain("buildAuditChainGenesisHash");
+    expect(auditService).toContain("existingEventCount");
+    expect(auditService).toContain("existingEventCount > 0");
+    expect(auditService).toContain("tx.insert(auditLogChainState).values({ id: 1, lastSequence: 0, lastHash: buildAuditChainGenesisHash() })");
+  });
+
   it("采购、电子发票与劳务证照上传均保留服务端内容指纹、字节数和完整性审计", () => {
     const finance = readProjectFile("server/routers/finance.ts");
     const labor = readProjectFile("server/routers/labor.ts");

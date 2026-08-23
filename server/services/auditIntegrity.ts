@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { asc, eq, isNull } from "drizzle-orm";
+import { asc, eq, isNull, sql } from "drizzle-orm";
 import { auditLogChainState, auditLogIntegrityEvents, auditLogs, sensitiveDataAccessLogs } from "../../drizzle/schema";
 
 type AuditEntryInput = {
@@ -20,17 +20,31 @@ type TransactionClient = {
   update: (...args: any[]) => any;
 };
 
+const AUDIT_CHAIN_VERSION = "audit-chain-v1";
+const AUDIT_CHAIN_GENESIS_SEED = "audit-chain-v1:genesis:2026-08-21";
+
+function buildAuditChainGenesisHash() {
+  return createHash("sha256").update(AUDIT_CHAIN_GENESIS_SEED).digest("hex");
+}
+
 function buildAuditChainHash(previousHash: string, auditLogId: number, input: AuditEntryInput, createdAt: Date) {
   const payload = [previousHash, auditLogId, input.userId ?? "", input.module, input.action, input.targetType ?? "", input.targetId ?? "", input.summary, input.beforeJson ?? "", input.afterJson ?? "", input.ipAddress ?? "", createdAt.toISOString()].join("|");
   return createHash("sha256").update(payload).digest("hex");
 }
 
 async function appendAuditLogChainEntry(tx: TransactionClient, auditLogId: number, input: AuditEntryInput, createdAt: Date) {
-  const [state] = await tx.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1);
+  let [state] = await tx.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1);
+  if (!state) {
+    const [existingEventCountRow] = await tx.select({ count: sql<number>`count(*)` }).from(auditLogIntegrityEvents);
+    const existingEventCount = Number(existingEventCountRow?.count ?? 0);
+    if (existingEventCount > 0) throw new Error("审计链锚点不存在，已拒绝写入关键业务审计事件");
+    await tx.insert(auditLogChainState).values({ id: 1, lastSequence: 0, lastHash: buildAuditChainGenesisHash() });
+    [state] = await tx.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1);
+  }
   if (!state) throw new Error("审计链锚点不存在，已拒绝写入关键业务审计事件");
   const sequenceNo = Number(state.lastSequence) + 1;
   const entryHash = buildAuditChainHash(state.lastHash, auditLogId, input, createdAt);
-  await tx.insert(auditLogIntegrityEvents).values({ auditLogId, sequenceNo, previousHash: state.lastHash, entryHash, integrityVersion: "audit-chain-v1" });
+  await tx.insert(auditLogIntegrityEvents).values({ auditLogId, sequenceNo, previousHash: state.lastHash, entryHash, integrityVersion: AUDIT_CHAIN_VERSION });
   const result = await tx.update(auditLogChainState).set({ lastSequence: sequenceNo, lastHash: entryHash }).where(eq(auditLogChainState.id, 1));
   const header = Array.isArray(result) ? result[0] : result;
   if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) throw new Error("审计链并发推进冲突，请重试");
@@ -71,7 +85,7 @@ export async function verifyAuditIntegrityChain(db: TransactionClient) {
     db.select().from(auditLogChainState).where(eq(auditLogChainState.id, 1)).limit(1).then((rows: any[]) => rows[0] ?? null),
     db.select({ event: auditLogIntegrityEvents, log: auditLogs }).from(auditLogIntegrityEvents).innerJoin(auditLogs, eq(auditLogIntegrityEvents.auditLogId, auditLogs.id)).orderBy(asc(auditLogIntegrityEvents.sequenceNo)),
   ]);
-  const genesisHash = createHash("sha256").update("audit-chain-v1:genesis:2026-08-21").digest("hex");
+  const genesisHash = buildAuditChainGenesisHash();
   let previousHash = genesisHash;
   let expectedSequence = 1;
   const errors: string[] = [];
