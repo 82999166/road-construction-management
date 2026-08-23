@@ -1,4 +1,5 @@
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -58,7 +59,7 @@ import { sealUnchainedAuditLogs, verifyAuditIntegrityChain } from "../services/a
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding } from "../services/officialAccountDriverBinding";
-import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
@@ -278,6 +279,11 @@ const officialAccountConfigurationInput = z.object({
   egressSigningSecret: z.string().max(2048),
 });
 
+/** 消息与事件推送 Token 由后台加密维护；留空表示保留现有密文。 */
+const officialAccountMessagePushConfigurationInput = z.object({
+  eventToken: z.string().trim().max(32),
+});
+
 /** 兼容 OpenAI Chat Completions 的外部 AI 配置；密钥后续修订留空表示保留既有密文。 */
 const externalAiApiConfigurationInput = z.object({
   baseUrl: z.string().trim().min(1, "请填写 AI API 基础地址").max(1024),
@@ -366,6 +372,28 @@ function assertOfficialAccountSettingContract(input: { settingKey: string; value
       throw new TRPCError({ code: "BAD_REQUEST", message: "公众号模板字段映射必须为 JSON 对象" });
     }
   }
+}
+
+function normalizeOfficialAccountEventToken(value: string) {
+  const token = value.trim();
+  if (!/^[A-Za-z0-9]{3,32}$/.test(token)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "消息推送 Token 只能使用 3–32 位英文或数字，且必须与微信公众平台填写值完全一致" });
+  }
+  return token;
+}
+
+function buildOfficialAccountMessageCallbackUrl(rawAppUrl: string | null | undefined) {
+  if (!rawAppUrl?.trim()) return null;
+  try {
+    const appUrl = assertSafeIntegrationUrl(rawAppUrl.trim());
+    return new URL("/api/official-account/messages", appUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function createOfficialAccountEventSignature(input: { token: string; timestamp: string; nonce: string }) {
+  return createHash("sha1").update([input.token, input.timestamp, input.nonce].sort().join("")).digest("hex");
 }
 
 /** 只允许测试公开 HTTPS 地址，防止系统设置被误用为内网探测器。 */
@@ -1729,6 +1757,97 @@ export const adminRouter = router({
       });
       const validation = await testPublishedOfficialAccountConfiguration();
       return { success: validation.success, message: validation.message };
+    }),
+    getOfficialAccountMessagePushConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) {
+        return {
+          configured: false,
+          callbackUrl: null as string | null,
+          appUrl: null as string | null,
+          appUrlConfigured: false,
+          tokenConfigured: false,
+          tokenPreview: null as string | null,
+          mode: "明文模式" as const,
+          dataFormat: "XML" as const,
+          updatedAt: null as Date | null,
+          publishedAt: null as Date | null,
+          statusText: "数据库连接暂不可用",
+        };
+      }
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status, updatedAt: systemSettings.updatedAt, publishedAt: systemSettings.publishedAt }).from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN"]));
+      const published = new Map(rows.filter(row => row.status === "published").map(row => [row.settingKey, row]));
+      const appUrl = published.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null;
+      const callbackUrl = buildOfficialAccountMessageCallbackUrl(appUrl);
+      const tokenSetting = published.get("WECHAT_OFFICIAL_EVENT_TOKEN");
+      const tokenConfigured = Boolean(tokenSetting?.secretEncrypted);
+      return {
+        configured: Boolean(callbackUrl && tokenConfigured),
+        callbackUrl,
+        appUrl,
+        appUrlConfigured: Boolean(callbackUrl),
+        tokenConfigured,
+        tokenPreview: tokenSetting?.valuePreview ?? null,
+        mode: "明文模式" as const,
+        dataFormat: "XML" as const,
+        updatedAt: tokenSetting?.updatedAt ?? null,
+        publishedAt: tokenSetting?.publishedAt ?? null,
+        statusText: callbackUrl && tokenConfigured ? "已具备微信消息推送保存条件" : callbackUrl ? "请配置消息推送 Token" : "请先发布公众号业务跳转地址",
+      };
+    }),
+    saveOfficialAccountMessagePushConfiguration: protectedProcedure.input(officialAccountMessagePushConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, "WECHAT_OFFICIAL_EVENT_TOKEN")).limit(1);
+      const submittedToken = input.eventToken.trim();
+      if (!submittedToken && !existing?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "首次配置消息推送 Token 必须填写；该 Token 必须同时填入微信公众平台" });
+      if (!submittedToken) {
+        const status = await loadPublishedOfficialAccountEventConfig();
+        return { success: Boolean(status.config), message: status.config ? "消息推送 Token 已保持不变，可继续在微信公众平台保存同一 Token" : "现有消息推送配置不可用，请重新输入 Token" };
+      }
+      const token = normalizeOfficialAccountEventToken(submittedToken);
+      const displayName = "微信服务号消息推送 Token";
+      const remarks = "微信公众平台“域名与消息推送配置 → 消息推送”的 Token；用于验证 /api/official-account/messages 回调签名。";
+      await db.transaction(async tx => {
+        if (existing) {
+          const nextVersion = existing.version + 1;
+          const writeResult = await tx.update(systemSettings).set({ category: "微信公众号服务号", displayName, valueJson: null, secretEncrypted: encryptSecret(token), valuePreview: maskSecret(token), isSensitive: true, status: "published", version: nextVersion, publishedAt: new Date(), remarks, updatedBy: admin.id }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+          assertVersionedSettingWrite(writeResult);
+          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
+        } else {
+          const result = await tx.insert(systemSettings).values({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EVENT_TOKEN", displayName, valueJson: null, secretEncrypted: encryptSecret(token), valuePreview: maskSecret(token), isSensitive: true, status: "published", version: 1, publishedAt: new Date(), remarks, updatedBy: admin.id });
+          const settingId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+          if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: "保存并发布服务号消息与事件推送 Token；后台展示明文/XML 填写说明" });
+      });
+      return { success: true, message: "消息推送 Token 已加密发布；请在微信公众平台填写同一个 Token 并保存" };
+    }),
+    testOfficialAccountMessagePushConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const eventConfig = await loadPublishedOfficialAccountEventConfig();
+      if (!eventConfig.config) throw new TRPCError({ code: "BAD_REQUEST", message: "请先发布服务号 AppID、AppSecret、业务跳转地址和消息推送 Token" });
+      const callbackUrl = buildOfficialAccountMessageCallbackUrl(eventConfig.config.appUrl);
+      if (!callbackUrl) throw new TRPCError({ code: "BAD_REQUEST", message: "公众号业务跳转地址不可用于消息推送，请先发布公开 HTTPS 地址" });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const nonce = randomBytes(8).toString("hex");
+      const echostr = randomBytes(10).toString("hex");
+      const signature = createOfficialAccountEventSignature({ token: eventConfig.config.eventToken, timestamp, nonce });
+      const verifyUrl = new URL(callbackUrl);
+      verifyUrl.searchParams.set("signature", signature);
+      verifyUrl.searchParams.set("timestamp", timestamp);
+      verifyUrl.searchParams.set("nonce", nonce);
+      verifyUrl.searchParams.set("echostr", echostr);
+      const response = await fetch(verifyUrl, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5_000) });
+      const body = await response.text().catch(() => "");
+      const success = response.status === 200 && body === echostr;
+      const message = success ? "消息推送回调验签通过：合法签名返回 200 和 echostr" : `消息推送回调未通过：HTTP ${response.status}`;
+      const dbForAudit = await getDb();
+      if (dbForAudit) await dbForAudit.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "test_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: message });
+      return { success, message, statusCode: response.status, callbackUrl };
     }),
     getExternalAiConfiguration: protectedProcedure.query(async ({ ctx }) => {
       await assertSuperAdmin(ctx);

@@ -358,6 +358,13 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("保存并校验服务号配置");
     expect(source).toContain("微信 API 固定出口网关地址");
     expect(source).toContain("固定出口网关签名密钥");
+    expect(source).toContain("域名与消息推送配置");
+    expect(source).toContain("getOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("saveOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("testOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("明文模式");
+    expect(source).toContain("XML");
+    expect(source).toContain("校验回调 200");
     expect(source).toContain("其它系统参数");
     expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
   });

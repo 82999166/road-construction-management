@@ -141,6 +141,7 @@ type AssignmentForm = { id?: number; userId: string; roleId: string; organizatio
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
+type OfficialAccountMessagePushForm = { eventToken: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
@@ -181,6 +182,7 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
+const EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM: OfficialAccountMessagePushForm = { eventToken: "" };
 const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
@@ -195,11 +197,14 @@ const OFFICIAL_ACCOUNT_BASE_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_URL",
   "WECHAT_OFFICIAL_EGRESS_URL",
   "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET",
+  "WECHAT_OFFICIAL_EVENT_TOKEN",
+  "WECHAT_OFFICIAL_EVENT_AES_KEY",
 ]);
 /** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */
 function resolveOfficialAccountSensitivity(settingKey: string, fallback: boolean) {
   if (settingKey === "WECHAT_OFFICIAL_APP_SECRET") return true;
   if (settingKey === "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET") return true;
+  if (settingKey === "WECHAT_OFFICIAL_EVENT_TOKEN" || settingKey === "WECHAT_OFFICIAL_EVENT_AES_KEY") return true;
   if (settingKey.startsWith("WECHAT_OFFICIAL_")) return false;
   return fallback;
 }
@@ -546,6 +551,7 @@ export default function AdminPage() {
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
   const externalAiConfiguration = trpc.admin.settings.getExternalAiConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
+  const officialMessagePushConfiguration = trpc.admin.settings.getOfficialAccountMessagePushConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
   const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && (isSettings || isDiesel) });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
@@ -985,6 +991,8 @@ export default function AdminPage() {
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
   const [officialAccountConfigurationForm, setOfficialAccountConfigurationForm] = useState<OfficialAccountConfigurationForm>(EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM);
   const [officialAccountConfigurationValidation, setOfficialAccountConfigurationValidation] = useState<{ success: boolean; message: string; statusCode?: number } | null>(null);
+  const [officialAccountMessagePushForm, setOfficialAccountMessagePushForm] = useState<OfficialAccountMessagePushForm>(EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM);
+  const [officialAccountMessagePushValidation, setOfficialAccountMessagePushValidation] = useState<{ success: boolean; message: string; statusCode?: number; callbackUrl?: string | null } | null>(null);
   const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
   const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
@@ -1527,6 +1535,29 @@ export default function AdminPage() {
     },
     onError: error => {
       setOfficialAccountConfigurationValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
+  });
+  const saveOfficialAccountMessagePushConfiguration = trpc.admin.settings.saveOfficialAccountMessagePushConfiguration.useMutation({
+    onSuccess: async result => {
+      setOfficialAccountMessagePushValidation({ success: result.success, message: result.message });
+      toast.success("消息推送 Token 已保存；微信后台请填同一 Token");
+      setOfficialAccountMessagePushForm(EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM);
+      await Promise.all([officialMessagePushConfiguration.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => {
+      setOfficialAccountMessagePushValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
+  });
+  const testOfficialAccountMessagePushConfiguration = trpc.admin.settings.testOfficialAccountMessagePushConfiguration.useMutation({
+    onSuccess: async result => {
+      setOfficialAccountMessagePushValidation(result);
+      result.success ? toast.success("消息推送回调验签通过") : toast.error(result.message);
+      await audits.refetch();
+    },
+    onError: error => {
+      setOfficialAccountMessagePushValidation({ success: false, message: error.message });
       toast.error(error.message);
     },
   });
@@ -2452,6 +2483,44 @@ export default function AdminPage() {
               <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">密钥仅在服务端加密保存，不会回显、写入日志或出现在版本记录中。保存后系统会自动校验服务号凭据，不会向员工发送测试消息。</p>
               <Button type="submit" className="min-h-11 w-full bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountConfiguration.isPending || !officialAccountConfigurationForm.appId.trim() || !officialAccountConfigurationForm.appUrl.trim() || !officialAccountConfigurationForm.egressUrl.trim()}>{saveOfficialAccountConfiguration.isPending ? "正在保存并校验…" : "保存并校验服务号配置"}</Button>
               {officialAccountConfigurationValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountConfigurationValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountConfigurationValidation.success ? "校验通过：" : "需要处理："}{officialAccountConfigurationValidation.message}</div> : null}
+            </form>
+          </CardContent>
+        </Card>
+        <Card className="border-[#cbded9] bg-[#f4faf8]">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="text-base">域名与消息推送配置</CardTitle>
+                <CardDescription className="mt-1">对应微信公众平台“域名与消息推送配置 → 消息推送”。以后更换服务号或重置 Token，可直接在这里维护，不再依赖服务器临时改配置。</CardDescription>
+              </div>
+              <Badge variant="outline" className={officialMessagePushConfiguration.data?.configured ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialMessagePushConfiguration.data?.configured ? "可保存微信后台" : "待配置"}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-xl border border-[#d7e8e3] bg-white p-3 text-sm text-slate-700">
+              <div className="grid gap-3">
+                <div>
+                  <p className="text-xs font-semibold text-slate-500">微信后台 URL</p>
+                  <p className="mt-1 break-all font-mono text-xs text-[#1f5e55]">{officialMessagePushConfiguration.data?.callbackUrl || "请先发布公众号业务跳转地址"}</p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <p><span className="text-slate-400">Token：</span>{officialMessagePushConfiguration.data?.tokenConfigured ? officialMessagePushConfiguration.data.tokenPreview || "已加密托管" : "未配置"}</p>
+                  <p><span className="text-slate-400">加解密方式：</span>{officialMessagePushConfiguration.data?.mode || "明文模式"}</p>
+                  <p><span className="text-slate-400">数据格式：</span>{officialMessagePushConfiguration.data?.dataFormat || "XML"}</p>
+                </div>
+                <p className="rounded-lg bg-[#eef7f4] px-3 py-2 text-xs leading-5 text-[#28584f]">微信后台保存时，URL 填上方地址，Token 填本系统保存的同一个值，消息加解密方式选择“明文模式”，数据格式选择“XML”。保存成功后，司机在服务号发送“绑定”即可自动收到车辆绑定链接。</p>
+                <p className="text-xs text-slate-500">当前状态：{officialMessagePushConfiguration.data?.statusText || "正在读取配置状态…"}</p>
+              </div>
+            </div>
+            <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountMessagePushValidation(null); saveOfficialAccountMessagePushConfiguration.mutate(officialAccountMessagePushForm); }}>
+              <Field label="消息推送 Token">
+                <Input type="password" value={officialAccountMessagePushForm.eventToken} placeholder={officialMessagePushConfiguration.data?.tokenConfigured ? "已安全托管；留空保持不变" : "填写 3–32 位英文或数字"} autoComplete="new-password" maxLength={32} onChange={event => setOfficialAccountMessagePushForm({ eventToken: event.target.value })} />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountMessagePushConfiguration.isPending || (!officialAccountMessagePushForm.eventToken.trim() && !officialMessagePushConfiguration.data?.tokenConfigured)}>{saveOfficialAccountMessagePushConfiguration.isPending ? "正在保存…" : "保存消息推送配置"}</Button>
+                <Button type="button" variant="outline" disabled={!officialMessagePushConfiguration.data?.configured || testOfficialAccountMessagePushConfiguration.isPending} onClick={() => testOfficialAccountMessagePushConfiguration.mutate()}>{testOfficialAccountMessagePushConfiguration.isPending ? "正在校验…" : "校验回调 200"}</Button>
+              </div>
+              {officialAccountMessagePushValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountMessagePushValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountMessagePushValidation.success ? "校验通过：" : "需要处理："}{officialAccountMessagePushValidation.message}</div> : null}
             </form>
           </CardContent>
         </Card>
