@@ -19,6 +19,7 @@ import { useIsMobile } from "./hooks/useMobile";
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const Home = lazy(() => import("./pages/Home"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal"));
 const MobileWorkbench = lazy(() => import("./pages/MobileWorkbench"));
 const MobileAttendancePage = lazy(() => import("./pages/MobileAttendancePage"));
@@ -91,9 +92,10 @@ function Router() {
     <>
     <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-500">正在加载业务工作区…</div>}>
     <Switch>
-      <Route path={"/login"} component={UnifiedLoginRoute} />
-      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
-      <Route path={"/"} component={Home} />
+	      <Route path={"/login"} component={UnifiedLoginRoute} />
+	      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
+	      <Route path={"/driver-wechat-bind"} component={DriverWechatBindPage} />
+	      <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/attendance"} component={MobileAttendancePage} />
       <Route path={"/mobile/construction"} component={MobileConstructionPage} />

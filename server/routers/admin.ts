@@ -23,6 +23,7 @@ import {
   measurementClaims,
   measurementTakeoffRecords,
   notificationRecords,
+  officialAccountDriverBindings,
   officialAccountBindings,
   organizations,
   outsourceContracts,
@@ -56,6 +57,7 @@ import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessMod
 import { sealUnchainedAuditLogs, verifyAuditIntegrityChain } from "../services/auditIntegrity";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
+import { revokeOfficialAccountDriverVehicleBinding } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
@@ -956,6 +958,8 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       const rows = await db.select().from(transportVehicles).orderBy(desc(transportVehicles.updatedAt));
+      const driverBindings = rows.length ? await db.select({ id: officialAccountDriverBindings.id, vehicleId: officialAccountDriverBindings.vehicleId, status: officialAccountDriverBindings.status, boundAt: officialAccountDriverBindings.boundAt, lastVerifiedAt: officialAccountDriverBindings.lastVerifiedAt, lastFailureAt: officialAccountDriverBindings.lastFailureAt, failureCount: officialAccountDriverBindings.failureCount }).from(officialAccountDriverBindings).where(eq(officialAccountDriverBindings.status, "active")) : [];
+      const driverBindingByVehicle = new Map(driverBindings.map(binding => [binding.vehicleId, binding]));
       return Promise.all(rows.map(async vehicle => {
         const rules = vehicle.ownership === "leased" ? await db.select().from(transportVehicleLeaseRules).where(eq(transportVehicleLeaseRules.vehicleId, vehicle.id)).orderBy(desc(transportVehicleLeaseRules.updatedAt)) : [];
         const activeRule = rules.find(rule => rule.projectId === vehicle.projectId && rule.status === "active");
@@ -963,6 +967,7 @@ export const adminRouter = router({
           ...vehicle,
           theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
           leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
+          driverWechatBinding: driverBindingByVehicle.get(vehicle.id) ?? null,
         };
       }));
     }),
@@ -1051,6 +1056,14 @@ export const adminRouter = router({
         success: true,
         theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor),
       };
+    }),
+    revokeDriverWechatBinding: protectedProcedure.input(z.object({ vehicleId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [vehicle] = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+      if (!vehicle) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或已删除" });
+      return revokeOfficialAccountDriverVehicleBinding({ vehicleId: input.vehicleId, operatorUserId: admin.id });
     }),
   }),
 

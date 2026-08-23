@@ -1139,6 +1139,80 @@ export const transportVehicles = mysqlTable(
   table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo) }),
 );
 
+/** 外部渣土车司机关注服务号后的车辆通知绑定；不创建系统账号，OpenID 只保存密文与不可逆指纹。 */
+export const officialAccountDriverBindings = mysqlTable(
+  "official_account_driver_bindings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    plateNoSnapshot: varchar("plateNoSnapshot", { length: 32 }).notNull(),
+    driverNameSnapshot: varchar("driverNameSnapshot", { length: 128 }),
+    driverPhoneMaskedSnapshot: varchar("driverPhoneMaskedSnapshot", { length: 32 }),
+    openIdEncrypted: text("openIdEncrypted").notNull(),
+    openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
+    status: mysqlEnum("status", ["active", "revoked", "disabled", "unsubscribed"]).default("active").notNull(),
+    boundAt: datetime("boundAt"),
+    lastVerifiedAt: datetime("lastVerifiedAt"),
+    lastFailureAt: datetime("lastFailureAt"),
+    failureCount: int("failureCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    vehicleIndex: index("official_account_driver_bindings_vehicle_index").on(table.vehicleId, table.status),
+    openIdIndex: index("official_account_driver_bindings_openid_index").on(table.openIdFingerprint, table.status),
+    projectStatusIndex: index("official_account_driver_bindings_project_status_index").on(table.projectId, table.status),
+    vehicleFk: foreignKey({ columns: [table.vehicleId], foreignColumns: [transportVehicles.id], name: "official_account_driver_bindings_vehicle_fk" }).onDelete("cascade").onUpdate("cascade"),
+  }),
+);
+
+/** 外部司机回复“绑定”后生成的短时链接；仅保存令牌指纹与 OpenID 密文，不在 URL 中暴露 OpenID。 */
+export const officialAccountDriverBindingRequests = mysqlTable(
+  "official_account_driver_binding_requests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    tokenFingerprint: varchar("tokenFingerprint", { length: 64 }).notNull(),
+    openIdEncrypted: text("openIdEncrypted").notNull(),
+    openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
+    expiresAt: datetime("expiresAt").notNull(),
+    consumedAt: datetime("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    tokenUnique: uniqueIndex("official_account_driver_binding_requests_token_unique").on(table.tokenFingerprint),
+    openIdIndex: index("official_account_driver_binding_requests_openid_index").on(table.openIdFingerprint, table.expiresAt),
+  }),
+);
+
+/** 外部司机微信通知投递审计；不写入内部用户通知表，避免把外部司机伪造成系统账号。 */
+export const officialAccountDriverNotificationRecords = mysqlTable(
+  "official_account_driver_notification_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventCode: varchar("eventCode", { length: 128 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 180 }).notNull(),
+    driverBindingId: bigint("driverBindingId", { mode: "number" }),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    content: text("content").notNull(),
+    deepLink: varchar("deepLink", { length: 512 }),
+    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
+    retryCount: int("retryCount").default(0).notNull(),
+    sentAt: datetime("sentAt"),
+    providerMessageId: varchar("providerMessageId", { length: 128 }),
+    failureCode: varchar("failureCode", { length: 64 }),
+    lastAttemptedAt: datetime("lastAttemptedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("official_account_driver_notifications_idempotency_unique").on(table.idempotencyKey),
+    vehicleStatusIndex: index("official_account_driver_notifications_vehicle_status_index").on(table.vehicleId, table.status),
+    projectCreatedIndex: index("official_account_driver_notifications_project_created_index").on(table.projectId, table.createdAt),
+  }),
+);
+
 /** 外租车辆租金规则；车辆自有时不建立启用规则，历史外租合同继续保留用于结算与审计。 */
 export const transportVehicleLeaseRules = mysqlTable(
   "transport_vehicle_lease_rules",

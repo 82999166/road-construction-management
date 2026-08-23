@@ -6,7 +6,8 @@ import { COOKIE_NAME } from "../shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { getDb } from "./db";
-import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials, requestOfficialAccountApi } from "./services/officialAccountNotifier";
+import { createOfficialAccountDriverBindingRequest, buildWechatTextReplyXml, isDriverBindingKeyword, parseWechatPlainTextMessage, verifyOfficialAccountEventSignature } from "./services/officialAccountDriverBinding";
+import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials, loadPublishedOfficialAccountEventConfig, requestOfficialAccountApi } from "./services/officialAccountNotifier";
 import { encryptSecret } from "./services/secretVault";
 
 const BINDING_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
@@ -228,6 +229,42 @@ async function persistBinding(userId: number, openId: string) {
 
 /** 微信 OAuth 回调只处理签名状态与 OpenID 绑定，绝不输出授权码、令牌或 OpenID。 */
 export function registerOfficialAccountBindingRoutes(app: Express) {
+  app.get("/api/official-account/messages", async (req: Request, res: Response) => {
+    const signature = typeof req.query.signature === "string" ? req.query.signature : "";
+    const timestamp = typeof req.query.timestamp === "string" ? req.query.timestamp : "";
+    const nonce = typeof req.query.nonce === "string" ? req.query.nonce : "";
+    const echostr = typeof req.query.echostr === "string" ? req.query.echostr : "";
+    const eventConfig = await loadPublishedOfficialAccountEventConfig();
+    if (!eventConfig.config || !signature || !timestamp || !nonce || !verifyOfficialAccountEventSignature({ token: eventConfig.config.eventToken, timestamp, nonce, signature })) {
+      res.status(403).type("text/plain").send("forbidden");
+      return;
+    }
+    res.type("text/plain").send(echostr);
+  });
+
+  app.post("/api/official-account/messages", async (req: Request, res: Response) => {
+    const signature = typeof req.query.signature === "string" ? req.query.signature : "";
+    const timestamp = typeof req.query.timestamp === "string" ? req.query.timestamp : "";
+    const nonce = typeof req.query.nonce === "string" ? req.query.nonce : "";
+    const eventConfig = await loadPublishedOfficialAccountEventConfig();
+    if (!eventConfig.config || !signature || !timestamp || !nonce || !verifyOfficialAccountEventSignature({ token: eventConfig.config.eventToken, timestamp, nonce, signature })) {
+      res.status(403).type("text/plain").send("forbidden");
+      return;
+    }
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : typeof req.body === "string" ? req.body : "";
+    const message = parseWechatPlainTextMessage(rawBody);
+    const content = message.msgType === "event" && message.event.toLowerCase() === "subscribe" ? "绑定" : message.content;
+    if (!message.fromUserName || !message.toUserName || !isDriverBindingKeyword(content)) {
+      res.type("text/plain").send("success");
+      return;
+    }
+    const request = await createOfficialAccountDriverBindingRequest(message.fromUserName);
+    const reply = request.success
+      ? `请点击以下链接绑定渣土车司机微信：\n${request.url}\n\n链接30分钟内有效。绑定时只需输入完整车牌号，司机不会获得后台登录权限。`
+      : "司机绑定入口暂未配置完成，请联系管理员检查服务号业务跳转地址与事件推送 Token。";
+    res.type("application/xml").send(buildWechatTextReplyXml({ toUserName: message.fromUserName, fromUserName: message.toUserName, content: reply }));
+  });
+
   app.get("/api/official-account/bind/callback", async (req: Request, res: Response) => {
     const code = typeof req.query.code === "string" ? req.query.code : undefined;
     const rawState = typeof req.query.state === "string" ? req.query.state : undefined;

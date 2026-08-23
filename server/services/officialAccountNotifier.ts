@@ -334,7 +334,7 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
   }
 }
 
-/** 消息与事件推送回调只读取后台已发布的敏感配置，避免 Token 和 AESKey 进入前端或环境变量。 */
+/** 消息与事件推送回调只读取后台已发布的敏感配置，避免 Token 和 AESKey 进入前端或环境变量；明文模式只要求 Token。 */
 export async function loadPublishedOfficialAccountEventConfig(): Promise<{ config?: OfficialAccountEventConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
@@ -346,11 +346,11 @@ export async function loadPublishedOfficialAccountEventConfig(): Promise<{ confi
   const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
   const tokenEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_TOKEN")?.secretEncrypted;
   const aesEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_AES_KEY")?.secretEncrypted;
-  if (!appId || !appSecretEncrypted || !tokenEncrypted || !aesEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
+  if (!appId || !appSecretEncrypted || !tokenEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
     const eventToken = decryptSecret(tokenEncrypted);
-    const eventAesKey = decryptSecret(aesEncrypted);
-    if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || !/^[A-Za-z0-9]{43}$/.test(eventAesKey)) return { reason: "invalid_config" };
+    const eventAesKey = aesEncrypted ? decryptSecret(aesEncrypted) : "";
+    if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || (eventAesKey && !/^[A-Za-z0-9]{43}$/.test(eventAesKey))) return { reason: "invalid_config" };
     return {
       config: {
         appId,

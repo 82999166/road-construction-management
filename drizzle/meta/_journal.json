@@ -491,6 +491,13 @@
       "when": 1787298274921,
       "tag": "0069_modern_leopardon",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "5",
+      "when": 1787469721833,
+      "tag": "0070_tan_inhumans",
+      "breakpoints": true
     }
   ]
 }
