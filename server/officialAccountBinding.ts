@@ -13,6 +13,7 @@ import { encryptSecret } from "./services/secretVault";
 const BINDING_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
 type BindingState = { userId: number; issuedAt: number; nonce: string };
 type LoginState = { returnTo: string; issuedAt: number; nonce: string };
+type DriverBindingEntryState = { issuedAt: number; nonce: string };
 
 function getStateSigningKey() {
   const key = process.env.JWT_SECRET;
@@ -71,6 +72,29 @@ function verifyLoginState(rawState: string): LoginState | null {
     if (typeof parsed.returnTo !== "string" || typeof parsed.issuedAt !== "number" || !Number.isFinite(parsed.issuedAt) || typeof parsed.nonce !== "string" || parsed.nonce.length < 12) return null;
     if (Math.abs(Date.now() - parsed.issuedAt) > BINDING_STATE_MAX_AGE_MS) return null;
     return { returnTo: normalizeWechatLoginReturnTo(parsed.returnTo), issuedAt: parsed.issuedAt, nonce: parsed.nonce };
+  } catch {
+    return null;
+  }
+}
+
+function createDriverBindingEntryState() {
+  const state: DriverBindingEntryState = { issuedAt: Date.now(), nonce: randomBytes(16).toString("base64url") };
+  const payload = Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
+  return `${payload}.${signBindingStatePayload(payload)}`;
+}
+
+function verifyDriverBindingEntryState(rawState: string): DriverBindingEntryState | null {
+  const [payload, receivedSignature] = rawState.split(".");
+  if (!payload || !receivedSignature) return null;
+  const expectedSignature = signBindingStatePayload(payload);
+  const received = Buffer.from(receivedSignature, "utf8");
+  const expected = Buffer.from(expectedSignature, "utf8");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<DriverBindingEntryState>;
+    if (typeof parsed.issuedAt !== "number" || !Number.isFinite(parsed.issuedAt) || typeof parsed.nonce !== "string" || parsed.nonce.length < 12) return null;
+    if (Math.abs(Date.now() - parsed.issuedAt) > BINDING_STATE_MAX_AGE_MS) return null;
+    return { issuedAt: parsed.issuedAt, nonce: parsed.nonce };
   } catch {
     return null;
   }
@@ -135,6 +159,16 @@ function loginCallbackError(res: Response, appUrl: URL | null, reason: "failed" 
   res.redirect(302, returnUrl.toString());
 }
 
+function driverBindingEntryError(res: Response, appUrl: URL | null, reason: "failed" | "not_configured") {
+  if (!appUrl) {
+    res.status(400).send("司机微信绑定入口暂未配置完成，请联系管理员检查服务号配置。");
+    return;
+  }
+  const returnUrl = new URL("/driver-wechat-bind", appUrl);
+  returnUrl.searchParams.set("driverBind", reason);
+  res.redirect(302, returnUrl.toString());
+}
+
 function requestTerminal(req: Request) {
   const userAgent = String(req.headers["user-agent"] ?? "");
   return /android|iphone|ipad|ipod|mobile/i.test(userAgent) ? "mobile" as const : "pc" as const;
@@ -194,6 +228,19 @@ export async function createOfficialAccountBindingUrl(userId: number) {
   authorizeUrl.searchParams.set("scope", "snsapi_base");
   authorizeUrl.searchParams.set("state", createBindingState(userId));
   return { url: `${authorizeUrl.toString()}#wechat_redirect`, reason: null };
+}
+
+export function createOfficialAccountDriverBindingEntryUrl(config: NonNullable<Awaited<ReturnType<typeof loadPublishedOfficialAccountCredentials>>["config"]>) {
+  const appUrl = getSafeAppUrl(config.appUrl);
+  if (!appUrl) return null;
+  const callbackUrl = new URL("/api/official-account/driver-bind/callback", appUrl).toString();
+  const authorizeUrl = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
+  authorizeUrl.searchParams.set("appid", config.appId);
+  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("scope", "snsapi_base");
+  authorizeUrl.searchParams.set("state", createDriverBindingEntryState());
+  return `${authorizeUrl.toString()}#wechat_redirect`;
 }
 
 export async function getOfficialAccountBindingStatus(userId: number) {
@@ -263,6 +310,46 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
       ? `请点击以下链接绑定渣土车司机微信：\n${request.url}\n\n链接30分钟内有效。绑定时只需输入完整车牌号，司机不会获得后台登录权限。`
       : "司机绑定入口暂未配置完成，请联系管理员检查服务号业务跳转地址与事件推送 Token。";
     res.type("application/xml").send(buildWechatTextReplyXml({ toUserName: message.fromUserName, fromUserName: message.toUserName, content: reply }));
+  });
+
+  /** 固定司机绑定入口：用于放入公众号自动回复，点击后通过服务号网页授权识别当前司机微信。 */
+  app.get("/api/official-account/driver-bind/start", async (_req: Request, res: Response) => {
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    const authorizeUrl = configResult.config ? createOfficialAccountDriverBindingEntryUrl(configResult.config) : null;
+    if (!configResult.config || !appUrl || !authorizeUrl) {
+      driverBindingEntryError(res, appUrl, "not_configured");
+      return;
+    }
+    res.redirect(302, authorizeUrl);
+  });
+
+  /** 固定司机绑定入口回调：生成一次性司机绑定令牌并跳转既有绑定页，不授予后台登录权限。 */
+  app.get("/api/official-account/driver-bind/callback", async (req: Request, res: Response) => {
+    const code = typeof req.query.code === "string" ? req.query.code : undefined;
+    const rawState = typeof req.query.state === "string" ? req.query.state : undefined;
+    const state = rawState ? verifyDriverBindingEntryState(rawState) : null;
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    if (!code || !state || !configResult.config || !appUrl) {
+      driverBindingEntryError(res, appUrl, "failed");
+      return;
+    }
+    try {
+      const openId = await exchangeWechatOAuthOpenId(configResult.config, code);
+      if (!openId) {
+        driverBindingEntryError(res, appUrl, "failed");
+        return;
+      }
+      const request = await createOfficialAccountDriverBindingRequest(openId);
+      if (!request.success) {
+        driverBindingEntryError(res, appUrl, "failed");
+        return;
+      }
+      res.redirect(302, request.url);
+    } catch {
+      driverBindingEntryError(res, appUrl, "failed");
+    }
   });
 
   app.get("/api/official-account/bind/callback", async (req: Request, res: Response) => {
