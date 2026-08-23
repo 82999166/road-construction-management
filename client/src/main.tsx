@@ -11,6 +11,38 @@ import "./index.css";
 
 const queryClient = new QueryClient();
 
+const DYNAMIC_IMPORT_RECOVERY_KEY = "yx-dynamic-import-recovery-at";
+
+const getErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object" && "message" in error && typeof (error as { message?: unknown }).message === "string") return (error as { message: string }).message;
+  return "";
+};
+
+const isDynamicImportLoadError = (error: unknown) => {
+  const message = getErrorMessage(error);
+  return /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Loading chunk .* failed/i.test(message);
+};
+
+const recoverFromDynamicImportLoadError = (error: unknown) => {
+  if (typeof window === "undefined" || !isDynamicImportLoadError(error)) return;
+  try {
+    const lastReloadedAt = Number(sessionStorage.getItem(DYNAMIC_IMPORT_RECOVERY_KEY) ?? "0");
+    const now = Date.now();
+    if (Number.isFinite(lastReloadedAt) && now - lastReloadedAt < 60_000) return;
+    sessionStorage.setItem(DYNAMIC_IMPORT_RECOVERY_KEY, String(now));
+  } catch {
+    // sessionStorage unavailable; still attempt one normal reload.
+  }
+  window.location.reload();
+};
+
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", event => recoverFromDynamicImportLoadError(event.reason));
+  window.addEventListener("error", event => recoverFromDynamicImportLoadError(event.error ?? event.message));
+}
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
