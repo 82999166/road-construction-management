@@ -1,18 +1,89 @@
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
-import { auditLogs, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, transportVehicles } from "../../drizzle/schema";
+import { auditLogs, dieselRefuelRecords, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, transportTrips, transportVehicleSettlements, transportVehicles } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { decryptSecret, encryptSecret } from "./secretVault";
 import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, getOfficialAccountTemplateSemanticMismatch, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
 
 const DRIVER_BINDING_REQUEST_TTL_MS = 30 * 60 * 1_000;
+const DRIVER_PORTAL_SESSION_TTL_MS = 8 * 60 * 60 * 1_000;
 
 export type DriverBindingRequestStatus =
   | { status: "ready"; expiresAt: Date }
   | { status: "invalid" | "expired" | "used" | "unavailable" };
 
+export type DriverPortalSummaryStatus =
+  | { status: "ready"; summary: DriverPortalSummary }
+  | { status: "invalid" | "expired" | "unbound" | "unavailable" };
+
+export type DriverPortalSummary = {
+  vehicle: { id: number; plateNo: string; driverName: string | null; driverPhoneMasked: string | null; projectName: string | null };
+  totals: {
+    tripCount: number;
+    grossFreightAmount: number;
+    settledFuelDeductionAmount: number;
+    pendingFuelDeductionAmount: number;
+    netPayableAmount: number;
+    paidAmount: number;
+    unpaidAmount: number;
+    pendingTripAmount: number;
+  };
+  settlements: Array<{ settlementNo: string; status: string; periodStart: string; periodEnd: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; paidAt: Date | null; paymentDate: string | null }>;
+  dieselRecords: Array<{ recordNo: string; refueledAt: Date; liters: number; amount: number; status: string; supplyMethod: string; deductFromFreight: boolean }>;
+  recentTrips: Array<{ tripNo: string; startAt: Date; status: string; grossFreightAmount: number; fuelDeductionAmount: number; netSettlementAmount: number | null }>;
+};
+
+type DriverPortalSession = { bindingId: number; vehicleId: number; issuedAt: number; expiresAt: number; nonce: string };
+
 function fingerprintDriverBindingToken(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function getDriverPortalSigningKey() {
+  const key = process.env.JWT_SECRET;
+  if (!key) throw new Error("系统未配置司机端访问签名密钥");
+  return key;
+}
+
+function signDriverPortalPayload(payload: string) {
+  return createHmac("sha256", getDriverPortalSigningKey()).update(payload, "utf8").digest("base64url");
+}
+
+function createDriverPortalSessionToken(input: { bindingId: number; vehicleId: number }) {
+  const issuedAt = Date.now();
+  const session: DriverPortalSession = { bindingId: input.bindingId, vehicleId: input.vehicleId, issuedAt, expiresAt: issuedAt + DRIVER_PORTAL_SESSION_TTL_MS, nonce: randomBytes(16).toString("base64url") };
+  const payload = Buffer.from(JSON.stringify(session), "utf8").toString("base64url");
+  return `${payload}.${signDriverPortalPayload(payload)}`;
+}
+
+function verifyDriverPortalSessionToken(token: string): DriverPortalSession | null {
+  const [payload, receivedSignature] = token.split(".");
+  if (!payload || !receivedSignature) return null;
+  const expectedSignature = signDriverPortalPayload(payload);
+  const received = Buffer.from(receivedSignature, "utf8");
+  const expected = Buffer.from(expectedSignature, "utf8");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<DriverPortalSession>;
+    if (!Number.isInteger(parsed.bindingId) || !Number.isInteger(parsed.vehicleId) || typeof parsed.issuedAt !== "number" || typeof parsed.expiresAt !== "number" || typeof parsed.nonce !== "string") return null;
+    if (parsed.expiresAt < Date.now()) return { bindingId: parsed.bindingId!, vehicleId: parsed.vehicleId!, issuedAt: parsed.issuedAt, expiresAt: parsed.expiresAt, nonce: parsed.nonce };
+    return { bindingId: parsed.bindingId!, vehicleId: parsed.vehicleId!, issuedAt: parsed.issuedAt, expiresAt: parsed.expiresAt, nonce: parsed.nonce };
+  } catch {
+    return null;
+  }
+}
+
+function isDriverPortalSessionExpired(session: DriverPortalSession) {
+  return session.expiresAt < Date.now();
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function toNumber(value: unknown) {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function getSafeDriverBindingAppUrl(appUrl: string | null) {
@@ -107,6 +178,7 @@ export async function completeOfficialAccountDriverVehicleBinding(input: { token
   if (matchedVehicles.length !== 1) return { success: false as const, reason: "vehicle_not_found" as const, message: "没有找到这台可调度车辆，请核对车牌号，或联系管理员先在车辆台账录入。" };
   const vehicle = matchedVehicles[0];
   const now = new Date();
+  let bindingId: number | null = null;
   await db.transaction(async tx => {
     await tx.update(officialAccountDriverBindings).set({ status: "revoked", updatedAt: now }).where(and(eq(officialAccountDriverBindings.openIdFingerprint, request.openIdFingerprint), eq(officialAccountDriverBindings.status, "active"), ne(officialAccountDriverBindings.vehicleId, vehicle.id)));
     await tx.update(officialAccountDriverBindings).set({ status: "revoked", updatedAt: now }).where(and(eq(officialAccountDriverBindings.vehicleId, vehicle.id), eq(officialAccountDriverBindings.status, "active")));
@@ -123,10 +195,74 @@ export async function completeOfficialAccountDriverVehicleBinding(input: { token
       lastVerifiedAt: now,
       failureCount: 0,
     });
+    const [createdBinding] = await tx.select({ id: officialAccountDriverBindings.id }).from(officialAccountDriverBindings).where(and(eq(officialAccountDriverBindings.vehicleId, vehicle.id), eq(officialAccountDriverBindings.openIdFingerprint, request.openIdFingerprint), eq(officialAccountDriverBindings.status, "active"))).orderBy(desc(officialAccountDriverBindings.id)).limit(1);
+    bindingId = createdBinding ? Number(createdBinding.id) : null;
     await tx.update(officialAccountDriverBindingRequests).set({ consumedAt: now }).where(eq(officialAccountDriverBindingRequests.id, request.id));
     await tx.insert(auditLogs).values({ userId: null, module: "transport", action: "driver_wechat_bound", targetType: "transport_vehicle", targetId: String(vehicle.id), summary: `外部司机通过服务号自助绑定车辆 ${vehicle.plateNo}` });
   });
-  return { success: true as const, vehicleId: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? null };
+  const portalToken = bindingId ? createDriverPortalSessionToken({ bindingId, vehicleId: vehicle.id }) : null;
+  const credentials = await loadPublishedOfficialAccountCredentials();
+  const appUrl = getSafeDriverBindingAppUrl(credentials.config?.appUrl ?? null);
+  const portalUrl = appUrl && portalToken ? new URL(`/driver-portal?token=${encodeURIComponent(portalToken)}`, appUrl).toString() : null;
+  return { success: true as const, vehicleId: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? null, portalUrl };
+}
+
+export async function createOfficialAccountDriverPortalSession(openId: string) {
+  const db = await getDb();
+  const credentials = await loadPublishedOfficialAccountCredentials();
+  const appUrl = getSafeDriverBindingAppUrl(credentials.config?.appUrl ?? null);
+  if (!db || !credentials.config || !appUrl) return { success: false as const, reason: "not_configured" as const };
+  const fingerprint = fingerprintOfficialAccountOpenId(openId);
+  const [binding] = await db.select().from(officialAccountDriverBindings).where(and(eq(officialAccountDriverBindings.openIdFingerprint, fingerprint), eq(officialAccountDriverBindings.status, "active"))).orderBy(desc(officialAccountDriverBindings.id)).limit(1);
+  if (!binding) return { success: false as const, reason: "unbound" as const };
+  const token = createDriverPortalSessionToken({ bindingId: Number(binding.id), vehicleId: binding.vehicleId });
+  const url = new URL("/driver-portal", appUrl);
+  url.searchParams.set("token", token);
+  return { success: true as const, url: url.toString(), token };
+}
+
+export async function getOfficialAccountDriverPortalSummary(token: string): Promise<DriverPortalSummaryStatus> {
+  if (!token || token.length < 16 || token.length > 512) return { status: "invalid" };
+  const session = verifyDriverPortalSessionToken(token);
+  if (!session) return { status: "invalid" };
+  if (isDriverPortalSessionExpired(session)) return { status: "expired" };
+  const db = await getDb();
+  if (!db) return { status: "unavailable" };
+  const [binding] = await db.select().from(officialAccountDriverBindings).where(and(eq(officialAccountDriverBindings.id, session.bindingId), eq(officialAccountDriverBindings.vehicleId, session.vehicleId), eq(officialAccountDriverBindings.status, "active"))).limit(1);
+  if (!binding) return { status: "unbound" };
+  const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId, plateNo: transportVehicles.plateNo, driverName: transportVehicles.driverName, driverPhoneMasked: transportVehicles.driverPhoneMasked, status: transportVehicles.status }).from(transportVehicles).where(eq(transportVehicles.id, binding.vehicleId)).limit(1);
+  if (!vehicle || vehicle.status !== "active") return { status: "unbound" };
+  const [project] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, vehicle.projectId)).limit(1);
+  const [trips, settlements, dieselRows] = await Promise.all([
+    db.select().from(transportTrips).where(and(eq(transportTrips.projectId, vehicle.projectId), eq(transportTrips.vehicleId, vehicle.id))).orderBy(desc(transportTrips.startAt)),
+    db.select().from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, vehicle.projectId), eq(transportVehicleSettlements.vehicleId, vehicle.id))).orderBy(desc(transportVehicleSettlements.createdAt)),
+    db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, vehicle.projectId), eq(dieselRefuelRecords.vehicleId, vehicle.id), eq(dieselRefuelRecords.assetType, "vehicle"))).orderBy(desc(dieselRefuelRecords.refueledAt)),
+  ]);
+  const validTrips = trips.filter(item => item.status !== "void");
+  const validSettlements = settlements.filter(item => item.status !== "void");
+  const deductibleDiesel = dieselRows.filter(item => item.status !== "void" && item.deductFromFreight);
+  const paidAmount = roundMoney(validSettlements.filter(item => item.status === "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
+  const unpaidAmount = roundMoney(validSettlements.filter(item => item.status !== "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
+  const settledFuelDeductionAmount = roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.fuelDeductionAmount), 0));
+  const pendingFuelDeductionAmount = roundMoney(deductibleDiesel.filter(item => item.status === "approved").reduce((sum, item) => sum + toNumber(item.amount), 0));
+  const pendingTripAmount = roundMoney(validTrips.filter(item => ["verified"].includes(item.status)).reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0));
+  const summary: DriverPortalSummary = {
+    vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? binding.driverNameSnapshot ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? binding.driverPhoneMaskedSnapshot ?? null, projectName: project?.name ?? null },
+    totals: {
+      tripCount: validTrips.length,
+      grossFreightAmount: roundMoney(validTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
+      settledFuelDeductionAmount,
+      pendingFuelDeductionAmount,
+      netPayableAmount: roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0)),
+      paidAmount,
+      unpaidAmount,
+      pendingTripAmount,
+    },
+    settlements: validSettlements.slice(0, 20).map(item => ({ settlementNo: item.settlementNo, status: item.status, periodStart: String(item.periodStart), periodEnd: String(item.periodEnd), tripCount: item.tripCount, grossFreightAmount: toNumber(item.grossFreightAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netPayableAmount: toNumber(item.netPayableAmount), paidAt: item.paidAt ?? null, paymentDate: item.paymentDate ? String(item.paymentDate) : null })),
+    dieselRecords: dieselRows.filter(item => item.status !== "void").slice(0, 20).map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight })),
+    recentTrips: validTrips.slice(0, 20).map(item => ({ tripNo: item.tripNo, startAt: item.startAt, status: item.status, grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
+  };
+  return { status: "ready", summary };
 }
 
 export async function revokeOfficialAccountDriverVehicleBinding(input: { vehicleId: number; operatorUserId: number }) {
@@ -164,7 +300,7 @@ function classifyDriverDeliveryFailure(error: unknown) {
 }
 
 /** 向车辆外部司机微信发送服务号模板通知；司机不是系统账号，投递记录写入专用审计表。 */
-export async function sendOfficialAccountDriverNotification(input: { vehicleId: number; projectId: number; module: "transport"; eventCode: string; idempotencyKey: string; title: string; content: string; deepLink?: string }) {
+export async function sendOfficialAccountDriverNotification(input: { vehicleId: number; projectId: number; module: "transport" | "diesel"; eventCode: string; idempotencyKey: string; title: string; content: string; deepLink?: string }) {
   const db = await getDb();
   if (!db) return { delivered: false as const, reason: "database_unavailable" as const };
   const idempotencyKey = input.idempotencyKey.slice(0, 180);
@@ -222,7 +358,7 @@ export async function sendOfficialAccountDriverNotification(input: { vehicleId: 
       method: "POST",
       redirect: "error",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ touser: openId, template_id: template.templateId, url: buildDriverDeepLink(configResult.config.appUrl, input.deepLink), data }),
+      body: JSON.stringify({ touser: openId, template_id: template.templateId, url: buildDriverDeepLink(configResult.config.appUrl, input.deepLink ?? "/api/official-account/driver-portal/start"), data }),
       signal: AbortSignal.timeout(8_000),
     });
     let payload = await response.json().catch(() => null) as { errcode?: number; msgid?: number | string } | null;

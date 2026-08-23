@@ -1,7 +1,7 @@
 import { requireAuthenticatedUser } from "../access";
 import { z } from "zod";
 import { getOfficialAccountBindingStatus, createOfficialAccountBindingUrl, createOfficialAccountScanBindingRequest } from "../officialAccountBinding";
-import { completeOfficialAccountDriverVehicleBinding, getOfficialAccountDriverBindingRequestStatus } from "../services/officialAccountDriverBinding";
+import { completeOfficialAccountDriverVehicleBinding, getOfficialAccountDriverBindingRequestStatus, getOfficialAccountDriverPortalSummary } from "../services/officialAccountDriverBinding";
 import { verifyOfficialAccountBindingFollowStatus } from "../services/officialAccountNotifier";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 
@@ -13,4 +13,5 @@ export const officialAccountRouter = router({
   verifyFollowStatus: protectedProcedure.mutation(async ({ ctx }) => verifyOfficialAccountBindingFollowStatus(requireAuthenticatedUser(ctx).id)),
   driverBindingStatus: publicProcedure.input(z.object({ token: z.string().min(16).max(160) })).query(async ({ input }) => getOfficialAccountDriverBindingRequestStatus(input.token)),
   completeDriverBinding: publicProcedure.input(z.object({ token: z.string().min(16).max(160), plateNo: z.string().trim().min(2).max(32) })).mutation(async ({ input }) => completeOfficialAccountDriverVehicleBinding(input)),
+  driverPortalSummary: publicProcedure.input(z.object({ token: z.string().min(16).max(512) })).query(async ({ input }) => getOfficialAccountDriverPortalSummary(input.token)),
 });

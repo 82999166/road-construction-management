@@ -42,11 +42,10 @@ export default function DriverWechatBindPage() {
             {message ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{message}</p> : null}
             <Button className="h-11 w-full bg-[#203c48] text-white hover:bg-[#17313b]" disabled={bind.isPending || plateNo.trim().length < 2}>{bind.isPending ? "正在绑定…" : "确认绑定车辆"}</Button>
           </form> : null}
-          {bind.data?.success ? <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm leading-6 text-emerald-900"><CheckCircle2 className="h-6 w-6" /><p className="font-semibold">绑定成功</p><p>已绑定车辆：{bind.data.plateNo}{bind.data.driverName ? `，司机 ${bind.data.driverName}` : ""}。后续本车运输通知将发送到当前微信。</p><Button variant="outline" className="w-full border-emerald-200 bg-white" onClick={() => navigate("/")}>返回系统首页</Button></div> : null}
+          {bind.data?.success ? <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm leading-6 text-emerald-900"><CheckCircle2 className="h-6 w-6" /><p className="font-semibold">绑定成功</p><p>已绑定车辆：{bind.data.plateNo}{bind.data.driverName ? `，司机 ${bind.data.driverName}` : ""}。后续本车运输通知将发送到当前微信。</p>{bind.data.portalUrl ? <Button className="w-full bg-[#203c48] text-white hover:bg-[#17313b]" onClick={() => { window.location.href = bind.data!.portalUrl!; }}>查看我的运费账单</Button> : null}<Button variant="outline" className="w-full border-emerald-200 bg-white" onClick={() => navigate("/")}>返回系统首页</Button></div> : null}
           <p className="text-xs leading-5 text-slate-500">如车牌无法匹配，请联系管理员先在“车辆统一台账”中录入该车牌，并确认车辆状态为可调度。</p>
         </CardContent>
       </Card>
     </main>
   );
 }
-

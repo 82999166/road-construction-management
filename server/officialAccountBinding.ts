@@ -6,7 +6,7 @@ import { COOKIE_NAME } from "../shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { getDb } from "./db";
-import { createOfficialAccountDriverBindingRequest, buildWechatTextReplyXml, isDriverBindingKeyword, parseWechatPlainTextMessage, verifyOfficialAccountEventSignature } from "./services/officialAccountDriverBinding";
+import { createOfficialAccountDriverBindingRequest, buildWechatTextReplyXml, createOfficialAccountDriverPortalSession, isDriverBindingKeyword, parseWechatPlainTextMessage, verifyOfficialAccountEventSignature } from "./services/officialAccountDriverBinding";
 import { fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountCredentials, loadPublishedOfficialAccountEventConfig, requestOfficialAccountApi } from "./services/officialAccountNotifier";
 import { encryptSecret } from "./services/secretVault";
 
@@ -243,6 +243,19 @@ export function createOfficialAccountDriverBindingEntryUrl(config: NonNullable<A
   return `${authorizeUrl.toString()}#wechat_redirect`;
 }
 
+export function createOfficialAccountDriverPortalEntryUrl(config: NonNullable<Awaited<ReturnType<typeof loadPublishedOfficialAccountCredentials>>["config"]>) {
+  const appUrl = getSafeAppUrl(config.appUrl);
+  if (!appUrl) return null;
+  const callbackUrl = new URL("/api/official-account/driver-portal/callback", appUrl).toString();
+  const authorizeUrl = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
+  authorizeUrl.searchParams.set("appid", config.appId);
+  authorizeUrl.searchParams.set("redirect_uri", callbackUrl);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("scope", "snsapi_base");
+  authorizeUrl.searchParams.set("state", createDriverBindingEntryState());
+  return `${authorizeUrl.toString()}#wechat_redirect`;
+}
+
 export async function getOfficialAccountBindingStatus(userId: number) {
   const db = await getDb();
   if (!db) return { status: "unavailable" as const, boundAt: null, lastVerifiedAt: null, lastFailureAt: null };
@@ -324,6 +337,18 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
     res.redirect(302, authorizeUrl);
   });
 
+  /** 固定司机端账单入口：用于服务号菜单、模板消息和绑定成功页跳转。 */
+  app.get("/api/official-account/driver-portal/start", async (_req: Request, res: Response) => {
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    const authorizeUrl = configResult.config ? createOfficialAccountDriverPortalEntryUrl(configResult.config) : null;
+    if (!configResult.config || !appUrl || !authorizeUrl) {
+      driverBindingEntryError(res, appUrl, "not_configured");
+      return;
+    }
+    res.redirect(302, authorizeUrl);
+  });
+
   /** 固定司机绑定入口回调：生成一次性司机绑定令牌并跳转既有绑定页，不授予后台登录权限。 */
   app.get("/api/official-account/driver-bind/callback", async (req: Request, res: Response) => {
     const code = typeof req.query.code === "string" ? req.query.code : undefined;
@@ -347,6 +372,34 @@ export function registerOfficialAccountBindingRoutes(app: Express) {
         return;
       }
       res.redirect(302, request.url);
+    } catch {
+      driverBindingEntryError(res, appUrl, "failed");
+    }
+  });
+
+  /** 固定司机端账单回调：仅为已绑定司机生成短时费用查询令牌，不授予后台登录权限。 */
+  app.get("/api/official-account/driver-portal/callback", async (req: Request, res: Response) => {
+    const code = typeof req.query.code === "string" ? req.query.code : undefined;
+    const rawState = typeof req.query.state === "string" ? req.query.state : undefined;
+    const state = rawState ? verifyDriverBindingEntryState(rawState) : null;
+    const configResult = await loadPublishedOfficialAccountCredentials();
+    const appUrl = getSafeAppUrl(configResult.config?.appUrl ?? null);
+    if (!code || !state || !configResult.config || !appUrl) {
+      driverBindingEntryError(res, appUrl, "failed");
+      return;
+    }
+    try {
+      const openId = await exchangeWechatOAuthOpenId(configResult.config, code);
+      if (!openId) {
+        driverBindingEntryError(res, appUrl, "failed");
+        return;
+      }
+      const session = await createOfficialAccountDriverPortalSession(openId);
+      if (!session.success) {
+        driverBindingEntryError(res, appUrl, session.reason === "unbound" ? "failed" : "not_configured");
+        return;
+      }
+      res.redirect(302, session.url);
     } catch {
       driverBindingEntryError(res, appUrl, "failed");
     }

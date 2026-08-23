@@ -20,6 +20,7 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 const Home = lazy(() => import("./pages/Home"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
+const DriverPortalPage = lazy(() => import("./pages/DriverPortalPage"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal"));
 const MobileWorkbench = lazy(() => import("./pages/MobileWorkbench"));
 const MobileAttendancePage = lazy(() => import("./pages/MobileAttendancePage"));
@@ -95,6 +96,7 @@ function Router() {
 	      <Route path={"/login"} component={UnifiedLoginRoute} />
 	      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
 	      <Route path={"/driver-wechat-bind"} component={DriverWechatBindPage} />
+	      <Route path={"/driver-portal"} component={DriverPortalPage} />
 	      <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/attendance"} component={MobileAttendancePage} />

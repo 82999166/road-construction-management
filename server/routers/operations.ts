@@ -685,7 +685,7 @@ function notifyExternalDriverWechat(input: { vehicleId: number; projectId: numbe
     idempotencyKey: `driver:${input.eventCode}:${input.targetType}:${input.targetId}:${input.vehicleId}`,
     title: input.title,
     content: input.content,
-    deepLink: input.deepLink,
+    deepLink: "/api/official-account/driver-portal/start",
   }).catch(() => undefined);
 }
 
