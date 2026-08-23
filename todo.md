@@ -560,6 +560,7 @@
 - [x] 修复自建服务器 MySQL 因宝塔残留 `/etc/my.cnf` 指向空 `/www/server/data` 导致服务失败的问题：已备份并停用旧配置，恢复 Ubuntu MySQL 默认 `/var/lib/mysql` 数据目录，`mysql` 与 `yx-cloud-management.service` 均为 active，正式域名页面访问正常。
 - [x] 修复微信公众平台“消息推送”保存时提示 HTTP 返回非 200：已将自建正式服务器 `WECHAT_OFFICIAL_EVENT_TOKEN` 统一为 `YxBind2026`，验证 `https://yx.maomaoyx.com/api/official-account/messages` 对合法微信签名返回 200 和 `echostr`，非法请求继续返回 403。
 - [x] 在超级管理后台新增“域名与消息推送配置”：展示微信后台应填写的消息推送 URL、Token、明文模式、XML 数据格式和当前校验状态，并允许超级管理员直接修改发布 `WECHAT_OFFICIAL_EVENT_TOKEN`，避免以后更换服务号或 Token 时依赖服务器临时改配置；已部署到自建正式域名并验证合法微信签名回调返回 200。
+- [x] 将超级管理后台“域名与消息推送配置”按微信后台三项参数收敛：直接展示 URL，支持超级管理员维护并加密发布 Token 与 EncodingAESKey；明文模式下 EncodingAESKey 可留空，但系统需保留配置入口和状态提示，便于后续更换服务号或切换加密模式。已部署到自建正式域名并验证合法微信签名回调返回 200。
 - [x] 核验未绑定实体卡恢复初卡后的 NDEF 用户区并澄清绑定窗口：已通过 uTrust CL Reader 对当前实体卡只读核验，返回 `payloadPersisted: false`，确认 NDEF 用户区无业务载荷；车牌、司机和电话明确标注为当前车辆表单预填，UID 保持芯片出厂标识不擦除。
 - [x] 修复正式车辆卡写入成功但手机 NFC 触碰未打开运输入口：已确认此前为测试写卡未包含 URL；按正式绑定与签名写卡流程后，真实手机 NFC 触碰已成功打开受控运输刷卡入口。保留不支持自动跳转设备的浏览器通知/历史入口降级说明。
 - [x] 在 uTrust 写卡板块增加正式车辆卡写入流程说明：清楚区分“写入测试卡”仅验证硬件与“PC 写入车辆卡”才写入已签名运输入口 URL，并展示绑定车辆、读取 UID、保存绑定、正式写入和手机触碰验证的顺序。

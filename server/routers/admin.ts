@@ -279,9 +279,10 @@ const officialAccountConfigurationInput = z.object({
   egressSigningSecret: z.string().max(2048),
 });
 
-/** 消息与事件推送 Token 由后台加密维护；留空表示保留现有密文。 */
+/** 消息与事件推送参数由后台加密维护；留空表示保留现有密文。 */
 const officialAccountMessagePushConfigurationInput = z.object({
   eventToken: z.string().trim().max(32),
+  encodingAesKey: z.string().trim().max(43),
 });
 
 /** 兼容 OpenAI Chat Completions 的外部 AI 配置；密钥后续修订留空表示保留既有密文。 */
@@ -380,6 +381,32 @@ function normalizeOfficialAccountEventToken(value: string) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "消息推送 Token 只能使用 3–32 位英文或数字，且必须与微信公众平台填写值完全一致" });
   }
   return token;
+}
+
+function normalizeOfficialAccountEncodingAesKey(value: string) {
+  const key = value.trim();
+  if (!key) return "";
+  if (!/^[A-Za-z0-9]{43}$/.test(key)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "EncodingAESKey 必须为空或 43 位英文数字；明文模式可留空，微信页面强制要求时可填写随机生成值" });
+  }
+  return key;
+}
+
+type SettingsTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
+
+async function upsertSensitiveOfficialAccountSetting(tx: SettingsTransaction, input: { adminId: number; settingKey: string; displayName: string; secretValue: string; remarks: string }) {
+  const [existing] = await tx.select().from(systemSettings).where(eq(systemSettings.settingKey, input.settingKey)).limit(1);
+  if (existing) {
+    const nextVersion = existing.version + 1;
+    const writeResult = await tx.update(systemSettings).set({ category: "微信公众号服务号", displayName: input.displayName, valueJson: null, secretEncrypted: encryptSecret(input.secretValue), valuePreview: maskSecret(input.secretValue), isSensitive: true, status: "published", version: nextVersion, publishedAt: new Date(), remarks: input.remarks, updatedBy: input.adminId }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+    assertVersionedSettingWrite(writeResult);
+    const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+    await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: input.adminId, snapshotJson: JSON.stringify(snapshot) });
+    return;
+  }
+  const result = await tx.insert(systemSettings).values({ category: "微信公众号服务号", settingKey: input.settingKey, displayName: input.displayName, valueJson: null, secretEncrypted: encryptSecret(input.secretValue), valuePreview: maskSecret(input.secretValue), isSensitive: true, status: "published", version: 1, publishedAt: new Date(), remarks: input.remarks, updatedBy: input.adminId });
+  const settingId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+  if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: input.adminId, snapshotJson: null });
 }
 
 function buildOfficialAccountMessageCallbackUrl(rawAppUrl: string | null | undefined) {
@@ -1776,12 +1803,14 @@ export const adminRouter = router({
           statusText: "数据库连接暂不可用",
         };
       }
-      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status, updatedAt: systemSettings.updatedAt, publishedAt: systemSettings.publishedAt }).from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN"]));
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status, updatedAt: systemSettings.updatedAt, publishedAt: systemSettings.publishedAt }).from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"]));
       const published = new Map(rows.filter(row => row.status === "published").map(row => [row.settingKey, row]));
       const appUrl = published.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null;
       const callbackUrl = buildOfficialAccountMessageCallbackUrl(appUrl);
       const tokenSetting = published.get("WECHAT_OFFICIAL_EVENT_TOKEN");
       const tokenConfigured = Boolean(tokenSetting?.secretEncrypted);
+      const aesSetting = published.get("WECHAT_OFFICIAL_EVENT_AES_KEY");
+      const encodingAesKeyConfigured = Boolean(aesSetting?.secretEncrypted);
       return {
         configured: Boolean(callbackUrl && tokenConfigured),
         callbackUrl,
@@ -1789,42 +1818,37 @@ export const adminRouter = router({
         appUrlConfigured: Boolean(callbackUrl),
         tokenConfigured,
         tokenPreview: tokenSetting?.valuePreview ?? null,
+        encodingAesKeyConfigured,
+        encodingAesKeyPreview: aesSetting?.valuePreview ?? null,
         mode: "明文模式" as const,
         dataFormat: "XML" as const,
-        updatedAt: tokenSetting?.updatedAt ?? null,
-        publishedAt: tokenSetting?.publishedAt ?? null,
-        statusText: callbackUrl && tokenConfigured ? "已具备微信消息推送保存条件" : callbackUrl ? "请配置消息推送 Token" : "请先发布公众号业务跳转地址",
+        updatedAt: tokenSetting?.updatedAt ?? aesSetting?.updatedAt ?? null,
+        publishedAt: tokenSetting?.publishedAt ?? aesSetting?.publishedAt ?? null,
+        statusText: callbackUrl && tokenConfigured ? "已具备微信消息推送保存条件；明文模式下 EncodingAESKey 可为空或按微信页面填写" : callbackUrl ? "请配置消息推送 Token" : "请先发布公众号业务跳转地址",
       };
     }),
     saveOfficialAccountMessagePushConfiguration: protectedProcedure.input(officialAccountMessagePushConfigurationInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
-      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, "WECHAT_OFFICIAL_EVENT_TOKEN")).limit(1);
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"]));
+      const existingByKey = new Map(existingRows.map(setting => [setting.settingKey, setting]));
+      const existingToken = existingByKey.get("WECHAT_OFFICIAL_EVENT_TOKEN");
       const submittedToken = input.eventToken.trim();
-      if (!submittedToken && !existing?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "首次配置消息推送 Token 必须填写；该 Token 必须同时填入微信公众平台" });
-      if (!submittedToken) {
+      const submittedAesKey = input.encodingAesKey.trim();
+      if (!submittedToken && !existingToken?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "首次配置消息推送 Token 必须填写；该 Token 必须同时填入微信公众平台" });
+      if (!submittedToken && !submittedAesKey) {
         const status = await loadPublishedOfficialAccountEventConfig();
-        return { success: Boolean(status.config), message: status.config ? "消息推送 Token 已保持不变，可继续在微信公众平台保存同一 Token" : "现有消息推送配置不可用，请重新输入 Token" };
+        return { success: Boolean(status.config), message: status.config ? "消息推送 Token 与 EncodingAESKey 已保持不变，可继续在微信公众平台保存同一组参数" : "现有消息推送配置不可用，请重新输入 Token" };
       }
-      const token = normalizeOfficialAccountEventToken(submittedToken);
-      const displayName = "微信服务号消息推送 Token";
-      const remarks = "微信公众平台“域名与消息推送配置 → 消息推送”的 Token；用于验证 /api/official-account/messages 回调签名。";
+      const token = submittedToken ? normalizeOfficialAccountEventToken(submittedToken) : "";
+      const encodingAesKey = normalizeOfficialAccountEncodingAesKey(submittedAesKey);
       await db.transaction(async tx => {
-        if (existing) {
-          const nextVersion = existing.version + 1;
-          const writeResult = await tx.update(systemSettings).set({ category: "微信公众号服务号", displayName, valueJson: null, secretEncrypted: encryptSecret(token), valuePreview: maskSecret(token), isSensitive: true, status: "published", version: nextVersion, publishedAt: new Date(), remarks, updatedBy: admin.id }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
-          assertVersionedSettingWrite(writeResult);
-          const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
-          await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify(snapshot) });
-        } else {
-          const result = await tx.insert(systemSettings).values({ category: "微信公众号服务号", settingKey: "WECHAT_OFFICIAL_EVENT_TOKEN", displayName, valueJson: null, secretEncrypted: encryptSecret(token), valuePreview: maskSecret(token), isSensitive: true, status: "published", version: 1, publishedAt: new Date(), remarks, updatedBy: admin.id });
-          const settingId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
-          if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
-        }
-        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: "保存并发布服务号消息与事件推送 Token；后台展示明文/XML 填写说明" });
+        if (token) await upsertSensitiveOfficialAccountSetting(tx, { adminId: admin.id, settingKey: "WECHAT_OFFICIAL_EVENT_TOKEN", displayName: "微信服务号消息推送 Token", secretValue: token, remarks: "微信公众平台“域名与消息推送配置 → 消息推送”的 Token；用于验证 /api/official-account/messages 回调签名。" });
+        if (encodingAesKey) await upsertSensitiveOfficialAccountSetting(tx, { adminId: admin.id, settingKey: "WECHAT_OFFICIAL_EVENT_AES_KEY", displayName: "微信服务号 EncodingAESKey", secretValue: encodingAesKey, remarks: "微信公众平台“域名与消息推送配置 → 消息推送”的 EncodingAESKey；明文模式可为空，兼容微信后台强制填写或后续加密模式切换。" });
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: "保存并发布服务号消息推送 URL、Token 与 EncodingAESKey 配置；后台展示明文/XML 填写说明" });
       });
-      return { success: true, message: "消息推送 Token 已加密发布；请在微信公众平台填写同一个 Token 并保存" };
+      return { success: true, message: "消息推送 Token / EncodingAESKey 已按填写项加密发布；请在微信公众平台填写同一组参数并保存" };
     }),
     testOfficialAccountMessagePushConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
       const admin = await assertSuperAdmin(ctx);

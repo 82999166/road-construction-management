@@ -141,7 +141,7 @@ type AssignmentForm = { id?: number; userId: string; roleId: string; organizatio
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
-type OfficialAccountMessagePushForm = { eventToken: string };
+type OfficialAccountMessagePushForm = { eventToken: string; encodingAesKey: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
@@ -182,7 +182,7 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
-const EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM: OfficialAccountMessagePushForm = { eventToken: "" };
+const EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM: OfficialAccountMessagePushForm = { eventToken: "", encodingAesKey: "" };
 const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
@@ -2503,21 +2503,25 @@ export default function AdminPage() {
                   <p className="text-xs font-semibold text-slate-500">微信后台 URL</p>
                   <p className="mt-1 break-all font-mono text-xs text-[#1f5e55]">{officialMessagePushConfiguration.data?.callbackUrl || "请先发布公众号业务跳转地址"}</p>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2">
                   <p><span className="text-slate-400">Token：</span>{officialMessagePushConfiguration.data?.tokenConfigured ? officialMessagePushConfiguration.data.tokenPreview || "已加密托管" : "未配置"}</p>
+                  <p><span className="text-slate-400">EncodingAESKey：</span>{officialMessagePushConfiguration.data?.encodingAesKeyConfigured ? officialMessagePushConfiguration.data.encodingAesKeyPreview || "已加密托管" : "明文模式可留空"}</p>
                   <p><span className="text-slate-400">加解密方式：</span>{officialMessagePushConfiguration.data?.mode || "明文模式"}</p>
                   <p><span className="text-slate-400">数据格式：</span>{officialMessagePushConfiguration.data?.dataFormat || "XML"}</p>
                 </div>
-                <p className="rounded-lg bg-[#eef7f4] px-3 py-2 text-xs leading-5 text-[#28584f]">微信后台保存时，URL 填上方地址，Token 填本系统保存的同一个值，消息加解密方式选择“明文模式”，数据格式选择“XML”。保存成功后，司机在服务号发送“绑定”即可自动收到车辆绑定链接。</p>
+                <p className="rounded-lg bg-[#eef7f4] px-3 py-2 text-xs leading-5 text-[#28584f]">微信后台保存时，URL 填上方地址，Token 和 EncodingAESKey 填本系统保存的同一组值，消息加解密方式选择“明文模式”，数据格式选择“XML”。明文模式下 EncodingAESKey 不参与验签，但保留配置入口便于微信页面强制填写或后续切换加密模式。</p>
                 <p className="text-xs text-slate-500">当前状态：{officialMessagePushConfiguration.data?.statusText || "正在读取配置状态…"}</p>
               </div>
             </div>
             <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountMessagePushValidation(null); saveOfficialAccountMessagePushConfiguration.mutate(officialAccountMessagePushForm); }}>
               <Field label="消息推送 Token">
-                <Input type="password" value={officialAccountMessagePushForm.eventToken} placeholder={officialMessagePushConfiguration.data?.tokenConfigured ? "已安全托管；留空保持不变" : "填写 3–32 位英文或数字"} autoComplete="new-password" maxLength={32} onChange={event => setOfficialAccountMessagePushForm({ eventToken: event.target.value })} />
+                <Input type="password" value={officialAccountMessagePushForm.eventToken} placeholder={officialMessagePushConfiguration.data?.tokenConfigured ? "已安全托管；留空保持不变" : "填写 3–32 位英文或数字"} autoComplete="new-password" maxLength={32} onChange={event => setOfficialAccountMessagePushForm(current => ({ ...current, eventToken: event.target.value }))} />
+              </Field>
+              <Field label="EncodingAESKey">
+                <Input type="password" value={officialAccountMessagePushForm.encodingAesKey} placeholder={officialMessagePushConfiguration.data?.encodingAesKeyConfigured ? "已安全托管；留空保持不变" : "明文模式可留空；微信页面要求时填 43 位英文数字"} autoComplete="new-password" maxLength={43} onChange={event => setOfficialAccountMessagePushForm(current => ({ ...current, encodingAesKey: event.target.value }))} />
               </Field>
               <div className="flex flex-wrap gap-2">
-                <Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountMessagePushConfiguration.isPending || (!officialAccountMessagePushForm.eventToken.trim() && !officialMessagePushConfiguration.data?.tokenConfigured)}>{saveOfficialAccountMessagePushConfiguration.isPending ? "正在保存…" : "保存消息推送配置"}</Button>
+                <Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountMessagePushConfiguration.isPending || (!officialAccountMessagePushForm.eventToken.trim() && !officialMessagePushConfiguration.data?.tokenConfigured)}>{saveOfficialAccountMessagePushConfiguration.isPending ? "正在保存…" : "保存三项参数"}</Button>
                 <Button type="button" variant="outline" disabled={!officialMessagePushConfiguration.data?.configured || testOfficialAccountMessagePushConfiguration.isPending} onClick={() => testOfficialAccountMessagePushConfiguration.mutate()}>{testOfficialAccountMessagePushConfiguration.isPending ? "正在校验…" : "校验回调 200"}</Button>
               </div>
               {officialAccountMessagePushValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountMessagePushValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountMessagePushValidation.success ? "校验通过：" : "需要处理："}{officialAccountMessagePushValidation.message}</div> : null}

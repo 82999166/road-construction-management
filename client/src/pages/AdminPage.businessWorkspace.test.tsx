@@ -362,6 +362,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("getOfficialAccountMessagePushConfiguration");
     expect(source).toContain("saveOfficialAccountMessagePushConfiguration");
     expect(source).toContain("testOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("微信后台 URL");
+    expect(source).toContain("EncodingAESKey");
+    expect(source).toContain("保存三项参数");
     expect(source).toContain("明文模式");
     expect(source).toContain("XML");
     expect(source).toContain("校验回调 200");
