@@ -3,7 +3,7 @@ import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { auditLogs, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, transportVehicles } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { decryptSecret, encryptSecret } from "./secretVault";
-import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
+import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, getOfficialAccountTemplateSemanticMismatch, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
 
 const DRIVER_BINDING_REQUEST_TTL_MS = 30 * 60 * 1_000;
 
@@ -204,6 +204,11 @@ export async function sendOfficialAccountDriverNotification(input: { vehicleId: 
   const template = configResult.config.moduleTemplates[input.module] ?? configResult.config.fallbackTemplate;
   if (!template) {
     await upsertRecord({ status: "skipped", failureCode: "module_template_not_bound" });
+    return { delivered: false as const, reason: "disabled" as const };
+  }
+  const semanticMismatch = getOfficialAccountTemplateSemanticMismatch({ module: input.module, eventCode: input.eventCode, templateTitle: template.title });
+  if (semanticMismatch) {
+    await upsertRecord({ status: "skipped", failureCode: semanticMismatch });
     return { delivered: false as const, reason: "disabled" as const };
   }
   await upsertRecord({ status: "pending", failureCode: null });

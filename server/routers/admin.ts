@@ -59,7 +59,7 @@ import { sealUnchainedAuditLogs, verifyAuditIntegrityChain } from "../services/a
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding } from "../services/officialAccountDriverBinding";
-import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
@@ -2211,6 +2211,8 @@ export const adminRouter = router({
       const selected = discovered.templates.find(template => template.templateId === input.templateId);
       if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
       if (!isPersistentBusinessTemplateEligible(selected)) throw new TRPCError({ code: "BAD_REQUEST", message: getPersistentBusinessTemplateEligibilityMessage(selected) ?? "所选模板不可用于持续业务通知。" });
+      const semanticMismatch = getOfficialAccountTemplateSemanticMismatch({ module: input.module, eventCode: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.find(item => item.module === input.module)?.events[0] ?? input.module, templateTitle: selected.title });
+      if (semanticMismatch) throw new TRPCError({ code: "BAD_REQUEST", message: "该模板标题与所选业务模块语义不匹配，不能硬绑定；请在微信模板库选择运输、运单、车辆、装卸土、趟次或结算语义相符的模板。" });
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const settingKey = "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS";

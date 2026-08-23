@@ -215,6 +215,31 @@ export function getPersistentBusinessTemplateEligibilityMessage(template: Pick<O
     : "该“订阅模板消息”占位模板实测会被微信返回 40037，不能用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板后重新读取模板库。";
 }
 
+function normalizeTemplateTitleForSemanticCheck(title: string) {
+  return title.replace(/[\s·・_\-—，,。.!！?？:：；;（）()【】\[\]{}]+/g, "").trim();
+}
+
+function isTransportSettlementEvent(eventCode: string) {
+  return /^transport_(daily_vehicle_settlement|vehicle_settlement_)/.test(eventCode);
+}
+
+/**
+ * 服务号模板必须和业务模块语义相符。宁可跳过服务号投递并保留站内通知，
+ * 也不能把运输刷卡、装土发票等消息套用“转账成功通知”等财务模板。
+ */
+export function getOfficialAccountTemplateSemanticMismatch(input: { module: OfficialAccountModule; eventCode: string; templateTitle: string }) {
+  const title = normalizeTemplateTitleForSemanticCheck(input.templateTitle);
+  if (!title) return "template_title_missing";
+  if (input.module === "transport") {
+    const settlementEvent = isTransportSettlementEvent(input.eventCode);
+    const financeOnlyTitle = /(转账|回款|到账|工资|打款|付款)/.test(title) && !/(运输|运单|车辆|渣土|趟次|结算|费用)/.test(title);
+    if (!settlementEvent && financeOnlyTitle) return "transport_template_finance_title_mismatch";
+    const required = settlementEvent ? /(运输|运单|车辆|渣土|趟次|结算|费用|付款)/ : /(运输|运单|车辆|渣土|趟次|装土|卸土|刷卡|发票|开票)/;
+    if (!required.test(title)) return "transport_template_title_mismatch";
+  }
+  return null;
+}
+
 /** 仅保留网络故障类别，禁止把 URL、令牌、OpenID 或响应正文写入业务投递审计。 */
 function classifyDeliveryRequestFailure(error: unknown) {
   if (error instanceof DOMException && error.name === "TimeoutError") return "timeout";
@@ -294,9 +319,10 @@ export async function getOfficialAccountNotificationTemplateCoverage() {
       return {
         ...item,
         missingVariables: [],
-        ready: Boolean(binding),
+        ready: Boolean(binding) && !item.events.some(eventCode => binding ? getOfficialAccountTemplateSemanticMismatch({ module: item.module, eventCode, templateTitle: binding.title }) : true),
         compatibilityMode: binding ? (usesSingleFieldSummaryCompatibility(binding.templateFields) ? "single_field_summary" as const : "module_template" as const) : null,
         templateTitle: binding?.title ?? null,
+        semanticMismatch: binding ? item.events.map(eventCode => getOfficialAccountTemplateSemanticMismatch({ module: item.module, eventCode, templateTitle: binding.title })).find(Boolean) ?? null : null,
       };
     }),
   };
@@ -512,6 +538,8 @@ export async function sendOfficialAccountNotification(input: { module: OfficialA
   if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
   const template = configResult.config.moduleTemplates[input.module] ?? configResult.config.fallbackTemplate;
   if (!template) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: "module_template_not_bound" });
+  const semanticMismatch = getOfficialAccountTemplateSemanticMismatch({ module: input.module, eventCode: input.eventCode, templateTitle: template.title });
+  if (semanticMismatch) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: semanticMismatch });
   try {
     const openId = decryptSecret(binding.openIdEncrypted);
     const token = await getOfficialAccountAccessToken(configResult.config);
