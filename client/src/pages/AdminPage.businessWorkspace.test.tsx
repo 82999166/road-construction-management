@@ -208,6 +208,23 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('suv: "越野车"');
   });
 
+  it("柴油登记默认当前时间、提供防重复录入提醒，并在权限管理中拆出柴油细分权限", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const foundationSource = readFileSync(new URL("../../../server/services/foundationData.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("function DuplicateEntryNotice");
+    expect(source).toContain("防重复录入提醒");
+    expect(source).toContain("dieselDuplicateCandidates");
+    expect(source).toContain("请确认不是重复录入后再继续保存");
+    expect(source).toContain("refueledAt: toLocalDateTimeInput(new Date())");
+    expect(source).toContain('diesel: "柴油管理"');
+    expect(source).toContain("柴油管理已独立拆分为台账查看、领用登记、指导价、预警、扣油结算、作废、导出和打印");
+    expect(foundationSource).toContain('["diesel:read", "柴油台账查看", "diesel", "read"]');
+    expect(foundationSource).toContain('["diesel:refuel:create", "柴油领用登记", "diesel", "create"]');
+    expect(foundationSource).toContain('["diesel:guideline:manage", "柴油指导价维护", "diesel", "manage"]');
+    expect(foundationSource).toContain('["diesel:deduction:settle", "运输扣油结算", "diesel", "settle"]');
+  });
+
   it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

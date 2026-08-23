@@ -168,6 +168,10 @@ const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", cod
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
 }
+
+function DuplicateEntryNotice({ detail }: { detail?: string }) {
+  return <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><p className="font-semibold">防重复录入提醒</p><p className="mt-1">{detail ?? "保存前请核对项目、对象、日期、数量、单价、凭证号和现场照片；如同一对象同日已有相近记录，请先打开台账确认后再保存，避免重复入账或重复通知。"}</p></div>;
+}
 const EMPTY_RISK_RULE_FORM: RiskRuleForm = { enabled: true, maxFuelFillRatio: "1.1", maxTransportSpeedKmh: "80", maxTransportDurationMinutes: "360", maxOpenCheckInHours: "14", maxPendingReportHours: "24", overdueEscalationEnabled: false, overdueEscalationHourChina: "9" };
 const EMPTY_MACHINE_COST_FORM: MachineCostForm = { machineId: "", projectId: "", costType: "fuel", quantity: "", unitPrice: "", occurredAt: "" };
 const EMPTY_MACHINE_MONTHLY_STATEMENT_FORM: MachineMonthlyStatementForm = { machineId: "", projectId: "", period: "", driverUserId: "", machineWorkDays: "0", machineOvertimeHours: "0", driverMonthlyWage: "0", driverWorkDays: "0", driverOvertimeHours: "0", signatureName: "", remarks: "" };
@@ -834,6 +838,9 @@ export default function AdminPage() {
   const submitDieselRefuel = async () => {
     try {
       let evidenceId: number | null = null;
+      if (!dieselRefuelForm.id && dieselDuplicateCandidates.length > 0 && !window.confirm("系统检测到同一资源同日已有相近柴油领用记录。请确认不是重复录入后再继续保存。")) {
+        return;
+      }
       if (!dieselReceiptFile && !dieselRefuelForm.id && dieselRefuelForm.status !== "void") {
         toast.error("请使用后置相机现场拍摄清晰的加油表照片后再保存");
         return;
@@ -1850,7 +1857,7 @@ export default function AdminPage() {
     onError: error => toast.error(error.message),
   });
 
-  const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", evidence: "影像取证", message: "消息中心" };
+  const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", diesel: "柴油管理", evidence: "影像取证", message: "消息中心" };
   const permissionActionLabels: Record<string, string> = { read: "查看", create: "新增", edit: "编辑", submit: "提交", review: "审核", settle: "结算/发放", void: "作废/归档", export: "导出", print: "打印", manage: "全量办理", publish: "发布", rollback: "回滚", test: "测试" };
   // 按功能模块分组展示权限，避免管理员在长列表中难以辨识业务归属。
   const permissionGroups = useMemo(() => {
@@ -1873,6 +1880,29 @@ export default function AdminPage() {
     () => new Map((users.data ?? []).map(user => [user.id, user.name || `用户 #${user.id}`])),
     [users.data],
   );
+  const dieselDuplicateCandidates = useMemo(() => {
+    if (!dieselRefuelDialogOpen || dieselRefuelForm.id || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt) return [];
+    const selectedAssetId = dieselRefuelForm.assetType === "vehicle" ? dieselRefuelForm.vehicleId : dieselRefuelForm.machineId;
+    if (!selectedAssetId) return [];
+    const refueledDate = dieselRefuelForm.refueledAt.slice(0, 10);
+    const refueledAtMs = new Date(dieselRefuelForm.refueledAt).getTime();
+    const liters = Number(dieselRefuelForm.liters || 0);
+    const receiptNo = dieselRefuelForm.receiptNo.trim();
+    const supplierName = dieselRefuelForm.stationOrSupplierName.trim();
+    return (dieselRefuelRecords.data ?? []).filter(record => {
+      if (record.status === "void" || String(record.projectId) !== dieselRefuelForm.projectId || record.assetType !== dieselRefuelForm.assetType) return false;
+      const recordAssetId = record.assetType === "vehicle" ? record.vehicleId : record.machineId;
+      if (String(recordAssetId ?? "") !== selectedAssetId) return false;
+      const recordDate = new Date(record.refueledAt).toISOString().slice(0, 10);
+      if (recordDate !== refueledDate) return false;
+      if (receiptNo && record.receiptNo === receiptNo) return true;
+      const recordTimeMs = new Date(record.refueledAt).getTime();
+      const withinTwoHours = Number.isFinite(recordTimeMs) && Number.isFinite(refueledAtMs) && Math.abs(recordTimeMs - refueledAtMs) <= 2 * 60 * 60 * 1000;
+      const sameLiters = liters > 0 && Math.abs(Number(record.liters) - liters) < 0.001;
+      const sameSupplier = supplierName && (record.stationOrSupplierName ?? "") === supplierName;
+      return withinTwoHours || (sameLiters && (dieselRefuelForm.supplyMethod === "project_supply" || sameSupplier));
+    }).slice(0, 3);
+  }, [dieselRefuelDialogOpen, dieselRefuelForm, dieselRefuelRecords.data]);
   const selectedAssignmentRole = useMemo(
     () => roles.data?.find(role => role.id === Number(assignmentForm.roleId)),
     [assignmentForm.roleId, roles.data],
@@ -2244,7 +2274,7 @@ export default function AdminPage() {
           <div className="mt-3 grid gap-2 md:grid-cols-3"><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第一级 · 菜单</p><p className="mt-1 text-xs leading-5 text-slate-500">部门业务范围与岗位模板决定可见业务菜单；前端只做导航投影，不能代替服务端拦截。</p></div><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第二级 · 页面</p><p className="mt-1 text-xs leading-5 text-slate-500">项目范围与账号有效期决定可查看的项目台账和页面数据；跨项目查询会被服务端拒绝。</p></div><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第三级 · 操作</p><p className="mt-1 text-xs leading-5 text-slate-500">本页勾选查看、新增、编辑、提交、审核、结算、作废、导出、打印；用户专属权限仅覆盖本模块操作，不扩大项目范围。</p></div></div>
           <div className="mt-2 space-y-3">
         <Card>
-          <CardHeader><CardTitle className="text-base">角色详细操作权限</CardTitle><CardDescription>选择角色后，按业务模块勾选查看、新增、编辑、提交、审核、结算、作废、导出或打印等动作。角色一旦配置某业务域的详细权限，服务端将拒绝该域未勾选的直接接口调用；岗位、部门和项目范围仍同时校验。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">角色详细操作权限</CardTitle><CardDescription>选择角色后，按业务模块勾选查看、新增、编辑、提交、审核、结算、作废、导出或打印等动作。角色一旦配置某业务域的详细权限，服务端将拒绝该域未勾选的直接接口调用；岗位、部门和项目范围仍同时校验。柴油管理已独立拆分为台账查看、领用登记、指导价、预警、扣油结算、作废、导出和打印，便于按岗位细分授权。</CardDescription></CardHeader>
           <CardContent>
             {selectedRoleId === undefined ? <EmptyState text="正在加载可分配角色…" /> : (
               <div className="space-y-5">
@@ -3256,6 +3286,7 @@ export default function AdminPage() {
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="audit">审计</TabsTrigger>
           </TabsList>
         </Tabs>
+        {activeSection !== "overview" ? <DuplicateEntryNotice /> : null}
         <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f8fcfb]"><CardContent className="p-6 text-sm text-slate-600">正在加载当前管理工作区…</CardContent></Card>}>
           {content}
           {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); const defaultVehicle = transportVehicleLedger.data?.[0]; setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: defaultVehicle ? String(defaultVehicle.id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid, driverPhone: defaultVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} /> : null}
