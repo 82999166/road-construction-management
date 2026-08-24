@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   assetMaintenanceRecords,
   auditLogs,
+  dieselGuidelinePrices,
   dieselRefuelRecords,
   evidenceRecords,
   freightRateRules,
@@ -481,6 +482,18 @@ function formatChinaBusinessDate(value: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
   const fields = Object.fromEntries(parts.filter(part => ["year", "month", "day"].includes(part.type)).map(part => [part.type, part.value]));
   return `${fields.year}-${fields.month}-${fields.day}`;
+}
+
+/** 机械油料费用与柴油领用共用同一项目指导价口径，避免前端手填单价绕开有效期控制。 */
+async function getEffectiveDieselGuidelinePrice(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, occurredAt: Date) {
+  const businessDate = formatChinaBusinessDate(occurredAt);
+  const prices = await db.select().from(dieselGuidelinePrices)
+    .where(eq(dieselGuidelinePrices.projectId, projectId))
+    .orderBy(desc(dieselGuidelinePrices.effectiveFrom));
+  const price = prices.find(item => item.status === "active"
+    && formatChinaBusinessDate(new Date(item.effectiveFrom)) <= businessDate
+    && (!item.effectiveTo || formatChinaBusinessDate(new Date(item.effectiveTo)) >= businessDate));
+  return { businessDate, price: price ? { id: price.id, pricePerLiter: Number(price.pricePerLiter), effectiveFrom: formatChinaBusinessDate(new Date(price.effectiveFrom)), effectiveTo: price.effectiveTo ? formatChinaBusinessDate(new Date(price.effectiveTo)) : null } : null };
 }
 
 /** 返回左闭右开的月度区间，确保月结查询不重复计入跨月数据。 */
@@ -1227,6 +1240,18 @@ export const machineryRouter = router({
     return listScopedProjects(ctx);
   }),
 
+  /** 费用录入仅展示当前项目、当前加油发生时间有效的指导价；保存时仍会重新匹配。 */
+  fuelCostDefault: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), occurredAt: isoDateTimeSchema })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const occurredAt = new Date(input.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "加油发生时间无效" });
+    const matched = await getEffectiveDieselGuidelinePrice(db, input.projectId, occurredAt);
+    return { occurredOn: matched.businessDate, guidelinePrice: matched.price?.pricePerLiter ?? null, guidelinePriceId: matched.price?.id ?? null, effectiveFrom: matched.price?.effectiveFrom ?? null, effectiveTo: matched.price?.effectiveTo ?? null };
+  }),
+
   listMachines: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertMachineryAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
@@ -1630,23 +1655,29 @@ export const machineryRouter = router({
       const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
       if (!evidence || evidence.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "费用水印照片不存在或不属于当前项目" });
     }
-    const amount = roundMoney(input.quantity * input.unitPrice);
+    const occurredAt = new Date(input.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "费用发生时间无效" });
+    const guideline = input.costType === "fuel" ? await getEffectiveDieselGuidelinePrice(db, input.projectId, occurredAt) : null;
+    if (input.costType === "fuel" && !guideline?.price) throw new TRPCError({ code: "BAD_REQUEST", message: "当前加油发生时间未匹配到有效柴油指导价，请先在柴油管理维护指导价" });
+    const appliedUnitPrice = input.costType === "fuel" ? guideline!.price!.pricePerLiter : input.unitPrice;
+    const amount = roundMoney(input.quantity * appliedUnitPrice);
     const result = await db.insert(machineCostRecords).values({
       machineId: input.machineId,
       projectId: input.projectId,
       costType: input.costType,
       quantity: String(input.quantity),
-      unitPrice: String(roundMoney(input.unitPrice)),
+      unitPrice: String(roundMoney(appliedUnitPrice)),
       amount: String(amount),
-      occurredAt: new Date(input.occurredAt),
+      occurredAt,
       evidenceId: input.evidenceId ?? null,
       remarks: input.remarks?.trim() || null,
       status: "draft",
     });
     const costId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
     if (input.evidenceId && costId) await db.update(evidenceRecords).set({ sourceId: `machine-cost-${costId}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: String(costId || `${input.machineId}:${input.occurredAt}`), summary: `录入机械${input.costType}成本，金额由系统核算${input.evidenceId ? "，已关联水印照片" : ""}` });
-    return { success: true, id: costId || null, amount };
+    const priceSource = guideline?.price ? `，引用柴油指导价 ¥${guideline.price.pricePerLiter}/L（${guideline.businessDate}，规则 #${guideline.price.id}）` : "";
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: String(costId || `${input.machineId}:${input.occurredAt}`), summary: `录入机械${input.costType}成本，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}` });
+    return { success: true, id: costId || null, amount, unitPrice: appliedUnitPrice, guidelinePriceId: guideline?.price?.id ?? null };
   }),
 
   /** 审批、结算或作废机械成本；已结算记录不可回退，结算操作限定财务岗位。 */

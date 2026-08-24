@@ -28,6 +28,9 @@ describe("移动端机械会计月度明细", () => {
     expect(source).toContain("机械月度结算预览表");
     expect(source).toContain("openCostDialog(machine.id)");
     expect(source).toContain(">费用录入</Button>");
+    expect(source).toContain("fuelCostDefault.fetch");
+    expect(source).toContain("已带入 ${defaultPrice.occurredOn} 有效柴油指导价");
+    expect(source).toContain('occurredAt: new Date().toISOString().slice(0, 16)');
     expect(source).toContain(">成本记录</Button>");
     expect(source).not.toContain('<TabsTrigger value="costs"');
     expect(source).toContain("createWatermarkedCostImage");

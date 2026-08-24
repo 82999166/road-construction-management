@@ -10,5 +10,10 @@ describe("机械费用说明与工程水印影像归档", () => {
     expect(source).toContain("remarks: input.remarks?.trim() || null");
     expect(source).toContain("sourceId: `machine-cost-${costId}`");
     expect(source).toContain("已关联水印照片");
+    expect(source).toContain("fuelCostDefault");
+    expect(source).toContain("getEffectiveDieselGuidelinePrice");
+    expect(source).toContain("当前加油发生时间未匹配到有效柴油指导价");
+    expect(source).toContain("const appliedUnitPrice = input.costType === \"fuel\" ? guideline!.price!.pricePerLiter : input.unitPrice");
+    expect(source).toContain("引用柴油指导价");
   });
 });

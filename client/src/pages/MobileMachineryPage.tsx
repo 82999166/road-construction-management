@@ -220,15 +220,27 @@ export default function MobileMachineryPage() {
   const previewInput = useMemo(() => ({ ...detailInput, period, leaseUsageUnits: Number(leaseUsageUnits || 0), deductionAmount: 0 }), [detailInput, leaseUsageUnits, period]);
   const monthlyStatementsInput = useMemo(() => ({ projectId: selectedProjectId, period }), [period, selectedProjectId]);
   const monthlyStatementPreviewInput = useMemo(() => ({ machineId: selectedMachineId, projectId: selectedProjectId, period, driverUserId: statementDraft.driverUserId ? Number(statementDraft.driverUserId) : null, machineWorkDays: Number(statementDraft.machineWorkDays || 0), machineOvertimeHours: Number(statementDraft.machineOvertimeHours || 0), driverMonthlyWage: Number(statementDraft.driverMonthlyWage || 0), driverWorkDays: Number(statementDraft.driverWorkDays || 0), driverOvertimeHours: Number(statementDraft.driverOvertimeHours || 0), signatureName: statementDraft.signatureName.trim() || null, remarks: statementDraft.remarks.trim() || null }), [period, selectedMachineId, selectedProjectId, statementDraft]);
+  const costOccurredAtIso = useMemo(() => {
+    const occurredAt = new Date(costDraft.occurredAt);
+    return Number.isNaN(occurredAt.getTime()) ? null : occurredAt.toISOString();
+  }, [costDraft.occurredAt]);
   const leaseRules = trpc.machinery.listLeaseRules.useQuery(detailInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const costs = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const settlement = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const monthlyStatements = trpc.machinery.listMonthlyStatements.useQuery(monthlyStatementsInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const paymentSettlements = trpc.machinery.listPaymentSettlements.useQuery({ projectId: selectedProjectId }, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const monthlyStatementPreview = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const fuelCostDefault = trpc.machinery.fuelCostDefault.useQuery({ projectId: selectedProjectId, occurredAt: costOccurredAtIso ?? new Date().toISOString() }, { enabled: isAuthenticated && costDialogOpen && costDraft.costType === "fuel" && Boolean(selectedProjectId) && Boolean(costOccurredAtIso), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation();
+
+  /** 油料单价始终从当前项目、当前加油发生时间有效的系统指导价回填；保存时服务端会再次复核。 */
+  useEffect(() => {
+    if (!costDialogOpen || costDraft.costType !== "fuel" || fuelCostDefault.data?.guidelinePrice === null || fuelCostDefault.data?.guidelinePrice === undefined) return;
+    const guidelinePrice = String(fuelCostDefault.data.guidelinePrice);
+    setCostDraft(current => current.unitPrice === guidelinePrice ? current : { ...current, unitPrice: guidelinePrice });
+  }, [costDialogOpen, costDraft.costType, fuelCostDefault.data?.guidelinePrice]);
 
   /** 相机流仅用于当前费用凭证直拍；关闭、取消或离开页面时立即关闭设备摄像头。 */
   function stopCostCamera() {
@@ -290,7 +302,7 @@ export default function MobileMachineryPage() {
     onError: error => toast.error(error.message),
   });
   const saveCost = trpc.machinery.saveCost.useMutation({
-    onSuccess: async data => { stopCostCamera(); toast.success(`机械成本已录入，系统核算 ${formatMoney(data.amount)}`); setCostDialogOpen(false); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
+    onSuccess: async data => { stopCostCamera(); toast.success(`机械成本已录入，系统核算 ${formatMoney(data.amount)}${data.guidelinePriceId ? "，已采用系统柴油指导价" : ""}`); setCostDialogOpen(false); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
     onError: error => toast.error(error.message),
   });
   const transitionCost = trpc.machinery.transitionCost.useMutation({
@@ -338,20 +350,34 @@ export default function MobileMachineryPage() {
   }
 
   /** 成本金额由服务端按数量和单价计算，移动端不传递可篡改的金额字段。 */
-  function openCostDialog(machineIdToUse = selectedMachineId) {
+  async function openCostDialog(machineIdToUse = selectedMachineId) {
     if (!machineIdToUse) return toast.error("请先选择机械台账");
     stopCostCamera();
     setMachineId(machineIdToUse);
     if (costPhotoPreview) URL.revokeObjectURL(costPhotoPreview);
     setCostPhotoFile(null);
     setCostPhotoPreview(null);
-    setCostDraft({ costType: "fuel", quantity: "", unitPrice: "", occurredAt: new Date().toISOString().slice(0, 16), remarks: "" });
+    const occurredAt = new Date();
+    setCostDraft({ costType: "fuel", quantity: "", unitPrice: "", occurredAt: occurredAt.toISOString().slice(0, 16), remarks: "" });
     setCostDialogOpen(true);
+    if (!selectedProjectId) return;
+    try {
+      const defaultPrice = await utils.machinery.fuelCostDefault.fetch({ projectId: selectedProjectId, occurredAt: occurredAt.toISOString() });
+      if (defaultPrice.guidelinePrice !== null) {
+        setCostDraft(current => current.costType === "fuel" ? { ...current, unitPrice: String(defaultPrice.guidelinePrice) } : current);
+        toast.info(`已带入 ${defaultPrice.occurredOn} 有效柴油指导价 ¥${defaultPrice.guidelinePrice}/L`);
+      } else {
+        toast.warning("当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "柴油指导价读取失败");
+    }
   }
 
   async function submitCost() {
     if (!selectedProjectId || !selectedMachineId) return toast.error("请先选择机械台账");
-    if (!costDraft.quantity || !costDraft.unitPrice) return toast.error("请填写数量与单价");
+    if (!costDraft.quantity || (!costDraft.unitPrice && costDraft.costType !== "fuel")) return toast.error("请填写数量与单价");
+    if (costDraft.costType === "fuel" && !fuelCostDefault.data?.guidelinePrice) return toast.error(fuelCostDefault.error?.message || "当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价");
     try {
       let evidenceId: number | null = null;
       if (costPhotoFile) {
