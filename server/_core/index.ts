@@ -12,6 +12,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { applyBaselineSecurityHeaders, createMemoryRateLimiter, isLargeTrpcBodyRequest } from "./httpSecurity";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -35,10 +36,14 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  app.disable("x-powered-by");
+  app.use(applyBaselineSecurityHeaders);
   app.use("/api/official-account/messages", express.raw({ type: ["text/xml", "application/xml", "*/xml"], limit: "256kb" }));
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // 证据影像通过少数明确的 tRPC 写入接口上传；普通 API 不再继承 50MB 的全局正文上限。
+  const standardJsonParser = express.json({ limit: "1mb" });
+  const evidenceJsonParser = express.json({ limit: "32mb" });
+  app.use("/api/trpc", (req, res, next) => (isLargeTrpcBodyRequest(req) ? evidenceJsonParser(req, res, next) : standardJsonParser(req, res, next)));
+  app.use(express.urlencoded({ limit: "256kb", extended: false }));
   registerStorageProxy(app);
   registerIdentityRecoveryRoute(app);
   registerOAuthRoutes(app);
@@ -54,6 +59,9 @@ async function startServer() {
     res.type("text/plain").send("ovXYyaGy5gpoUjxo");
   });
   // tRPC API
+  app.use("/api/trpc/auth.localAdminLogin", createMemoryRateLimiter({ windowMs: 15 * 60 * 1000, max: 10, message: "登录请求过于频繁，请稍后再试" }));
+  app.use("/api/trpc/auth.localManagerLogin", createMemoryRateLimiter({ windowMs: 15 * 60 * 1000, max: 15, message: "登录请求过于频繁，请稍后再试" }));
+  app.use("/api/trpc", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 360, message: "请求过于频繁，请稍后再试" }));
   app.use(
     "/api/trpc",
     createExpressMiddleware({

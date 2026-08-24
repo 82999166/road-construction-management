@@ -379,7 +379,7 @@ async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: stri
   const scopedSheets = sheets.map(sheet => sheet.name === "临时日结" && dailyFilter ? { ...sheet, rows: sheet.rows.filter(matchesDailyWageFilter) } : sheet);
   const scopedFilters: CsvExportScope["filters"] = dailyFilter ? [...scope.filters, ["日结日期起", dailyFilter.dateFrom || "全部"], ["日结日期止", dailyFilter.dateTo || "全部"], ["日结人员/班组", dailyFilter.keyword || "全部"], ["日结班组", dailyFilter.team === "all" ? "全部" : dailyFilter.team], ["日结状态", dailyFilter.status === "all" ? "全部" : dailyFilter.status]] : scope.filters;
   const exportScope = { ...scope, filters: scopedFilters };
-  const XLSX = await import("xlsx");
+  const XLSX = await import("@e965/xlsx");
   const workbook = XLSX.utils.book_new();
   const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);

@@ -23,6 +23,7 @@ class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
+      const showTechnicalDetails = import.meta.env.DEV;
       return (
         <div className="notranslate flex min-h-screen items-center justify-center bg-background p-8" translate="no">
           <div className="flex flex-col items-center w-full max-w-2xl p-8">
@@ -33,11 +34,17 @@ class ErrorBoundary extends Component<Props, State> {
 
             <h2 className="mb-4 text-xl">发生意外错误。</h2>
 
-            <div className="p-4 w-full rounded bg-muted overflow-auto mb-6">
-              <pre className="text-sm text-muted-foreground whitespace-break-spaces">
-                {this.state.error?.stack}
-              </pre>
-            </div>
+            {showTechnicalDetails ? (
+              <div className="p-4 w-full rounded bg-muted overflow-auto mb-6">
+                <pre className="text-sm text-muted-foreground whitespace-break-spaces">
+                  {this.state.error?.stack}
+                </pre>
+              </div>
+            ) : (
+              <p className="mb-6 max-w-md text-center text-sm leading-6 text-muted-foreground">
+                为保护系统安全，详细技术信息不会显示在页面上。请先重新加载；若问题持续，请联系系统管理员查看受控日志。
+              </p>
+            )}
 
             <button
               onClick={() => window.location.reload()}

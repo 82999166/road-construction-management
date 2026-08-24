@@ -285,6 +285,29 @@ export const auditLogs = mysqlTable(
 );
 
 /**
+ * 登录失败限流状态。subjectHash 为账号标识的不可逆摘要，避免将手机号、管理员名称或口令
+ * 写入限流表；持久化后服务重启或未来多实例部署也不会使锁定窗口自然失效。
+ */
+export const loginRateLimitStates = mysqlTable(
+  "login_rate_limit_states",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    scope: varchar("scope", { length: 64 }).notNull(),
+    subjectHash: varchar("subjectHash", { length: 128 }).notNull(),
+    failureCount: int("failureCount").default(0).notNull(),
+    windowStartedAt: datetime("windowStartedAt").notNull(),
+    lastFailureAt: datetime("lastFailureAt").notNull(),
+    lockedUntil: datetime("lockedUntil"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scopeSubjectUnique: uniqueIndex("login_rate_limit_scope_subject_unique").on(table.scope, table.subjectHash),
+    lockedUntilIndex: index("login_rate_limit_locked_until_index").on(table.lockedUntil),
+  }),
+);
+
+/**
  * 敏感数据访问利用日志。完整账户、原始定位等高风险信息即使允许依法业务使用，
  * 也必须单独记录访问者、项目范围、业务目的、返回记录数和结果，不依赖浏览器端日志。
  */

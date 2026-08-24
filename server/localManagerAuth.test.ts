@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./db", () => ({
   getDb: vi.fn(),
+  getLoginRateLimitState: vi.fn(),
+  recordLoginRateLimitFailure: vi.fn(),
+  clearLoginRateLimitState: vi.fn(),
   getLocalManagerByUsername: vi.fn(),
   getUserByOpenId: vi.fn(),
   updateLocalManagerPassword: vi.fn(),

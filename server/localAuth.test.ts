@@ -4,6 +4,10 @@ vi.mock("./db", () => ({
   getDb: vi.fn(),
   getUserByOpenId: vi.fn(),
   upsertUser: vi.fn(),
+  hasPermanentAdministrator: vi.fn(),
+  getLoginRateLimitState: vi.fn().mockResolvedValue(undefined),
+  recordLoginRateLimitFailure: vi.fn().mockResolvedValue(undefined),
+  clearLoginRateLimitState: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./_core/sdk", () => ({
@@ -11,8 +15,8 @@ vi.mock("./_core/sdk", () => ({
 }));
 
 import { assertSuperAdmin } from "./access";
-import { getDb, getUserByOpenId, upsertUser } from "./db";
-import { resetTemporaryAdminLoginRateLimitForTests } from "./localAuth";
+import { getDb, getLoginRateLimitState, getUserByOpenId, hasPermanentAdministrator, upsertUser } from "./db";
+import { resetTemporaryAdminLoginRateLimitForTests, shouldBlockTemporaryAdminLogin } from "./localAuth";
 import { appRouter } from "./routers";
 
 function createUnauthenticatedCaller(response = { cookie: vi.fn(), clearCookie: vi.fn() }) {
@@ -30,6 +34,7 @@ describe("临时本地超级管理员登录", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetTemporaryAdminLoginRateLimitForTests();
+    vi.mocked(getLoginRateLimitState).mockResolvedValue(undefined);
     vi.mocked(getDb).mockResolvedValue({
       insert: vi.fn(() => ({ values: vi.fn().mockResolvedValue({}) })),
     } as never);
@@ -44,6 +49,29 @@ describe("临时本地超级管理员登录", () => {
       updatedAt: new Date(),
       lastSignedIn: new Date(),
     } as never);
+    vi.mocked(hasPermanentAdministrator).mockResolvedValue(false);
+  });
+
+  it("生产环境存在永久管理员时默认收口临时入口，显式应急开关才允许恢复", () => {
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "", hasPermanentAdministrator: true })).toBe(true);
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "true", hasPermanentAdministrator: true })).toBe(false);
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: false, configuredOverride: "", hasPermanentAdministrator: true })).toBe(false);
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "false", hasPermanentAdministrator: false })).toBe(true);
+  });
+
+  it("持久化锁定窗口存在时不得因服务重启后的内存清空而重新签发临时会话", async () => {
+    vi.mocked(getLoginRateLimitState).mockResolvedValue({
+      failureCount: 5,
+      windowStartedAt: new Date(Date.now() - 1_000),
+      lockedUntil: new Date(Date.now() + 60_000),
+    });
+    const { caller, response } = createUnauthenticatedCaller();
+
+    await expect(caller.auth.localAdminLogin({
+      username: process.env.TEMP_ADMIN_USERNAME!,
+      password: process.env.TEMP_ADMIN_PASSWORD!,
+    })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(response.cookie).not.toHaveBeenCalled();
   });
 
   it("使用部署环境中的临时账号和口令可获取八小时受签名会话", async () => {
