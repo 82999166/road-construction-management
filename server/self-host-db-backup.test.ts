@@ -11,6 +11,10 @@ describe("自有服务器全库备份脚本", () => {
     expect(source).toContain('"--databases"');
     expect(source).toContain('gzip", ["-t", filePath]');
     expect(source).toContain("CREATE TABLE \\`${table}\\`");
+    expect(source).toContain('const result = await run("mysql"');
+    expect(source).not.toContain('const [result] = await run("mysql"');
+    expect(source).toContain('const exitCodePromise = new Promise(resolve => child.once("close", resolve));');
+    expect(source).toContain("const exitCode = await exitCodePromise;");
     expect(source).toContain("latest-success.json");
     expect(source).toContain("latest-failure.json");
   });

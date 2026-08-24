@@ -134,8 +134,9 @@ function ensureTemporaryAdminConfiguration() {
 }
 
 /**
- * 生产环境的临时入口只可在没有永久管理员时完成初始化；已有永久管理员后默认关闭。
- * `TEMP_ADMIN_ENABLED=true` 仅作为受控应急恢复开关，`false` 可在任何环境明确关闭。
+ * 部署环境中的 `admin` 是现有系统所有者使用的超级管理员入口，不能仅因数据库中存在
+ * OAuth/角色管理员记录而自动收口，否则会把真实管理账号误判为“临时账号”并锁死后台。
+ * 仅 `TEMP_ADMIN_ENABLED=false` 才显式关闭；其余情况继续保留持久化限流、审计和会话保护。
  */
 export function shouldBlockTemporaryAdminLogin(input: {
   isProduction: boolean;
@@ -143,8 +144,7 @@ export function shouldBlockTemporaryAdminLogin(input: {
   hasPermanentAdministrator: boolean;
 }) {
   const override = input.configuredOverride.trim().toLowerCase();
-  if (override === "false") return true;
-  return input.isProduction && override !== "true" && input.hasPermanentAdministrator;
+  return override === "false";
 }
 
 /**

@@ -26,8 +26,20 @@ function backupDirectory() {
 function backupScriptPath() {
   const configured = process.env.YX_DB_BACKUP_SCRIPT_PATH?.trim();
   if (configured) return configured;
+  const managedRuntime = "/usr/local/lib/yx-cloud-management/backup/self-host-db-backup.mjs";
+  if (existsSync(managedRuntime)) return managedRuntime;
   const packaged = resolve(process.cwd(), "dist/scripts/self-host-db-backup.mjs");
   return existsSync(packaged) ? packaged : resolve(process.cwd(), "scripts/self-host-db-backup.mjs");
+}
+
+function backupServiceName() {
+  const configured = process.env.YX_DB_BACKUP_SYSTEMD_SERVICE?.trim();
+  return configured && /^[A-Za-z0-9@_.-]+\.service$/.test(configured) ? configured : "yx-db-backup.service";
+}
+
+function backupServiceInstalled() {
+  const service = backupServiceName();
+  return existsSync(`/etc/systemd/system/${service}`) || existsSync(`/lib/systemd/system/${service}`);
 }
 
 function hasRequiredConfiguration() {
@@ -76,21 +88,20 @@ export async function getSelfHostDatabaseBackupStatus() {
   ]);
   return {
     configured: hasRequiredConfiguration(),
-    executable: existsSync(scriptPath),
+    executable: existsSync(scriptPath) && backupServiceInstalled(),
     latestSuccess: safeManifest(latestSuccess),
     latestFailure: safeFailure(latestFailure),
   };
 }
 
-/** 由超级管理员手工发起服务器端完整备份；实际密码仅由子进程读取受限 MySQL 配置文件。 */
+/** 由超级管理员手工发起服务器端完整备份；导出仅由低权限 systemd 服务读取受限 MySQL 配置文件。 */
 export async function createSelfHostDatabaseBackup() {
   if (!hasRequiredConfiguration()) throw new Error("服务器尚未配置完整数据库备份参数，请先由服务器管理员完成 backup.env 配置");
   const scriptPath = backupScriptPath();
   if (!existsSync(scriptPath)) throw new Error("服务器未部署完整数据库备份脚本，请完成应用发布后再试");
+  if (!backupServiceInstalled()) throw new Error("服务器尚未安装完整数据库备份服务，请先由服务器管理员安装并启用 systemd 服务");
   try {
-    const { stdout } = await execFileAsync(process.execPath, [scriptPath], { cwd: process.cwd(), timeout: 15 * 60 * 1000, maxBuffer: 1024 * 1024 * 2 });
-    const result = JSON.parse(stdout.trim()) as { success?: boolean };
-    if (!result.success) throw new Error("备份脚本未返回成功状态");
+    await execFileAsync("systemctl", ["start", backupServiceName()], { cwd: process.cwd(), timeout: 15 * 60 * 1000, maxBuffer: 1024 * 1024 * 2 });
     const status = await getSelfHostDatabaseBackupStatus();
     if (!status.latestSuccess) throw new Error("备份已结束，但未读取到可验证清单");
     return status.latestSuccess;

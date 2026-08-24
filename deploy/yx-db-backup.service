@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# 请改为实际运行应用且可读取 MySQL 备份凭据的非 root 服务账户。
-User=yxapp
-Group=yxapp
+# 专用无登录备份账户；仅能读取备份凭据和写入备份目录。
+User=yxbackup
+Group=yxbackup
 EnvironmentFile=/etc/yx-cloud-management/backup.env
-WorkingDirectory=/opt/yx-cloud-management/current
-ExecStart=/usr/bin/node /opt/yx-cloud-management/current/scripts/self-host-db-backup.mjs
+WorkingDirectory=/var/backups/yx-cloud-management/mysql
+ExecStart=/usr/bin/node /usr/local/lib/yx-cloud-management/backup/self-host-db-backup.mjs
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

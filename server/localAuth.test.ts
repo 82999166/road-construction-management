@@ -52,8 +52,8 @@ describe("临时本地超级管理员登录", () => {
     vi.mocked(hasPermanentAdministrator).mockResolvedValue(false);
   });
 
-  it("生产环境存在永久管理员时默认收口临时入口，显式应急开关才允许恢复", () => {
-    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "", hasPermanentAdministrator: true })).toBe(true);
+  it("已有角色管理员时仍允许现有 admin 登录，只有显式服务器开关才关闭该入口", () => {
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "", hasPermanentAdministrator: true })).toBe(false);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "true", hasPermanentAdministrator: true })).toBe(false);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: false, configuredOverride: "", hasPermanentAdministrator: true })).toBe(false);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "false", hasPermanentAdministrator: false })).toBe(true);

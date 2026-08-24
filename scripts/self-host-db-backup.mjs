@@ -34,7 +34,7 @@ if (mysqlPort) mysqlClientArgs.push(`--port=${mysqlPort}`);
 if (mysqlUser) mysqlClientArgs.push(`--user=${mysqlUser}`);
 
 async function listDatabaseTables() {
-  const [result] = await run("mysql", [...mysqlClientArgs, "--batch", "--skip-column-names", "--execute", `SELECT table_name FROM information_schema.tables WHERE table_schema = '${database}' AND table_type = 'BASE TABLE' ORDER BY table_name`]);
+  const result = await run("mysql", [...mysqlClientArgs, "--batch", "--skip-column-names", "--execute", `SELECT table_name FROM information_schema.tables WHERE table_schema = '${database}' AND table_type = 'BASE TABLE' ORDER BY table_name`]);
   const tables = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
   if (!tables.length) throw new Error(`数据库 ${database} 没有可备份的基础表`);
   return tables;
@@ -96,6 +96,7 @@ async function main() {
     "--routines",
     "--events",
     "--triggers",
+    "--no-tablespaces",
     "--hex-blob",
     "--default-character-set=utf8mb4",
     "--add-drop-table",
@@ -105,8 +106,9 @@ async function main() {
   const child = (await import("node:child_process")).spawn("mysqldump", dumpArgs, { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const exitCodePromise = new Promise(resolve => child.once("close", resolve));
   await pipeline(child.stdout, createGzip({ level: 9 }), createWriteStream(dumpPath, { mode: 0o640 }));
-  const exitCode = await new Promise(resolve => child.once("close", resolve));
+  const exitCode = await exitCodePromise;
   if (exitCode !== 0) {
     await fs.unlink(dumpPath).catch(() => undefined);
     throw new Error(`mysqldump 导出失败（退出码 ${exitCode}）：${stderr.slice(0, 600)}`);

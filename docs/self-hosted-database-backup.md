@@ -17,15 +17,16 @@
 
 ## 一次性安装步骤
 
-以下步骤由服务器环境管理员执行。路径以当前 `release/current` 部署结构为准；请使用实际非 root 应用服务账户替换示例中的 `yxapp`。`pnpm build:self-host` 会将完整备份脚本归档到生产包的 `dist/scripts/`，后台手工备份入口优先调用该发布脚本，不依赖发布目录外的源码文件。
+以下步骤由服务器环境管理员执行。备份应使用独立的无登录系统账户 `yxbackup`，而不是应用服务账户。`pnpm build:self-host` 会将完整备份脚本归档到生产包；安装备份服务时再将脚本复制到只读的受控运行时目录，使低权限备份账户无需读取应用发布目录。
 
 ```bash
-sudo install -d -m 0750 -o yxapp -g yxapp /var/backups/yx-cloud-management/mysql
-sudo install -d -m 0750 -o root -g yxapp /etc/yx-cloud-management
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin yxbackup
+sudo install -d -m 0750 -o yxbackup -g yxbackup /var/backups/yx-cloud-management/mysql
+sudo install -d -m 0750 -o root -g yxbackup /etc/yx-cloud-management
 sudo editor /etc/yx-cloud-management/mysql-backup.cnf
 ```
 
-`/etc/yx-cloud-management/mysql-backup.cnf` 仅写入 MySQL 备份专用、只读导出权限账号，文件权限必须为 `0640`，属主 `root:yxapp`。不要把口令写入项目源码、systemd unit 或命令行。
+`/etc/yx-cloud-management/mysql-backup.cnf` 仅写入 MySQL 备份专用、只读导出权限账号，文件权限必须为 `0640`，属主 `root:yxbackup`。不要把口令写入项目源码、systemd unit 或命令行。
 
 ```ini
 [client]
@@ -61,7 +62,7 @@ sudo journalctl -u yx-db-backup.service -n 80 --no-pager
 成功后目录会出现 `.sql.gz`、同名 `.manifest.json` 和 `latest-success.json`。清单中的 `tableCount` 必须与 `tables` 数量一致，且 `verification` 同时显示 gzip 与全表定义校验通过。
 
 ```bash
-node /opt/yx-cloud-management/current/scripts/verify-self-host-db-backup.mjs \
+node /usr/local/lib/yx-cloud-management/backup/verify-self-host-db-backup.mjs \
   /var/backups/yx-cloud-management/mysql/请填写某个备份文件.sql.gz.manifest.json
 ```
 
