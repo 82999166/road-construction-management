@@ -29,6 +29,14 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("柴油扣款");
     expect(source).toContain("净结算");
   });
+
+  it("将单次刷卡闭环明确标记为待核验，不伪称卸土确认", () => {
+    const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
+    expect(source).toContain("isNfcSingleScanClosed");
+    expect(source).toContain("单次刷卡闭环 · 待核验");
+    expect(source).toContain("单次闭环时间（非卸土确认）");
+    expect(source).toContain("未记录实际卸土确认");
+  });
 });
 
 

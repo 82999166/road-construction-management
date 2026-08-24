@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "crypto";
+import { readFileSync } from "node:fs";
 import type { TrpcContext } from "./_core/context";
 
 /** 业务节点通知在路由中异步投递；测试仅校验公众号调用契约，不发起真实外部请求。 */
@@ -464,6 +465,40 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(transportRouter.createCaller(createAuthContext()).saveSite({ projectId: 10, siteType: "load", name: "K12 装土区", address: null, latitude: null, longitude: null, administratorUserId: null, status: "active" })).resolves.toMatchObject({ success: true, id: 71 });
     expect(insert).toHaveBeenCalled();
+  });
+
+  it("运输负责人可读取项目级单次刷卡闭环设置，缺省值保持关闭", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).getNfcSingleScanCloseSetting({ projectId: 10 })).resolves.toEqual({ enabled: false, minimumIntervalPolicy: "route_minimum_transit_minutes" });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
+  it("运输负责人启用单次刷卡闭环时发布项目设置并留下审计记录", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const settingUpdate = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const auditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 900, version: 2 }]),
+      update: vi.fn(() => ({ set: settingUpdate })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).resolves.toEqual({ success: true, enabled: true });
+    expect(settingUpdate).toHaveBeenCalledWith(expect.objectContaining({ valueJson: "true", status: "published", version: 3 }));
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "set_nfc_single_scan_close", targetId: "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT:10" }));
+  });
+
+  it("NFC 单次闭环保留最小连续开票拦截和真实状态标记，不伪造卸土刷卡事件", () => {
+    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    expect(source).toContain("assertVehicleMinimumNfcInvoiceInterval");
+    expect(source).toContain("minimumTransitMinutes: route.minimumTransitMinutes");
+    expect(source).toContain("completeNfcTripBySingleScan");
+    expect(source).toContain("nfcSingleScanClosed: true");
+    expect(source).toContain("singleScanClosed");
+    expect(source).toContain("activeVehicleTransitKey: null");
+    expect(source).toContain("nfcTransitKey: null");
   });
 
   it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {

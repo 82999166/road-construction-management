@@ -16,4 +16,13 @@ describe("运输路线安全开关", () => {
     expect(source).toContain("<Dialog open={settingsOpen}");
     expect(source).toContain("compact = false");
   });
+
+  it("提供项目级单次刷卡闭环开关，并明确继续强制同车最小开票间隔", () => {
+    const source = readFileSync(new URL("./TransportRouteSafetySettings.tsx", import.meta.url), "utf8");
+    expect(source).toContain("getNfcSingleScanCloseSetting");
+    expect(source).toContain("setNfcSingleScanCloseSetting");
+    expect(source).toContain("刷卡发票即完成整车运输闭环（特殊场景）");
+    expect(source).toContain("硬性拦截同车的连续刷卡开票");
+    expect(source).toContain("默认关闭");
+  });
 });

@@ -18,6 +18,7 @@ import {
   projects,
   rfidCardWriteJobs,
   rfidWriterDevices,
+  systemSettings,
   transportCardEvents,
   transportReaderDevices,
   transportRoutePresets,
@@ -57,6 +58,31 @@ const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const isoDateTimeSchema = z.string().datetime({ offset: true, message: "时间必须使用 ISO 8601 格式" });
 const transportSettlementPaymentMethodSchema = z.enum(["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]);
 const transportSettlementStatusSchema = z.enum(["draft", "submitted", "approved", "paid", "void"]);
+const TRANSPORT_NFC_SINGLE_SCAN_CLOSE_KEY_PREFIX = "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT";
+
+function getTransportNfcSingleScanCloseSettingKey(projectId: number) {
+  return `${TRANSPORT_NFC_SINGLE_SCAN_CLOSE_KEY_PREFIX}:${projectId}`;
+}
+
+async function getTransportNfcSingleScanCloseEnabled(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number) {
+  const [setting] = await db.select({ valueJson: systemSettings.valueJson, status: systemSettings.status }).from(systemSettings).where(eq(systemSettings.settingKey, getTransportNfcSingleScanCloseSettingKey(projectId))).limit(1);
+  return setting?.status === "published" && setting.valueJson === "true";
+}
+
+async function saveTransportNfcSingleScanCloseEnabled(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { projectId: number; enabled: boolean; userId: number }) {
+  const settingKey = getTransportNfcSingleScanCloseSettingKey(input.projectId);
+  const valueJson = input.enabled ? "true" : "false";
+  const valuePreview = input.enabled ? "开启：刷卡发票即完成整车运输闭环" : "关闭：仍需卸土刷卡或卸土确认完成闭环";
+  const displayName = "刷卡发票即完成整车运输闭环";
+  const remarks = "特殊运输场景使用。开启后，NFC 刷卡发票创建运单时直接完成装土与卸土闭环，但同车重复开票最小间隔仍按路线安全阈值硬拦截。";
+  const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.settingKey, settingKey)).limit(1);
+  if (existing) {
+    await db.update(systemSettings).set({ category: "运输管理", displayName, valueJson, valuePreview, isSensitive: false, status: "published", version: existing.version + 1, publishedAt: new Date(), remarks, updatedBy: input.userId }).where(eq(systemSettings.id, existing.id));
+  } else {
+    await db.insert(systemSettings).values({ category: "运输管理", settingKey, displayName, valueJson, valuePreview, isSensitive: false, status: "published", version: 1, publishedAt: new Date(), remarks, updatedBy: input.userId });
+  }
+  await db.insert(auditLogs).values({ userId: input.userId, module: "transport", action: "set_nfc_single_scan_close", targetType: "system_setting", targetId: settingKey, summary: input.enabled ? "开启刷卡发票即完成整车运输闭环" : "关闭刷卡发票即完成整车运输闭环，恢复卸土闭环要求" });
+}
 
 /** 业务人员维护中文详细地址；服务端仅为围栏计算解析并保存内部坐标，不向页面返回。 */
 async function resolveTransportSiteAddress(address: string) {
@@ -545,6 +571,25 @@ function createActiveVehicleTransitKey(projectId: number, vehicleId: number) {
   return `vehicle:${projectId}:${vehicleId}`;
 }
 
+async function assertVehicleMinimumNfcInvoiceInterval(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { projectId: number; vehicleId: number; plateNo: string; occurredAt: Date; minimumTransitMinutes: number }) {
+  const [latestTrip] = await db.select({ tripNo: transportTrips.tripNo, startAt: transportTrips.startAt }).from(transportTrips).where(and(
+    eq(transportTrips.projectId, input.projectId),
+    eq(transportTrips.vehicleId, input.vehicleId),
+    ne(transportTrips.status, "void"),
+  )).orderBy(desc(transportTrips.startAt)).limit(1);
+  if (!latestTrip) return;
+  const elapsedMinutes = Math.max(0, Math.floor((input.occurredAt.getTime() - new Date(latestTrip.startAt).getTime()) / 60_000));
+  if (elapsedMinutes < input.minimumTransitMinutes) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `重复开票拦截：车辆 ${input.plateNo} 距上次装土/开票仅 ${elapsedMinutes} 分钟，未达到最小间隔 ${input.minimumTransitMinutes} 分钟` });
+  }
+}
+
+async function completeNfcTripBySingleScan(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { tripId: number; userId: number; occurredAt: Date; routeSnapshot: unknown }) {
+  const routeSnapshot = { ...getRouteSnapshot(input.routeSnapshot), nfcSingleScanClosed: true, nfcSingleScanClosedAt: input.occurredAt.toISOString(), nfcSingleScanClosedBy: input.userId };
+  const result = await db.update(transportTrips).set({ unloadConfirmedAt: input.occurredAt, unloadConfirmedBy: null, unloadEventId: null, endAt: input.occurredAt, status: "submitted", activeVehicleTransitKey: null, nfcTransitKey: null, routeSnapshot }).where(and(eq(transportTrips.id, input.tripId), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+  if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运输闭环状态已被其他操作更新，请刷新后查看" });
+}
+
 function getChinaBusinessDate(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value).reduce<Record<string, string>>((result, part) => ({ ...result, [part.type]: part.value }), {});
   return `${parts.year}-${parts.month}-${parts.day}`;
@@ -710,7 +755,7 @@ async function assertCanIssueMobileNfcCards(ctx: Parameters<typeof requireAuthen
   throw new TRPCError({ code: "FORBIDDEN", message: "当前账号仅有运输查看权限，未获车辆卡签发或维护授权" });
 }
 
-async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload") {
+async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload", options: { singleScanClose?: boolean } = {}) {
   const user = requireAuthenticatedUser(ctx);
   const roleCodes = await assertTransportAccess(ctx);
   await assertProjectInCurrentScope(ctx, input.projectId);
@@ -851,11 +896,14 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       channel: "in_app",
     }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: notificationTime } })));
   }
-  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按调度前往卸土点。" : "运输闭环已记录，等待后续核验。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  const nextActionText = eventType === "load"
+    ? options.singleScanClose ? "本项目已启用刷卡发票即完成闭环，本次运输已直接进入待核验。" : "请按调度前往卸土点。"
+    : "运输闭环已记录，等待后续核验。";
+  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${nextActionText}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   if (vehicle.driverUserId) {
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [vehicle.driverUserId], projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? options.singleScanClose ? "本次运输已按单次刷卡闭环完成。" : "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   }
-  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: input.projectId, eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" });
+  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: input.projectId, eventCode: `transport_${eventType}_driver_notice`, targetType: "transport_card_event", targetId: String(event.id), title: `${eventLabel}刷卡成功`, content: `${tripFinancialSummary} ${eventType === "load" ? options.singleScanClose ? "本次运输已按单次刷卡闭环完成。" : "请按流程前往卸土点。" : "本次运输已完成卸土刷卡，闭环记录已生成。"}`, deepLink: "/mobile/transport" });
   return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, driverNotificationQueued: Boolean(vehicle.driverUserId) };
 }
 
@@ -876,7 +924,9 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     if (replayedEvent.projectId !== input.projectId || replayedEvent.cardFingerprint !== input.cardFingerprint || replayedEvent.deviceId !== input.readerDeviceCode) {
       throw new TRPCError({ code: "CONFLICT", message: "该读卡幂等键已用于其他事件，已拒绝重放" });
     }
-    return { success: replayedEvent.validationStatus === "accepted" || replayedEvent.validationStatus === "duplicate", duplicate: true, needsReview: replayedEvent.validationStatus === "needs_review", stage: replayedEvent.eventType === "load" ? "in_transit" as const : "completed" as const, tripId: replayedEvent.tripId, eventId: replayedEvent.id, reason: replayedEvent.validationReason ?? undefined };
+    const [replayedTrip] = replayedEvent.tripId ? await db.select({ routeSnapshot: transportTrips.routeSnapshot }).from(transportTrips).where(eq(transportTrips.id, replayedEvent.tripId)).limit(1) : [];
+    const singleScanClosed = replayedEvent.eventType === "load" && Boolean(replayedTrip && getRouteSnapshot(replayedTrip.routeSnapshot).nfcSingleScanClosed);
+    return { success: replayedEvent.validationStatus === "accepted" || replayedEvent.validationStatus === "duplicate", duplicate: true, needsReview: replayedEvent.validationStatus === "needs_review", stage: replayedEvent.eventType === "load" ? singleScanClosed ? "completed" as const : "in_transit" as const : "completed" as const, singleScanClosed, tripId: replayedEvent.tripId, eventId: replayedEvent.id, reason: replayedEvent.validationReason ?? undefined };
   }
 
   const [reader] = await db.select().from(transportReaderDevices).where(and(eq(transportReaderDevices.projectId, input.projectId), eq(transportReaderDevices.deviceCode, input.readerDeviceCode))).limit(1);
@@ -904,10 +954,12 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
       db.select().from(transportSites).where(eq(transportSites.id, route.unloadSiteId)).limit(1),
       db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
     ]);
-    if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或已停用" });
-    if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线运价不存在或未生效" });
-    if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，暂不能由首次刷卡自动发车" });
-    let theoreticalVolume: number;
+	    if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或已停用" });
+	    if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线运价不存在或未生效" });
+	    if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，暂不能由首次刷卡自动发车" });
+	    const singleScanCloseEnabled = await getTransportNfcSingleScanCloseEnabled(db, input.projectId);
+	    if (singleScanCloseEnabled) await assertVehicleMinimumNfcInvoiceInterval(db, { projectId: input.projectId, vehicleId: vehicle.id, plateNo: vehicle.plateNo, occurredAt, minimumTransitMinutes: route.minimumTransitMinutes });
+	    let theoreticalVolume: number;
     try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
     const settlementQuantity = rule.settlementUnit === "cubic_meter" ? theoreticalVolume : 1;
     let price;
@@ -921,24 +973,26 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     }
     const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
     if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "装土刷卡运输票据创建失败" });
-    const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "load");
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_load_create_transit_trip", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `装土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 创建在途票据 ${tripNo}` });
-    const loadRecipientUserIds = Array.from(new Set([site.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
+    const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "load", { singleScanClose: singleScanCloseEnabled });
+    const singleScanClosed = singleScanCloseEnabled && event.success && !event.needsReview;
+    if (singleScanClosed) await completeNfcTripBySingleScan(db, { tripId: createdTrip.id, userId: user.id, occurredAt, routeSnapshot });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: singleScanClosed ? "nfc_load_create_and_close_trip" : "nfc_load_create_transit_trip", targetType: "transport_trip", targetId: String(createdTrip.id), summary: singleScanClosed ? `装土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 创建并完成单次刷卡闭环票据 ${tripNo}` : `装土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 创建在途票据 ${tripNo}` });
+	    const loadRecipientUserIds = Array.from(new Set([site.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
     void notifyOfficialAccountBusinessEventSafely({
       userId: user.id,
       recipientUserIds: loadRecipientUserIds,
       projectId: input.projectId,
       module: "transport",
-      eventCode: "transport_nfc_load_departed",
-      targetType: "transport_trip",
-      targetId: String(createdTrip.id),
-      title: "运输车辆已装土发车",
-      content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成装土刷卡，请按路线前往 ${unloadSite.name} 完成卸土闭环。`,
-      deepLink: "/mobile/transport",
-    }).catch(() => undefined);
-    if (event.success && !event.needsReview) triggerTransportRiskScan(input.projectId);
-    return { ...event, stage: "in_transit" as const, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: site.name, unloadSiteName: unloadSite.name };
-  }
+      eventCode: singleScanClosed ? "transport_nfc_single_scan_completed" : "transport_nfc_load_departed",
+	      targetType: "transport_trip",
+	      targetId: String(createdTrip.id),
+      title: singleScanClosed ? "运输刷卡发票已完成闭环" : "运输车辆已装土发车",
+      content: singleScanClosed ? `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成刷卡发票，系统已按管理员设置直接形成整车运输闭环，运单 ${tripNo} 进入待核验。` : `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成装土刷卡，请按路线前往 ${unloadSite.name} 完成卸土闭环。`,
+	      deepLink: "/mobile/transport",
+	    }).catch(() => undefined);
+	    if (event.success && !event.needsReview) triggerTransportRiskScan(input.projectId);
+    return { ...event, stage: singleScanClosed ? "completed" as const : "in_transit" as const, singleScanClosed, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: site.name, unloadSiteName: unloadSite.name };
+	  }
 
   if (!activeTrip) throw new TRPCError({ code: "BAD_REQUEST", message: `车辆 ${vehicle.plateNo} 当前没有可在本卸土点闭环的在途票据，请先在装土点完成首次刷卡` });
   if (activeTrip.unloadSiteId !== site.id) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卸土设备与在途票据的路线卸土点不一致，已拒绝闭环" });
@@ -962,7 +1016,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     }).catch(() => undefined);
     triggerTransportRiskScan(input.projectId);
   }
-  return { ...event, stage: "completed" as const, tripId: activeTrip.id, tripNo: activeTrip.tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: (activeTrip.routeSnapshot as { loadSite?: { name?: string } } | null)?.loadSite?.name ?? "装土点", unloadSiteName: site.name };
+  return { ...event, stage: "completed" as const, singleScanClosed: false, tripId: activeTrip.id, tripNo: activeTrip.tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: (activeTrip.routeSnapshot as { loadSite?: { name?: string } } | null)?.loadSite?.name ?? "装土点", unloadSiteName: site.name };
 }
 
 /** 将手机触碰卡片 URL 的签名令牌转换为同一套双设备扫描输入；原始 UID 不会进入手机 URL 或服务端日志。 */
@@ -1030,7 +1084,7 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
       throw new TRPCError({ code: "CONFLICT", message: "卸土状态未能最终写入，当前运单仍在运输中，请刷新后核验" });
     }
     triggerTransportRiskScan(resolved.projectId);
-    return { ...event, stage: "completed" as const, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
+    return { ...event, stage: "completed" as const, singleScanClosed: false, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
   }
   if (!input.routePresetId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先选择运输线路" });
   const [route] = await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, input.routePresetId)).limit(1);
@@ -1041,9 +1095,11 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     db.select().from(transportSites).where(eq(transportSites.id, route.unloadSiteId)).limit(1),
     db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
   ]);
-  if (!vehicle || vehicle.status !== "active" || !loadSite || loadSite.status !== "active" || !unloadSite || unloadSite.status !== "active" || !rule || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "车辆、路线地点或运价已变更，请重新刷卡后开票" });
-  await assertNoOpenTransportTrip(db, resolved.projectId, vehicle.id, vehicle.plateNo);
-  if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，不能自动开票" });
+	  if (!vehicle || vehicle.status !== "active" || !loadSite || loadSite.status !== "active" || !unloadSite || unloadSite.status !== "active" || !rule || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "车辆、路线地点或运价已变更，请重新刷卡后开票" });
+	  await assertNoOpenTransportTrip(db, resolved.projectId, vehicle.id, vehicle.plateNo);
+	  if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，不能自动开票" });
+	  const singleScanCloseEnabled = await getTransportNfcSingleScanCloseEnabled(db, resolved.projectId);
+	  if (singleScanCloseEnabled) await assertVehicleMinimumNfcInvoiceInterval(db, { projectId: resolved.projectId, vehicleId: vehicle.id, plateNo: vehicle.plateNo, occurredAt, minimumTransitMinutes: route.minimumTransitMinutes });
   let theoreticalVolume: number;
   try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
   let price;
@@ -1057,12 +1113,14 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   }
   const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
   if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "运输开票保存失败" });
-  const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: resolved.projectId, siteId: loadSite.id, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "load");
-  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: Array.from(new Set([loadSite.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0))), projectId: resolved.projectId, module: "transport", eventCode: "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: "运输 NFC 发票已开具", content: `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
-  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: resolved.projectId, eventCode: "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: "运输 NFC 发票已开具", content: `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" });
+  const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: resolved.projectId, siteId: loadSite.id, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "load", { singleScanClose: singleScanCloseEnabled });
+  const singleScanClosed = singleScanCloseEnabled && event.success && !event.needsReview;
+  if (singleScanClosed) await completeNfcTripBySingleScan(db, { tripId: createdTrip.id, userId: user.id, occurredAt, routeSnapshot: createdTrip.routeSnapshot });
+  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: Array.from(new Set([loadSite.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0))), projectId: resolved.projectId, module: "transport", eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: resolved.projectId, eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" });
   if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "mobile_nfc_invoice_created", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `手机刷 NFC 卡开具运输发票 ${tripNo}：${vehicle.plateNo}，${loadSite.name} → ${unloadSite.name}` });
-  return { ...event, stage: "in_transit" as const, tripNo, vehiclePlateNo: vehicle.plateNo };
+  return { ...event, stage: singleScanClosed ? "completed" as const : "in_transit" as const, singleScanClosed, tripNo, vehiclePlateNo: vehicle.plateNo };
 }
 
 /** 返回用户有权访问的项目选项，项目/组织范围均以服务端授权记录为准。 */
@@ -2348,6 +2406,27 @@ export const transportRouter = router({
     const db = await getDb();
     if (!db) return [];
     return db.select().from(transportRoutePresets).where(eq(transportRoutePresets.projectId, input.projectId)).orderBy(desc(transportRoutePresets.isDefault), desc(transportRoutePresets.updatedAt));
+  }),
+
+  /** 特殊场景开关：首次 NFC 刷卡发票可直接结束运单，但仍按路线最短时间拦截同车连续开票。 */
+  getNfcSingleScanCloseSetting: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertTransportAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { enabled: false, minimumIntervalPolicy: "route_minimum_transit_minutes" as const };
+    return { enabled: await getTransportNfcSingleScanCloseEnabled(db, input.projectId), minimumIntervalPolicy: "route_minimum_transit_minutes" as const };
+  }),
+
+  /** 仅运输负责人或项目负责人可切换特殊闭环模式，默认关闭。 */
+  setNfcSingleScanCloseSetting: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), enabled: z.boolean() })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    await saveTransportNfcSingleScanCloseEnabled(db, { ...input, userId: user.id });
+    return { success: true, enabled: input.enabled };
   }),
 
   /** 运输负责人维护路线的装卸点、预设里程和有效阶梯运价。 */
