@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, lt, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -110,12 +110,7 @@ const MAX_CERTIFICATE_BYTES = 5 * 1024 * 1024;
  */
 async function assertLaborBusinessAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
   await assertDepartmentBusinessAccess(ctx, "LABOR");
-  const roleCodes = await getEffectiveRoleCodes(ctx);
-  const allowedCodes = ["LABOR_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowedCodes.includes(role))) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获劳务工资数据访问授权" });
-  }
-  return roleCodes;
+  return getEffectiveRoleCodes(ctx);
 }
 
 /** 付款凭证属于内部资金流水，只允许会计、财务负责人和系统级应急角色查看。 */
@@ -493,15 +488,27 @@ export const laborRouter = router({
       }
     }),
 
-    /** 项目负责人或劳资负责人可按日期查看打卡留痕；设备标识仅显示匿名标签，不返回原始指纹。 */
-    listCheckIns: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), businessDate: z.string().date().optional() })).query(async ({ ctx, input }) => {
-      const roleCodes = await assertLaborBusinessAccess(ctx);
-      if (!roleCodes.includes("ALL") && !roleCodes.some(role => ["LABOR_MANAGER", "PROJECT_MANAGER"].includes(role))) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无考勤打卡核验权限" });
-      await assertProjectInCurrentScope(ctx, input.projectId);
+    /** 按授权项目范围核验登录人员上下班打卡；设备标识仅显示匿名标签，不返回原始指纹。 */
+    listCheckIns: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), businessDate: z.string().date().optional() })).query(async ({ ctx, input }) => {
+      await assertLaborBusinessAccess(ctx);
       const db = await getDb();
       if (!db) return [];
       const businessDate = input.businessDate ? toBusinessDate(input.businessDate) : toBusinessDate(getChinaBusinessDate(new Date()));
-      return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, userName: users.name, projectId: attendanceCheckIns.projectId, businessDate: attendanceCheckIns.businessDate, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, checkInAddress: attendanceCheckIns.checkInAddress, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status, checkoutAddress: attendanceCheckIns.checkoutAddress, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).innerJoin(users, eq(attendanceCheckIns.userId, users.id)).where(and(eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).orderBy(desc(attendanceCheckIns.checkedInAt));
+      let scopedProjectIds: number[] | null = null;
+      if (input.projectId) {
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        scopedProjectIds = [input.projectId];
+      } else {
+        const scope = await getCurrentDataScope(ctx);
+        if (!scope.hasAllProjects) {
+          const projectRows = await db.select({ id: projects.id, organizationId: projects.organizationId }).from(projects);
+          scopedProjectIds = projectRows.filter(project => scope.projectIds.includes(project.id) || (project.organizationId !== null && scope.organizationIds.includes(project.organizationId))).map(project => project.id);
+          if (!scopedProjectIds.length) return [];
+        }
+      }
+      const filters = [eq(attendanceCheckIns.businessDate, businessDate)];
+      if (scopedProjectIds) filters.push(inArray(attendanceCheckIns.projectId, scopedProjectIds));
+      return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, userName: users.name, projectId: attendanceCheckIns.projectId, projectName: projects.name, businessDate: attendanceCheckIns.businessDate, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, checkInAddress: attendanceCheckIns.checkInAddress, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status, checkoutAddress: attendanceCheckIns.checkoutAddress, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).innerJoin(users, eq(attendanceCheckIns.userId, users.id)).innerJoin(projects, eq(attendanceCheckIns.projectId, projects.id)).where(and(...filters)).orderBy(desc(attendanceCheckIns.checkedInAt));
     }),
 
     /** 原始坐标只用于考勤争议核验；请求人须为项目/劳资负责人并说明用途，读取行为写入敏感访问日志。 */

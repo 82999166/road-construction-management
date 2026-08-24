@@ -24,7 +24,7 @@ export default function LaborWorkspaceLoader({ enabled, projectId, initialAttend
   const workspaceProjectInput = useMemo(() => ({ projectId }), [projectId]);
   const laborWorkspaceInput = useMemo(() => ({ projectId, includeLeft: true }), [projectId]);
   const payrollWorkspaceInput = useMemo(() => ({ projectId, period: filters.laborPeriod || undefined }), [filters.laborPeriod, projectId]);
-  const laborCheckInWorkspaceInput = useMemo(() => ({ projectId, businessDate: filters.laborAttendanceDate || undefined }), [filters.laborAttendanceDate, projectId]);
+  const laborCheckInWorkspaceInput = useMemo(() => ({ businessDate: filters.laborAttendanceDate || undefined }), [filters.laborAttendanceDate]);
   const queries = useLaborWorkspaceQueries({ enabled, workspaceProjectInput, laborWorkspaceInput, payrollWorkspaceInput, laborCheckInWorkspaceInput });
   return <>{children({ filters, queries })}</>;
 }

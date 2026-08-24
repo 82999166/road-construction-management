@@ -1,8 +1,8 @@
+import { and, desc, eq, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
-import { dieselRefuelRecords, projects } from "../../drizzle/schema";
-import { getCurrentDataScope, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
+import { auditLogs, dieselGuidelinePrices, dieselRefuelRecords, evidenceRecords, machineCostRecords, machines, projects, transportVehicles } from "../../drizzle/schema";
+import { assertProjectInCurrentScope, getCurrentDataScope, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 
@@ -34,9 +34,23 @@ export const dieselRouter = router({
       stationLiters: activeRows.filter(row => row.supplyMethod === "external_station").reduce((total, row) => total + Number(row.liters), 0),
       deductibleAmount: activeRows.filter(row => row.deductFromFreight).reduce((total, row) => total + Number(row.amount), 0),
     };
+    const [createAccess, settleAccess, voidAccess, guidelineAccess, alertAccess] = await Promise.all([
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "create"),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "settle"),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "void"),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "manage"),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "manage"),
+    ]);
     return {
       projects: authorizedProjects.map(project => ({ id: project.id, name: project.name })),
       selectedProjectId,
+      capabilities: {
+        canCreateRefuel: createAccess.allowed,
+        canSettleDeduction: settleAccess.allowed,
+        canVoidRefuel: voidAccess.allowed,
+        canManageGuidelinePrice: guidelineAccess.allowed,
+        canManagePriceAlert: alertAccess.allowed,
+      },
       summary,
       records: rows.slice(0, 30).map(row => ({
         id: row.id,
@@ -52,5 +66,91 @@ export const dieselRouter = router({
         status: row.status,
       })),
     };
+  }),
+
+  /** 为移动端柴油领用登记提供已授权项目内的真实车辆与机械；不能依赖客户端猜测资产编号。 */
+  mobileRefuelOptions: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    requireAuthenticatedUser(ctx);
+    const createAccess = await getRoleOperationPermissionDecision(ctx, "DIESEL", "create");
+    if (!createAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油领用登记权限" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { vehicles: [], machines: [] };
+    const [vehicleRows, machineRows] = await Promise.all([
+      db.select({ id: transportVehicles.id, label: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      db.select({ id: machines.id, label: machines.name, code: machines.code }).from(machines).where(eq(machines.projectId, input.projectId)),
+    ]);
+    return {
+      vehicles: vehicleRows.map(item => ({ id: item.id, label: item.label })),
+      machines: machineRows.map(item => ({ id: item.id, label: item.code ? `${item.label} · ${item.code}` : item.label })),
+    };
+  }),
+
+  /**
+   * 移动柴油登记与后台登记共用相同的关键业务约束：项目、资产、影像和指导价均由服务端复核。
+   * 现场端只允许新增已记账领用；编辑、作废、指导价与预警设置仍由各自细分权限的受控窗口办理。
+   */
+  mobileCreateRefuel: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    assetType: z.enum(["vehicle", "machine"]),
+    assetId: z.number().int().positive(),
+    supplyMethod: z.enum(["project_supply", "external_station"]),
+    stationOrSupplierName: z.string().trim().max(160).nullable().optional(),
+    liters: z.number().positive().max(100_000),
+    actualUnitPrice: z.number().positive().max(10_000).nullable().optional(),
+    deductFromFreight: z.boolean().default(false),
+    refueledAt: z.string().datetime(),
+    meterReading: z.number().min(0).max(10_000_000).nullable().optional(),
+    receiptNo: z.string().trim().max(128).nullable().optional(),
+    evidenceId: z.number().int().positive(),
+    remarks: z.string().trim().max(500).nullable().optional(),
+  })).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const createAccess = await getRoleOperationPermissionDecision(ctx, "DIESEL", "create");
+    if (!createAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油领用登记权限" });
+    if (input.deductFromFreight) {
+      const settleAccess = await getRoleOperationPermissionDecision(ctx, "DIESEL", "settle");
+      if (!settleAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "运输扣油需额外授予柴油扣油结算权限" });
+      if (input.assetType !== "vehicle") throw new TRPCError({ code: "BAD_REQUEST", message: "运输扣油仅适用于车辆" });
+    }
+    if (input.supplyMethod === "external_station" && (!input.stationOrSupplierName?.trim() || !input.actualUnitPrice)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "加油站加油必须填写加油站/供应商和实际单价" });
+    }
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [project, evidence, asset] = await Promise.all([
+      db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1),
+      db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1),
+      input.assetType === "vehicle"
+        ? db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.assetId)).limit(1)
+        : db.select({ id: machines.id, projectId: machines.projectId }).from(machines).where(eq(machines.id, input.assetId)).limit(1),
+    ]);
+    if (!project[0] || project[0].status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油记录必须归属有效项目" });
+    if (!evidence[0] || evidence[0].projectId !== input.projectId || evidence[0].sourceType !== "diesel_receipt" || evidence[0].status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油领用必须关联当前项目有效的加油表水印凭证" });
+    if (!asset[0] || asset[0].projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "所选车辆或机械必须归属当前项目" });
+    const refueledAt = new Date(input.refueledAt);
+    if (Number.isNaN(refueledAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "加油时间无效" });
+    let appliedUnitPrice = input.actualUnitPrice ?? 0;
+    if (input.supplyMethod === "project_supply") {
+      const dateText = input.refueledAt.slice(0, 10);
+      const prices = await db.select().from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.projectId, input.projectId)).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
+      const activePrice = prices.find(price => price.status === "active" && new Date(price.effectiveFrom).toISOString().slice(0, 10) <= dateText && (!price.effectiveTo || new Date(price.effectiveTo).toISOString().slice(0, 10) >= dateText));
+      if (!activePrice) throw new TRPCError({ code: "BAD_REQUEST", message: "项目部供油前请先维护当日有效的柴油指导单价" });
+      appliedUnitPrice = Number(activePrice.pricePerLiter);
+    }
+    const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
+    const recordNo = `DS${input.projectId}${Date.now().toString().slice(-8)}`;
+    let recordId = 0;
+    await db.transaction(async tx => {
+      const result = await tx.insert(dieselRefuelRecords).values({ projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.assetId : null, machineId: input.assetType === "machine" ? input.assetId : null, transportTripId: null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName?.trim() || null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" && input.deductFromFreight, refueledAt, meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo?.trim() || null, evidenceId: input.evidenceId, remarks: input.remarks?.trim() || null, status: "approved", recordNo, createdBy: user.id, approvedBy: user.id, approvedAt: new Date() });
+      recordId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+      if (!recordId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "柴油记录保存后无法确认编号" });
+      if (input.assetType === "machine") {
+        await tx.insert(machineCostRecords).values({ machineId: input.assetId, projectId: input.projectId, costType: "fuel", quantity: String(input.liters), unitPrice: String(appliedUnitPrice), amount: String(amount), dieselRefuelRecordId: recordId, occurredAt: refueledAt, evidenceId: input.evidenceId, status: "approved" });
+      }
+      await tx.insert(auditLogs).values({ userId: user.id, module: "diesel", action: "mobile_create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `移动柴油领用登记：${input.assetType === "vehicle" ? "车辆" : "机械"} · ${input.liters}L · ¥${amount}${input.deductFromFreight ? " · 运输扣油" : ""}` });
+    });
+    return { success: true, id: recordId, recordNo, amount, appliedUnitPrice };
   }),
 });

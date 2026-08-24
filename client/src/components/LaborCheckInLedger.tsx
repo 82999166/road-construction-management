@@ -7,6 +7,8 @@ export type LaborCheckInLedgerRow = {
   id: number;
   userId: number;
   userName: string | null;
+  projectId: number;
+  projectName?: string | null;
   businessDate: Date | string;
   checkedInAt: Date | string;
   checkedOutAt: Date | string | null;
@@ -38,6 +40,7 @@ function getLocationReviewText(item: LaborCheckInLedgerRow) {
 export default function LaborCheckInLedger({ checkIns, businessDate, onBusinessDateChange, fallbackBusinessDate, displayDate, formatAttendanceLocation, onExportCsv }: LaborCheckInLedgerProps) {
   const exportRows = checkIns.map(item => [
     item.userName || `用户 #${item.userId}`,
+    item.projectName || `项目 #${item.projectId}`,
     displayDate(item.businessDate),
     displayDate(item.checkedInAt),
     item.checkedOutAt ? displayDate(item.checkedOutAt) : "未打卡",
@@ -55,7 +58,7 @@ export default function LaborCheckInLedger({ checkIns, businessDate, onBusinessD
       </div>
       <div className="flex flex-wrap gap-2">
         <Input aria-label="考勤日期" className="w-[160px]" type="date" value={businessDate} onChange={event => onBusinessDateChange(event.target.value)} />
-        <Button size="sm" variant="outline" disabled={!checkIns.length} onClick={() => onExportCsv(`上下班考勤-${businessDate || fallbackBusinessDate}.csv`, ["人员", "日期", "上班时间", "下班时间", "上班打卡位置（中文地址）", "下班打卡位置（中文地址）", "定位复核", "设备"], exportRows)}>导出 CSV</Button>
+        <Button size="sm" variant="outline" disabled={!checkIns.length} onClick={() => onExportCsv(`上下班考勤-${businessDate || fallbackBusinessDate}.csv`, ["人员", "项目", "日期", "上班时间", "下班时间", "上班打卡位置（中文地址）", "下班打卡位置（中文地址）", "定位复核", "设备"], exportRows)}>导出 CSV</Button>
       </div>
     </CardHeader>
     <CardContent>
@@ -64,6 +67,7 @@ export default function LaborCheckInLedger({ checkIns, businessDate, onBusinessD
           <TableHeader>
             <TableRow>
               <TableHead>人员</TableHead>
+              <TableHead>项目</TableHead>
               <TableHead>考勤日期</TableHead>
               <TableHead>上班打卡</TableHead>
               <TableHead>下班打卡</TableHead>
@@ -76,6 +80,7 @@ export default function LaborCheckInLedger({ checkIns, businessDate, onBusinessD
           <TableBody>
             {checkIns.length ? checkIns.map(item => <TableRow key={item.id}>
               <TableCell className="font-medium">{item.userName || `用户 #${item.userId}`}</TableCell>
+              <TableCell>{item.projectName || `项目 #${item.projectId}`}</TableCell>
               <TableCell>{displayDate(item.businessDate)}</TableCell>
               <TableCell>{displayDate(item.checkedInAt)}</TableCell>
               <TableCell>{item.checkedOutAt ? displayDate(item.checkedOutAt) : <span className="text-amber-700">待下班打卡</span>}</TableCell>
@@ -83,7 +88,7 @@ export default function LaborCheckInLedger({ checkIns, businessDate, onBusinessD
               <TableCell className="min-w-[168px] text-xs text-slate-600">{item.checkedOutAt ? formatAttendanceLocation(item.checkoutAddress, item.checkoutStatus) : <span className="text-amber-700">待下班打卡</span>}</TableCell>
               <TableCell><span className={item.status === "normal" && (!item.checkoutStatus || item.checkoutStatus === "normal") ? "text-emerald-700" : "text-amber-700"}>{getLocationReviewText(item)}</span></TableCell>
               <TableCell className="text-xs text-slate-500">{item.deviceLabel || "未记录"}</TableCell>
-            </TableRow>) : <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-slate-500">所选日期暂无登录人员上下班打卡记录。</TableCell></TableRow>}
+            </TableRow>) : <TableRow><TableCell colSpan={9} className="h-24 text-center text-sm text-slate-500">所选日期及已授权项目范围内暂无登录人员上下班打卡记录。</TableCell></TableRow>}
           </TableBody>
         </Table>
       </div>

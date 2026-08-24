@@ -10,7 +10,7 @@ type DepartmentScopedContext = TrpcContext & { departmentModule?: DepartmentBusi
 type DataScope = { userId: number; hasAllProjects: boolean; projectIds: number[]; organizationIds: number[] };
 
 /** 角色详细授权按业务域与动作拆分；未配置详细权限的历史角色继续沿用既有岗位授权，避免升级时误锁业务。 */
-export type BusinessOperationAction = "read" | "create" | "edit" | "submit" | "review" | "settle" | "void" | "export" | "print";
+export type BusinessOperationAction = "read" | "create" | "edit" | "manage" | "submit" | "review" | "settle" | "void" | "export" | "print";
 
 const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule, string> = {
   CONSTRUCTION: "construction",

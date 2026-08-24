@@ -29,7 +29,7 @@ vi.mock("./access", async importOriginal => {
   };
 });
 
-import { assertProjectInCurrentScope, getEffectiveRoleCodes } from "./access";
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { laborRouter } from "./routers/labor";
 import { createInAppMessage } from "./routers/messages";
@@ -60,12 +60,14 @@ function createSelectDb(rows: unknown[]) {
     orderBy: vi.fn(async () => rows),
     limit: vi.fn(async () => rows),
   };
+  const chain = {
+    where: vi.fn(() => terminalQuery),
+    innerJoin: vi.fn(),
+  };
+  chain.innerJoin.mockReturnValue(chain);
   return {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => terminalQuery),
-        innerJoin: vi.fn(() => ({ where: vi.fn(() => terminalQuery) })),
-      })),
+      from: vi.fn(() => chain),
     })),
   };
 }
@@ -75,6 +77,36 @@ describe("labor tRPC 路由", () => {
     vi.clearAllMocks();
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["LABOR_MANAGER"]);
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
+    vi.mocked(getCurrentDataScope).mockResolvedValue({ userId: 1, hasAllProjects: true, projectIds: [], organizationIds: [] });
+  });
+
+  it("后台全员考勤台账按管理员授权项目范围汇总当天移动打卡，不强制绑定单一工作区项目", async () => {
+    const checkIn = {
+      id: 51,
+      userId: 9,
+      userName: "登录人员",
+      projectId: 1,
+      projectName: "项目部",
+      businessDate: new Date("2026-08-24T00:00:00.000Z"),
+      checkedInAt: new Date("2026-08-24T00:05:00.000Z"),
+      checkedOutAt: null,
+      deviceLabel: "已绑定设备",
+      checkInAddress: "中文详细地址",
+      locationAccuracyMeters: "15",
+      status: "normal",
+      checkoutAddress: null,
+      checkoutLocationAccuracyMeters: null,
+      checkoutStatus: null,
+    };
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([checkIn]) as never);
+
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.listCheckIns({ businessDate: "2026-08-24" })).resolves.toMatchObject([{
+      id: 51,
+      projectId: 1,
+      projectName: "项目部",
+      checkedInAt: checkIn.checkedInAt,
+    }]);
+    expect(assertProjectInCurrentScope).not.toHaveBeenCalled();
   });
 
   it("人员台账仅返回脱敏投影和实名审核状态，不返回加密原字段", async () => {

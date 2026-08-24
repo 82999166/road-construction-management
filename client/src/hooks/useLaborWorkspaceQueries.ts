@@ -5,7 +5,7 @@ type QueryInputs = {
   workspaceProjectInput: { projectId: number };
   laborWorkspaceInput: { projectId: number; includeLeft: boolean };
   payrollWorkspaceInput: { projectId: number; period?: string };
-  laborCheckInWorkspaceInput: { projectId: number; businessDate?: string };
+  laborCheckInWorkspaceInput: { projectId?: number; businessDate?: string };
 };
 
 /**
