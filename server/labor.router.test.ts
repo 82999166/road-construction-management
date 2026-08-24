@@ -357,4 +357,18 @@ describe("labor tRPC 路由", () => {
     await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 12 })).resolves.toMatchObject({ success: true, duplicate: false, punchType: "out", id: 44, status: "normal" });
     expect(checkoutSet).toHaveBeenCalledWith(expect.objectContaining({ checkedOutAt: expect.any(Date), checkoutLongitude: "120.1", checkoutLatitude: "30.2", checkoutStatus: "normal" }));
   });
+
+  it("上班打卡遇到已禁用设备时保留明确业务错误，不泛化为保存失败", async () => {
+    const fingerprint = "b".repeat(64);
+    const results: unknown[][] = [[], [{ id: 12, status: "disabled" }]];
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => results.shift() ?? []) })) })) })),
+      insert: vi.fn(),
+    };
+    Object.assign(db, { transaction: vi.fn(async callback => callback(db)) });
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "in", deviceFingerprintHash: fingerprint, deviceLabel: "已停用设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 10 })).rejects.toMatchObject({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
 });

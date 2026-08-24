@@ -475,15 +475,19 @@ export const laborRouter = router({
             return;
           }
           const [created] = await tx.insert(attendanceCheckIns).values({ userId: user.id, projectId: input.projectId, businessDate, checkedInAt: now, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, checkInAddress: attendanceAddress, longitude: hasLocation ? String(input.longitude) : null, latitude: hasLocation ? String(input.latitude) : null, locationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), status: hasLocation ? "normal" : "location_missing" }).$returningId();
-          createdCheckInId = Number(created?.id);
+          createdCheckInId = Number(created?.id ?? 0);
+          if (!createdCheckInId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡记录保存后未返回编号，请稍后重试" });
           await tx.insert(auditLogs).values({ userId: user.id, module: "labor", action: newlyBound ? "bind_device_and_check_in" : "mobile_check_in", targetType: "attendance_check_in", targetId: String(createdCheckInId), summary: `移动一键打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
         });
         if (input.punchType === "out" && existing) return { success: true, duplicate: false, punchType: "out" as const, id: existing.id, checkedOutAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
         return { success: true, duplicate: false, punchType: "in" as const, id: createdCheckInId, checkedInAt: now, businessDate: businessDateText, status: "normal" as const, newlyBound };
       } catch (error) {
         if (input.punchType === "out") throw error;
+        // 设备禁用、设备数量上限、项目范围等均为可处理的业务错误，不能被泛化为“保存失败”。
+        if (error instanceof TRPCError) throw error;
         const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
         if (concurrent) return { success: true, duplicate: true, punchType: "in" as const, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
+        console.error("[Attendance] 上班打卡事务保存失败", { projectId: input.projectId, userId: user.id, error: error instanceof Error ? error.message : String(error) });
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡保存失败，请稍后重试" });
       }
     }),
