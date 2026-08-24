@@ -14,7 +14,7 @@ export const dieselRouter = router({
   mobileOverview: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
     requireAuthenticatedUser(ctx);
     const readAccess = await getRoleOperationPermissionDecision(ctx, "DIESEL", "read");
-    if (!readAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油台账查看权限" });
+    if (!readAccess.hasDetailedPermissions || !readAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油台账查看权限" });
     const db = await getDb();
     if (!db) return { projects: [], selectedProjectId: null, summary: null, records: [] };
     const dataScope = await getCurrentDataScope(ctx);

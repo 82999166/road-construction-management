@@ -130,4 +130,16 @@ describe("移动工作台 tRPC 路由", () => {
 
     expect(result.menus.some(menu => menu.code === "DIESEL" && menu.title === "柴油管理")).toBe(true);
   });
+
+  it("未配置柴油细分权限时，旧岗位兼容规则不得自动显示柴油管理入口", async () => {
+    mockGetEffectiveRoleCodes.mockResolvedValue(["MACHINERY_MANAGER"]);
+    mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [88], organizationIds: [] });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY"], hasAllDepartments: false });
+    mockGetRoleOperationPermissionDecision.mockResolvedValueOnce({ hasDetailedPermissions: false, allowed: true });
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
+
+    const result = await mobileRouter.createCaller(createAuthContext()).workbench();
+
+    expect(result.menus.some(menu => menu.code === "DIESEL")).toBe(false);
+  });
 });

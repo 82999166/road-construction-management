@@ -59,13 +59,12 @@ export const mobileRouter = router({
   }),
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
-    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules, dieselReadAccess, dieselCreateAccess] = await Promise.all([
+    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules, dieselReadAccess] = await Promise.all([
       getEffectiveRoleCodes(ctx),
       getCurrentDataScope(ctx),
       getCurrentDepartmentAccess(ctx),
       getCurrentUserSpecificMenuModules(ctx),
       getRoleOperationPermissionDecision(ctx, "DIESEL", "read"),
-      getRoleOperationPermissionDecision(ctx, "DIESEL", "create"),
     ]);
     const db = await getDb();
     const unreadMessages = db
@@ -74,8 +73,8 @@ export const mobileRouter = router({
     const menus = MOBILE_MENU_CATALOG.filter(menu => {
       // 工作台和消息中心属于所有已登录人员的基础入口；其余业务入口必须同时通过岗位和部门业务范围校验。
       if ((DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code)) return true;
-      // 柴油权限此前仅存在于权限矩阵，未进入移动菜单目录。保留项目范围约束，但无需再要求管理员额外重复配置部门模块。
-      if (menu.code === "DIESEL") return dieselReadAccess.allowed || dieselCreateAccess.allowed;
+      // 柴油是新增细分权限模块，不能沿用“旧岗位无细分权限即默认放行”的兼容规则；必须显式授予柴油台账查看权限。
+      if (menu.code === "DIESEL") return dieselReadAccess.hasDetailedPermissions && dieselReadAccess.allowed;
       // 将只读字面量角色数组提升为字符串数组，便于对不同菜单的角色集合统一比较。
       const menuRoles = menu.roles as readonly string[];
       const hasRoleAccess = roleCodes.includes("ALL") || menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));
