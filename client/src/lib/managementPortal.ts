@@ -28,7 +28,9 @@ export function getManagementModulePath(code: string) {
     "TRANSPORT",
     "PURCHASING",
     "MEASUREMENT",
+    "CONTRACT",
     "FINANCE",
+    "DIESEL",
     "EVIDENCE",
   ]);
   return supportedCodes.has(code) ? `/mobile/${code.toLowerCase()}` : null;

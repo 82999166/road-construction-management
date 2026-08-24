@@ -73,14 +73,12 @@ export const mobileRouter = router({
     const menus = MOBILE_MENU_CATALOG.filter(menu => {
       // 工作台和消息中心属于所有已登录人员的基础入口；其余业务入口必须同时通过岗位和部门业务范围校验。
       if ((DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code)) return true;
-      // 柴油是新增细分权限模块，不能沿用“旧岗位无细分权限即默认放行”的兼容规则；必须显式授予柴油台账查看权限。
-      if (menu.code === "DIESEL") return dieselReadAccess.hasDetailedPermissions && dieselReadAccess.allowed;
-      // 将只读字面量角色数组提升为字符串数组，便于对不同菜单的角色集合统一比较。
-      const menuRoles = menu.roles as readonly string[];
-      const hasRoleAccess = roleCodes.includes("ALL") || menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));
+      // 柴油是新增细分权限模块，不能沿用旧岗位默认放行规则；必须显式授予柴油台账查看权限。
       const hasDepartmentAccess = departmentAccess.hasAllDepartments || departmentAccess.moduleCodes.includes(menu.code as never);
       const hasUserSpecificMenuAccess = userSpecificMenuModules.includes(menu.code as never);
-      return (hasRoleAccess && hasDepartmentAccess) || hasUserSpecificMenuAccess;
+      if (menu.code === "DIESEL") return (dieselReadAccess.hasDetailedPermissions && dieselReadAccess.allowed && hasDepartmentAccess) || hasUserSpecificMenuAccess;
+      // 部门模块集合已在服务端同时核验角色、角色细分权限、用户专属权限和项目范围；这里不得再次用旧菜单角色白名单覆盖显式授权。
+      return hasDepartmentAccess || hasUserSpecificMenuAccess;
     });
 
     // 无数据库连接时仅返回已知的未读数降级值；不构造或缓存虚假的业务待办统计。

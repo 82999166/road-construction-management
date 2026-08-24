@@ -31,6 +31,7 @@ const MobileTransportPage = lazy(() => import("./pages/MobileTransportPage"));
 const MobilePurchasingPage = lazy(() => import("./pages/MobilePurchasingPage"));
 const MobileMeasurementPage = lazy(() => import("./pages/MobileMeasurementPage"));
 const MobileSubcontractPage = lazy(() => import("./pages/MobileSubcontractPage"));
+const MobileContractPage = lazy(() => import("./pages/MobileContractPage"));
 const MobileFinancePage = lazy(() => import("./pages/MobileFinancePage"));
 const MobileDieselPage = lazy(() => import("./pages/MobileDieselPage"));
 const MobileMessagesPage = lazy(() => import("./pages/MobileMessagesPage"));
@@ -108,6 +109,7 @@ function Router() {
       <Route path={"/mobile/purchasing"} component={MobilePurchasingPage} />
       <Route path={"/mobile/measurement"} component={MobileMeasurementPage} />
       <Route path={"/mobile/subcontract"} component={MobileSubcontractPage} />
+      <Route path={"/mobile/contract"} component={MobileContractPage} />
       <Route path={"/mobile/finance"} component={MobileFinancePage} />
       <Route path={"/mobile/diesel"} component={MobileDieselPage} />
       <Route path={"/mobile/messages"} component={MobileMessagesPage} />

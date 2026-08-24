@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, outsourceContracts } from "../../drizzle/schema";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertRoleOperationPermission, getEffectiveRoleCodes, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getRoleOperationPermissionDecision, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -17,24 +17,7 @@ function createContractNo() {
 }
 
 async function assertContractAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0], action: BusinessOperationAction = "read") {
-  await assertDepartmentBusinessAccess(ctx, "CONTRACT");
-  const detailedPermission = await assertRoleOperationPermission(ctx, "CONTRACT", action);
-  const roleCodes = await getEffectiveRoleCodes(ctx);
-  const allowed = ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "TRANSPORT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
-  // 管理员若已为非标准岗位配置了合同详细操作权限，应以该显式授权为准，不能被历史岗位白名单误拦截。
-  const hasExplicitGrantedOperation = detailedPermission.hasDetailedPermissions && detailedPermission.allowed;
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role)) && !hasExplicitGrantedOperation) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获外包合同管理授权" });
-  }
-  return roleCodes;
-}
-
-function canMaintain(roleCodes: readonly string[]) {
-  return roleCodes.includes("ALL") || roleCodes.some(role => ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "TRANSPORT_MANAGER", "FINANCE_MANAGER"].includes(role));
-}
-
-function canClose(roleCodes: readonly string[]) {
-  return roleCodes.includes("ALL") || roleCodes.some(role => ["PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
+  return assertDepartmentBusinessAccess(ctx, "CONTRACT", action);
 }
 
 const contractInput = z.object({
@@ -56,8 +39,14 @@ const contractInput = z.object({
 
 export const contractRouter = router({
   capabilities: protectedProcedure.query(async ({ ctx }) => {
-    const roles = await assertContractAccess(ctx, "read");
-    return { canMaintain: canMaintain(roles), canClose: canClose(roles) };
+    await assertContractAccess(ctx, "read");
+    const [create, edit, review, close] = await Promise.all([
+      getRoleOperationPermissionDecision(ctx, "CONTRACT", "create"),
+      getRoleOperationPermissionDecision(ctx, "CONTRACT", "edit"),
+      getRoleOperationPermissionDecision(ctx, "CONTRACT", "review"),
+      getRoleOperationPermissionDecision(ctx, "CONTRACT", "void"),
+    ]);
+    return { canMaintain: create.allowed || edit.allowed || review.allowed, canClose: close.allowed };
   }),
 
   list: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), status: contractStatus.optional(), contractType: contractType.optional() })).query(async ({ ctx, input }) => {
@@ -73,8 +62,7 @@ export const contractRouter = router({
 
   save: protectedProcedure.input(contractInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    const roles = await assertContractAccess(ctx, input.id ? "edit" : "create");
-    if (!canMaintain(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无外包合同维护权限" });
+    await assertContractAccess(ctx, input.id ? "edit" : "create");
     await assertProjectInCurrentScope(ctx, input.projectId);
     if (input.startDate && input.endDate && input.endDate < input.startDate) throw new TRPCError({ code: "BAD_REQUEST", message: "合同结束日期不得早于开始日期" });
     const db = await getDb();
@@ -101,7 +89,7 @@ export const contractRouter = router({
   transition: protectedProcedure.input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), targetStatus: contractStatus })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     const transitionAction: BusinessOperationAction = ["closed", "void"].includes(input.targetStatus) ? "void" : input.targetStatus === "active" ? "review" : "edit";
-    const roles = await assertContractAccess(ctx, transitionAction);
+    await assertContractAccess(ctx, transitionAction);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -109,8 +97,6 @@ export const contractRouter = router({
     if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目合同" });
     const targets: Record<string, string[]> = { draft: ["active", "void"], active: ["suspended", "expired", "closed"], suspended: ["active", "closed", "void"] };
     if (!targets[existing.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前合同状态不允许该操作" });
-    if (["closed", "void"].includes(input.targetStatus) && !canClose(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无合同关闭或作废权限" });
-    if (!["closed", "void"].includes(input.targetStatus) && !canMaintain(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无合同状态维护权限" });
     await db.update(outsourceContracts).set({ status: input.targetStatus }).where(and(eq(outsourceContracts.id, input.id), eq(outsourceContracts.status, existing.status)));
     await db.insert(auditLogs).values({ userId: user.id, module: "contract", action: "transition_outsource_contract", targetType: "outsource_contract", targetId: String(input.id), summary: `外包合同状态变更为：${input.targetStatus}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "contract", eventCode: `outsource_contract_${input.targetStatus}`, targetType: "outsource_contract", targetId: String(input.id), title: `外包合同状态已更新`, content: "一份外包合同的办理状态已更新，请进入系统查看受控合同台账。", deepLink: "/admin/contracts" }).catch(() => undefined);

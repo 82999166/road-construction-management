@@ -122,7 +122,7 @@ describe("移动工作台 tRPC 路由", () => {
   it("已授予柴油查看细分权限时，移动工作台必须返回柴油管理入口", async () => {
     mockGetEffectiveRoleCodes.mockResolvedValue(["MACHINERY_MANAGER"]);
     mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [88], organizationIds: [] });
-    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY"], hasAllDepartments: false });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY", "DIESEL"], hasAllDepartments: false });
     mockGetRoleOperationPermissionDecision.mockResolvedValueOnce({ hasDetailedPermissions: true, allowed: true }).mockResolvedValueOnce({ hasDetailedPermissions: true, allowed: false });
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
 

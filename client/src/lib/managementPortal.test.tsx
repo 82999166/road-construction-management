@@ -20,11 +20,15 @@ describe("统一管理入口权限投影", () => {
       { code: "MESSAGES", title: "消息" },
       { code: "CONSTRUCTION", title: "施工现场" },
       { code: "FINANCE", title: "财务成本" },
+      { code: "DIESEL", title: "柴油管理" },
+      { code: "CONTRACT", title: "外包合同" },
       { code: "UNRECOGNIZED", title: "未知模块" },
     ]);
 
-    expect(modules.map(module => module.code)).toEqual(["CONSTRUCTION", "FINANCE"]);
+    expect(modules.map(module => module.code)).toEqual(["CONSTRUCTION", "FINANCE", "DIESEL", "CONTRACT"]);
     expect(getManagementModulePath("CONSTRUCTION")).toBe("/mobile/construction");
+    expect(getManagementModulePath("DIESEL")).toBe("/mobile/diesel");
+    expect(getManagementModulePath("CONTRACT")).toBe("/mobile/contract");
     expect(getManagementModulePath("UNRECOGNIZED")).toBeNull();
   });
 });

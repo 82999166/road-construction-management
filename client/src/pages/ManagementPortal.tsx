@@ -9,6 +9,8 @@ import {
   Bell,
   Camera,
   ContactRound,
+  FileText,
+  Fuel,
   HardHat,
   LayoutDashboard,
   MapPin,
@@ -32,7 +34,9 @@ const MANAGEMENT_MODULE_ICONS: Record<string, LucideIcon> = {
   TRANSPORT: Truck,
   PURCHASING: PackageSearch,
   MEASUREMENT: Ruler,
+  CONTRACT: FileText,
   FINANCE: WalletCards,
+  DIESEL: Fuel,
   EVIDENCE: Camera,
 };
 
