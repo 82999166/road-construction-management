@@ -125,6 +125,20 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("已开通 1 项部门业务");
   });
 
+  it("服务端已确认上班后将上班按钮改为已上班禁用状态，而不是保留可操作的实色按钮", () => {
+    vi.stubGlobal("navigator", { onLine: true });
+    mockWorkbenchUseQuery.mockReturnValue({ data: { user: { id: 7, name: "现场管理员", roleCodes: ["CONSTRUCTION_MANAGER"], departments: [], departmentModules: ["CONSTRUCTION"] }, menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "CONSTRUCTION", title: "施工管理" }], statistics: { pendingApprovals: 0, unreadMessages: 0, todayTrips: 0, pendingPayroll: 0 } }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendanceProjectsUseQuery.mockReturnValue({ data: { projects: [{ id: 1, name: "测试项目" }] }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendanceStatusUseQuery.mockReturnValue({ data: { checkedIn: true, checkedOut: false, checkIn: { checkedInAt: new Date("2026-08-24T01:00:00Z") }, checkOut: null }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendancePunchUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
+
+    const markup = renderToStaticMarkup(<MobileWorkbench />);
+
+    expect(markup).toContain("已上班");
+    expect(markup).toContain("bg-slate-200");
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>已上班<\/button>/);
+  });
+
   it("仅对短暂网络传输失败作有限重试，并在浏览器恢复联网后重新同步", () => {
     const markup = renderWorkbench({
       user: { id: 7, name: "劳务测试人员", roleCodes: ["LABOR_MANAGER"], departments: [], departmentModules: ["LABOR"] },

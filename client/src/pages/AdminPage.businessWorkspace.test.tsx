@@ -543,6 +543,15 @@ describe("后台全员上下班考勤定位展示", () => {
     expect(source).toContain("中文地址");
     expect(source).not.toContain("formatAttendanceLocation(item.checkoutLongitude");
   });
+
+  it("后台上下班打卡台账默认使用中国业务日期，与服务端打卡日期裁切保持一致", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('timeZone: "Asia/Shanghai"');
+    expect(source).toContain("function toChinaBusinessDateInput");
+    expect(source).toContain("initialAttendanceDate={toChinaBusinessDateInput()}");
+    expect(source).toContain("fallbackBusinessDate={toChinaBusinessDateInput()}");
+  });
 });
 
 describe("后台导出性能", () => {
