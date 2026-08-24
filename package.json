@@ -14,6 +14,8 @@
     "db:check": "node scripts/check-migration-hygiene.mjs",
     "db:push": "pnpm db:check && drizzle-kit generate && drizzle-kit migrate",
     "audit:prod": "node scripts/security-audit.mjs",
+    "backup:self-host": "node scripts/self-host-db-backup.mjs",
+    "backup:self-host:verify": "node scripts/verify-self-host-db-backup.mjs",
     "verify:release": "pnpm check && pnpm test && pnpm build && pnpm build:self-host && pnpm db:check && pnpm audit:prod"
   },
   "dependencies": {
