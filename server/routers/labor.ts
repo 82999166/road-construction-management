@@ -146,6 +146,21 @@ function getChinaBusinessDate(now: Date) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+/**
+ * MySQL DATE 与 JavaScript Date 在不同运行时区下比较可能发生序列化偏移。
+ * 考勤状态、上下班衔接和台账筛选统一以中国自然日对应的 UTC 时间区间匹配真实上班时间，
+ * 而 businessDate 继续仅承担唯一键和审计标签职责。
+ */
+function getChinaBusinessDateRange(value: string) {
+  const start = new Date(`${value}T00:00:00.000+08:00`);
+  return { start, endExclusive: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+function attendanceCheckInDateRangeFilter(value: string) {
+  const { start, endExclusive } = getChinaBusinessDateRange(value);
+  return and(gte(attendanceCheckIns.checkedInAt, start), lt(attendanceCheckIns.checkedInAt, endExclusive));
+}
+
 /** 从加密敏感字段生成只读掩码；密文异常时宁可返回全掩码也不泄露原值。 */
 function getMaskedEncryptedValue(cipherText: string | null | undefined, visibleTail = 4) {
   if (!cipherText) return null;
@@ -430,7 +445,7 @@ export const laborRouter = router({
       const db = await getDb();
       if (!db) return { checkedIn: false, checkedOut: false, businessDate: getChinaBusinessDate(new Date()), checkIn: null, checkOut: null };
       const businessDate = getChinaBusinessDate(new Date());
-      const [checkIn] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus, checkInAddress: attendanceCheckIns.checkInAddress, checkoutAddress: attendanceCheckIns.checkoutAddress, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, toBusinessDate(businessDate)))).limit(1);
+      const [checkIn] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus, checkInAddress: attendanceCheckIns.checkInAddress, checkoutAddress: attendanceCheckIns.checkoutAddress, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), attendanceCheckInDateRangeFilter(businessDate))).limit(1);
       return { checkedIn: Boolean(checkIn), checkedOut: Boolean(checkIn?.checkedOutAt), businessDate, checkIn: checkIn ? { ...checkIn, locationProtection: checkIn.status === "normal" ? "定位已受保护，业务页面仅显示中文地址" : "未采集定位" } : null, checkOut: checkIn?.checkedOutAt ? { checkedOutAt: checkIn.checkedOutAt, status: checkIn.checkoutStatus, address: checkIn.checkoutAddress, locationAccuracyMeters: checkIn.checkoutLocationAccuracyMeters, locationProtection: checkIn.checkoutStatus === "normal" ? "定位已受保护，业务页面仅显示中文地址" : "未采集定位" } : null };
     }),
 
@@ -446,7 +461,7 @@ export const laborRouter = router({
       const hasLocation = input.longitude !== null && input.longitude !== undefined && input.latitude !== null && input.latitude !== undefined;
       if (!hasLocation) throw new TRPCError({ code: "BAD_REQUEST", message: "上下班打卡必须上传实时定位信息，请允许浏览器定位后重试" });
       const attendanceAddress = hasLocation ? await resolveAttendanceAddress(input.latitude!, input.longitude!) : null;
-      const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
+      const [existing] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, status: attendanceCheckIns.status, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), attendanceCheckInDateRangeFilter(businessDateText))).limit(1);
       if (input.punchType === "in" && existing) return { success: true, duplicate: true, punchType: "in" as const, id: existing.id, checkedInAt: existing.checkedInAt, businessDate: businessDateText, status: existing.status };
       if (input.punchType === "out" && !existing) throw new TRPCError({ code: "BAD_REQUEST", message: "请先完成今日上班打卡后再进行下班打卡" });
       if (input.punchType === "out" && existing?.checkedOutAt) return { success: true, duplicate: true, punchType: "out" as const, id: existing.id, checkedOutAt: existing.checkedOutAt, businessDate: businessDateText, status: existing.checkoutStatus ?? "normal" };
@@ -485,7 +500,7 @@ export const laborRouter = router({
         if (input.punchType === "out") throw error;
         // 设备禁用、设备数量上限、项目范围等均为可处理的业务错误，不能被泛化为“保存失败”。
         if (error instanceof TRPCError) throw error;
-        const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate))).limit(1);
+        const [concurrent] = await db.select({ id: attendanceCheckIns.id, checkedInAt: attendanceCheckIns.checkedInAt, status: attendanceCheckIns.status }).from(attendanceCheckIns).where(and(eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), attendanceCheckInDateRangeFilter(businessDateText))).limit(1);
         if (concurrent) return { success: true, duplicate: true, punchType: "in" as const, id: concurrent.id, checkedInAt: concurrent.checkedInAt, businessDate: businessDateText, status: concurrent.status };
         console.error("[Attendance] 上班打卡事务保存失败", { projectId: input.projectId, userId: user.id, error: error instanceof Error ? error.message : String(error) });
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "打卡保存失败，请稍后重试" });
@@ -497,7 +512,7 @@ export const laborRouter = router({
       await assertLaborBusinessAccess(ctx);
       const db = await getDb();
       if (!db) return [];
-      const businessDate = input.businessDate ? toBusinessDate(input.businessDate) : toBusinessDate(getChinaBusinessDate(new Date()));
+      const businessDateText = input.businessDate ?? getChinaBusinessDate(new Date());
       let scopedProjectIds: number[] | null = null;
       if (input.projectId) {
         await assertProjectInCurrentScope(ctx, input.projectId);
@@ -510,7 +525,7 @@ export const laborRouter = router({
           if (!scopedProjectIds.length) return [];
         }
       }
-      const filters = [eq(attendanceCheckIns.businessDate, businessDate)];
+      const filters = [attendanceCheckInDateRangeFilter(businessDateText)];
       if (scopedProjectIds) filters.push(inArray(attendanceCheckIns.projectId, scopedProjectIds));
       return db.select({ id: attendanceCheckIns.id, userId: attendanceCheckIns.userId, userName: users.name, projectId: attendanceCheckIns.projectId, projectName: projects.name, businessDate: attendanceCheckIns.businessDate, checkedInAt: attendanceCheckIns.checkedInAt, checkedOutAt: attendanceCheckIns.checkedOutAt, deviceLabel: attendanceCheckIns.deviceLabel, checkInAddress: attendanceCheckIns.checkInAddress, locationAccuracyMeters: attendanceCheckIns.locationAccuracyMeters, status: attendanceCheckIns.status, checkoutAddress: attendanceCheckIns.checkoutAddress, checkoutLocationAccuracyMeters: attendanceCheckIns.checkoutLocationAccuracyMeters, checkoutStatus: attendanceCheckIns.checkoutStatus }).from(attendanceCheckIns).innerJoin(users, eq(attendanceCheckIns.userId, users.id)).innerJoin(projects, eq(attendanceCheckIns.projectId, projects.id)).where(and(...filters)).orderBy(desc(attendanceCheckIns.checkedInAt));
     }),
