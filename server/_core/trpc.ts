@@ -17,7 +17,7 @@ export const publicProcedure = t.procedure;
  * 业务模块的高影响写入不能仅依赖前端隐藏按钮；客户端可直接调用 RPC。
  * 普通管理人员只能在其已授权模块与项目范围内新增、查看，既有记录修改与状态流转由超级管理员负责。
  */
-const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "subcontract.", "contract.", "finance.", "evidence."] as const;
+const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "subcontract.", "contract.", "finance.", "diesel.", "evidence."] as const;
 const HIGH_IMPACT_MUTATION_SEGMENTS = ["transition", "approve", "pay", "void", "reverse", "ocr", "recordSettlement", "recordPayment"] as const;
 const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   construction: "CONSTRUCTION",
@@ -30,6 +30,7 @@ const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   subcontract: "MEASUREMENT",
   contract: "CONTRACT",
   finance: "FINANCE",
+  diesel: "DIESEL",
   evidence: "EVIDENCE",
 };
 /**

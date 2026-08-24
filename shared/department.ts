@@ -14,6 +14,7 @@ export const DEPARTMENT_BUSINESS_MODULES = [
   { code: "MEASUREMENT", name: "计量结算", description: "计量申报、审核、结算与付款" },
   { code: "CONTRACT", name: "合同管理", description: "外包合同台账、合同草案、预览与签署管理" },
   { code: "FINANCE", name: "财务成本", description: "资金收支、凭证、成本与财务汇总" },
+  { code: "DIESEL", name: "柴油管理", description: "柴油领用、指导价、预警、扣油与供油台账" },
   { code: "EVIDENCE", name: "水印取证", description: "现场影像、水印与 OCR 取证" },
 ] as const;
 

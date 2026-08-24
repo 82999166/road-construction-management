@@ -21,6 +21,7 @@ const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule
   MEASUREMENT: "measurement",
   CONTRACT: "contract",
   FINANCE: "finance",
+  DIESEL: "diesel",
   EVIDENCE: "evidence",
 };
 
@@ -303,7 +304,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   if (isSuperAdmin) {
     return {
       departments: [] as Array<{ id: number; name: string; type: "department" | "project_department" }>,
-      moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"] as DepartmentBusinessModule[],
+      moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "DIESEL", "EVIDENCE"] as DepartmentBusinessModule[],
       hasAllDepartments: true,
     };
   }

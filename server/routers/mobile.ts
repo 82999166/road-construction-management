@@ -1,7 +1,7 @@
 import { MOBILE_MENU_CATALOG } from "../../shared/domain";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { constructionDailyReports, measurementClaims, notificationRecords, payrollStatements, projects, purchaseRequests, transportTrips } from "../../drizzle/schema";
-import { getCurrentDataScope, getCurrentDepartmentAccess, getCurrentUserSpecificMenuModules, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { getCurrentDataScope, getCurrentDepartmentAccess, getCurrentUserSpecificMenuModules, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { DEPARTMENT_AGNOSTIC_MOBILE_MENUS } from "../../shared/department";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
@@ -59,7 +59,14 @@ export const mobileRouter = router({
   }),
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
-    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules] = await Promise.all([getEffectiveRoleCodes(ctx), getCurrentDataScope(ctx), getCurrentDepartmentAccess(ctx), getCurrentUserSpecificMenuModules(ctx)]);
+    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules, dieselReadAccess, dieselCreateAccess] = await Promise.all([
+      getEffectiveRoleCodes(ctx),
+      getCurrentDataScope(ctx),
+      getCurrentDepartmentAccess(ctx),
+      getCurrentUserSpecificMenuModules(ctx),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "read"),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "create"),
+    ]);
     const db = await getDb();
     const unreadMessages = db
       ? (await db.select({ id: notificationRecords.id }).from(notificationRecords).where(and(eq(notificationRecords.recipientUserId, user.id), ne(notificationRecords.status, "read")))).length
@@ -67,6 +74,8 @@ export const mobileRouter = router({
     const menus = MOBILE_MENU_CATALOG.filter(menu => {
       // 工作台和消息中心属于所有已登录人员的基础入口；其余业务入口必须同时通过岗位和部门业务范围校验。
       if ((DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code)) return true;
+      // 柴油权限此前仅存在于权限矩阵，未进入移动菜单目录。保留项目范围约束，但无需再要求管理员额外重复配置部门模块。
+      if (menu.code === "DIESEL") return dieselReadAccess.allowed || dieselCreateAccess.allowed;
       // 将只读字面量角色数组提升为字符串数组，便于对不同菜单的角色集合统一比较。
       const menuRoles = menu.roles as readonly string[];
       const hasRoleAccess = roleCodes.includes("ALL") || menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));

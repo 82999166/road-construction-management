@@ -237,7 +237,7 @@ const roleInput = z.object({
 /** 部门业务范围配置仅允许使用系统定义的业务模块编码。 */
 const departmentBusinessScopeInput = z.object({
   organizationId: z.number().int().positive(),
-  module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "EVIDENCE"]),
+  module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"]),
   status: z.enum(["active", "disabled"]).default("active"),
 });
 

@@ -113,6 +113,18 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("返回统一管理后台");
   });
 
+  it("服务端返回柴油管理菜单时展示柴油入口，不由前端自行推断其他未授权业务", () => {
+    const markup = renderWorkbench({
+      user: { id: 7, name: "柴油管理员", roleCodes: ["MACHINERY_MANAGER"], departments: [], departmentModules: ["DIESEL"] },
+      menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "DIESEL", title: "柴油管理" }, { code: "MESSAGES", title: "消息中心" }],
+      statistics: { pendingApprovals: 0, unreadMessages: 0, todayTrips: 0, pendingPayroll: 0 },
+    });
+
+    expect(markup).toContain("柴油管理");
+    expect(markup).not.toContain("财务成本");
+    expect(markup).toContain("已开通 1 项部门业务");
+  });
+
   it("仅对短暂网络传输失败作有限重试，并在浏览器恢复联网后重新同步", () => {
     const markup = renderWorkbench({
       user: { id: 7, name: "劳务测试人员", roleCodes: ["LABOR_MANAGER"], departments: [], departmentModules: ["LABOR"] },
