@@ -58,10 +58,16 @@ export default function MobileAttendancePage() {
   const attendanceCheckOutAt = attendanceStatus.data?.checkOut?.checkedOutAt ?? currentAttendanceOverride?.checkedOutAt ?? null;
   const punch = trpc.labor.attendance.checkIn.useMutation({
     onSuccess: async (result, variables) => {
+      const refreshed = await attendanceStatus.refetch();
+      const serverStatus = refreshed.data;
+      if (result.punchType === "out" && serverStatus && !serverStatus.checkedOut) {
+        setAttendanceStatusOverride(null);
+        toast.error("下班打卡尚未被服务器确认，请刷新状态后重试");
+        return;
+      }
       setAttendanceStatusOverride({ projectId: variables.projectId, checkedIn: true, checkedOut: result.punchType === "out", checkedInAt: result.punchType === "in" ? result.checkedInAt : attendanceStatus.data?.checkIn?.checkedInAt ?? null, checkedOutAt: result.punchType === "out" ? result.checkedOutAt : null });
       const label = result.punchType === "out" ? "下班" : "上班";
       toast.success(result.duplicate ? `今日${label}打卡已完成` : `${label}打卡成功，定位已上传`);
-      await attendanceStatus.refetch();
     },
     onError: error => toast.error(error.message),
   });

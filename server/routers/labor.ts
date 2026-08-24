@@ -134,6 +134,14 @@ function assertConditionalPayrollWrite(result: unknown) {
   }
 }
 
+/** 下班更新必须真实命中本人、项目和当天的未下班记录，禁止把 0 行更新误报为移动端成功。 */
+function assertAttendanceCheckoutWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "未确认到可更新的今日上班记录，请刷新考勤状态后重试下班打卡" });
+  }
+}
+
 /** 将 YYYY-MM-DD 业务日期固定转换为 UTC 零点，避免客户端时区影响项目日考勤口径。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -485,7 +493,8 @@ export const laborRouter = router({
             await tx.update(attendanceDeviceBindings).set({ deviceLabel: input.deviceLabel, lastUsedAt: now }).where(eq(attendanceDeviceBindings.id, binding.id));
           }
           if (input.punchType === "out" && existing) {
-            await tx.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutAddress: attendanceAddress, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), eq(attendanceCheckIns.businessDate, businessDate), isNull(attendanceCheckIns.checkedOutAt)));
+            const checkoutWrite = await tx.update(attendanceCheckIns).set({ checkedOutAt: now, checkoutAddress: attendanceAddress, checkoutLongitude: hasLocation ? String(input.longitude) : null, checkoutLatitude: hasLocation ? String(input.latitude) : null, checkoutLocationAccuracyMeters: input.locationAccuracyMeters === null || input.locationAccuracyMeters === undefined ? null : String(input.locationAccuracyMeters), checkoutStatus: hasLocation ? "normal" : "location_missing" }).where(and(eq(attendanceCheckIns.id, existing.id), eq(attendanceCheckIns.userId, user.id), eq(attendanceCheckIns.projectId, input.projectId), attendanceCheckInDateRangeFilter(businessDateText), isNull(attendanceCheckIns.checkedOutAt)));
+            assertAttendanceCheckoutWrite(checkoutWrite);
             await tx.insert(auditLogs).values({ userId: user.id, module: "labor", action: "mobile_check_out", targetType: "attendance_check_in", targetId: String(existing.id), summary: `移动下班打卡：${businessDateText} · 已记录定位 · 设备 ${input.deviceLabel.slice(0, 60)}` });
             return;
           }

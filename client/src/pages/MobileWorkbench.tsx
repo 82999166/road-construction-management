@@ -136,6 +136,13 @@ export default function MobileWorkbench() {
   const attendanceCheckInAt = attendanceStatus.data?.checkIn?.checkedInAt ?? currentAttendanceOverride?.checkedInAt ?? null;
   const attendanceCheckOutAt = attendanceStatus.data?.checkOut?.checkedOutAt ?? currentAttendanceOverride?.checkedOutAt ?? null;
   const attendancePunch = trpc.labor.attendance.checkIn.useMutation({ onSuccess: async (result, variables) => {
+    const refreshed = await attendanceStatus.refetch();
+    const serverStatus = refreshed.data;
+    if (result.punchType === "out" && serverStatus && !serverStatus.checkedOut) {
+      setAttendanceStatusOverride(null);
+      toast.error("下班打卡尚未被服务器确认，请刷新状态后重试");
+      return;
+    }
     setAttendanceStatusOverride({
       projectId: variables.projectId,
       checkedIn: true,
@@ -144,7 +151,6 @@ export default function MobileWorkbench() {
       checkedOutAt: result.punchType === "out" ? result.checkedOutAt : null,
     });
     toast.success(result.duplicate ? `今日${result.punchType === "out" ? "下班" : "上班"}打卡已完成` : `${result.punchType === "out" ? "下班" : "上班"}打卡成功，定位已上传`);
-    await attendanceStatus.refetch();
   }, onError: error => toast.error(error.message) });
 
   /** 离线缓存仅可阅读，不允许通过重试按钮主动发起业务接口调用。 */

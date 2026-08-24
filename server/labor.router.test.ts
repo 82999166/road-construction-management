@@ -356,6 +356,16 @@ describe("labor tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(db as never);
     await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "测试设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 12 })).resolves.toMatchObject({ success: true, duplicate: false, punchType: "out", id: 44, status: "normal" });
     expect(checkoutSet).toHaveBeenCalledWith(expect.objectContaining({ checkedOutAt: expect.any(Date), checkoutLongitude: "120.1", checkoutLatitude: "30.2", checkoutStatus: "normal" }));
+
+    const zeroWriteResults = [[existing], [binding]];
+    const zeroWriteDb = {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => zeroWriteResults.shift() ?? []) })) })) })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 0 }]) })) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    Object.assign(zeroWriteDb, { transaction: vi.fn(async callback => callback(zeroWriteDb)) });
+    vi.mocked(getDb).mockResolvedValue(zeroWriteDb as never);
+    await expect(laborRouter.createCaller(createAuthContext()).attendance.checkIn({ projectId: 10, punchType: "out", deviceFingerprintHash: fingerprint, deviceLabel: "未命中测试设备", longitude: 120.1, latitude: 30.2, locationAccuracyMeters: 12 })).rejects.toMatchObject({ code: "CONFLICT", message: "未确认到可更新的今日上班记录，请刷新考勤状态后重试下班打卡" });
   });
 
   it("上班打卡遇到已禁用设备时保留明确业务错误，不泛化为保存失败", async () => {
