@@ -632,6 +632,7 @@ export default function AdminPage() {
   const businessStatistics = trpc.admin.business.statistics.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
   const operatingDashboard = trpc.admin.business.operatingDashboard.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
   const backups = trpc.admin.backup.list.useQuery(undefined, { enabled: canQuery && isBusiness });
+  const fullDatabaseBackup = trpc.admin.backup.fullStatus.useQuery(undefined, { enabled: canQuery && isBusiness });
   const workspaceProjectState = getBusinessWorkspaceProjectState(businessWorkspaceProjectId);
   const workspaceProjectId = workspaceProjectState.projectId;
   const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
@@ -1785,6 +1786,13 @@ export default function AdminPage() {
       anchor.click();
       toast.success("已生成受控下载链接，下载行为已记录审计");
       await audits.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const createFullDatabaseBackup = trpc.admin.backup.createFull.useMutation({
+    onSuccess: async backup => {
+      toast.success(`完整数据库备份已完成：${backup.tableCount} 张表已逐表校验`);
+      await Promise.all([fullDatabaseBackup.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -3126,6 +3134,24 @@ export default function AdminPage() {
               <Button className="print:hidden" size="sm" variant="outline" onClick={() => downloadBackup.mutate({ id: Number(backup.id) })} disabled={downloadBackup.isPending}>下载</Button>
             </div>
           )) : <EmptyState text="尚无已归档备份。首次创建备份前不会生成任何示例文件。" />}
+        </CardContent>
+      </Card>
+
+      <Card className="border-[#b7d3cc] bg-[#f7fcfa]">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle className="text-base">完整数据库灾备（服务器端）</CardTitle>
+            <CardDescription>导出完整 MySQL 数据库的全部表、表结构、触发器、例程和事件，并校验压缩、SHA-256 与每张表定义。数据库凭据、服务器路径和恢复口令不会返回浏览器。</CardDescription>
+          </div>
+          <Button className="shrink-0 print:hidden" size="sm" onClick={() => createFullDatabaseBackup.mutate()} disabled={createFullDatabaseBackup.isPending || !fullDatabaseBackup.data?.configured || !fullDatabaseBackup.data?.executable}><DatabaseBackup className="mr-1.5 h-4 w-4" />{createFullDatabaseBackup.isPending ? "正在执行完整备份…" : "执行完整备份"}</Button>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取完整数据库备份状态。" /> : fullDatabaseBackup.isLoading ? <EmptyState text="正在读取服务器端完整数据库备份状态…" /> : fullDatabaseBackup.isError || !fullDatabaseBackup.data ? <EmptyState text="暂无法读取完整数据库备份状态，请确认服务器备份组件已部署。" /> : <>
+            {!fullDatabaseBackup.data.configured || !fullDatabaseBackup.data.executable ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"><p className="font-medium">服务器端完整备份尚未就绪</p><p className="mt-1 text-xs">请由服务器管理员配置备份专用 MySQL 凭据、备份目录与定时任务；配置完成后本按钮才会启用。页面不会显示凭据或服务器路径。</p></div> : null}
+            {fullDatabaseBackup.data.latestSuccess ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-emerald-900">最近完整备份校验通过</p><Badge className="bg-emerald-700">逐表校验通过</Badge></div><p className="mt-1 text-xs text-emerald-900">{displayDate(fullDatabaseBackup.data.latestSuccess.createdAt)} · {fullDatabaseBackup.data.latestSuccess.tableCount} 张表 · gzip {fullDatabaseBackup.data.latestSuccess.verification.gzipIntegrity === "passed" ? "通过" : "异常"} · SHA-256 {fullDatabaseBackup.data.latestSuccess.sha256.slice(0, 12)}…</p><p className="mt-1 text-xs text-emerald-800">保留策略：{fullDatabaseBackup.data.latestSuccess.retention.keepDays} 天；最近轮换清理 {fullDatabaseBackup.data.latestSuccess.retention.removedFiles.length} 个过期文件。</p></div> : <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">尚未生成经过逐表校验的完整数据库备份。首次执行完成后，此处将显示表数量、校验和保留状态。</div>}
+            {fullDatabaseBackup.data.latestFailure ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900"><p className="font-medium">最近一次完整备份未成功</p><p className="mt-1 text-xs">{displayDate(fullDatabaseBackup.data.latestFailure.failedAt)} · {fullDatabaseBackup.data.latestFailure.error}</p></div> : null}
+            <p className="text-xs text-slate-500">完整备份用于灾难恢复，不开放浏览器直接下载或在线恢复；恢复必须在非生产演练库中由服务器管理员执行。</p>
+          </>}
         </CardContent>
       </Card>
     </div>

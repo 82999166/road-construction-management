@@ -6,12 +6,11 @@
  */
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, promises as fs } from "node:fs";
-import { createGzip } from "node:zlib";
+import { createGzip, createGunzip } from "node:zlib";
 import { basename, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import mysql from "mysql2/promise";
 
 const execFileAsync = promisify(execFile);
 const now = new Date();
@@ -35,7 +34,6 @@ if (mysqlPort) mysqlClientArgs.push(`--port=${mysqlPort}`);
 if (mysqlUser) mysqlClientArgs.push(`--user=${mysqlUser}`);
 
 async function listDatabaseTables() {
-  const query = `SELECT table_name AS tableName FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`;
   const [result] = await run("mysql", [...mysqlClientArgs, "--batch", "--skip-column-names", "--execute", `SELECT table_name FROM information_schema.tables WHERE table_schema = '${database}' AND table_type = 'BASE TABLE' ORDER BY table_name`]);
   const tables = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
   if (!tables.length) throw new Error(`数据库 ${database} 没有可备份的基础表`);
@@ -44,11 +42,23 @@ async function listDatabaseTables() {
 
 async function verifyDumpContainsAllTables(filePath, tables) {
   await run("gzip", ["-t", filePath]);
-  const buffer = await fs.readFile(filePath);
-  const { stdout } = await run("gzip", ["-cd", filePath]);
-  const missing = tables.filter(table => !stdout.includes(`CREATE TABLE \`${table}\``));
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  const found = new Set();
+  let carry = "";
+  const readable = createReadStream(filePath).pipe(createGunzip());
+  readable.setEncoding("utf8");
+  for await (const chunk of readable) {
+    const text = carry + chunk;
+    for (const table of tables) {
+      if (!found.has(table) && text.includes(`CREATE TABLE \`${table}\``)) found.add(table);
+    }
+    carry = text.slice(-512);
+  }
+  const missing = tables.filter(table => !found.has(table));
   if (missing.length) throw new Error(`备份文件缺少 ${missing.length} 张表定义：${missing.slice(0, 10).join(", ")}`);
-  return { bytes: buffer.byteLength, sha256: createHash("sha256").update(buffer).digest("hex") };
+  const stat = await fs.stat(filePath);
+  return { bytes: stat.size, sha256: hash.digest("hex") };
 }
 
 async function removeExpiredBackups() {
@@ -69,6 +79,14 @@ async function removeExpiredBackups() {
 
 async function main() {
   await fs.mkdir(backupDir, { recursive: true, mode: 0o750 });
+  const lockPath = join(backupDir, ".yx-full-backup.lock");
+  let lockHandle;
+  try {
+    lockHandle = await fs.open(lockPath, "wx", 0o640);
+  } catch {
+    throw new Error("已有完整数据库备份正在执行，请等待当前任务完成后再试");
+  }
+  try {
   const tablesBefore = await listDatabaseTables();
   const dumpPath = join(backupDir, `yx-full-${database}-${stamp}.sql.gz`);
   const manifestPath = `${dumpPath}.manifest.json`;
@@ -110,6 +128,10 @@ async function main() {
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o640 });
   await fs.writeFile(join(backupDir, "latest-success.json"), `${JSON.stringify({ ...manifest, manifestFile: basename(manifestPath) }, null, 2)}\n`, { mode: 0o640 });
   console.log(JSON.stringify({ success: true, backupFile: dumpPath, manifestFile: manifestPath, tableCount: tablesBefore.length, sha256: verification.sha256, removedCount: removedFiles.length }));
+  } finally {
+    await lockHandle?.close().catch(() => undefined);
+    await fs.unlink(lockPath).catch(() => undefined);
+  }
 }
 
 main().catch(async error => {

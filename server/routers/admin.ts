@@ -55,6 +55,7 @@ import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
 import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
+import { createSelfHostDatabaseBackup, getSelfHostDatabaseBackupStatus } from "../services/selfHostDatabaseBackup";
 import { sealUnchainedAuditLogs, verifyAuditIntegrityChain } from "../services/auditIntegrity";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
@@ -2415,6 +2416,24 @@ export const adminRouter = router({
       } catch (error) {
         const message = error instanceof Error ? error.message : "读取业务数据备份失败";
         throw new TRPCError({ code: "NOT_FOUND", message });
+      }
+    }),
+    fullStatus: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      return getSelfHostDatabaseBackupStatus();
+    }),
+    createFull: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      try {
+        const backup = await createSelfHostDatabaseBackup();
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "create", targetType: "full_database_backup", targetId: backup.sha256.slice(0, 16), summary: `创建完整数据库备份：${backup.tableCount} 张表，gzip 校验与逐表定义校验通过` });
+        return backup;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "完整数据库备份失败";
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "create_failed", targetType: "full_database_backup", targetId: null, summary: "完整数据库备份未成功；服务器端已保留诊断状态" });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
       }
     }),
   }),

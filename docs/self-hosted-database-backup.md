@@ -17,7 +17,7 @@
 
 ## 一次性安装步骤
 
-以下步骤由服务器环境管理员执行。路径以当前 `release/current` 部署结构为准；请使用实际非 root 应用服务账户替换示例中的 `yxapp`。
+以下步骤由服务器环境管理员执行。路径以当前 `release/current` 部署结构为准；请使用实际非 root 应用服务账户替换示例中的 `yxapp`。`pnpm build:self-host` 会将完整备份脚本归档到生产包的 `dist/scripts/`，后台手工备份入口优先调用该发布脚本，不依赖发布目录外的源码文件。
 
 ```bash
 sudo install -d -m 0750 -o yxapp -g yxapp /var/backups/yx-cloud-management/mysql
