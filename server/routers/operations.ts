@@ -51,7 +51,18 @@ import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTranspor
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { storageGetSignedUrl } from "../storage";
-import { runProjectRiskScan } from "./projectRisk";
+import {
+  assertNoOpenTransportTrip,
+  assertVehicleMinimumNfcInvoiceInterval,
+  calculateCoordinateDistanceMeters,
+  completeNfcTripBySingleScan,
+  createActiveVehicleTransitKey,
+  didConditionalWriteApply,
+  getChinaBusinessDate,
+  getRouteSnapshot,
+  throwIfDuplicateActiveVehicleTransit,
+  triggerTransportRiskScan,
+} from "../services/transportNfcSupport";
 
 /** 月度结算期间固定使用 YYYY-MM，防止客户端时区影响日历月统计。 */
 const settlementPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "结算期间格式应为 YYYY-MM");
@@ -579,69 +590,6 @@ function maskPaymentAccount(account: string | null) {
   return `${"*".repeat(Math.max(4, compact.length - 4))}${compact.slice(-4)}`;
 }
 
-/** 所有开票方式共用的车辆在途锁；卡片会话键仍仅用于 NFC 卸土闭环匹配。 */
-function createActiveVehicleTransitKey(projectId: number, vehicleId: number) {
-  return `vehicle:${projectId}:${vehicleId}`;
-}
-
-async function assertVehicleMinimumNfcInvoiceInterval(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { projectId: number; vehicleId: number; plateNo: string; occurredAt: Date; minimumTransitMinutes: number }) {
-  const [latestTrip] = await db.select({ tripNo: transportTrips.tripNo, startAt: transportTrips.startAt }).from(transportTrips).where(and(
-    eq(transportTrips.projectId, input.projectId),
-    eq(transportTrips.vehicleId, input.vehicleId),
-    ne(transportTrips.status, "void"),
-  )).orderBy(desc(transportTrips.startAt)).limit(1);
-  if (!latestTrip) return;
-  const elapsedMinutes = Math.max(0, Math.floor((input.occurredAt.getTime() - new Date(latestTrip.startAt).getTime()) / 60_000));
-  if (elapsedMinutes < input.minimumTransitMinutes) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: `重复开票拦截：车辆 ${input.plateNo} 距上次装土/开票仅 ${elapsedMinutes} 分钟，未达到最小间隔 ${input.minimumTransitMinutes} 分钟` });
-  }
-}
-
-async function completeNfcTripBySingleScan(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { tripId: number; userId: number; occurredAt: Date; routeSnapshot: unknown }) {
-  const routeSnapshot = { ...getRouteSnapshot(input.routeSnapshot), nfcSingleScanClosed: true, nfcSingleScanClosedAt: input.occurredAt.toISOString(), nfcSingleScanClosedBy: input.userId };
-  const result = await db.update(transportTrips).set({ unloadConfirmedAt: input.occurredAt, unloadConfirmedBy: null, unloadEventId: null, endAt: input.occurredAt, status: "submitted", activeVehicleTransitKey: null, nfcTransitKey: null, routeSnapshot }).where(and(eq(transportTrips.id, input.tripId), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
-  if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运输闭环状态已被其他操作更新，请刷新后查看" });
-}
-
-function getChinaBusinessDate(value = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value).reduce<Record<string, string>>((result, part) => ({ ...result, [part.type]: part.value }), {});
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
-function triggerTransportRiskScan(projectId: number) {
-  void runProjectRiskScan(projectId, getChinaBusinessDate()).catch(() => undefined);
-}
-
-function calculateCoordinateDistanceMeters(fromLatitude: number, fromLongitude: number, toLatitude: number, toLongitude: number) {
-  const toRadians = (value: number) => value * Math.PI / 180;
-  const earthRadiusMeters = 6_371_000;
-  const latitudeDelta = toRadians(toLatitude - fromLatitude);
-  const longitudeDelta = toRadians(toLongitude - fromLongitude);
-  const a = Math.sin(latitudeDelta / 2) ** 2 + Math.cos(toRadians(fromLatitude)) * Math.cos(toRadians(toLatitude)) * Math.sin(longitudeDelta / 2) ** 2;
-  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function throwIfDuplicateActiveVehicleTransit(error: unknown, plateNo: string): never {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("transport_trips_project_active_vehicle_transit_unique") || message.includes("activeVehicleTransitKey")) {
-    throw new TRPCError({ code: "CONFLICT", message: `车辆 ${plateNo} 还未卸土，请先完成当前运单后再开具新发票` });
-  }
-  throw error;
-}
-
-/** 历史票据可能尚未写入新锁字段，开票前仍须按车辆状态查询一次作为兼容保护。 */
-async function assertNoOpenTransportTrip(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, vehicleId: number, plateNo: string) {
-  const rows = await db.select({ tripNo: transportTrips.tripNo, id: transportTrips.id }).from(transportTrips).where(and(
-    eq(transportTrips.projectId, projectId),
-    eq(transportTrips.vehicleId, vehicleId),
-    isNull(transportTrips.unloadConfirmedAt),
-    ne(transportTrips.status, "void"),
-    ne(transportTrips.status, "settled"),
-  ));
-  const activeTrip = rows.sort((left, right) => Number(right.id) - Number(left.id))[0];
-  if (activeTrip) throw new TRPCError({ code: "CONFLICT", message: `车辆 ${plateNo} 还未卸土，请先完成当前运单 ${activeTrip.tripNo} 后再开具新发票` });
-}
-
 /**
  * 运输异常仅由服务端按已固化的趟次快照计算，前端只负责展示；
  * 这避免司机通过修改浏览器状态规避核验提示。
@@ -651,10 +599,6 @@ type TransportAnomaly = {
   severity: "warning" | "notice";
   label: string;
 };
-
-function getRouteSnapshot(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
 
 function calculateTransportAnomalies(trip: {
   evidenceId: number | null;
@@ -701,11 +645,6 @@ function assertConditionalStatusWrite(result: unknown, recordName: string) {
   if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
     throw new TRPCError({ code: "CONFLICT", message: `${recordName}状态已被其他用户更新，请刷新后重试` });
   }
-}
-
-function didConditionalWriteApply(result: unknown) {
-  const header = Array.isArray(result) ? result[0] : result;
-  return !(header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0);
 }
 
 function createCardEventPayloadFingerprint(input: { tripId: number; projectId: number; siteId?: number | null; idempotencyKey: string; deviceId?: string; cardFingerprint?: string; latitude?: number | null; longitude?: number | null; occurredAt: string }, eventType: "load" | "unload") {

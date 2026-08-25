@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(resolve(process.cwd(), "server/routers/operations.ts"), "utf8");
+const supportSource = readFileSync(resolve(process.cwd(), "server/services/transportNfcSupport.ts"), "utf8");
 
 describe("运输 NFC 双设备闭环路由", () => {
   it("要求现场读卡设备先绑定项目与装卸地点，再允许双刷卡闭环", () => {
@@ -22,5 +23,13 @@ describe("运输 NFC 双设备闭环路由", () => {
     expect(source).toContain("verifyTransportNfcDeepLinkToken");
     expect(source).toContain("scanNfcLink");
     expect(source).toContain("recordTransportNfcReaderScan(ctx");
+  });
+
+  it("在途锁、最短间隔、单次闭环和条件写入保护已抽取为可复用服务", () => {
+    expect(source).toContain('from "../services/transportNfcSupport"');
+    expect(supportSource).toContain("createActiveVehicleTransitKey");
+    expect(supportSource).toContain("assertVehicleMinimumNfcInvoiceInterval");
+    expect(supportSource).toContain("completeNfcTripBySingleScan");
+    expect(supportSource).toContain("didConditionalWriteApply");
   });
 });

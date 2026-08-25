@@ -492,13 +492,14 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("NFC 单次闭环保留最小连续开票拦截和真实状态标记，不伪造卸土刷卡事件", () => {
     const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    const supportSource = readFileSync(new URL("./services/transportNfcSupport.ts", import.meta.url), "utf8");
     expect(source).toContain("assertVehicleMinimumNfcInvoiceInterval");
     expect(source).toContain("minimumTransitMinutes: route.minimumTransitMinutes");
     expect(source).toContain("completeNfcTripBySingleScan");
-    expect(source).toContain("nfcSingleScanClosed: true");
+    expect(supportSource).toContain("nfcSingleScanClosed: true");
     expect(source).toContain("singleScanClosed");
-    expect(source).toContain("activeVehicleTransitKey: null");
-    expect(source).toContain("nfcTransitKey: null");
+    expect(supportSource).toContain("activeVehicleTransitKey: null");
+    expect(supportSource).toContain("nfcTransitKey: null");
   });
 
   it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
