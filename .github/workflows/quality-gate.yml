@@ -40,3 +40,7 @@ jobs:
         run: pnpm test
       - name: 生产构建
         run: pnpm build
+      - name: 自建服务器构建
+        run: pnpm build:self-host
+      - name: 生产依赖安全审计
+        run: pnpm audit:prod
