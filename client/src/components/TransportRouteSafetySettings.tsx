@@ -9,7 +9,7 @@ import { toast } from "sonner";
 
 type SafetyDraft = { minimumTransitMinutes: string; minimumTransitEnabled: boolean; unloadGeofenceMeters: string; unloadGeofenceEnabled: boolean };
 
-export function TransportRouteSafetySettings({ projectId, compact = false }: { projectId?: number; compact?: boolean }) {
+export function TransportRouteSafetySettings({ projectId, compact = false, canConfigure = true }: { projectId?: number; compact?: boolean; canConfigure?: boolean }) {
   const utils = trpc.useUtils();
   const routes = trpc.transport.listRoutePresets.useQuery({ projectId: projectId ?? 0 }, { enabled: Boolean(projectId) });
   const singleScanCloseSetting = trpc.transport.getNfcSingleScanCloseSetting.useQuery({ projectId: projectId ?? 0 }, { enabled: Boolean(projectId) });
@@ -41,7 +41,7 @@ export function TransportRouteSafetySettings({ projectId, compact = false }: { p
     });
   }, [routes.data]);
 
-  if (!projectId || !routes.data?.length) return null;
+  if (!canConfigure || !projectId || !routes.data?.length) return null;
   const singleScanCloseEnabled = Boolean(singleScanCloseSetting.data?.enabled);
   const changeSingleScanClose = (enabled: boolean) => {
     if (enabled && !window.confirm("开启后，NFC 刷卡发票会直接完成本趟运输闭环，不再要求卸土点二次刷卡。系统仍会强制拦截同车未达到路线最短时间的连续开票。确认开启吗？")) return;

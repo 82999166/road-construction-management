@@ -40,7 +40,7 @@ import {
   calculateTieredFreightAmount,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, getSuperAdminAccess, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
@@ -2387,11 +2387,11 @@ export const transportRouter = router({
     return { enabled: await getTransportNfcSingleScanCloseEnabled(db, input.projectId), minimumIntervalPolicy: "route_minimum_transit_minutes" as const };
   }),
 
-  /** 仅运输负责人或项目负责人可切换特殊闭环模式，默认关闭。 */
+  /** 单次刷卡闭环会改变项目运输控制策略，仅超级管理员可在后台切换。 */
   setNfcSingleScanCloseSetting: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), enabled: z.boolean() })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    const roleCodes = await assertTransportAccess(ctx);
-    assertCanManageTransportResources(roleCodes);
+    const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
+    if (!isSuperAdmin) throw new TRPCError({ code: "FORBIDDEN", message: "仅超级管理员可在后台维护刷卡发票运输闭环设置" });
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -2404,6 +2404,7 @@ export const transportRouter = router({
     const user = requireAuthenticatedUser(ctx);
     const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
+    const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [loadSite, unloadSite, rule] = await Promise.all([
@@ -2414,6 +2415,11 @@ export const transportRouter = router({
     if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线装土点不存在或未启用" });
     if (!unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线卸土点不存在或未启用" });
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
+    const [existingRoute] = input.id ? await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, input.id)).limit(1) : [null];
+    if (input.id && (!existingRoute || existingRoute.projectId !== input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "运输路线不存在或不属于当前项目" });
+    const isDefaultSafety = input.minimumTransitMinutes === 10 && input.minimumTransitEnabled && input.unloadGeofenceMeters === 300 && input.unloadGeofenceEnabled;
+    const changesSafety = Boolean(existingRoute && (existingRoute.minimumTransitMinutes !== input.minimumTransitMinutes || existingRoute.minimumTransitEnabled !== input.minimumTransitEnabled || existingRoute.unloadGeofenceMeters !== input.unloadGeofenceMeters || existingRoute.unloadGeofenceEnabled !== input.unloadGeofenceEnabled));
+    if (!isSuperAdmin && (changesSafety || (!existingRoute && !isDefaultSafety))) throw new TRPCError({ code: "FORBIDDEN", message: "运输安全阈值仅超级管理员可在后台维护" });
     const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, minimumTransitEnabled: input.minimumTransitEnabled, unloadGeofenceMeters: input.unloadGeofenceMeters, unloadGeofenceEnabled: input.unloadGeofenceEnabled, isDefault: input.isDefault, status: input.status };
     if (input.isDefault) await db.update(transportRoutePresets).set({ isDefault: false }).where(eq(transportRoutePresets.projectId, input.projectId));
     if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));

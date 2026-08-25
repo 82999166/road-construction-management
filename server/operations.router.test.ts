@@ -19,11 +19,12 @@ vi.mock("./access", async importOriginal => {
     assertProjectInCurrentScope: vi.fn(),
     getCurrentDataScope: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
+    getSuperAdminAccess: vi.fn(),
     hasUserSpecificOperationPermission: vi.fn(),
   };
 });
 
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission } from "./access";
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getSuperAdminAccess, hasUserSpecificOperationPermission } from "./access";
 import { getDb } from "./db";
 import { machineryRouter, transportRouter } from "./routers/operations";
 import { encryptSecret } from "./services/secretVault";
@@ -89,6 +90,7 @@ describe("机械与运输 tRPC 路由", () => {
     process.env.JWT_SECRET = "operations-router-rfid-test-secret";
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     vi.mocked(getCurrentDataScope).mockResolvedValue({ userId: 1, hasAllProjects: false, projectIds: [], organizationIds: [] });
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: false, reason: "not_super_admin" });
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(false);
     mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
   });
@@ -475,8 +477,8 @@ describe("机械与运输 tRPC 路由", () => {
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
-  it("运输负责人启用单次刷卡闭环时发布项目设置并留下审计记录", async () => {
-    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+  it("仅超级管理员可启用单次刷卡闭环并留下审计记录", async () => {
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: true, reason: "super_admin" });
     const settingUpdate = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
     const auditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
@@ -488,6 +490,10 @@ describe("机械与运输 tRPC 路由", () => {
     await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).resolves.toEqual({ success: true, enabled: true });
     expect(settingUpdate).toHaveBeenCalledWith(expect.objectContaining({ valueJson: "true", status: "published", version: 3 }));
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "set_nfc_single_scan_close", targetId: "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT:10" }));
+  });
+
+  it("非超级管理员不得通过移动端或接口启用单次刷卡闭环", async () => {
+    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("NFC 单次闭环保留最小连续开票拦截和真实状态标记，不伪造卸土刷卡事件", () => {

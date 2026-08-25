@@ -15,6 +15,8 @@ describe("运输路线安全开关", () => {
     expect(source).toContain("settingsOpen");
     expect(source).toContain("<Dialog open={settingsOpen}");
     expect(source).toContain("compact = false");
+    expect(source).toContain("canConfigure = true");
+    expect(source).toContain("if (!canConfigure || !projectId || !routes.data?.length) return null");
   });
 
   it("提供项目级单次刷卡闭环开关，并明确继续强制同车最小开票间隔", () => {
