@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
 import BusinessStatusBadge from "@/components/BusinessStatusBadge";
+import NotificationChannelSettings from "@/components/NotificationChannelSettings";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
@@ -2514,6 +2515,7 @@ export default function AdminPage() {
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>
+        <NotificationChannelSettings />
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
           <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>五项基础参数在此一次填写、一次保存并自动校验。首次配置请完整填写；后续只修改公开参数时，两个密钥留空即可保留已加密的现有值。</CardDescription></CardHeader>
           <CardContent>

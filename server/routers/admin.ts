@@ -286,6 +286,26 @@ const officialAccountMessagePushConfigurationInput = z.object({
   encodingAesKey: z.string().trim().max(43),
 });
 
+const notificationModuleCode = z.enum(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction", "diesel", "contract"]);
+
+/** 短信凭据和模块路由由超级管理员统一维护；密钥留空表示保留已有加密值。 */
+const notificationChannelConfigurationInput = z.object({
+  smsEnabled: z.boolean(),
+  smsProvider: z.enum(["none", "aliyun", "tencent"]),
+  smsModules: z.array(notificationModuleCode).max(10),
+  aliyunAccessKeyId: z.string().max(256),
+  aliyunAccessKeySecret: z.string().max(2048),
+  aliyunSignName: z.string().trim().max(128),
+  aliyunTemplateCode: z.string().trim().max(128),
+  tencentSecretId: z.string().max(256),
+  tencentSecretKey: z.string().max(2048),
+  tencentSdkAppId: z.string().trim().max(64),
+  tencentSignName: z.string().trim().max(128),
+  tencentTemplateId: z.string().trim().max(128),
+  officialEnabled: z.boolean(),
+  officialModules: z.array(notificationModuleCode).max(10),
+});
+
 /** 兼容 OpenAI Chat Completions 的外部 AI 配置；密钥后续修订留空表示保留既有密文。 */
 const externalAiApiConfigurationInput = z.object({
   baseUrl: z.string().trim().min(1, "请填写 AI API 基础地址").max(1024),
@@ -340,6 +360,12 @@ const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_EGRESS_URL",
 ]);
 const RETIRED_NOTIFICATION_SETTING_KEYS = new Set(["WECHAT_WORK_WEBHOOK"]);
+const NOTIFICATION_CHANNEL_SETTING_KEYS = [
+  "SMS_NOTIFICATION_ENABLED", "SMS_NOTIFICATION_PROVIDER", "SMS_NOTIFICATION_MODULES",
+  "SMS_ALIYUN_ACCESS_KEY_ID", "SMS_ALIYUN_ACCESS_KEY_SECRET", "SMS_ALIYUN_SIGN_NAME", "SMS_ALIYUN_TEMPLATE_CODE",
+  "SMS_TENCENT_SECRET_ID", "SMS_TENCENT_SECRET_KEY", "SMS_TENCENT_SDK_APP_ID", "SMS_TENCENT_SIGN_NAME", "SMS_TENCENT_TEMPLATE_ID",
+  "WECHAT_OFFICIAL_NOTIFICATION_ENABLED", "WECHAT_OFFICIAL_NOTIFICATION_MODULES",
+] as const;
 
 /** 用户已确认系统统一使用认证服务号，禁止旧企业微信机器人配置重新进入任何可生效流程。 */
 function assertSupportedSettingKey(settingKey: string) {
@@ -1853,6 +1879,90 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: "保存并发布服务号消息推送 URL、Token 与 EncodingAESKey 配置；后台展示明文/XML 填写说明" });
       });
       return { success: true, message: "消息推送 Token / EncodingAESKey 已按填写项加密发布；请在微信公众平台填写同一组参数并保存" };
+    }),
+    getNotificationChannelConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status }).from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, [...NOTIFICATION_CHANNEL_SETTING_KEYS])));
+      const byKey = new Map(rows.map(row => [row.settingKey, row]));
+      const parseModules = (key: string) => {
+        try {
+          const value = JSON.parse(byKey.get(key)?.valueJson ?? "[]") as unknown;
+          return Array.isArray(value) ? value.filter(item => typeof item === "string" && notificationModuleCode.options.includes(item as never)) : [];
+        } catch { return []; }
+      };
+      const provider = byKey.get("SMS_NOTIFICATION_PROVIDER")?.valueJson;
+      return {
+        smsEnabled: byKey.get("SMS_NOTIFICATION_ENABLED")?.valueJson === "true",
+        smsProvider: provider === "aliyun" || provider === "tencent" ? provider : "none",
+        smsModules: parseModules("SMS_NOTIFICATION_MODULES"),
+        aliyunAccessKeyConfigured: Boolean(byKey.get("SMS_ALIYUN_ACCESS_KEY_ID")?.secretEncrypted && byKey.get("SMS_ALIYUN_ACCESS_KEY_SECRET")?.secretEncrypted),
+        aliyunSignName: byKey.get("SMS_ALIYUN_SIGN_NAME")?.valueJson ?? "",
+        aliyunTemplateCode: byKey.get("SMS_ALIYUN_TEMPLATE_CODE")?.valueJson ?? "",
+        tencentSecretConfigured: Boolean(byKey.get("SMS_TENCENT_SECRET_ID")?.secretEncrypted && byKey.get("SMS_TENCENT_SECRET_KEY")?.secretEncrypted),
+        tencentSdkAppId: byKey.get("SMS_TENCENT_SDK_APP_ID")?.valueJson ?? "",
+        tencentSignName: byKey.get("SMS_TENCENT_SIGN_NAME")?.valueJson ?? "",
+        tencentTemplateId: byKey.get("SMS_TENCENT_TEMPLATE_ID")?.valueJson ?? "",
+        officialEnabled: byKey.get("WECHAT_OFFICIAL_NOTIFICATION_ENABLED")?.valueJson === "true",
+        officialModules: parseModules("WECHAT_OFFICIAL_NOTIFICATION_MODULES"),
+      };
+    }),
+    saveNotificationChannelConfiguration: protectedProcedure.input(notificationChannelConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      if (input.smsEnabled && input.smsProvider === "none") throw new TRPCError({ code: "BAD_REQUEST", message: "启用短信通知前请选择阿里云短信或腾讯云短信" });
+      const unique = (items: string[]) => Array.from(new Set(items));
+      const definitions = [
+        { key: "SMS_NOTIFICATION_ENABLED", name: "短信通知总开关", value: String(input.smsEnabled), sensitive: false },
+        { key: "SMS_NOTIFICATION_PROVIDER", name: "短信服务商", value: input.smsProvider, sensitive: false },
+        { key: "SMS_NOTIFICATION_MODULES", name: "短信通知业务模块", value: JSON.stringify(unique(input.smsModules)), sensitive: false },
+        { key: "SMS_ALIYUN_ACCESS_KEY_ID", name: "阿里云短信 AccessKey ID", value: input.aliyunAccessKeyId.trim(), sensitive: true },
+        { key: "SMS_ALIYUN_ACCESS_KEY_SECRET", name: "阿里云短信 AccessKey Secret", value: input.aliyunAccessKeySecret.trim(), sensitive: true },
+        { key: "SMS_ALIYUN_SIGN_NAME", name: "阿里云短信签名", value: input.aliyunSignName, sensitive: false },
+        { key: "SMS_ALIYUN_TEMPLATE_CODE", name: "阿里云短信模板 Code", value: input.aliyunTemplateCode, sensitive: false },
+        { key: "SMS_TENCENT_SECRET_ID", name: "腾讯云短信 SecretId", value: input.tencentSecretId.trim(), sensitive: true },
+        { key: "SMS_TENCENT_SECRET_KEY", name: "腾讯云短信 SecretKey", value: input.tencentSecretKey.trim(), sensitive: true },
+        { key: "SMS_TENCENT_SDK_APP_ID", name: "腾讯云短信 SdkAppId", value: input.tencentSdkAppId, sensitive: false },
+        { key: "SMS_TENCENT_SIGN_NAME", name: "腾讯云短信签名", value: input.tencentSignName, sensitive: false },
+        { key: "SMS_TENCENT_TEMPLATE_ID", name: "腾讯云短信模板 ID", value: input.tencentTemplateId, sensitive: false },
+        { key: "WECHAT_OFFICIAL_NOTIFICATION_ENABLED", name: "服务号即时通知总开关", value: String(input.officialEnabled), sensitive: false },
+        { key: "WECHAT_OFFICIAL_NOTIFICATION_MODULES", name: "服务号即时通知业务模块", value: JSON.stringify(unique(input.officialModules)), sensitive: false },
+      ] as const;
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, definitions.map(item => item.key)));
+      const existingByKey = new Map(existingRows.map(row => [row.settingKey, row]));
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.key);
+          const preserveSecret = definition.sensitive && !definition.value;
+          if (definition.sensitive && preserveSecret && !existing?.secretEncrypted) continue;
+          const next = {
+            category: "通知通道",
+            displayName: definition.name,
+            valueJson: definition.sensitive ? null : definition.value,
+            secretEncrypted: definition.sensitive ? (preserveSecret ? existing?.secretEncrypted ?? null : encryptSecret(definition.value)) : null,
+            valuePreview: definition.sensitive ? (preserveSecret ? existing?.valuePreview ?? null : maskSecret(definition.value)) : definition.value.slice(0, 256),
+            isSensitive: definition.sensitive,
+            status: "published" as const,
+            publishedAt: new Date(),
+            remarks: definition.sensitive ? "仅服务端 AES-GCM 加密托管；页面和审计不回显明文。" : "通知通道路由与模块选择；发送失败不回滚业务。",
+            updatedBy: admin.id,
+          };
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const write = await tx.update(systemSettings).set({ ...next, version: nextVersion }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(write);
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify({ settingKey: existing.settingKey, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive }) });
+          } else {
+            const created = await tx.insert(systemSettings).values({ settingKey: definition.key, version: 1, ...next });
+            const settingId = Number((created[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+            if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_notification_channel_configuration", targetType: "notification_channel", targetId: "sms_and_official", summary: `发布通知通道配置：短信 ${input.smsEnabled ? input.smsProvider : "关闭"}，服务号即时通知 ${input.officialEnabled ? "开启" : "关闭"}` });
+      });
+      return { success: true, message: "通知通道配置已发布。短信需在服务商签名、模板和密钥审核齐备后才可发送；服务号仅可用于用户即时操作后的合规结果通知。" };
     }),
     testOfficialAccountMessagePushConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
       const admin = await assertSuperAdmin(ctx);

@@ -19,6 +19,8 @@
     "verify:release": "pnpm check && pnpm test && pnpm build && pnpm build:self-host && pnpm db:check && pnpm audit:prod"
   },
   "dependencies": {
+    "@alicloud/dysmsapi20170525": "^4.6.0",
+    "@alicloud/openapi-client": "^0.4.15",
     "@aws-sdk/client-s3": "^3.1116.0",
     "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "@e965/xlsx": "0.20.3",
@@ -81,6 +83,7 @@
     "superjson": "^1.13.3",
     "tailwind-merge": "^3.3.1",
     "tailwindcss-animate": "^1.0.7",
+    "tencentcloud-sdk-nodejs": "^4.1.302",
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
     "zod": "^4.1.12"

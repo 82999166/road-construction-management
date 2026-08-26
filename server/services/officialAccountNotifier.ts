@@ -532,6 +532,16 @@ export async function sendOfficialAccountNotification(input: { module: OfficialA
     await db.update(notificationRecords).set(values).where(eq(notificationRecords.idempotencyKey, idempotencyKey));
     return result;
   };
+  const channelRows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson }).from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_NOTIFICATION_ENABLED", "WECHAT_OFFICIAL_NOTIFICATION_MODULES"])));
+  const channelSettings = new Map(channelRows.map(row => [row.settingKey, row.valueJson]));
+  const enabled = channelSettings.get("WECHAT_OFFICIAL_NOTIFICATION_ENABLED") === "true";
+  let configuredModules: string[] = [];
+  try { configuredModules = JSON.parse(channelSettings.get("WECHAT_OFFICIAL_NOTIFICATION_MODULES") ?? "[]") as string[]; } catch { configuredModules = []; }
+  /** 仅用户即时登录成功属于当前已明确合规且可由系统确认的即时操作结果；其他事件一律保留站内/短信降级。 */
+  const immediateEventAllowed = input.eventCode === "user_login_success";
+  if (!enabled || !configuredModules.includes(input.module) || !immediateEventAllowed) {
+    return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: !enabled ? "official_channel_disabled" : !configuredModules.includes(input.module) ? "official_module_disabled" : "official_event_not_immediate" });
+  }
   const [binding] = await db.select().from(officialAccountBindings).where(and(eq(officialAccountBindings.userId, input.recipientUserId), eq(officialAccountBindings.status, "active"))).limit(1);
   if (!binding) return update({ delivered: false, reason: "not_bound" }, { status: "skipped", failureCode: "not_bound" });
   const configResult = await loadPublishedOfficialAccountConfig();
