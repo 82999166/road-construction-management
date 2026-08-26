@@ -12,6 +12,6 @@ export const officialAccountRouter = router({
   beginScanBinding: protectedProcedure.mutation(async ({ ctx }) => createOfficialAccountScanBindingRequest(requireAuthenticatedUser(ctx).id)),
   verifyFollowStatus: protectedProcedure.mutation(async ({ ctx }) => verifyOfficialAccountBindingFollowStatus(requireAuthenticatedUser(ctx).id)),
   driverBindingStatus: publicProcedure.input(z.object({ token: z.string().min(16).max(160) })).query(async ({ input }) => getOfficialAccountDriverBindingRequestStatus(input.token)),
-  completeDriverBinding: publicProcedure.input(z.object({ token: z.string().min(16).max(160), plateNo: z.string().trim().min(2).max(32), driverPhone: z.string().trim().min(6).max(32) })).mutation(async ({ input }) => completeOfficialAccountDriverVehicleBinding(input)),
+  completeDriverBinding: publicProcedure.input(z.object({ token: z.string().min(16).max(160), plateNo: z.string().trim().min(2).max(32), driverPhone: z.string().trim().min(6).max(32), initialPassword: z.string().min(6).max(128) })).mutation(async ({ input }) => completeOfficialAccountDriverVehicleBinding(input)),
   driverPortalSummary: publicProcedure.input(z.object({ token: z.string().min(16).max(512) })).query(async ({ input }) => getOfficialAccountDriverPortalSummary(input.token)),
 });

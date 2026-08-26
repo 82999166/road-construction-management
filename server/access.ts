@@ -227,8 +227,8 @@ export function requireAuthenticatedUser(ctx: TrpcContext) {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "请先登录后再继续操作" });
   }
-  if (ctx.user.loginMethod === "local_manager" && ctx.user.localAccountStatus !== "active") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已停用，请联系超级管理员" });
+  if (["local_manager", "local_driver"].includes(ctx.user.loginMethod ?? "") && ctx.user.localAccountStatus !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: ctx.user.loginMethod === "local_driver" ? "该司机手机号账号已停用，请联系管理员" : "该普通管理人员账号已停用，请联系超级管理员" });
   }
   if (ctx.user.loginMethod === "deleted_local_manager") {
     throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已删除，请联系超级管理员" });

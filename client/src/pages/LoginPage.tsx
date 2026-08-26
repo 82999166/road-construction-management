@@ -108,8 +108,8 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-6 text-[#3b2118] sm:p-12">
             <p className="text-sm font-semibold text-[#9a6036]">悦信云智管</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:mt-3 sm:text-3xl">{localAdminOnly ? "超级管理员登录" : "管理员登录"}</h2>
-            <p className="mt-4 hidden text-sm leading-6 text-slate-600 lg:block">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "使用管理人员账号或已绑定微信完成登录。系统会安全返回您刚才访问的业务页面；未指定目标时默认进入已授权的管理工作台。"}</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:mt-3 sm:text-3xl">{localAdminOnly ? "超级管理员登录" : "手机号账号登录"}</h2>
+            <p className="mt-4 hidden text-sm leading-6 text-slate-600 lg:block">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后进入全局管理后台；口令只在服务器端校验并受失败限流保护。" : "司机和管理人员均可使用已开通的手机号账号登录。系统仅返回您的角色、项目范围及本人可见的业务数据。"}</p>
             {!localAdminOnly ? <div className="mt-7 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><MessageCircle className="h-4 w-4" />微信授权登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-600">请在已关注服务号且已完成系统绑定的微信内打开。微信只验证您已有的系统账号，不会自动创建账号或扩大权限。</p>
@@ -129,14 +129,14 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               </form>
             ) : <>
             {!localAdminOnly ? <form className="mt-5 rounded-2xl border border-[#c7d7dc] bg-[#f4fafb] p-4" onSubmit={handleLocalManagerLogin}>
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />管理人员手机号登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">手机号由超级管理员在后台创建。登录后系统自动进入您获授权的管理功能版块，不显示未获授权的菜单。</p>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#294d5a]"><KeyRound className="h-4 w-4" />手机号账号登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">司机在微信绑定车辆时开通手机号账号；管理人员由超级管理员创建。登录后仅显示本人获授权的项目、消息和业务版块。</p>
               <div className="mt-3 grid gap-3">
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-username">手机号</Label><Input id="local-manager-username" type="tel" inputMode="numeric" autoComplete="tel" placeholder="请输入 11 位手机号" value={managerUsername} onChange={event => setManagerUsername(event.target.value)} disabled={managerLogin.isPending} required /></div>
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-password">密码</Label><Input id="local-manager-password" type="password" autoComplete="current-password" value={managerPassword} onChange={event => setManagerPassword(event.target.value)} disabled={managerLogin.isPending} required /></div>
               </div>
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
-              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的管理版块"}</Button>
+              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的工作台"}</Button>
             </form> : null}
             {localAdminOnly ? <form className="mt-6 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
               <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />超级管理员账号登录</div>

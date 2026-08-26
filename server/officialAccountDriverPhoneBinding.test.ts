@@ -20,4 +20,18 @@ describe("微信司机车辆绑定手机号二次校验", () => {
     expect(source).toContain("车牌与司机手机号未匹配");
     expect(source).not.toContain("summary: `外部司机微信车辆绑定手机号");
   });
+
+  it("仅在已验证的微信车牌手机号流程中开通移动端司机账号，并收敛到当前车辆和项目", () => {
+    const source = readFileSync(new URL("./services/officialAccountDriverBinding.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('loginMethod: "local_driver"');
+    expect(source).toContain("createLocalDriverOpenId(normalizedDriverPhone)");
+    expect(source).toContain("createLocalManagerPasswordHash(input.initialPassword)");
+    expect(source).toContain('localLoginMode: "mobile"');
+    expect(source).toContain('eq(systemRoles.code, "DRIVER")');
+    expect(source).toContain("projectId: vehicle.projectId");
+    expect(source).toContain("driver_account_vehicle_conflict");
+    expect(source).toContain("officialAccountBindings");
+    expect(source).toContain("driver_mobile_account_provisioned");
+  });
 });

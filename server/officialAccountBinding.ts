@@ -202,6 +202,7 @@ async function completeWechatLogin(req: Request, res: Response, appUrl: URL, ope
   if (!account) return loginCallbackError(res, appUrl, "not_bound");
   if (account.localAccountStatus === "disabled") return loginCallbackError(res, appUrl, "disabled");
   const terminal = requestTerminal(req);
+  if (account.loginMethod === "local_driver" && terminal !== "mobile") return loginCallbackError(res, appUrl, "terminal");
   if (account.loginMethod === "local_manager" && ((account.localLoginMode === "pc" && terminal !== "pc") || (account.localLoginMode === "mobile" && terminal !== "mobile"))) return loginCallbackError(res, appUrl, "terminal");
   await database.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, account.id));
   try {

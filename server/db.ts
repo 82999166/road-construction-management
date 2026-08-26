@@ -89,7 +89,7 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-/** 仅供本地普通管理人员登录使用；调用方不得把口令摘要返回到 RPC 响应。 */
+/** 仅供手机号本地账号登录使用；调用方不得把口令摘要返回到 RPC 响应。 */
 export async function getLocalManagerByUsername(localUsername: string) {
   const db = await getDb();
   if (!db) {
@@ -100,7 +100,7 @@ export async function getLocalManagerByUsername(localUsername: string) {
   const result = await db
     .select()
     .from(users)
-    .where(and(eq(users.localUsername, localUsername), eq(users.loginMethod, "local_manager")))
+    .where(and(eq(users.localUsername, localUsername), or(eq(users.loginMethod, "local_manager"), eq(users.loginMethod, "local_driver"))))
     .limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
@@ -197,14 +197,14 @@ export async function clearLoginRateLimitState(scope: string, subjectHash: strin
   await database.delete(loginRateLimitStates).where(and(eq(loginRateLimitStates.scope, scope), eq(loginRateLimitStates.subjectHash, subjectHash)));
 }
 
-/** 仅更新本地普通账号的口令摘要；兼容字段统一保持为不强制首次改密，避免 OAuth 同步覆盖本地认证字段。 */
+/** 仅更新本地管理或司机账号的口令摘要；兼容字段统一保持为不强制首次改密，避免 OAuth 同步覆盖本地认证字段。 */
 export async function updateLocalManagerPassword(userId: number, localPasswordHash: string) {
   const db = await getDb();
   if (!db) throw new Error("数据库连接暂不可用");
   await db
     .update(users)
     .set({ localPasswordHash, localPasswordChangeRequired: false })
-    .where(and(eq(users.id, userId), eq(users.loginMethod, "local_manager")));
+    .where(and(eq(users.id, userId), or(eq(users.loginMethod, "local_manager"), eq(users.loginMethod, "local_driver"))));
 }
 
 // TODO: add feature queries here as your schema grows.

@@ -1,7 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
-import { auditLogs, dieselRefuelRecords, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, transportSites, transportTrips, transportVehicleSettlements, transportVehicles } from "../../drizzle/schema";
+import { and, desc, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
+import { auditLogs, dieselRefuelRecords, officialAccountBindings, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, systemRoles, transportSites, transportTrips, transportVehicleSettlements, transportVehicles, userRoleAssignments, users } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { createLocalDriverOpenId, createLocalManagerPasswordHash } from "../localAuth";
+import { ensureFoundationData } from "./foundationData";
 import { decryptSecret, encryptSecret } from "./secretVault";
 import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, getOfficialAccountTemplateSemanticMismatch, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
 
@@ -185,11 +187,12 @@ export async function getOfficialAccountDriverBindingRequestStatus(token: string
   return { status: "ready", expiresAt: request.expiresAt };
 }
 
-export async function completeOfficialAccountDriverVehicleBinding(input: { token: string; plateNo: string; driverPhone: string }) {
+export async function completeOfficialAccountDriverVehicleBinding(input: { token: string; plateNo: string; driverPhone: string; initialPassword: string }) {
   const normalizedPlateNo = normalizeDriverPlateNo(input.plateNo);
   if (!normalizedPlateNo) return { success: false as const, reason: "invalid_plate" as const, message: "请填写完整车牌号。" };
   const normalizedDriverPhone = normalizeDriverPhone(input.driverPhone);
   if (!normalizedDriverPhone) return { success: false as const, reason: "invalid_driver_phone" as const, message: "请填写司机本人登记的11位手机号。" };
+  if (input.initialPassword.length < 6 || input.initialPassword.length > 128) return { success: false as const, reason: "invalid_initial_password" as const, message: "请设置 6 至 128 位的司机登录密码。" };
   const db = await getDb();
   if (!db) return { success: false as const, reason: "database_unavailable" as const, message: "系统暂时无法连接数据库，请稍后再试。" };
   const [request] = await db.select().from(officialAccountDriverBindingRequests).where(and(eq(officialAccountDriverBindingRequests.tokenFingerprint, fingerprintDriverBindingToken(input.token)), gt(officialAccountDriverBindingRequests.expiresAt, new Date()))).orderBy(desc(officialAccountDriverBindingRequests.id)).limit(1);
@@ -208,9 +211,62 @@ export async function completeOfficialAccountDriverVehicleBinding(input: { token
     await db.insert(auditLogs).values({ userId: null, module: "transport", action: "driver_wechat_binding_phone_mismatch", targetType: "transport_vehicle", targetId: String(vehicle.id), summary: "外部司机微信车辆绑定手机号校验失败" });
     return { success: false as const, reason: "driver_phone_mismatch" as const, message: "车牌与司机手机号未匹配，请核对登记手机号；如车辆台账未登记手机号，请联系管理员补充后再绑定。" };
   }
+  const [existingLocalAccount] = await db.select({ id: users.id, loginMethod: users.loginMethod, localAccountStatus: users.localAccountStatus }).from(users).where(eq(users.localUsername, normalizedDriverPhone)).limit(1);
+  if (existingLocalAccount && existingLocalAccount.loginMethod !== "local_driver") {
+    return { success: false as const, reason: "phone_account_conflict" as const, message: "该手机号已被其他系统账号使用，请联系管理员处理后再绑定。" };
+  }
+  if (existingLocalAccount?.localAccountStatus === "disabled") {
+    return { success: false as const, reason: "driver_account_disabled" as const, message: "该司机手机号账号已停用，请联系管理员启用后再登录。" };
+  }
+  if (existingLocalAccount) {
+    const assignedToOtherVehicles = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(and(eq(transportVehicles.driverUserId, existingLocalAccount.id), ne(transportVehicles.id, vehicle.id))).limit(1);
+    if (assignedToOtherVehicles[0]) return { success: false as const, reason: "driver_account_vehicle_conflict" as const, message: "该司机手机号账号已关联其他车辆，请联系管理员调整车辆后再绑定。" };
+  }
+  if (vehicle.driverUserId && vehicle.driverUserId !== existingLocalAccount?.id) {
+    return { success: false as const, reason: "vehicle_account_conflict" as const, message: "该车辆已关联其他司机系统账号，请联系管理员核验后处理。" };
+  }
+  const [openIdOwner] = await db.select({ userId: officialAccountBindings.userId }).from(officialAccountBindings).where(and(eq(officialAccountBindings.openIdFingerprint, request.openIdFingerprint), eq(officialAccountBindings.status, "active"))).limit(1);
+  if (openIdOwner && openIdOwner.userId !== existingLocalAccount?.id) {
+    return { success: false as const, reason: "wechat_account_conflict" as const, message: "当前微信已关联其他系统账号，请联系管理员处理后再绑定。" };
+  }
+  await ensureFoundationData(db);
+  const [driverRole] = await db.select({ id: systemRoles.id }).from(systemRoles).where(and(eq(systemRoles.code, "DRIVER"), eq(systemRoles.status, "active"))).limit(1);
+  if (!driverRole) return { success: false as const, reason: "driver_role_unavailable" as const, message: "司机角色暂不可用，请联系管理员后重试。" };
   const now = new Date();
   let bindingId: number | null = null;
+  let driverUserId = existingLocalAccount?.id ?? null;
+  let accountProvisioned = false;
   await db.transaction(async tx => {
+    if (!driverUserId) {
+      await tx.insert(users).values({
+        openId: createLocalDriverOpenId(normalizedDriverPhone),
+        name: vehicle.driverName || "司机",
+        loginMethod: "local_driver",
+        role: "user",
+        localUsername: normalizedDriverPhone,
+        localPasswordHash: createLocalManagerPasswordHash(input.initialPassword),
+        localAccountStatus: "active",
+        localLoginMode: "mobile",
+        localPasswordChangeRequired: false,
+        lastSignedIn: now,
+      });
+      const [createdUser] = await tx.select({ id: users.id }).from(users).where(and(eq(users.localUsername, normalizedDriverPhone), eq(users.loginMethod, "local_driver"))).limit(1);
+      if (!createdUser) throw new Error("司机手机号账号创建失败");
+      driverUserId = createdUser.id;
+      accountProvisioned = true;
+    }
+    if (!driverUserId) throw new Error("司机手机号账号不可用");
+    await tx.update(transportVehicles).set({ driverUserId }).where(and(eq(transportVehicles.id, vehicle.id), or(isNull(transportVehicles.driverUserId), eq(transportVehicles.driverUserId, driverUserId))));
+    const [vehicleAccount] = await tx.select({ driverUserId: transportVehicles.driverUserId }).from(transportVehicles).where(eq(transportVehicles.id, vehicle.id)).limit(1);
+    if (vehicleAccount?.driverUserId !== driverUserId) throw new Error("车辆司机账号关联冲突");
+    const [activeDriverAssignment] = await tx.select({ id: userRoleAssignments.id }).from(userRoleAssignments).where(and(eq(userRoleAssignments.userId, driverUserId), eq(userRoleAssignments.roleId, driverRole.id), eq(userRoleAssignments.projectId, vehicle.projectId), eq(userRoleAssignments.status, "active"))).limit(1);
+    if (!activeDriverAssignment) await tx.insert(userRoleAssignments).values({ userId: driverUserId, roleId: driverRole.id, projectId: vehicle.projectId, organizationId: null, status: "active", grantedBy: null });
+    const [userWechatBinding] = await tx.select({ id: officialAccountBindings.id }).from(officialAccountBindings).where(eq(officialAccountBindings.userId, driverUserId)).limit(1);
+    if (userWechatBinding) {
+      await tx.update(officialAccountBindings).set({ openIdEncrypted: request.openIdEncrypted, openIdFingerprint: request.openIdFingerprint, bindingSource: "wechat_oauth", status: "active", boundAt: now, lastVerifiedAt: now, lastFailureAt: null, failureCount: 0 }).where(eq(officialAccountBindings.id, userWechatBinding.id));
+    } else {
+      await tx.insert(officialAccountBindings).values({ userId: driverUserId, openIdEncrypted: request.openIdEncrypted, openIdFingerprint: request.openIdFingerprint, bindingSource: "wechat_oauth", status: "active", boundAt: now, lastVerifiedAt: now, failureCount: 0 });
+    }
     await tx.update(officialAccountDriverBindings).set({ status: "revoked", updatedAt: now }).where(and(eq(officialAccountDriverBindings.openIdFingerprint, request.openIdFingerprint), eq(officialAccountDriverBindings.status, "active"), ne(officialAccountDriverBindings.vehicleId, vehicle.id)));
     await tx.update(officialAccountDriverBindings).set({ status: "revoked", updatedAt: now }).where(and(eq(officialAccountDriverBindings.vehicleId, vehicle.id), eq(officialAccountDriverBindings.status, "active")));
     await tx.insert(officialAccountDriverBindings).values({
@@ -230,12 +286,13 @@ export async function completeOfficialAccountDriverVehicleBinding(input: { token
     bindingId = createdBinding ? Number(createdBinding.id) : null;
     await tx.update(officialAccountDriverBindingRequests).set({ consumedAt: now }).where(eq(officialAccountDriverBindingRequests.id, request.id));
     await tx.insert(auditLogs).values({ userId: null, module: "transport", action: "driver_wechat_bound", targetType: "transport_vehicle", targetId: String(vehicle.id), summary: `外部司机通过服务号自助绑定车辆 ${vehicle.plateNo}` });
+    if (accountProvisioned) await tx.insert(auditLogs).values({ userId: driverUserId, module: "security", action: "driver_mobile_account_provisioned", targetType: "user", targetId: String(driverUserId), summary: "司机手机号移动端账号已开通并关联微信身份" });
   });
   const portalToken = bindingId ? createDriverPortalSessionToken({ bindingId, vehicleId: vehicle.id }) : null;
   const credentials = await loadPublishedOfficialAccountCredentials();
   const appUrl = getSafeDriverBindingAppUrl(credentials.config?.appUrl ?? null);
   const portalUrl = appUrl && portalToken ? new URL(`/driver-portal?token=${encodeURIComponent(portalToken)}`, appUrl).toString() : null;
-  return { success: true as const, vehicleId: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? null, portalUrl };
+  return { success: true as const, vehicleId: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? null, portalUrl, mobileLoginUrl: "/login?returnTo=%2Fmobile%2Ftransport", accountProvisioned };
 }
 
 export async function createOfficialAccountDriverPortalSession(openId: string) {
