@@ -508,7 +508,7 @@ describe("机械与运输 tRPC 路由", () => {
     expect(supportSource).toContain("nfcTransitKey: null");
   });
 
-  it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
+  it("装土刷卡按事件幂等记录、条件更新趟次，并向已绑定司机账号写入站内消息", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
@@ -530,8 +530,9 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({ tripId: 50, vehicleId: 11, eventType: "load", validationStatus: "accepted" }));
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenNthCalledWith(2, expect.objectContaining({ module: "transport", action: "record_load_card_event", targetId: "100" }));
+    expect(insertValues).toHaveBeenNthCalledWith(3, expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserId: 7, idempotencyKey: "inapp:transport-load:100:7", channel: "in_app", deepLink: "/mobile/transport" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_card_confirmed", targetId: "100" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserIds: [7], targetId: "100" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice" }));
   });
 
   it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {
@@ -572,8 +573,34 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, idempotencyKey: "reader-unload-0001", occurredAt: "2026-07-25T08:10:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
     expect(updateWhere).toHaveBeenCalledTimes(2);
-    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
+    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", recipientUserId: 7, idempotencyKey: "inapp:transport-card-review:102:7", channel: "in_app", deepLink: "/mobile/transport" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "102" }));
+  });
+
+  it("司机柴油扣款明细仅投影本人车辆的有效运输扣油记录和加油机表数", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [
+        { id: 11, plateNo: "川A12345", driverUserId: 1 },
+        { id: 12, plateNo: "川A99999", driverUserId: 2 },
+      ],
+      [
+        { id: 201, recordNo: "DS1001", vehicleId: 11, transportTripId: 50, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:30:00.000Z"), liters: "42.5", amount: "310.25", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: "项目油库", meterReading: "1234.5", receiptNo: "RC-001", evidenceId: null, remarks: "当日运输扣油" },
+        { id: 202, recordNo: "DS1002", vehicleId: 12, transportTripId: 51, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:40:00.000Z"), liters: "30", amount: "219", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: "2000", receiptNo: null, evidenceId: null, remarks: null },
+        { id: 203, recordNo: "DS1003", vehicleId: 11, transportTripId: 52, assetType: "vehicle", deductFromFreight: false, status: "approved", refueledAt: new Date("2026-08-26T02:50:00.000Z"), liters: "20", amount: "146", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
+        { id: 204, recordNo: "DS1004", vehicleId: 11, transportTripId: 53, assetType: "vehicle", deductFromFreight: true, status: "void", refueledAt: new Date("2026-08-26T03:00:00.000Z"), liters: "10", amount: "73", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
+      ],
+    ) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).driverFuelDeductionDetails({ projectId: 10, date: "2026-08-26" })).resolves.toMatchObject({
+      date: "2026-08-26",
+      recordCount: 1,
+      totalLiters: 42.5,
+      totalAmount: 310.25,
+      records: [expect.objectContaining({ id: 201, vehiclePlateNo: "川A12345", meterReading: 1234.5, receiptNo: "RC-001", evidence: null })],
+    });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
   it("现场传入未绑定的射频卡指纹时只留痕待复核，不能确认装土状态", async () => {
