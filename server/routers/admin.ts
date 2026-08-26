@@ -906,6 +906,7 @@ export const adminRouter = router({
       month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "月份格式应为 YYYY-MM").optional(),
       supplyMethod: z.enum(["project_supply", "external_station"]).optional(),
       plateNo: z.string().trim().max(32).optional(),
+      machineName: z.string().trim().max(160).optional(),
       supplierName: z.string().trim().max(160).optional(),
     }).refine(input => !input.dateFrom || !input.dateTo || input.dateFrom <= input.dateTo, { message: "加油结束日期不得早于开始日期", path: ["dateTo"] }).optional()).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);
@@ -916,6 +917,8 @@ export const adminRouter = router({
       const dateTo = input?.dateTo ?? input?.date;
       const plateKeyword = input?.plateNo?.trim().toUpperCase();
       const matchingVehicleIds = new Set(plateKeyword ? (await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles)).filter(vehicle => vehicle.plateNo.toUpperCase().includes(plateKeyword)).map(vehicle => vehicle.id) : []);
+      const machineKeyword = input?.machineName?.trim().toLowerCase();
+      const matchingMachineIds = new Set(machineKeyword ? (await db.select({ id: machines.id, name: machines.name, code: machines.code }).from(machines)).filter(machine => `${machine.name} ${machine.code ?? ""}`.toLowerCase().includes(machineKeyword)).map(machine => machine.id) : []);
       const supplierKeyword = input?.supplierName?.trim().toLowerCase();
       const filtered = rows.filter(row => {
         const refueledDate = new Date(row.refueledAt).toISOString().slice(0, 10);
@@ -928,6 +931,7 @@ export const adminRouter = router({
           && (!input?.month || refueledDate.slice(0, 7) === input.month)
           && (!input?.supplyMethod || row.supplyMethod === input.supplyMethod)
           && (!plateKeyword || (row.assetType === "vehicle" && Boolean(row.vehicleId) && matchingVehicleIds.has(Number(row.vehicleId))))
+          && (!machineKeyword || (row.assetType === "machine" && Boolean(row.machineId) && matchingMachineIds.has(Number(row.machineId))))
           && (!supplierKeyword || (row.stationOrSupplierName ?? "").toLowerCase().includes(supplierKeyword));
       });
       const [alertRule] = input?.projectId ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
