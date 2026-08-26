@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { FileDown, LoaderCircle, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -58,7 +59,21 @@ export function TransportFreightPrintDialog({ open, onOpenChange, projectId, pro
 
   function printFreightStatement() {
     if (!canPrint) return;
-    window.print();
+    const selectedPlate = vehicleId === "all" ? "全部车辆" : vehicles.find(item => String(item.id) === vehicleId)?.plateNo ?? "已选车辆";
+    const rows = trips.map((trip, index) => {
+      const gross = Number(trip.calculatedAmount ?? 0);
+      const fuel = Number(trip.fuelDeductionAmount ?? 0);
+      const net = Number(trip.netSettlementAmount ?? gross - fuel);
+      return `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(formatDateTime(trip.startAt))}</td><td>${escapePrintHtml(trip.vehiclePlateNo)}</td><td>${escapePrintHtml(trip.tripNo)}</td><td>${escapePrintHtml(`${trip.loadLocation.name} → ${trip.unloadLocation.name}`)}</td><td class="right">${Number(trip.volumeCubicMeters ?? 0).toFixed(2)}</td><td class="right">${escapePrintHtml(trip.actualDistanceKm ?? "—")} km</td><td class="right">${escapePrintHtml(formatMoney(trip.calculatedUnitPrice))}</td><td class="right">${escapePrintHtml(formatMoney(gross))}</td><td class="right">${escapePrintHtml(formatMoney(fuel))}</td><td class="right">${escapePrintHtml(formatMoney(net))}</td><td class="center">${escapePrintHtml(tripStatusLabel(trip.status))}</td></tr>`;
+    }).join("");
+    try {
+      openA4LandscapePrintDocument({
+        title: "运输运费明细表",
+        bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　车牌：${escapePrintHtml(selectedPlate)}　|　期间：${escapePrintHtml(dateFrom)} 至 ${escapePrintHtml(dateTo)}</p><p class="sub">生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}　|　数据范围：当前账号已授权项目与车辆</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:10%">业务时间</th><th style="width:7%">车牌</th><th style="width:10%">运单号</th><th style="width:19%">运输路线</th><th style="width:6%">方量</th><th style="width:6%">里程</th><th style="width:8%">运价</th><th style="width:8%">应付运费</th><th style="width:8%">柴油扣款</th><th style="width:8%">净额</th><th style="width:7%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${trips.length} 趟，去重车辆数 ${totals.vehicleIds.size} 辆</td><td class="right">${totals.volume.toFixed(2)}</td><td>—</td><td>—</td><td class="right">${escapePrintHtml(formatMoney(totals.gross))}</td><td class="right">${escapePrintHtml(formatMoney(totals.fuel))}</td><td class="right">${escapePrintHtml(formatMoney(totals.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+      });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "无法打开打印页");
+    }
   }
 
   return <Dialog open={open} onOpenChange={onOpenChange}>

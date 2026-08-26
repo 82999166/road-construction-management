@@ -1363,6 +1363,54 @@ export const machineryRouter = router({
     return db.select().from(machineCostRecords).where(and(...predicates)).orderBy(desc(machineCostRecords.occurredAt));
   }),
 
+  /**
+   * 机械成本汇总打印按项目和自然月读取真实成本记录。默认排除作废记录；
+   * 明确选择“已作废”时才输出其审计明细，避免无效金额混入正常合计。
+   */
+  printSummary: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    period: settlementPeriodSchema,
+    machineId: z.number().int().positive().nullable().optional(),
+    status: z.enum(["all", "draft", "approved", "settled", "void"]).default("all"),
+  })).query(async ({ ctx, input }) => {
+    await assertMachineryAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    if (input.machineId) await getScopedMachine(ctx, input.machineId, input.projectId);
+    const db = await getDb();
+    if (!db) return { records: [], summary: { recordCount: 0, machineCount: 0, quantity: 0, amount: 0 } };
+    const range = getMonthRange(input.period);
+    const predicates = [eq(machineCostRecords.projectId, input.projectId), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive)];
+    if (input.machineId) predicates.push(eq(machineCostRecords.machineId, input.machineId));
+    if (input.status === "all") predicates.push(ne(machineCostRecords.status, "void"));
+    else predicates.push(eq(machineCostRecords.status, input.status));
+    const [rows, machineRows] = await Promise.all([
+      db.select().from(machineCostRecords).where(and(...predicates)).orderBy(desc(machineCostRecords.occurredAt)),
+      db.select({ id: machines.id, name: machines.name, code: machines.code, model: machines.model }).from(machines).where(eq(machines.projectId, input.projectId)),
+    ]);
+    const labels = new Map(machineRows.map(row => [row.id, `${row.name}${row.code ? ` · ${row.code}` : ""}`]));
+    const records = rows.map(row => ({
+      id: row.id,
+      machineId: row.machineId,
+      machineLabel: labels.get(row.machineId) ?? "机械已停用/删除",
+      costType: row.costType,
+      quantity: Number(row.quantity),
+      unitPrice: Number(row.unitPrice),
+      amount: Number(row.amount),
+      occurredAt: row.occurredAt,
+      remarks: row.remarks,
+      status: row.status,
+    }));
+    return {
+      records,
+      summary: {
+        recordCount: records.length,
+        machineCount: new Set(records.map(row => row.machineId)).size,
+        quantity: records.reduce((sum, row) => sum + row.quantity, 0),
+        amount: records.reduce((sum, row) => sum + row.amount, 0),
+      },
+    };
+  }),
+
   /** 统一机械台账仅汇总当前已授权项目内的真实成本；作废记录不计入金额但仍保留于单机详情审计。 */
   listCostSummaries: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     await assertMachineryAccess(ctx);

@@ -72,6 +72,68 @@ export const dieselRouter = router({
     };
   }),
 
+  /**
+   * 柴油汇总打印仅查询已授权项目内的真实领用记录。默认不让作废记录混入金额汇总；
+   * 管理人员显式筛选“已作废”时才单独打印作废审计明细。
+   */
+  printSummary: protectedProcedure.input(z.object({
+    projectId: z.number().int().positive(),
+    dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    assetType: z.enum(["all", "vehicle", "machine"]).default("all"),
+    supplyMethod: z.enum(["all", "project_supply", "external_station"]).default("all"),
+    status: z.enum(["all", "approved", "settled", "void"]).default("all"),
+  })).query(async ({ ctx, input }) => {
+    requireAuthenticatedUser(ctx);
+    const readAccess = await getRoleOperationPermissionDecision(ctx, "DIESEL", "read");
+    if (!readAccess.hasDetailedPermissions || !readAccess.allowed) throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油台账查看权限" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { records: [], summary: { recordCount: 0, liters: 0, amount: 0, deductibleAmount: 0, vehicleCount: 0, machineCount: 0 } };
+    const start = new Date(`${input.dateFrom}T00:00:00+08:00`);
+    const end = new Date(`${input.dateTo}T23:59:59.999+08:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) throw new TRPCError({ code: "BAD_REQUEST", message: "柴油汇总日期范围无效" });
+    const predicates = [eq(dieselRefuelRecords.projectId, input.projectId), gte(dieselRefuelRecords.refueledAt, start), lte(dieselRefuelRecords.refueledAt, end)];
+    if (input.assetType !== "all") predicates.push(eq(dieselRefuelRecords.assetType, input.assetType));
+    if (input.supplyMethod !== "all") predicates.push(eq(dieselRefuelRecords.supplyMethod, input.supplyMethod));
+    if (input.status === "all") predicates.push(ne(dieselRefuelRecords.status, "void"));
+    else predicates.push(eq(dieselRefuelRecords.status, input.status));
+    const [rows, vehicleRows, machineRows] = await Promise.all([
+      db.select().from(dieselRefuelRecords).where(and(...predicates)).orderBy(desc(dieselRefuelRecords.refueledAt)),
+      db.select({ id: transportVehicles.id, label: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)),
+      db.select({ id: machines.id, label: machines.name, code: machines.code }).from(machines).where(eq(machines.projectId, input.projectId)),
+    ]);
+    const vehicleLabels = new Map(vehicleRows.map(row => [row.id, row.label]));
+    const machineLabels = new Map(machineRows.map(row => [row.id, row.code ? `${row.label} · ${row.code}` : row.label]));
+    const records = rows.map(row => ({
+      id: row.id,
+      recordNo: row.recordNo,
+      assetType: row.assetType,
+      assetLabel: row.assetType === "vehicle" ? vehicleLabels.get(row.vehicleId ?? -1) ?? "车辆已停用/删除" : machineLabels.get(row.machineId ?? -1) ?? "机械已停用/删除",
+      supplyMethod: row.supplyMethod,
+      stationOrSupplierName: row.stationOrSupplierName,
+      liters: Number(row.liters),
+      appliedUnitPrice: Number(row.appliedUnitPrice),
+      amount: Number(row.amount),
+      deductFromFreight: row.deductFromFreight,
+      meterReading: row.meterReading === null ? null : Number(row.meterReading),
+      receiptNo: row.receiptNo,
+      refueledAt: row.refueledAt,
+      status: row.status,
+    }));
+    return {
+      records,
+      summary: {
+        recordCount: records.length,
+        liters: records.reduce((sum, row) => sum + row.liters, 0),
+        amount: records.reduce((sum, row) => sum + row.amount, 0),
+        deductibleAmount: records.filter(row => row.deductFromFreight).reduce((sum, row) => sum + row.amount, 0),
+        vehicleCount: new Set(records.filter(row => row.assetType === "vehicle").map(row => row.assetLabel)).size,
+        machineCount: new Set(records.filter(row => row.assetType === "machine").map(row => row.assetLabel)).size,
+      },
+    };
+  }),
+
   /** 为移动端柴油领用登记提供已授权项目内的真实车辆与机械；不能依赖客户端猜测资产编号。 */
   mobileRefuelOptions: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
     requireAuthenticatedUser(ctx);

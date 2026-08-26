@@ -23,6 +23,7 @@ describe("运输运费 A4 PDF 打印模板", () => {
     expect(source).toContain("去重车辆数");
     expect(source).toContain("运单趟数");
     expect(source).toContain("打印 / 保存 PDF");
-    expect(source).toContain("window.print()");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("bodyHtml");
   });
 });
