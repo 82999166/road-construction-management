@@ -107,6 +107,19 @@ export function normalizeDriverPlateNo(value: string) {
   return value.trim().toUpperCase().replace(/[\s·・.\-_]+/g, "").slice(0, 32);
 }
 
+/** 司机绑定手机号仅接受中国大陆手机号；可输入空格、短横线或 +86 前缀，服务端统一归一化后再比较。 */
+export function normalizeDriverPhone(value: string) {
+  const digits = value.trim().replace(/[^\d]/g, "");
+  const withoutCountryCode = digits.startsWith("86") && digits.length === 13 ? digits.slice(2) : digits;
+  return /^1[3-9]\d{9}$/.test(withoutCountryCode) ? withoutCountryCode : "";
+}
+
+function isSameDriverPhone(left: string, right: string) {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 export function isDriverBindingKeyword(content: string) {
   const compact = content.trim().replace(/\s+/g, "");
   return ["绑定", "绑定车辆", "车辆绑定", "司机绑定", "司机车辆绑定"].includes(compact);
@@ -172,9 +185,11 @@ export async function getOfficialAccountDriverBindingRequestStatus(token: string
   return { status: "ready", expiresAt: request.expiresAt };
 }
 
-export async function completeOfficialAccountDriverVehicleBinding(input: { token: string; plateNo: string }) {
+export async function completeOfficialAccountDriverVehicleBinding(input: { token: string; plateNo: string; driverPhone: string }) {
   const normalizedPlateNo = normalizeDriverPlateNo(input.plateNo);
   if (!normalizedPlateNo) return { success: false as const, reason: "invalid_plate" as const, message: "请填写完整车牌号。" };
+  const normalizedDriverPhone = normalizeDriverPhone(input.driverPhone);
+  if (!normalizedDriverPhone) return { success: false as const, reason: "invalid_driver_phone" as const, message: "请填写司机本人登记的11位手机号。" };
   const db = await getDb();
   if (!db) return { success: false as const, reason: "database_unavailable" as const, message: "系统暂时无法连接数据库，请稍后再试。" };
   const [request] = await db.select().from(officialAccountDriverBindingRequests).where(and(eq(officialAccountDriverBindingRequests.tokenFingerprint, fingerprintDriverBindingToken(input.token)), gt(officialAccountDriverBindingRequests.expiresAt, new Date()))).orderBy(desc(officialAccountDriverBindingRequests.id)).limit(1);
@@ -183,6 +198,16 @@ export async function completeOfficialAccountDriverVehicleBinding(input: { token
   const matchedVehicles = vehicles.filter(vehicle => normalizeDriverPlateNo(vehicle.plateNo) === normalizedPlateNo);
   if (matchedVehicles.length !== 1) return { success: false as const, reason: "vehicle_not_found" as const, message: "没有找到这台可调度车辆，请核对车牌号，或联系管理员先在车辆台账录入。" };
   const vehicle = matchedVehicles[0];
+  let verifiedDriverPhone = "";
+  try {
+    verifiedDriverPhone = vehicle.driverPhoneEncrypted ? normalizeDriverPhone(decryptSecret(vehicle.driverPhoneEncrypted)) : "";
+  } catch {
+    verifiedDriverPhone = "";
+  }
+  if (!verifiedDriverPhone || !isSameDriverPhone(verifiedDriverPhone, normalizedDriverPhone)) {
+    await db.insert(auditLogs).values({ userId: null, module: "transport", action: "driver_wechat_binding_phone_mismatch", targetType: "transport_vehicle", targetId: String(vehicle.id), summary: "外部司机微信车辆绑定手机号校验失败" });
+    return { success: false as const, reason: "driver_phone_mismatch" as const, message: "车牌与司机手机号未匹配，请核对登记手机号；如车辆台账未登记手机号，请联系管理员补充后再绑定。" };
+  }
   const now = new Date();
   let bindingId: number | null = null;
   await db.transaction(async tx => {

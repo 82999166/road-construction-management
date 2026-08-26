@@ -15,6 +15,7 @@ function getTokenFromSearch() {
 export default function DriverWechatBindPage() {
   const [token] = useState(() => getTokenFromSearch());
   const [plateNo, setPlateNo] = useState("");
+  const [driverPhone, setDriverPhone] = useState("");
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const status = trpc.officialAccount.driverBindingStatus.useQuery({ token }, { enabled: token.length >= 16, retry: false });
@@ -32,15 +33,16 @@ export default function DriverWechatBindPage() {
         <CardHeader>
           <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#203c48] text-white"><Truck className="h-6 w-6" /></div>
           <CardTitle>渣土车司机微信绑定</CardTitle>
-          <CardDescription>司机关注服务号后绑定车辆，只用于接收本车装土、卸土、结算和异常通知，不开通后台登录权限。</CardDescription>
+          <CardDescription>填写车牌和在车辆台账登记的司机手机号后才可绑定，防止仅凭车牌误绑车辆。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {state === "loading" ? <div className="flex items-center gap-2 rounded-xl bg-white p-3 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" />正在核验绑定链接…</div> : null}
           {["invalid", "expired", "used", "unavailable"].includes(state) ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900"><XCircle className="mb-2 h-5 w-5" />绑定链接无效、已过期或已使用。请回到服务号聊天窗口重新发送“绑定”获取新链接。</div> : null}
-          {state === "ready" && !bind.data?.success ? <form className="space-y-3" onSubmit={event => { event.preventDefault(); bind.mutate({ token, plateNo }); }}>
+          {state === "ready" && !bind.data?.success ? <form className="space-y-3" onSubmit={event => { event.preventDefault(); bind.mutate({ token, plateNo, driverPhone }); }}>
             <div className="space-y-2"><Label>车牌号</Label><Input value={plateNo} placeholder="例如 湘A12345" autoFocus onChange={event => setPlateNo(event.target.value.toUpperCase())} /></div>
+            <div className="space-y-2"><Label>司机手机号（校验）</Label><Input type="tel" inputMode="numeric" autoComplete="tel" value={driverPhone} placeholder="填写车辆台账登记的手机号" onChange={event => setDriverPhone(event.target.value.replace(/[^\d+\s-]/g, ""))} /><p className="text-xs leading-5 text-slate-500">手机号仅用于本次匹配校验，不会在页面、通知或账单中明文展示。</p></div>
             {message ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{message}</p> : null}
-            <Button className="h-11 w-full bg-[#203c48] text-white hover:bg-[#17313b]" disabled={bind.isPending || plateNo.trim().length < 2}>{bind.isPending ? "正在绑定…" : "确认绑定车辆"}</Button>
+            <Button className="h-11 w-full bg-[#203c48] text-white hover:bg-[#17313b]" disabled={bind.isPending || plateNo.trim().length < 2 || driverPhone.replace(/[^\d]/g, "").length < 11}>{bind.isPending ? "正在核验并绑定…" : "核验手机号并绑定车辆"}</Button>
           </form> : null}
           {bind.data?.success ? <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm leading-6 text-emerald-900"><CheckCircle2 className="h-6 w-6" /><p className="font-semibold">绑定成功</p><p>已绑定车辆：{bind.data.plateNo}{bind.data.driverName ? `，司机 ${bind.data.driverName}` : ""}。后续本车运输通知将发送到当前微信。</p>{bind.data.portalUrl ? <Button className="w-full bg-[#203c48] text-white hover:bg-[#17313b]" onClick={() => { window.location.href = bind.data!.portalUrl!; }}>查看我的运费账单</Button> : null}<Button variant="outline" className="w-full border-emerald-200 bg-white" onClick={() => navigate("/")}>返回系统首页</Button></div> : null}
           <p className="text-xs leading-5 text-slate-500">如车牌无法匹配，请联系管理员先在“车辆统一台账”中录入该车牌，并确认车辆状态为可调度。</p>

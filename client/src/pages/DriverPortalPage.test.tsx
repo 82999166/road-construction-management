@@ -6,9 +6,10 @@ describe("微信绑定司机门户", () => {
     const source = readFileSync(new URL("./DriverPortalPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("微信司机运输工作台");
-    expect(source).toContain("运输提醒说明");
+    expect(source).toContain("账单使用说明");
+    expect(source).toContain("使用说明");
     expect(source).toContain("司机不需要也没有系统登录账号");
-    expect(source).toContain("不读取其他车辆或系统账号的站内消息");
+    expect(source).toContain("不读取其他车辆或系统账号的消息");
     expect(source).not.toContain("useAuth");
   });
 
