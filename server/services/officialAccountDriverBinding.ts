@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
-import { auditLogs, dieselRefuelRecords, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, transportTrips, transportVehicleSettlements, transportVehicles } from "../../drizzle/schema";
+import { auditLogs, dieselRefuelRecords, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, transportSites, transportTrips, transportVehicleSettlements, transportVehicles } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { decryptSecret, encryptSecret } from "./secretVault";
 import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, getOfficialAccountTemplateSemanticMismatch, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
@@ -18,6 +18,7 @@ export type DriverPortalSummaryStatus =
 
 export type DriverPortalSummary = {
   vehicle: { id: number; plateNo: string; driverName: string | null; driverPhoneMasked: string | null; projectName: string | null };
+  today: { businessDate: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number };
   totals: {
     tripCount: number;
     grossFreightAmount: number;
@@ -29,8 +30,8 @@ export type DriverPortalSummary = {
     pendingTripAmount: number;
   };
   settlements: Array<{ settlementNo: string; status: string; periodStart: string; periodEnd: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; paidAt: Date | null; paymentDate: string | null }>;
-  dieselRecords: Array<{ recordNo: string; refueledAt: Date; liters: number; amount: number; status: string; supplyMethod: string; deductFromFreight: boolean }>;
-  recentTrips: Array<{ tripNo: string; startAt: Date; status: string; grossFreightAmount: number; fuelDeductionAmount: number; netSettlementAmount: number | null }>;
+  dieselRecords: Array<{ recordNo: string; refueledAt: Date; liters: number; amount: number; status: string; supplyMethod: string; deductFromFreight: boolean; meterReading: number | null; receiptNo: string | null; stationOrSupplierName: string | null; remarks: string | null }>;
+  recentTrips: Array<{ tripNo: string; startAt: Date; endAt: Date | null; status: string; invoiceMode: string; routeLabel: string; actualDistanceKm: number | null; volumeCubicMeters: number | null; grossFreightAmount: number; fuelDeductionAmount: number; netSettlementAmount: number | null }>;
 };
 
 type DriverPortalSession = { bindingId: number; vehicleId: number; issuedAt: number; expiresAt: number; nonce: string };
@@ -84,6 +85,11 @@ function roundMoney(value: number) {
 function toNumber(value: unknown) {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+/** 司机门户的“当日”按中国业务日聚合，避免服务器 UTC 日期与现场日期错位。 */
+function chinaBusinessDate(value: Date) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
 }
 
 function getSafeDriverBindingAppUrl(appUrl: string | null) {
@@ -233,14 +239,19 @@ export async function getOfficialAccountDriverPortalSummary(token: string): Prom
   const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId, plateNo: transportVehicles.plateNo, driverName: transportVehicles.driverName, driverPhoneMasked: transportVehicles.driverPhoneMasked, status: transportVehicles.status }).from(transportVehicles).where(eq(transportVehicles.id, binding.vehicleId)).limit(1);
   if (!vehicle || vehicle.status !== "active") return { status: "unbound" };
   const [project] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, vehicle.projectId)).limit(1);
-  const [trips, settlements, dieselRows] = await Promise.all([
+  const [trips, settlements, dieselRows, sites] = await Promise.all([
     db.select().from(transportTrips).where(and(eq(transportTrips.projectId, vehicle.projectId), eq(transportTrips.vehicleId, vehicle.id))).orderBy(desc(transportTrips.startAt)),
     db.select().from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, vehicle.projectId), eq(transportVehicleSettlements.vehicleId, vehicle.id))).orderBy(desc(transportVehicleSettlements.createdAt)),
     db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, vehicle.projectId), eq(dieselRefuelRecords.vehicleId, vehicle.id), eq(dieselRefuelRecords.assetType, "vehicle"))).orderBy(desc(dieselRefuelRecords.refueledAt)),
+    db.select({ id: transportSites.id, name: transportSites.name }).from(transportSites).where(eq(transportSites.projectId, vehicle.projectId)),
   ]);
   const validTrips = trips.filter(item => item.status !== "void");
   const validSettlements = settlements.filter(item => item.status !== "void");
   const deductibleDiesel = dieselRows.filter(item => item.status !== "void" && item.deductFromFreight);
+  const today = chinaBusinessDate(new Date());
+  const todayTrips = validTrips.filter(item => chinaBusinessDate(item.startAt) === today);
+  const todayDiesel = deductibleDiesel.filter(item => chinaBusinessDate(item.refueledAt) === today);
+  const siteNameById = new Map(sites.map(item => [item.id, item.name]));
   const paidAmount = roundMoney(validSettlements.filter(item => item.status === "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
   const unpaidAmount = roundMoney(validSettlements.filter(item => item.status !== "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
   const settledFuelDeductionAmount = roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.fuelDeductionAmount), 0));
@@ -248,6 +259,12 @@ export async function getOfficialAccountDriverPortalSummary(token: string): Prom
   const pendingTripAmount = roundMoney(validTrips.filter(item => ["verified"].includes(item.status)).reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0));
   const summary: DriverPortalSummary = {
     vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? binding.driverNameSnapshot ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? binding.driverPhoneMaskedSnapshot ?? null, projectName: project?.name ?? null },
+    today: {
+      businessDate: today,
+      tripCount: todayTrips.length,
+      grossFreightAmount: roundMoney(todayTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
+      fuelDeductionAmount: roundMoney(todayDiesel.reduce((sum, item) => sum + toNumber(item.amount), 0)),
+    },
     totals: {
       tripCount: validTrips.length,
       grossFreightAmount: roundMoney(validTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
@@ -259,8 +276,8 @@ export async function getOfficialAccountDriverPortalSummary(token: string): Prom
       pendingTripAmount,
     },
     settlements: validSettlements.slice(0, 20).map(item => ({ settlementNo: item.settlementNo, status: item.status, periodStart: String(item.periodStart), periodEnd: String(item.periodEnd), tripCount: item.tripCount, grossFreightAmount: toNumber(item.grossFreightAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netPayableAmount: toNumber(item.netPayableAmount), paidAt: item.paidAt ?? null, paymentDate: item.paymentDate ? String(item.paymentDate) : null })),
-    dieselRecords: dieselRows.filter(item => item.status !== "void").slice(0, 20).map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight })),
-    recentTrips: validTrips.slice(0, 20).map(item => ({ tripNo: item.tripNo, startAt: item.startAt, status: item.status, grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
+    dieselRecords: dieselRows.filter(item => item.status !== "void").slice(0, 20).map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight, meterReading: item.meterReading === null ? null : toNumber(item.meterReading), receiptNo: item.receiptNo ?? null, stationOrSupplierName: item.stationOrSupplierName ?? null, remarks: item.remarks ?? null })),
+    recentTrips: validTrips.slice(0, 20).map(item => ({ tripNo: item.tripNo, startAt: item.startAt, endAt: item.endAt ?? null, status: item.status, invoiceMode: item.invoiceMode, routeLabel: `${item.loadSiteId ? siteNameById.get(item.loadSiteId) ?? "装土点未记录" : "装土点未记录"} → ${item.unloadSiteId ? siteNameById.get(item.unloadSiteId) ?? "卸土点未记录" : "卸土点未记录"}`, actualDistanceKm: item.actualDistanceKm === null ? null : toNumber(item.actualDistanceKm), volumeCubicMeters: item.volumeCubicMeters === null ? null : toNumber(item.volumeCubicMeters), grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
   };
   return { status: "ready", summary };
 }
