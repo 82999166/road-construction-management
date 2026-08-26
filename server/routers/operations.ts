@@ -2498,6 +2498,14 @@ export const transportRouter = router({
     }
     let rows = await db.select().from(transportTrips).where(and(...predicates)).orderBy(desc(transportTrips.startAt));
     const { month, dateFrom, dateTo, vehicleId, status, routePresetId } = input;
+    if (dateFrom) {
+      const { start } = getChinaBusinessDateRange(dateFrom);
+      rows = rows.filter(trip => new Date(trip.startAt) >= start);
+    }
+    if (dateTo) {
+      const { end } = getChinaBusinessDateRange(dateTo);
+      rows = rows.filter(trip => new Date(trip.startAt) < end);
+    }
     if (month) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 7) === month);
     if (dateFrom) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) >= dateFrom);
     if (dateTo) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) <= dateTo);

@@ -61,4 +61,13 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain('aria-label="移动运输导航"');
     expect(source.indexOf("<MobileTransportLedger")).toBeLessThan(source.indexOf("运输日报"));
   });
+
+  it("提供受项目与车辆范围约束的运费明细 PDF 打印入口", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("TransportFreightPrintDialog");
+    expect(source).toContain("运费明细 PDF");
+    expect(source).toContain("setFreightPrintOpen(true)");
+    expect(source).toContain("projectName={selectedProject?.name");
+  });
 });
