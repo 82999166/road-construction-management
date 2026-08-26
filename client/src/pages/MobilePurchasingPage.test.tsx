@@ -36,3 +36,15 @@ describe("移动采购订单详情", () => {
     expect(source).toContain("closed: \"已结算\"");
   });
 });
+
+describe("移动采购项目范围反馈", () => {
+  it("区分项目授权请求失败与真实无授权项目，并允许重新获取服务端范围", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('retry: 2');
+    expect(source).toContain('refetchOnMount: "always"');
+    expect(source).toContain("项目授权加载失败");
+    expect(source).toContain("这不等同于没有项目权限");
+    expect(source).toContain("重新获取授权项目");
+    expect(source).toContain("projects.refetch()");
+  });
+});
