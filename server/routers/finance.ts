@@ -39,7 +39,7 @@ import {
   assertPurchaseRequestStatusTransition,
   ConstructionDomainError,
 } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSuperAdmin, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSuperAdmin, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -161,7 +161,8 @@ async function assertPurchaseAccess(ctx: Parameters<typeof requireAuthenticatedU
   await assertDepartmentBusinessAccess(ctx, "PURCHASING");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["PURCHASER", "WAREHOUSE_MANAGER", "LOGISTICS_MANAGER", "FINANCE_MANAGER", "PROJECT_MANAGER"];
-  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role))) {
+  const hasUserSpecificReadPermission = await hasUserSpecificOperationPermission(ctx, "PURCHASING", "read");
+  if (!roleCodes.includes("ALL") && !roleCodes.some(role => allowed.includes(role)) && !hasUserSpecificReadPermission) {
     throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获采购仓储数据访问授权" });
   }
   return roleCodes;
