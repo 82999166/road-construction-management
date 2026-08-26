@@ -22,6 +22,7 @@ const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
 const DriverPortalPage = lazy(() => import("./pages/DriverPortalPage"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal"));
+const ScopedManagementModulePage = lazy(() => import("./pages/ScopedManagementModulePage"));
 const MobileWorkbench = lazy(() => import("./pages/MobileWorkbench"));
 const MobileAttendancePage = lazy(() => import("./pages/MobileAttendancePage"));
 const MobileConstructionPage = lazy(() => import("./pages/MobileConstructionPage"));
@@ -45,7 +46,7 @@ const MobileProfilePage = lazy(() => import("./pages/MobileProfilePage"));
  */
 function AdminRouteGuard() {
   const { isAuthenticated, loading } = useAuth();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const isMobile = useIsMobile();
   const access = trpc.admin.access.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const mode = resolveManagementAccessMode({
@@ -77,7 +78,8 @@ function AdminRouteGuard() {
   if (isMobileScopedManager) {
     return <div className="flex min-h-screen items-center justify-center bg-[#fffaf3] text-sm text-[#76523f]">正在进入工程承包移动工作台…</div>;
   }
-  return mode === "super-admin" ? <AdminPage /> : <ManagementPortal />;
+  const requestedSection = location.match(/^\/admin\/([^/?#]+)/)?.[1] ?? null;
+  return mode === "super-admin" ? <AdminPage /> : requestedSection ? <ScopedManagementModulePage section={requestedSection} /> : <ManagementPortal />;
 }
 
 /** 测试环境专用的独立本地超级管理员入口，不改变企业身份统一登录页。 */

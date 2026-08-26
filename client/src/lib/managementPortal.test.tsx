@@ -26,9 +26,9 @@ describe("统一管理入口权限投影", () => {
     ]);
 
     expect(modules.map(module => module.code)).toEqual(["CONSTRUCTION", "FINANCE", "DIESEL", "CONTRACT"]);
-    expect(getManagementModulePath("CONSTRUCTION")).toBe("/mobile/construction");
-    expect(getManagementModulePath("DIESEL")).toBe("/mobile/diesel");
-    expect(getManagementModulePath("CONTRACT")).toBe("/mobile/contract");
+    expect(getManagementModulePath("CONSTRUCTION")).toBe("/admin/construction");
+    expect(getManagementModulePath("DIESEL")).toBe("/admin/diesel");
+    expect(getManagementModulePath("CONTRACT")).toBe("/admin/contract");
     expect(getManagementModulePath("UNRECOGNIZED")).toBeNull();
   });
 });

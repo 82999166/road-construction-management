@@ -33,7 +33,7 @@ export function getManagementModulePath(code: string) {
     "DIESEL",
     "EVIDENCE",
   ]);
-  return supportedCodes.has(code) ? `/mobile/${code.toLowerCase()}` : null;
+  return supportedCodes.has(code) ? `/admin/${code.toLowerCase()}` : null;
 }
 
 /** 工作台与消息中心不重复呈现为“业务管理版块”。 */
