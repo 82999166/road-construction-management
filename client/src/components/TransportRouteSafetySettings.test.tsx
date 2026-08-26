@@ -29,4 +29,14 @@ describe("运输路线安全开关", () => {
     expect(source).toContain("硬性拦截同车的连续刷卡开票");
     expect(source).toContain("默认关闭");
   });
+
+  it("将超级管理员配置入口固定放在 PC 路线配置卡片内，而非运输台账区域之后", () => {
+    const routeEditor = readFileSync(new URL("./TransportRouteConfigurationEditor.tsx", import.meta.url), "utf8");
+    const adminPage = readFileSync(new URL("../pages/AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(routeEditor).toContain('import { TransportRouteSafetySettings } from "@/components/TransportRouteSafetySettings"');
+    expect(routeEditor).toContain("<TransportRouteSafetySettings projectId={projectId} />");
+    expect(routeEditor).toContain("以下配置仅限超级管理员维护");
+    expect(adminPage).not.toContain("<TransportRouteSafetySettings projectId={workspaceProjectId} />");
+  });
 });

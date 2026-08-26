@@ -2969,7 +2969,6 @@ export default function AdminPage() {
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="可见车辆" value={vehiclesForProject.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Truck} /><MetricCard title="可调度车辆" value={vehiclesForProject.filter(item => item.status === "active").length} description="车辆状态来自真实台账" icon={ShieldCheck} /><MetricCard title="当日有效趟次" value={activeTrips.length} description={transportDate || "全部日期"} icon={ScrollText} /><MetricCard title="可结算金额" value={Math.round(totalAmount * 100) / 100} description="非作废趟次金额合计" icon={BarChart3} /></section>
             <TransportRouteConfigurationEditor projectId={workspaceProjectId} />
             {/* 运输完整明细、筛选、导出与状态操作统一由下方 TransportTripLedger 承担；简版车辆趟次卡已移除，避免同一运单重复展示。 */}
-            <TransportRouteSafetySettings projectId={workspaceProjectId} />
             <div id="transport-trip-ledger-upgrade">
               <TransportTripLedger
                 filter={transportLedgerFilter}
