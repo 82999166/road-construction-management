@@ -37,6 +37,18 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("单次闭环时间（非卸土确认）");
     expect(source).toContain("未记录实际卸土确认");
   });
+
+  it("按后台当前筛选提供 A4 横向运费明细 PDF，并在最末行汇总金额、趟数和车辆数", () => {
+    const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
+    expect(source).toContain("运费明细 PDF");
+    expect(source).toContain("freightPrintOpen");
+    expect(source).toContain("@page { size: A4 landscape");
+    expect(source).toContain("printableTrips");
+    expect(source).toContain("去重车辆数");
+    expect(source).toContain("运单趟数");
+    expect(source).toContain("打印 / 保存 PDF");
+    expect(source).toContain("全部状态”打印仍默认排除作废单");
+  });
 });
 
 
