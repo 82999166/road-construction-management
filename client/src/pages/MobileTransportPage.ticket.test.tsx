@@ -51,4 +51,14 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("刷 NFC 卡发票");
     expect(source).toContain("自动读取车辆");
   });
+
+  it("司机在运输页可直接进入站内消息，且台账位于现场操作卡之前", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("trpc.messages.unreadCount.useQuery");
+    expect(source).toContain('aria-label="进入消息中心"');
+    expect(source).toContain('navigate("/mobile/messages")');
+    expect(source).toContain('aria-label="移动运输导航"');
+    expect(source.indexOf("<MobileTransportLedger")).toBeLessThan(source.indexOf("运输日报"));
+  });
 });
