@@ -2414,7 +2414,10 @@ export default function AdminPage() {
   const renderSettings = () => (
     <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
       <section className="space-y-6">
-        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">微信公众号服务号是唯一通知通道；地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">站内通知为基础通道；短信和服务号即时通知可在下方按模块配置。地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
+          <NotificationChannelSettings />
+        </Suspense>
         <Card className="border-[#d8e3e0]">
           <CardHeader><CardTitle className="text-base">每日项目站内汇总</CardTitle><CardDescription>每天按中国标准时间汇总施工日报、收入开支、计量申报与运输装卸数据，并写入项目负责人的站内消息中心。定时任务、运行结果和配置修改均保留审计记录。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
@@ -2515,9 +2518,6 @@ export default function AdminPage() {
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>
-        <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
-          <NotificationChannelSettings />
-        </Suspense>
         <Card className="border-[#d8e3e0] bg-[#f7faf9]">
           <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>五项基础参数在此一次填写、一次保存并自动校验。首次配置请完整填写；后续只修改公开参数时，两个密钥留空即可保留已加密的现有值。</CardDescription></CardHeader>
           <CardContent>

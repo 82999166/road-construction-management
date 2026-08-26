@@ -1,10 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Bell, CheckCheck, ChevronRight, HardHat, Inbox, LayoutDashboard, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { useState } from "react";
 import { useAuth } from "../_core/hooks/useAuth";
 
 /** 移动端底部导航只使用移动路由，避免从消息中心误跳至后台个人页。 */
@@ -30,6 +32,7 @@ export default function MobileMessagesPage() {
   const utils = trpc.useUtils();
   const messages = trpc.messages.list.useQuery({ limit: 50 }, { enabled: isAuthenticated, retry: false });
   const pendingBroadcasts = trpc.broadcast.myPendingAcknowledgements.useQuery(undefined, { enabled: isAuthenticated, retry: false });
+  const [selectedMessage, setSelectedMessage] = useState<NonNullable<typeof messages.data>[number] | null>(null);
   const markRead = trpc.messages.markRead.useMutation({
     onSuccess: async () => {
       await Promise.all([utils.messages.list.invalidate(), utils.messages.unreadCount.invalidate(), utils.mobile.workbench.invalidate()]);
@@ -48,7 +51,7 @@ export default function MobileMessagesPage() {
 
   function openMessage(message: NonNullable<typeof messages.data>[number]) {
     if (message.status !== "read") markRead.mutate({ id: message.id });
-    if (message.deepLink) navigate(message.deepLink);
+    setSelectedMessage(message);
   }
 
   return (
@@ -66,9 +69,12 @@ export default function MobileMessagesPage() {
           {!messages.error && !messages.data?.length ? <Card className="overflow-hidden border-0 bg-[#fffaf3] shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="px-5 py-12 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#f6e6d2] text-[#a85e31]"><Inbox className="h-7 w-7" /></div><h2 className="mt-4 text-base font-semibold">暂时没有业务消息</h2><p className="mx-auto mt-2 max-w-xs text-xs leading-5 text-[#765544]">当您提交工资条、收到审核结论或系统发现需处理事项时，消息会在此保留。</p></CardContent></Card> : null}
           {messages.data?.map(message => {
             const unread = message.status !== "read";
-            return <button key={message.id} className="w-full text-left" onClick={() => openMessage(message)}><Card className={`border-0 transition-transform active:scale-[.99] ${unread ? "bg-white shadow-[0_8px_22px_rgba(71,42,30,.10)]" : "bg-[#fbf4ea] shadow-[0_5px_14px_rgba(71,42,30,.04)]"}`}><CardContent className="flex gap-3 p-4"><div className={`mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-2xl ${unread ? "bg-[#f4dfc3] text-[#9d5128]" : "bg-[#eee5da] text-[#8f7566]"}`}><Bell className="h-5 w-5" /></div><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><h2 className={`line-clamp-1 text-sm ${unread ? "font-semibold" : "font-medium"}`}>{message.title}</h2><span className="shrink-0 text-[11px] text-[#9d8574]">{formatMessageTime(message.createdAt)}</span></div><p className="mt-1.5 line-clamp-2 text-xs leading-5 text-[#80685b]">{message.content}</p><div className="mt-2 flex items-center justify-between"><span className={`rounded-full px-2 py-0.5 text-[10px] ${unread ? "bg-[#fff0d9] text-[#a7602d]" : "bg-[#eee8e2] text-[#867465]"}`}>{unread ? "未读" : "已读"}</span>{message.deepLink ? <span className="inline-flex items-center text-[11px] font-medium text-[#9b5128]">查看业务 <ChevronRight className="h-3.5 w-3.5" /></span> : <CheckCheck className="h-4 w-4 text-[#b29b8a]" />}</div></div></CardContent></Card></button>;
+            return <button key={message.id} className="w-full text-left" onClick={() => openMessage(message)}><Card className={`border-0 transition-transform active:scale-[.99] ${unread ? "bg-white shadow-[0_8px_22px_rgba(71,42,30,.10)]" : "bg-[#fbf4ea] shadow-[0_5px_14px_rgba(71,42,30,.04)]"}`}><CardContent className="flex gap-3 p-4"><div className={`mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-2xl ${unread ? "bg-[#f4dfc3] text-[#9d5128]" : "bg-[#eee5da] text-[#8f7566]"}`}><Bell className="h-5 w-5" /></div><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><h2 className={`line-clamp-1 text-sm ${unread ? "font-semibold" : "font-medium"}`}>{message.title}</h2><span className="shrink-0 text-[11px] text-[#9d8574]">{formatMessageTime(message.createdAt)}</span></div><p className="mt-1.5 line-clamp-2 text-xs leading-5 text-[#80685b]">{message.content}</p><div className="mt-2 flex items-center justify-between"><span className={`rounded-full px-2 py-0.5 text-[10px] ${unread ? "bg-[#fff0d9] text-[#a7602d]" : "bg-[#eee8e2] text-[#867465]"}`}>{unread ? "未读" : "已读"}</span>{message.deepLink ? <span className="inline-flex items-center text-[11px] font-medium text-[#9b5128]">查看详情 <ChevronRight className="h-3.5 w-3.5" /></span> : <CheckCheck className="h-4 w-4 text-[#b29b8a]" />}</div></div></CardContent></Card></button>;
           })}
         </main>
+        <Dialog open={Boolean(selectedMessage)} onOpenChange={open => { if (!open) setSelectedMessage(null); }}>
+          <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{selectedMessage?.title ?? "消息详情"}</DialogTitle></DialogHeader><div className="space-y-3 py-2"><p className="whitespace-pre-wrap text-sm leading-6 text-[#634737]">{selectedMessage?.content}</p><p className="text-xs text-[#927665]">接收时间：{formatMessageTime(selectedMessage?.createdAt)}</p>{selectedMessage?.deepLink ? <p className="rounded-lg bg-[#f8eee2] p-3 text-xs leading-5 text-[#80543d]">该消息关联一条业务记录。查看详情不会自动跳转；请确认内容后再打开关联业务。</p> : null}</div><DialogFooter><Button variant="outline" onClick={() => setSelectedMessage(null)}>关闭</Button>{selectedMessage?.deepLink ? <Button className="bg-[#9a5128] text-white hover:bg-[#7e3d1c]" onClick={() => { const target = selectedMessage?.deepLink; setSelectedMessage(null); if (target) navigate(target); }}>打开关联业务</Button> : null}</DialogFooter></DialogContent>
+        </Dialog>
 
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_BOTTOM_NAVIGATION.workbench)}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Bell className="h-5 w-5" /><span className="text-[10px] font-medium">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate(MOBILE_BOTTOM_NAVIGATION.profile)}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
