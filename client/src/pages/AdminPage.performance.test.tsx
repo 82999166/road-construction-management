@@ -13,4 +13,12 @@ describe("超级管理后台首屏依赖", () => {
     expect(toolsPanel).toContain('lazy(() => import("@/components/SettlementTemplateCalculator"))');
     expect(toolsPanel).toContain('正在加载工程测算工具…');
   });
+
+  it("仅在系统设置使用的通知通道配置不进入后台首屏静态依赖", () => {
+    const adminPage = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(adminPage).toContain('lazy(() => import("@/components/NotificationChannelSettings"))');
+    expect(adminPage).not.toContain('import NotificationChannelSettings from "@/components/NotificationChannelSettings"');
+    expect(adminPage).toContain("正在加载短信与通知通道配置…");
+  });
 });
