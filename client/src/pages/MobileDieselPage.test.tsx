@@ -18,4 +18,11 @@ describe("移动柴油管理操作窗口", () => {
     expect(source).toContain("柴油领用必须使用后置相机直拍加油表照片");
     expect(source).not.toContain('type="file"');
   });
+
+  it("在上传影像前提示近期相同资源与油量的重复记录，并禁用再次记账", () => {
+    expect(source).toContain("recentDuplicateRefuel");
+    expect(source).toContain("DUPLICATE_REFUEL_WINDOW_MILLISECONDS");
+    expect(source).toContain("为防止重复入账，本次保存已禁用");
+    expect(source).toContain("Boolean(recentDuplicateRefuel)");
+  });
 });

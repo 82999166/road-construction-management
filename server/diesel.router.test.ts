@@ -17,4 +17,12 @@ describe("移动柴油领用服务端边界", () => {
     expect(source).toContain('status: "approved"');
     expect(source).toContain("现场端只允许新增已记账领用");
   });
+
+  it("在事务内拦截五分钟内同项目、同资源、同供油方式和相同加油量的重复记录", () => {
+    expect(source).toContain("DUPLICATE_REFUEL_WINDOW_MILLISECONDS");
+    expect(source).toContain("DUPLICATE_REFUEL_LITERS_TOLERANCE");
+    expect(source).toContain("duplicateRefuelRecord");
+    expect(source).toContain('code: "CONFLICT"');
+    expect(source).toContain("为避免重复入账，本次未保存");
+  });
 });

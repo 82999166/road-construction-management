@@ -1,4 +1,4 @@
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, dieselGuidelinePrices, dieselRefuelRecords, evidenceRecords, machineCostRecords, machines, projects, transportVehicles } from "../../drizzle/schema";
@@ -10,6 +10,9 @@ import { protectedProcedure, router } from "../_core/trpc";
  * 移动柴油工作区只提供已授权项目的真实台账摘要与最近记录。
  * 领用登记、指导价、预警、结算和作废仍分别由既有细分权限与后台受控流程处理，避免移动端菜单扩大操作边界。
  */
+const DUPLICATE_REFUEL_WINDOW_MILLISECONDS = 5 * 60 * 1000;
+const DUPLICATE_REFUEL_LITERS_TOLERANCE = 0.001;
+
 export const dieselRouter = router({
   mobileOverview: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional() }).optional()).query(async ({ ctx, input }) => {
     requireAuthenticatedUser(ctx);
@@ -56,6 +59,7 @@ export const dieselRouter = router({
         id: row.id,
         recordNo: row.recordNo,
         assetType: row.assetType,
+        assetId: row.assetType === "vehicle" ? row.vehicleId : row.machineId,
         supplyMethod: row.supplyMethod,
         stationOrSupplierName: row.stationOrSupplierName,
         liters: Number(row.liters),
@@ -143,6 +147,22 @@ export const dieselRouter = router({
     const recordNo = `DS${input.projectId}${Date.now().toString().slice(-8)}`;
     let recordId = 0;
     await db.transaction(async tx => {
+      const duplicateWindowStart = new Date(refueledAt.getTime() - DUPLICATE_REFUEL_WINDOW_MILLISECONDS);
+      const duplicateWindowEnd = new Date(refueledAt.getTime() + DUPLICATE_REFUEL_WINDOW_MILLISECONDS);
+      const nearbyRecords = await tx.select({ id: dieselRefuelRecords.id, recordNo: dieselRefuelRecords.recordNo, liters: dieselRefuelRecords.liters, refueledAt: dieselRefuelRecords.refueledAt, supplyMethod: dieselRefuelRecords.supplyMethod })
+        .from(dieselRefuelRecords)
+        .where(and(
+          eq(dieselRefuelRecords.projectId, input.projectId),
+          eq(dieselRefuelRecords.assetType, input.assetType),
+          input.assetType === "vehicle" ? eq(dieselRefuelRecords.vehicleId, input.assetId) : eq(dieselRefuelRecords.machineId, input.assetId),
+          ne(dieselRefuelRecords.status, "void"),
+          gte(dieselRefuelRecords.refueledAt, duplicateWindowStart),
+          lte(dieselRefuelRecords.refueledAt, duplicateWindowEnd),
+        ));
+      const duplicateRefuelRecord = nearbyRecords.find(record => record.supplyMethod === input.supplyMethod && Math.abs(Number(record.liters) - input.liters) <= DUPLICATE_REFUEL_LITERS_TOLERANCE);
+      if (duplicateRefuelRecord) {
+        throw new TRPCError({ code: "CONFLICT", message: `检测到 ${DUPLICATE_REFUEL_WINDOW_MILLISECONDS / 60_000} 分钟内同一资源相同加油量的记录（${duplicateRefuelRecord.recordNo}），为避免重复入账，本次未保存` });
+      }
       const result = await tx.insert(dieselRefuelRecords).values({ projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.assetId : null, machineId: input.assetType === "machine" ? input.assetId : null, transportTripId: null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName?.trim() || null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" && input.deductFromFreight, refueledAt, meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo?.trim() || null, evidenceId: input.evidenceId, remarks: input.remarks?.trim() || null, status: "approved", recordNo, createdBy: user.id, approvedBy: user.id, approvedAt: new Date() });
       recordId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
       if (!recordId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "柴油记录保存后无法确认编号" });

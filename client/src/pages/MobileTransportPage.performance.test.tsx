@@ -9,7 +9,10 @@ describe("移动运输页首屏依赖", () => {
     expect(source).toContain("mobileNfcInvoiceOpen ? <NfcInvoiceLoadBoundary");
     expect(source).toContain("<Suspense fallback={<NfcInvoiceLoadingDialog");
     expect(source).toContain("刷卡发票页面加载失败");
-    expect(source).not.toContain('import { TransportRouteSafetySettings }');
-    expect(source).not.toContain("<TransportRouteSafetySettings");
+    expect(source).toContain('lazy(() => import("@/components/TransportRouteSafetySettings")');
+    expect(source).toContain("isSuperAdmin ? <section");
+    expect(source).toContain("<TransportRouteSafetySettings projectId={selectedProjectId} compact />");
+    expect(source).toContain("普通运输管理员不会显示此入口");
+    expect(source).toContain("正在加载运输安全设置…");
   });
 });
