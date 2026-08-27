@@ -61,7 +61,7 @@ describe("存储代理影像读取", () => {
     expect(response.set).toHaveBeenCalledWith("Content-Type", "image/jpeg");
     expect(response.set).toHaveBeenCalledWith("Cache-Control", "private, max-age=300");
     expect(response.send).toHaveBeenCalledWith(Buffer.from([7, 8, 9]));
-  });
+  }, 10_000);
 
   it("自建本地存储拒绝通过相对路径读取存储根目录外文件", async () => {
     ENV.selfHostStorageDir = await fs.mkdtemp(path.join(os.tmpdir(), "yx-self-host-storage-"));

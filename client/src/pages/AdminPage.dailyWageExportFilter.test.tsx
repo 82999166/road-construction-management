@@ -11,6 +11,9 @@ describe("临时日结分类 Excel 筛选数据范围", () => {
     expect(source).toContain("日结人员/班组");
     expect(source).toContain("日结状态");
     expect(source).toContain("筛选条件 ·");
+    expect(source).toContain("getBusinessStatusLabel(row.status)");
+    expect(source).toContain("getPayrollWorkerCategoryLabel(row.workerCategory)");
+    expect(source).toContain("status === getBusinessStatusLabel(dailyFilter.status)");
   });
 
 });
