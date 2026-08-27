@@ -11,6 +11,9 @@ describe("超级管理员系统设置和菜单结构", () => {
     expect(source).toContain('type="password" value={aliyunOssPhotoStorageForm.accessKeyId}');
     expect(source).toContain('type="password" value={aliyunOssPhotoStorageForm.accessKeySecret}');
     expect(source).toContain('setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: "", accessKeySecret: "" }))');
+    expect(source).toContain("testAliyunOssPhotoStorageConnection");
+    expect(source).toContain("测试 OSS 连接");
+    expect(source).toContain("只读取保留探测对象元数据");
   });
 
   it("将权限管理下移至平台治理并按运营类别分组", () => {

@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { FileDown, LoaderCircle, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -22,8 +23,7 @@ function formatMoney(value: string | number | null | undefined) {
 }
 
 function formatDateTime(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  return formatChinaDateTime(value);
 }
 
 function tripStatusLabel(status: "draft" | "submitted" | "verified" | "settled" | "void") {
@@ -69,7 +69,7 @@ export function TransportFreightPrintDialog({ open, onOpenChange, projectId, pro
     try {
       openA4LandscapePrintDocument({
         title: "运输运费明细表",
-        bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　车牌：${escapePrintHtml(selectedPlate)}　|　期间：${escapePrintHtml(dateFrom)} 至 ${escapePrintHtml(dateTo)}</p><p class="sub">生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}　|　数据范围：当前账号已授权项目与车辆</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:10%">业务时间</th><th style="width:7%">车牌</th><th style="width:10%">运单号</th><th style="width:19%">运输路线</th><th style="width:6%">方量</th><th style="width:6%">里程</th><th style="width:8%">运价</th><th style="width:8%">应付运费</th><th style="width:8%">柴油扣款</th><th style="width:8%">净额</th><th style="width:7%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${trips.length} 趟，去重车辆数 ${totals.vehicleIds.size} 辆</td><td class="right">${totals.volume.toFixed(2)}</td><td>—</td><td>—</td><td class="right">${escapePrintHtml(formatMoney(totals.gross))}</td><td class="right">${escapePrintHtml(formatMoney(totals.fuel))}</td><td class="right">${escapePrintHtml(formatMoney(totals.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　车牌：${escapePrintHtml(selectedPlate)}　|　期间：${escapePrintHtml(dateFrom)} 至 ${escapePrintHtml(dateTo)}</p><p class="sub">生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}　|　数据范围：当前账号已授权项目与车辆</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:10%">业务时间</th><th style="width:7%">车牌</th><th style="width:10%">运单号</th><th style="width:19%">运输路线</th><th style="width:6%">方量</th><th style="width:6%">里程</th><th style="width:8%">运价</th><th style="width:8%">应付运费</th><th style="width:8%">柴油扣款</th><th style="width:8%">净额</th><th style="width:7%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${trips.length} 趟，去重车辆数 ${totals.vehicleIds.size} 辆</td><td class="right">${totals.volume.toFixed(2)}</td><td>—</td><td>—</td><td class="right">${escapePrintHtml(formatMoney(totals.gross))}</td><td class="right">${escapePrintHtml(formatMoney(totals.fuel))}</td><td class="right">${escapePrintHtml(formatMoney(totals.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
     } catch (error) {
       alert(error instanceof Error ? error.message : "无法打开打印页");
@@ -105,7 +105,7 @@ export function TransportFreightPrintDialog({ open, onOpenChange, projectId, pro
       </div>
 
       <section id="transport-freight-print-sheet" className="mt-5 bg-white p-4 text-[#1f1712] print:mt-0 print:p-0">
-        <header className="border-b-2 border-[#3a2117] pb-3 text-center"><h1 className="text-xl font-bold">运输运费明细表</h1><p className="mt-1 text-xs">项目：{projectName}　|　车牌：{vehicleId === "all" ? "全部车辆" : vehicles.find(item => String(item.id) === vehicleId)?.plateNo ?? "已选车辆"}　|　期间：{dateFrom || "—"} 至 {dateTo || "—"}</p><p className="mt-1 text-[10px] text-[#5e5147]">生成时间：{new Date().toLocaleString("zh-CN", { hour12: false })}　|　数据范围：当前账号已授权项目与车辆</p></header>
+        <header className="border-b-2 border-[#3a2117] pb-3 text-center"><h1 className="text-xl font-bold">运输运费明细表</h1><p className="mt-1 text-xs">项目：{projectName}　|　车牌：{vehicleId === "all" ? "全部车辆" : vehicles.find(item => String(item.id) === vehicleId)?.plateNo ?? "已选车辆"}　|　期间：{dateFrom || "—"} 至 {dateTo || "—"}</p><p className="mt-1 text-[10px] text-[#5e5147]">生成时间：{formatChinaDateTime(new Date())}　|　数据范围：当前账号已授权项目与车辆</p></header>
         <table className="freight-print-table mt-3 w-full table-fixed border-collapse text-[10px]"><thead className="bg-[#eee2d2]"><tr><th className="w-[3%]">序号</th><th className="w-[10%]">业务时间</th><th className="w-[7%]">车牌</th><th className="w-[10%]">运单号</th><th className="w-[19%]">运输路线</th><th className="w-[6%]">方量</th><th className="w-[6%]">里程</th><th className="w-[8%]">运价</th><th className="w-[8%]">应付运费</th><th className="w-[8%]">柴油扣款</th><th className="w-[8%]">净额</th><th className="w-[7%]">状态</th></tr></thead><tbody>
           {trips.map((trip, index) => { const gross = Number(trip.calculatedAmount ?? 0); const fuel = Number(trip.fuelDeductionAmount ?? 0); const net = Number(trip.netSettlementAmount ?? gross - fuel); return <tr key={trip.id}><td className="text-center">{index + 1}</td><td>{formatDateTime(trip.startAt)}</td><td>{trip.vehiclePlateNo}</td><td>{trip.tripNo}</td><td>{trip.loadLocation.name} → {trip.unloadLocation.name}</td><td className="text-right">{Number(trip.volumeCubicMeters ?? 0).toFixed(2)}</td><td className="text-right">{trip.actualDistanceKm ?? "—"} km</td><td className="text-right">{formatMoney(trip.calculatedUnitPrice)}</td><td className="text-right">{formatMoney(gross)}</td><td className="text-right">{formatMoney(fuel)}</td><td className="text-right">{formatMoney(net)}</td><td className="text-center">{tripStatusLabel(trip.status)}</td></tr>; })}
           {!trips.length && !tripsQuery.isLoading ? <tr><td colSpan={12} className="py-8 text-center text-[#765544]">当前筛选条件下暂无可打印运费记录。</td></tr> : null}

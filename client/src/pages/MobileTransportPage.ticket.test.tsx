@@ -52,21 +52,22 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("自动读取车辆");
   });
 
-  it("司机在运输页可直接进入站内消息，且台账位于现场操作卡之前", () => {
+  it("司机在运输页可直接进入站内消息，且发票主操作位于统计和台账之前", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("trpc.messages.unreadCount.useQuery");
     expect(source).toContain('aria-label="进入消息中心"');
     expect(source).toContain('navigate("/mobile/messages")');
     expect(source).toContain('aria-label="移动运输导航"');
-    expect(source.indexOf("<MobileTransportLedger")).toBeLessThan(source.indexOf("运输日报"));
+    expect(source.indexOf('aria-label="运输发票主操作"')).toBeLessThan(source.indexOf('<MetricCard label="当日发票"'));
+    expect(source.indexOf('aria-label="运输发票主操作"')).toBeLessThan(source.indexOf("<MobileTransportLedger"));
   });
 
   it("提供受项目与车辆范围约束的运费明细 PDF 打印入口", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("TransportFreightPrintDialog");
-    expect(source).toContain("运费明细 PDF");
+    expect(source).toContain("打印运费明细");
     expect(source).toContain("setFreightPrintOpen(true)");
     expect(source).toContain("projectName={selectedProject?.name");
   });

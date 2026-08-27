@@ -8,6 +8,9 @@ describe("PayrollStatementLedger", () => {
     expect(source).toContain("检索工资人员");
     expect(source).toContain("CurrentFilterPrintActions");
     expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
+    expect(source).toContain("生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}");
+    expect(source).not.toContain('new Date().toLocaleString("zh-CN", { hour12: false })');
     expect(source).toContain("劳务工资明细表");
     expect(source).toContain("合计：工资条");
     expect(source).toContain("全部（不含作废）");

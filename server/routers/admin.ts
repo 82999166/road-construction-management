@@ -62,7 +62,8 @@ import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
-import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion } from "../services/aliyunOssPhotoStorage";
+import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion, testAliyunOssPhotoStorageConnection } from "../services/aliyunOssPhotoStorage";
+import { chinaBusinessDate, chinaBusinessMonth } from "../services/chinaBusinessTime";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
@@ -900,7 +901,7 @@ export const adminRouter = router({
       if (!db) return [];
       const [rule] = await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1);
       const allRows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
-      const rows = allRows.filter(row => row.projectId === input.projectId && row.supplyMethod === "external_station" && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 7) === input.period);
+      const rows = allRows.filter(row => row.projectId === input.projectId && row.supplyMethod === "external_station" && row.status !== "void" && chinaBusinessMonth(row.refueledAt) === input.period);
       const groups = new Map<string, { supplierName: string; recordCount: number; liters: number; amount: number; receiptCount: number; alertCount: number; minUnitPrice: number; maxUnitPrice: number }>();
       rows.forEach(row => {
         const supplierName = row.stationOrSupplierName?.trim() || "未登记供应商";
@@ -944,7 +945,7 @@ export const adminRouter = router({
       const matchingMachineIds = new Set(machineKeyword ? (await db.select({ id: machines.id, name: machines.name, code: machines.code }).from(machines)).filter(machine => `${machine.name} ${machine.code ?? ""}`.toLowerCase().includes(machineKeyword)).map(machine => machine.id) : []);
       const supplierKeyword = input?.supplierName?.trim().toLowerCase();
       const filtered = rows.filter(row => {
-        const refueledDate = new Date(row.refueledAt).toISOString().slice(0, 10);
+        const refueledDate = chinaBusinessDate(row.refueledAt);
         return (!input?.projectId || row.projectId === input.projectId)
           && (!input?.assetType || row.assetType === input.assetType)
           && (!input?.status || row.status === input.status)
@@ -970,7 +971,7 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return { totalLiters: 0, totalAmount: 0, projectSupplyLiters: 0, stationLiters: 0, vehicleLiters: 0, machineLiters: 0, deductibleAmount: 0, records: [] };
-      const rows = (await db.select().from(dieselRefuelRecords)).filter(row => row.projectId === input.projectId && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 10) === input.date);
+      const rows = (await db.select().from(dieselRefuelRecords)).filter(row => row.projectId === input.projectId && row.status !== "void" && chinaBusinessDate(row.refueledAt) === input.date);
       const sum = (predicate: (row: typeof rows[number]) => boolean, field: "liters" | "amount") => rows.filter(predicate).reduce((total, row) => total + Number(row[field]), 0);
       return {
         totalLiters: sum(() => true, "liters"),
@@ -1016,11 +1017,11 @@ export const adminRouter = router({
         if (!trip || trip.projectId !== input.projectId || trip.vehicleId !== input.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "运输趟次必须属于所选项目和车辆" });
         if (trip.status === "settled" || trip.status === "void") throw new TRPCError({ code: "BAD_REQUEST", message: "已结算或已作废趟次不得新增柴油扣款" });
       }
-      const refuelDate = input.refueledAt.slice(0, 10);
+      const refuelDate = chinaBusinessDate(input.refueledAt);
       let appliedUnitPrice = input.actualUnitPrice ?? 0;
       if (input.supplyMethod === "project_supply") {
         const prices = await db.select().from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.projectId, input.projectId)).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
-        const activePrice = prices.find(price => price.status === "active" && new Date(price.effectiveFrom).toISOString().slice(0, 10) <= refuelDate && (!price.effectiveTo || new Date(price.effectiveTo).toISOString().slice(0, 10) >= refuelDate));
+        const activePrice = prices.find(price => price.status === "active" && chinaBusinessDate(price.effectiveFrom) <= refuelDate && (!price.effectiveTo || chinaBusinessDate(price.effectiveTo) >= refuelDate));
         if (!activePrice) throw new TRPCError({ code: "BAD_REQUEST", message: "项目部供油前请先维护当日有效的柴油指导单价" });
         appliedUnitPrice = Number(activePrice.pricePerLiter);
       }
@@ -2115,6 +2116,23 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_aliyun_oss_photo_storage_configuration", targetType: "photo_storage", targetId: "aliyun_oss", summary: `阿里云 OSS 照片存储配置已发布：${input.enabled ? "启用" : "停用"}；密钥不写入审计摘要` });
       });
       return { success: true, message: input.enabled ? "阿里云 OSS 照片存储已启用；后续新上传的 JPEG/PNG 照片将写入配置 Bucket。" : "阿里云 OSS 配置已保存但处于停用状态；新照片继续使用既有存储路径。" };
+    }),
+    /** 仅通过读取保留探测对象元数据核验 OSS；不会创建、覆盖或删除业务照片。 */
+    testAliyunOssPhotoStorageConnection: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const result = await testAliyunOssPhotoStorageConnection();
+      const db = await getDb();
+      if (db) {
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "settings",
+          action: "test_aliyun_oss_photo_storage_connection",
+          targetType: "photo_storage",
+          targetId: "aliyun_oss",
+          summary: `阿里云 OSS 照片存储连接校验：${result.success ? "通过" : "未通过"}（${result.code}）；未读写业务照片，密钥不写入审计摘要`,
+        });
+      }
+      return result;
     }),
     saveExternalAiConfiguration: protectedProcedure.input(externalAiApiConfigurationInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);

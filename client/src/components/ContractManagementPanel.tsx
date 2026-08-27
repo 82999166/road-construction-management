@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import FullContractTemplates, { type FullContractTemplate } from "@/components/FullContractTemplates";
 
 type ProjectOption = { id: number; name: string };
@@ -21,7 +22,9 @@ type ContractForm = { id?: number; projectId: string; contractType: ContractType
 const blank = (projectId = ""): ContractForm => ({ projectId, contractType: "transport", counterpartyName: "", counterpartyContact: "", pricingMethod: "trip", unit: "趟", unitPrice: "", contractAmount: "0", startDate: "", endDate: "", contractSummary: "", remarks: "" });
 const contractTypeLabel: Record<ContractType, string> = { transport: "渣土车运输", labor_subcontract: "附属工程外包", machinery_lease: "机械租赁", material_supply: "材料供应", other: "其他外包" };
 const pricingLabel: Record<PricingMethod, string> = { lump_sum: "总价包干", unit_price: "单价计量", trip: "按趟", ton: "按吨", m3: "按方", day: "按天", month: "按月", other: "其他" };
-const statusLabel: Record<string, string> = { draft: "草稿", active: "执行中", suspended: "已暂停", expired: "已到期", closed: "已关闭", void: "已作废" };
+const statusLabel = new Proxy<Record<string, string>>({ draft: "草稿", active: "执行中", suspended: "已暂停", expired: "已到期", closed: "已关闭", void: "已作废" }, {
+  get: (labels, status) => typeof status === "string" ? labels[status] ?? getBusinessStatusLabel(status) : undefined,
+});
 
 const contractTemplates: Array<{ id: "auxiliary" | "transport" | "machinery"; title: string; detail: string; values: Pick<ContractForm, "contractType" | "pricingMethod" | "unit" | "contractSummary" | "remarks"> }> = [
   { id: "auxiliary", title: "附属工程外包合同草案", detail: "涵洞、边沟、挡墙、排水、防护等按图纸、清单和已确认收方计量。", values: { contractType: "labor_subcontract", pricingMethod: "m3", unit: "方 / 项", contractSummary: "工程范围：按项目施工图、设计变更、经确认的附属工程清单及收方记录办理。计价口径：按合同约定单价及实际合格完成工程量计量。质量、安全、进度、缺陷责任、验收与结算以双方最终签署文本及项目管理制度为准。", remarks: "草案要点：明确里程桩号、构件名称、图纸参数、计量规则、含税/不含税口径、材料甲供/乙供、进度节点、质量保修和违约处理。" } },

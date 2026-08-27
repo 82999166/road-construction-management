@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { downloadCurrentFilteredCsv, escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { Archive, ArrowLeft, Camera, CircleHelp, HardHat, PackagePlus, Printer, ReceiptText, RefreshCw, ShoppingCart, Warehouse } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -34,15 +35,15 @@ function orderStatus(status: string) {
 }
 
 function createInventoryDraft() {
-  return { transactionType: "inbound" as "inbound" | "outbound" | "return", requestId: "", purchaseOrderId: "", itemName: "", unit: "件", quantity: "", unitCost: "", occurredAt: new Date().toISOString().slice(0, 16), remarks: "" };
+  return { transactionType: "inbound" as "inbound" | "outbound" | "return", requestId: "", purchaseOrderId: "", itemName: "", unit: "件", quantity: "", unitCost: "", occurredAt: toDeviceDateTimeInput(), remarks: "" };
 }
 
 function createOrderDraft() {
-  return { requestId: "", supplierId: "", amount: "", orderedAt: new Date().toISOString().slice(0, 16) };
+  return { requestId: "", supplierId: "", amount: "", orderedAt: toDeviceDateTimeInput() };
 }
 
 function createSmallDirectDraft() {
-  return { categoryId: "", itemDescription: "", quantity: "", unitPrice: "", amountMode: "auto" as "auto" | "manual", manualAmount: "", evidenceId: "", hasInvoice: false, invoiceEvidenceId: "", orderedAt: new Date().toISOString().slice(0, 16) };
+  return { categoryId: "", itemDescription: "", quantity: "", unitPrice: "", amountMode: "auto" as "auto" | "manual", manualAmount: "", evidenceId: "", hasInvoice: false, invoiceEvidenceId: "", orderedAt: toDeviceDateTimeInput() };
 }
 
 function fileToBase64(file: File) {
@@ -91,7 +92,7 @@ export default function MobilePurchasingPage() {
   const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null);
   const [requestDraft, setRequestDraft] = useState({ categoryId: "", amount: "", description: "" });
   const [orderDraft, setOrderDraft] = useState(createOrderDraft);
-  const [settlementDraft, setSettlementDraft] = useState({ orderId: "", amount: "", settledAt: new Date().toISOString().slice(0, 16), remarks: "" });
+  const [settlementDraft, setSettlementDraft] = useState({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" });
   const [inventoryDraft, setInventoryDraft] = useState(createInventoryDraft);
   const [supplierDraft, setSupplierDraft] = useState({ name: "", contactName: "", contactPhoneMasked: "" });
   const [smallDirectDraft, setSmallDirectDraft] = useState(createSmallDirectDraft);
@@ -114,9 +115,9 @@ export default function MobilePurchasingPage() {
   const activeProjectName = projects.data?.find(project => project.id === selectedProjectId)?.name ?? "请选择项目";
   const filteredOrders = useMemo(() => (orders.data ?? []).filter(order => orderPrintStatus === "all" || order.status === orderPrintStatus), [orderPrintStatus, orders.data]);
   const printCurrentPurchasingTab = () => {
-    const createdAt = escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }));
+    const createdAt = escapePrintHtml(formatChinaDateTime(new Date()));
     if (tab === "orders") {
-      const rows = filteredOrders.map((order, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(order.orderNo)}</td><td>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</td><td>${escapePrintHtml(new Date(order.orderedAt).toLocaleString("zh-CN", { hour12: false }))}</td><td class="right">${escapePrintHtml(order.quantity ?? "—")}</td><td class="right">${order.unitPrice === null || order.unitPrice === undefined ? "—" : `¥${escapePrintHtml(Number(order.unitPrice).toFixed(2))}`}</td><td class="right">¥${escapePrintHtml(Number(order.amount).toFixed(2))}</td><td>${escapePrintHtml(orderStatus(order.status).label)}</td></tr>`).join("");
+      const rows = filteredOrders.map((order, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(order.orderNo)}</td><td>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</td><td>${escapePrintHtml(formatChinaDateTime(order.orderedAt))}</td><td class="right">${escapePrintHtml(order.quantity ?? "—")}</td><td class="right">${order.unitPrice === null || order.unitPrice === undefined ? "—" : `¥${escapePrintHtml(Number(order.unitPrice).toFixed(2))}`}</td><td class="right">¥${escapePrintHtml(Number(order.amount).toFixed(2))}</td><td>${escapePrintHtml(orderStatus(order.status).label)}</td></tr>`).join("");
       const total = filteredOrders.filter(order => !["void", "cancelled"].includes(order.status)).reduce((sum, order) => sum + Number(order.amount ?? 0), 0);
       openA4LandscapePrintDocument({ title: "采购订单明细表", bodyHtml: `<h1>采购订单明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　状态：${escapePrintHtml(orderPrintStatus === "all" ? "全部（不含作废金额）" : orderStatus(orderPrintStatus).label)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>订单号</th><th>物资/说明</th><th>下单时间</th><th>数量</th><th>单价</th><th>金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="center">当前筛选范围暂无采购订单</td></tr>'}<tr class="summary"><td colspan="6">合计：订单 ${filteredOrders.length} 笔</td><td class="right">¥${escapePrintHtml(total.toFixed(2))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
       return;
@@ -132,7 +133,7 @@ export default function MobilePurchasingPage() {
     openA4LandscapePrintDocument({ title: "采购申请明细表", bodyHtml: `<h1>采购申请明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>申请单号</th><th>采购说明</th><th>申请金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="center">当前项目暂无采购申请</td></tr>'}<tr class="summary"><td colspan="3">合计：申请 ${requests.data?.length ?? 0} 笔</td><td class="right">¥${escapePrintHtml(total.toFixed(2))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
   };
   const exportCurrentPurchasingTab = () => {
-    if (tab === "orders") return downloadCurrentFilteredCsv("采购订单-当前筛选.csv", ["订单号", "物资/说明", "下单时间", "数量", "单价", "金额", "状态"], filteredOrders.map(order => [order.orderNo, order.itemDescription || "采购申请关联订单", new Date(order.orderedAt).toLocaleString("zh-CN"), order.quantity ?? "", order.unitPrice ?? "", order.amount, orderStatus(order.status).label]));
+    if (tab === "orders") return downloadCurrentFilteredCsv("采购订单-当前筛选.csv", ["订单号", "物资/说明", "下单时间", "数量", "单价", "金额", "状态"], filteredOrders.map(order => [order.orderNo, order.itemDescription || "采购申请关联订单", formatChinaDateTime(order.orderedAt), order.quantity ?? "", order.unitPrice ?? "", order.amount, orderStatus(order.status).label]));
     if (tab === "inventory") return downloadCurrentFilteredCsv("库存余额-当前筛选.csv", ["物料名称", "库存数量", "单位", "库存成本"], inventoryBalances.map(item => [item.itemName, item.balanceQuantity, item.unit, item.totalAmount]));
     return downloadCurrentFilteredCsv("采购申请-当前筛选.csv", ["申请单号", "采购说明", "申请金额", "状态"], (requests.data ?? []).map(request => [request.requestNo, request.description, request.amount, requestStatus(request.status).label]));
   };
@@ -156,7 +157,7 @@ export default function MobilePurchasingPage() {
     onError: error => toast.error(error.message),
   });
   const transitionOrder = trpc.purchasing.transitionOrder.useMutation({ onSuccess: async () => { toast.success("采购订单状态已更新"); await refreshData(); }, onError: error => toast.error(error.message) });
-  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: new Date().toISOString().slice(0, 16), remarks: "" }); await refreshData(); }, onError: error => toast.error(error.message) });
+  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" }); await refreshData(); }, onError: error => toast.error(error.message) });
   const saveInventory = trpc.purchasing.saveInventoryTransaction.useMutation({
     onSuccess: async () => { toast.success("库存收发流水已登记"); setInventoryOpen(false); setInventoryDraft(createInventoryDraft()); await refreshData(); },
     onError: error => toast.error(error.message),
@@ -177,7 +178,7 @@ export default function MobilePurchasingPage() {
   }
 
   function openCreateOrder(request: { id: number; amount: string | number }) {
-    setOrderDraft({ requestId: String(request.id), supplierId: "", amount: String(request.amount), orderedAt: new Date().toISOString().slice(0, 16) });
+    setOrderDraft({ requestId: String(request.id), supplierId: "", amount: String(request.amount), orderedAt: toDeviceDateTimeInput() });
     setOrderOpen(true);
   }
 
@@ -195,7 +196,7 @@ export default function MobilePurchasingPage() {
   function openSettlement(orderId?: number) {
     const order = orderId ? orders.data?.find(item => item.id === orderId) : undefined;
     const balance = order ? settlements.data?.totalsByOrder[String(order.id)]?.remainingAmount ?? Number(order.amount) : "";
-    setSettlementDraft({ orderId: order ? String(order.id) : "", amount: balance === "" ? "" : String(balance), settledAt: new Date().toISOString().slice(0, 16), remarks: "" });
+    setSettlementDraft({ orderId: order ? String(order.id) : "", amount: balance === "" ? "" : String(balance), settledAt: toDeviceDateTimeInput(), remarks: "" });
     setSettlementOpen(true);
   }
 

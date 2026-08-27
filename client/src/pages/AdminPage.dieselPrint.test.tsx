@@ -20,4 +20,11 @@ describe("后台柴油顶部筛选直接打印", () => {
     expect(source).not.toContain('aria-label="柴油每日汇总日期"');
     expect(source).not.toContain("dieselDailySummary.data");
   });
+
+  it("后台柴油台账和新建登记使用中国时区显示与设备当前时间", () => {
+    expect(source).toContain('import { formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime"');
+    expect(source).toContain("return formatChinaDateTime(value);");
+    expect(source).toContain("refueledAt: toDeviceDateTimeInput()");
+    expect(source).toContain("const recordDate = toChinaDateInput(record.refueledAt);");
+  });
 });

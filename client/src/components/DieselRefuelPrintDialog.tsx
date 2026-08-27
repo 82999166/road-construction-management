@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import { Printer } from "lucide-react";
 
@@ -22,7 +23,7 @@ export type DieselPrintRecord = {
 
 type PrintMode = "current" | "daily" | "vehicle" | "machine";
 const money = (value: number | string) => `¥${Number(value || 0).toFixed(2)}`;
-const dateTime = (value: Date | string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
+const dateTime = (value: Date | string) => formatChinaDateTime(value);
 
 /** 后台柴油打印只接收已由服务端项目范围过滤后的真实记录，打印逻辑不再读取页面 DOM。 */
 export default function DieselRefuelPrintDialog({ open, onOpenChange, mode, projectName, dateLabel, records }: {

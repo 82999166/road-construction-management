@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { DieselSummaryPrintDialog } from "@/components/DieselSummaryPrintDialog";
+import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Camera, Fuel, Plus, Printer, ReceiptText, RefreshCw, Tractor, Truck, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -105,7 +106,7 @@ export default function MobileDieselPage() {
   const [projectId, setProjectId] = useState<number>();
   const [dieselPrintOpen, setDieselPrintOpen] = useState(false);
   const [refuelOpen, setRefuelOpen] = useState(false);
-  const [draft, setDraft] = useState({ assetType: "vehicle" as "vehicle" | "machine", assetId: "", supplyMethod: "project_supply" as "project_supply" | "external_station", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: new Date().toISOString().slice(0, 16), meterReading: "", receiptNo: "", remarks: "" });
+  const [draft, setDraft] = useState({ assetType: "vehicle" as "vehicle" | "machine", assetId: "", supplyMethod: "project_supply" as "project_supply" | "external_station", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toDeviceDateTimeInput(), meterReading: "", receiptNo: "", remarks: "" });
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -192,7 +193,7 @@ export default function MobileDieselPage() {
 
   function openRefuelDialog() {
     if (!selectedProjectId) return toast.error("请先选择项目");
-    setDraft({ assetType: "vehicle", assetId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: new Date().toISOString().slice(0, 16), meterReading: "", receiptNo: "", remarks: "" });
+    setDraft({ assetType: "vehicle", assetId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toDeviceDateTimeInput(), meterReading: "", receiptNo: "", remarks: "" });
     setRefuelOpen(true);
   }
 
@@ -210,7 +211,7 @@ export default function MobileDieselPage() {
       const assetLabel = assets.find(asset => asset.id === Number(draft.assetId))?.label ?? `资源 #${draft.assetId}`;
       const antiCounterfeit = `${selectedProjectId}-${draft.assetId}-${capturedAt.getTime().toString(36).toUpperCase()}`;
       const values: Record<string, string> = {
-        capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
+        capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`,
         principal: `登记人：${user?.name || "当前管理员"}`,
         weather: `业务类型：柴油领用`,
         location: `详细地点：${location ? "已采集" : "未取得"}`,
@@ -243,7 +244,7 @@ export default function MobileDieselPage() {
         <section className="flex flex-wrap gap-2"><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="h-11 min-w-[170px] flex-1 border-[#e9d8c6] bg-white"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{data.projects.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Button className="h-11" variant="outline" disabled={!selectedProjectId} onClick={() => setDieselPrintOpen(true)}><Printer className="mr-1 h-4 w-4" />汇总 PDF</Button>{data.capabilities?.canCreateRefuel ? <Button className="h-11 bg-[#a65e2d] text-white hover:bg-[#884a22]" onClick={openRefuelDialog}><Plus className="mr-1 h-4 w-4" />登记领用</Button> : null}</section>
         {data.capabilities?.canCreateRefuel && captureConfig.error ? <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">已授予柴油领用登记，但当前账号未获水印影像取证权限，无法完成必需的加油表凭证归档。请同时授予“影像证据上传”和项目范围。</p> : null}
         <section className="grid grid-cols-2 gap-3"><Metric icon={Fuel} label="有效供油量" value={`${Number(data.summary?.totalLiters ?? 0).toFixed(2)} L`} /><Metric icon={WalletCards} label="有效柴油金额" value={money(data.summary?.totalAmount)} /><Metric icon={Truck} label="运费扣油" value={money(data.summary?.deductibleAmount)} /><Metric icon={ReceiptText} label="项目部 / 加油站" value={`${Number(data.summary?.projectSupplyLiters ?? 0).toFixed(1)} / ${Number(data.summary?.stationLiters ?? 0).toFixed(1)} L`} /></section>
-        <section className="rounded-2xl border border-[#ead9c8] bg-white p-4"><div className="flex items-start justify-between gap-3"><div><h2 className="font-semibold">最近柴油记录</h2><p className="mt-1 text-xs text-[#8f7566]">项目：{selectedProjectName} · 已作废记录保留审计状态</p></div><Button size="sm" variant="outline" onClick={() => void overview.refetch()}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button></div>{data.records.length ? <div className="mt-3 space-y-2">{data.records.map(record => <div key={record.id} className="flex items-center gap-3 rounded-xl border border-[#f0e1d2] bg-[#fffaf4] p-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#f5e5d0] text-[#a65e2d]">{record.assetType === "machine" ? <Tractor className="h-4 w-4" /> : <Truck className="h-4 w-4" />}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{record.recordNo} · {record.supplyMethod === "project_supply" ? "项目部供油" : record.stationOrSupplierName || "加油站加油"}</p><p className="mt-1 text-[11px] text-[#8f7566]">{new Date(record.refueledAt).toLocaleString("zh-CN")} · {record.liters.toFixed(3)}L · ¥{record.appliedUnitPrice.toFixed(2)}/L{record.deductFromFreight ? " · 运费扣油" : ""}</p></div><div className="shrink-0 text-right"><p className="font-semibold text-[#6d3421]">{money(record.amount)}</p><p className={`mt-1 text-[11px] ${record.status === "void" ? "text-rose-600" : record.status === "settled" ? "text-emerald-700" : "text-[#8f7566]"}`}>{statusLabel(record.status)}</p></div></div>)}</div> : <p className="mt-3 rounded-xl border border-dashed border-[#e4cdb6] px-4 py-6 text-center text-xs text-[#8f7566]">当前项目暂无柴油领用记录。</p>}</section>
+        <section className="rounded-2xl border border-[#ead9c8] bg-white p-4"><div className="flex items-start justify-between gap-3"><div><h2 className="font-semibold">最近柴油记录</h2><p className="mt-1 text-xs text-[#8f7566]">项目：{selectedProjectName} · 已作废记录保留审计状态</p></div><Button size="sm" variant="outline" onClick={() => void overview.refetch()}><RefreshCw className="mr-1 h-3.5 w-3.5" />刷新</Button></div>{data.records.length ? <div className="mt-3 space-y-2">{data.records.map(record => <div key={record.id} className="flex items-center gap-3 rounded-xl border border-[#f0e1d2] bg-[#fffaf4] p-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#f5e5d0] text-[#a65e2d]">{record.assetType === "machine" ? <Tractor className="h-4 w-4" /> : <Truck className="h-4 w-4" />}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{record.recordNo} · {record.supplyMethod === "project_supply" ? "项目部供油" : record.stationOrSupplierName || "加油站加油"}</p><p className="mt-1 text-[11px] text-[#8f7566]">{formatChinaDateTime(record.refueledAt)} · {record.liters.toFixed(3)}L · ¥{record.appliedUnitPrice.toFixed(2)}/L{record.deductFromFreight ? " · 运费扣油" : ""}</p></div><div className="shrink-0 text-right"><p className="font-semibold text-[#6d3421]">{money(record.amount)}</p><p className={`mt-1 text-[11px] ${record.status === "void" ? "text-rose-600" : record.status === "settled" ? "text-emerald-700" : "text-[#8f7566]"}`}>{statusLabel(record.status)}</p></div></div>)}</div> : <p className="mt-3 rounded-xl border border-dashed border-[#e4cdb6] px-4 py-6 text-center text-xs text-[#8f7566]">当前项目暂无柴油领用记录。</p>}</section>
       </>}
     </main>
     <DieselSummaryPrintDialog open={dieselPrintOpen} onOpenChange={setDieselPrintOpen} projectId={selectedProjectId} projectName={selectedProjectName} />

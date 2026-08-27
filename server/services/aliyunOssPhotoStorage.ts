@@ -28,6 +28,17 @@ export type AliyunOssPhotoStorageConfiguration = {
   accessKeySecret: string;
 };
 
+export type AliyunOssPhotoStorageConnectionTestResult = {
+  success: boolean;
+  code: "connected" | "not_configured" | "configuration_invalid" | "access_denied" | "bucket_unavailable" | "endpoint_unreachable" | "request_failed";
+  message: string;
+};
+
+type AliyunOssPhotoStorageConfigurationLoadResult = {
+  configuration: AliyunOssPhotoStorageConfiguration | null;
+  configurationError: string | null;
+};
+
 function isBlockedIpv4(host: string) {
   const parts = host.split(".").map(Number);
   if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return false;
@@ -46,6 +57,9 @@ export function normalizeAliyunOssEndpoint(value: string) {
   const hostname = url.hostname.toLowerCase();
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "") || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname === "::1" || isIP(hostname) === 6 || isBlockedIpv4(hostname)) {
     throw new Error("OSS Endpoint 必须为公开 HTTPS 地址，不能使用本机、内网或带路径参数的地址");
+  }
+  if (hostname.endsWith(".oss-accesspoint.aliyuncs.com")) {
+    throw new Error("当前 Node.js 照片存储仅支持标准 Bucket 公网 Endpoint；请填写 https://oss-<地域>.aliyuncs.com，不能填写 OSS 接入点 Endpoint");
   }
   return url.origin;
 }
@@ -84,6 +98,37 @@ function createClient(configuration: AliyunOssPhotoStorageConfiguration) {
   });
 }
 
+function getOssErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+function getOssErrorStatus(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : null;
+}
+
+/** 将 SDK 异常投影为可操作但不包含请求、对象键、签名或密钥的管理员诊断。 */
+export function getAliyunOssConnectionTestDiagnostic(error: unknown): AliyunOssPhotoStorageConnectionTestResult {
+  const code = getOssErrorCode(error);
+  const status = getOssErrorStatus(error);
+  if (code === "NoSuchKey" || status === 404) {
+    return { success: true, code: "connected", message: "OSS 连接、Bucket 定位和只读对象权限校验通过；未上传、覆盖或删除任何照片。" };
+  }
+  if (["AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "SecurityTokenExpired", "InvalidSecurityToken"].includes(code ?? "") || status === 401 || status === 403) {
+    return { success: false, code: "access_denied", message: "OSS 已响应，但 RAM 密钥、Bucket 授权策略或照片目录的读取权限不足；请核对受限 RAM 用户与 Bucket 策略。" };
+  }
+  if (["NoSuchBucket", "BucketNotFound"].includes(code ?? "")) {
+    return { success: false, code: "bucket_unavailable", message: "OSS 已响应，但未找到配置的 Bucket；请核对 Bucket 名称和所在地域。" };
+  }
+  if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ESOCKETTIMEDOUT"].includes(code ?? "")) {
+    return { success: false, code: "endpoint_unreachable", message: "无法连接 OSS Endpoint；请核对标准 Bucket 公网 Endpoint、服务器网络出口和 Bucket 网络策略。" };
+  }
+  return { success: false, code: "request_failed", message: "OSS 连接校验未通过；请核对 Endpoint、Bucket、RAM 权限和 Bucket 网络策略后重试。" };
+}
+
 function normalizeObjectName(key: string) {
   const normalized = key.replace(/^\/+/, "").replace(/\\/g, "/");
   if (!normalized || normalized.includes("..") || !/^[A-Za-z0-9._()\-\u4e00-\u9fa5/]+$/.test(normalized)) throw new Error("照片对象键无效");
@@ -100,9 +145,9 @@ export function isAliyunOssPhotoStorageKey(key: string) {
 }
 
 /** 读取已发布的加密配置；密钥只在此服务端函数解密，绝不返回给路由或前端。 */
-export async function getPublishedAliyunOssPhotoStorageConfiguration(): Promise<AliyunOssPhotoStorageConfiguration | null> {
+async function loadPublishedAliyunOssPhotoStorageConfiguration(): Promise<AliyunOssPhotoStorageConfigurationLoadResult> {
   const db = await getDb();
-  if (!db) return null;
+  if (!db) return { configuration: null, configurationError: "数据库连接暂不可用" };
   const keys = Object.values(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS);
   const rows = await db.select().from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, keys)));
   const byKey = new Map(rows.map(row => [row.settingKey, row]));
@@ -113,19 +158,47 @@ export async function getPublishedAliyunOssPhotoStorageConfiguration(): Promise<
   const objectPrefix = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.objectPrefix)?.valueJson;
   const encryptedAccessKeyId = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeyId)?.secretEncrypted;
   const encryptedAccessKeySecret = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeySecret)?.secretEncrypted;
-  if (!region || !endpoint || !bucket || !objectPrefix || !encryptedAccessKeyId || !encryptedAccessKeySecret) return null;
+  if (!region || !endpoint || !bucket || !objectPrefix || !encryptedAccessKeyId || !encryptedAccessKeySecret) return { configuration: null, configurationError: "请先完整保存 OSS 地域、标准 Bucket Endpoint、Bucket 名称和 RAM 密钥" };
   try {
     return {
-      enabled,
-      region: normalizeAliyunOssRegion(region),
-      endpoint: normalizeAliyunOssEndpoint(endpoint),
-      bucket: normalizeAliyunOssBucket(bucket),
-      objectPrefix: normalizeAliyunOssObjectPrefix(objectPrefix),
-      accessKeyId: decryptSecret(encryptedAccessKeyId),
-      accessKeySecret: decryptSecret(encryptedAccessKeySecret),
+      configuration: {
+        enabled,
+        region: normalizeAliyunOssRegion(region),
+        endpoint: normalizeAliyunOssEndpoint(endpoint),
+        bucket: normalizeAliyunOssBucket(bucket),
+        objectPrefix: normalizeAliyunOssObjectPrefix(objectPrefix),
+        accessKeyId: decryptSecret(encryptedAccessKeyId),
+        accessKeySecret: decryptSecret(encryptedAccessKeySecret),
+      },
+      configurationError: null,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    const message = error instanceof Error && error.message.includes("接入点 Endpoint")
+      ? error.message
+      : "已托管的 OSS 配置或密钥无法使用，请核对后重新保存";
+    return { configuration: null, configurationError: message };
+  }
+}
+
+export async function getPublishedAliyunOssPhotoStorageConfiguration(): Promise<AliyunOssPhotoStorageConfiguration | null> {
+  return (await loadPublishedAliyunOssPhotoStorageConfiguration()).configuration;
+}
+
+/** 只请求保留探测对象的元数据；404 代表认证、Endpoint 与 Bucket 已有效连通，绝不创建或删除对象。 */
+export async function testAliyunOssPhotoStorageConnection(): Promise<AliyunOssPhotoStorageConnectionTestResult> {
+  const { configuration, configurationError } = await loadPublishedAliyunOssPhotoStorageConfiguration();
+  if (!configuration) {
+    return {
+      success: false,
+      code: configurationError?.includes("接入点 Endpoint") ? "configuration_invalid" : "not_configured",
+      message: configurationError ?? "请先完整保存 OSS 配置后再校验连接。",
+    };
+  }
+  try {
+    await createClient(configuration).head(`${configuration.objectPrefix}/__yx_oss_connection_probe_do_not_create__`);
+    return { success: true, code: "connected", message: "OSS 连接、Bucket 定位和只读对象权限校验通过；未上传、覆盖或删除任何照片。" };
+  } catch (error) {
+    return getAliyunOssConnectionTestDiagnostic(error);
   }
 }
 

@@ -1,10 +1,11 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
-import BusinessStatusBadge from "@/components/BusinessStatusBadge";
+import BusinessStatusBadge, { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
 import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
@@ -149,6 +150,7 @@ type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appU
 type OfficialAccountMessagePushForm = { eventToken: string; encodingAesKey: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type AliyunOssPhotoStorageConfigurationForm = { enabled: boolean; region: string; endpoint: string; bucket: string; objectPrefix: string; accessKeyId: string; accessKeySecret: string };
+type AliyunOssPhotoStorageValidation = { success: boolean; code: string; message: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type BroadcastAudienceType = "project" | "organization" | "role";
@@ -238,7 +240,7 @@ function getOfficialAccountTestLabel(settingKey: string) {
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
-  return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+  return formatChinaDateTime(value);
 }
 
 /** 考勤业务台账只显示中文详细地址；坐标仅可在有用途说明的争议核验接口中受控读取。 */
@@ -249,8 +251,7 @@ function formatAttendanceLocation(address: string | null | undefined, status: "n
 
 /** 本地日期筛选以用户浏览器日历为准，避免将 UTC 日期偏移带入运输日结算口径。 */
 function toLocalDateInput(value = new Date()) {
-  const localValue = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return localValue.toISOString().slice(0, 10);
+  return toDeviceDateInput(value);
 }
 
 /** 上下班考勤的“当天”由服务端按中国业务日期裁切；后台默认筛选必须使用同一口径。 */
@@ -362,7 +363,7 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
     ["导出模块", scope.module],
     ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]),
     ["导出记录数", rows.length],
-    ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })],
+    ["生成时间", formatChinaDateTime(new Date())],
     [],
   ];
   const content = `\uFEFF${[...scopeRows, headers, ...rows].map(row => row.map(escapeCell).join(",")).join("\n")}`;
@@ -396,7 +397,7 @@ async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: stri
   const exportScope = { ...scope, filters: scopedFilters };
   const XLSX = await import("@e965/xlsx");
   const workbook = XLSX.utils.book_new();
-  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
+  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", formatChinaDateTime(new Date())], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);
   overview["!cols"] = [{ wch: 22 }, { wch: 48 }];
   XLSX.utils.book_append_sheet(workbook, overview, "汇总说明");
@@ -423,10 +424,7 @@ function isEditableConstructionReport(input: ConstructionReportEditor | null): i
 
 /** 将服务端 UTC 时间转换为 datetime-local 控件可编辑的本地值，避免维护授权有效期时出现时区偏移。 */
 function toLocalDateTimeInput(value: Date | string | null | undefined) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toDeviceDateTimeInput(value);
 }
 
 /** 后台仅展示推导状态；服务端仍以授权记录、角色状态和当前时间作为最终访问边界。 */
@@ -604,7 +602,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [businessWorkspaceProjectId, setBusinessWorkspaceProjectId] = useState("");
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [machineDetailOpen, setMachineDetailOpen] = useState(false);
-  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: new Date().toISOString().slice(0, 7), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
+  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: toChinaMonthInput(), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
@@ -618,15 +616,15 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [measurementTakeoffForm, setMeasurementTakeoffForm] = useState<MeasurementTakeoffForm>(EMPTY_MEASUREMENT_TAKEOFF_FORM);
   const [measurementTakeoffDialogOpen, setMeasurementTakeoffDialogOpen] = useState(false);
   const [financeProjectId, setFinanceProjectId] = useState("");
-  const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
+  const [financePeriod, setFinancePeriod] = useState(() => toChinaMonthInput());
   const [financeLedgerFilter, setFinanceLedgerFilter] = useState({ direction: "all", category: "all", settlementStatus: "all", sourceType: "all", keyword: "" });
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
   const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
   const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string; externalFallback?: string | null } | null>(null);
-  const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => new Date().toISOString().slice(0, 7));
-  const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => new Date().toISOString().slice(0, 7));
+  const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => toChinaMonthInput());
+  const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => toChinaMonthInput());
   const [vehicleAnalysisTarget, setVehicleAnalysisTarget] = useState<{ vehicleId: number; projectId: number; plateNo: string } | null>(null);
   const [machineStatementForm, setMachineStatementForm] = useState<MachineMonthlyStatementForm>(EMPTY_MACHINE_MONTHLY_STATEMENT_FORM);
   const [machineStatementDialogOpen, setMachineStatementDialogOpen] = useState(false);
@@ -899,7 +897,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         const projectName = projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? `项目 #${dieselRefuelForm.projectId}`;
         const antiCounterfeitNo = `DIESEL-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
         const watermarkValues: Record<string, string> = {
-          capturedAt: `加油时间：${capturedAt.toLocaleString("zh-CN", { hour12: false })}`,
+          capturedAt: `加油时间：${formatChinaDateTime(capturedAt)}`,
           principal: `操作人：${user?.name || "超级管理员"}`,
           location: `详细地点：${locationAddress}`,
           coordinates: `详细地点：${locationAddress}`,
@@ -961,7 +959,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onError: error => toast.error(error.message),
   });
   const reviewBroadcast = trpc.broadcast.review.useMutation({
-    onSuccess: async result => { toast.success(`群发单状态已更新为 ${result.status}`); await refreshBroadcasts(); },
+    onSuccess: async result => { toast.success(`范围通知状态已更新为：${getBusinessStatusLabel(result.status)}`); await refreshBroadcasts(); },
     onError: error => toast.error(error.message),
   });
   const publishBroadcast = trpc.broadcast.publish.useMutation({
@@ -1045,6 +1043,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
   const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
   const [aliyunOssPhotoStorageForm, setAliyunOssPhotoStorageForm] = useState<AliyunOssPhotoStorageConfigurationForm>(EMPTY_ALIYUN_OSS_PHOTO_STORAGE_CONFIGURATION_FORM);
+  const [aliyunOssPhotoStorageValidation, setAliyunOssPhotoStorageValidation] = useState<AliyunOssPhotoStorageValidation | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
   const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
@@ -1639,9 +1638,22 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onSuccess: async result => {
       toast.success(result.message);
       setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: "", accessKeySecret: "" }));
+      setAliyunOssPhotoStorageValidation(null);
       await Promise.all([aliyunOssPhotoStorageConfiguration.refetch(), settings.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
+  });
+  const testAliyunOssPhotoStorageConnection = trpc.admin.settings.testAliyunOssPhotoStorageConnection.useMutation({
+    onSuccess: async result => {
+      setAliyunOssPhotoStorageValidation(result);
+      if (result.success) toast.success("OSS 只读连接校验通过");
+      else toast.error(result.message);
+      await audits.refetch();
+    },
+    onError: error => {
+      setAliyunOssPhotoStorageValidation({ success: false, code: "request_failed", message: error.message });
+      toast.error(error.message);
+    },
   });
   const testExternalAiConfiguration = trpc.admin.settings.testExternalAiConfiguration.useMutation({
     onSuccess: async result => {
@@ -1963,7 +1975,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (record.status === "void" || String(record.projectId) !== dieselRefuelForm.projectId || record.assetType !== dieselRefuelForm.assetType) return false;
       const recordAssetId = record.assetType === "vehicle" ? record.vehicleId : record.machineId;
       if (String(recordAssetId ?? "") !== selectedAssetId) return false;
-      const recordDate = new Date(record.refueledAt).toISOString().slice(0, 10);
+      const recordDate = toChinaDateInput(record.refueledAt);
       if (recordDate !== refueledDate) return false;
       if (receiptNo && record.receiptNo === receiptNo) return true;
       const recordTimeMs = new Date(record.refueledAt).getTime();
@@ -2141,7 +2153,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           <Card>
             <CardHeader><CardTitle className="text-base">项目层级</CardTitle><CardDescription>推荐“项目 → 标段/工区 → 单位工程 → 施工段/作业面”；点击条目可维护归属、计划日期和状态。</CardDescription></CardHeader>
             <CardContent className="space-y-3">
-              {projects.data?.length ? projects.data.map(item => <button key={item.id} className="w-full rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setProjectForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", organizationId: item.organizationId ? String(item.organizationId) : "", code: item.code, name: item.name, nodeType: item.nodeType, projectType: item.projectType ?? "other", status: item.status, startDate: item.startDate ? new Date(item.startDate).toISOString().slice(0, 10) : "", endDate: item.endDate ? new Date(item.endDate).toISOString().slice(0, 10) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder) })}><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · 上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {item.status}</p></button>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
+              {projects.data?.length ? projects.data.map(item => <button key={item.id} className="w-full rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setProjectForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", organizationId: item.organizationId ? String(item.organizationId) : "", code: item.code, name: item.name, nodeType: item.nodeType, projectType: item.projectType ?? "other", status: item.status, startDate: item.startDate ? toDeviceDateInput(item.startDate) : "", endDate: item.endDate ? toDeviceDateInput(item.endDate) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder) })}><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · 上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {item.status}</p></button>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
             </CardContent>
           </Card>
         </section>
@@ -2219,7 +2231,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       }, { trips: 0, fuelLiters: 0, fuelAmount: 0, maintenance: 0, gross: 0, net: 0 });
       openA4LandscapePrintDocument({
         title: "车辆资源台账明细表",
-        bodyHtml: `<h1>车辆资源台账明细表</h1><p class="sub">项目：${escapePrintHtml(selectedProject)}　|　查询：${escapePrintHtml(vehicleLedgerFilter.search || "全部车辆")}　|　资源性质：${escapePrintHtml(vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : vehicleLedgerFilter.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</p><p class="sub">调度状态：${escapePrintHtml(vehicleLedgerFilter.status === "all" ? "全部" : vehicleStatusLabel[vehicleLedgerFilter.status as VehicleStatus])}　|　分析期间：${escapePrintHtml(vehicleAnalysisPeriod)}　|　生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>车牌</th><th>项目</th><th>类型</th><th>资源性质</th><th>状态</th><th>所属人/出租方</th><th>司机</th><th>运输趟次</th><th>柴油升数</th><th>柴油金额</th><th>维修保养</th><th>毛收入</th><th>净收益</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="8">合计：车辆数 ${filteredRows.length} 辆</td><td class="right">${escapePrintHtml(String(totals.trips))}</td><td class="right">${escapePrintHtml(displayMoney(totals.fuelLiters))} L</td><td class="right">¥${escapePrintHtml(displayMoney(totals.fuelAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.maintenance))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.gross))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.net))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>车辆资源台账明细表</h1><p class="sub">项目：${escapePrintHtml(selectedProject)}　|　查询：${escapePrintHtml(vehicleLedgerFilter.search || "全部车辆")}　|　资源性质：${escapePrintHtml(vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : vehicleLedgerFilter.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</p><p class="sub">调度状态：${escapePrintHtml(vehicleLedgerFilter.status === "all" ? "全部" : vehicleStatusLabel[vehicleLedgerFilter.status as VehicleStatus])}　|　分析期间：${escapePrintHtml(vehicleAnalysisPeriod)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>车牌</th><th>项目</th><th>类型</th><th>资源性质</th><th>状态</th><th>所属人/出租方</th><th>司机</th><th>运输趟次</th><th>柴油升数</th><th>柴油金额</th><th>维修保养</th><th>毛收入</th><th>净收益</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="8">合计：车辆数 ${filteredRows.length} 辆</td><td class="right">${escapePrintHtml(String(totals.trips))}</td><td class="right">${escapePrintHtml(displayMoney(totals.fuelLiters))} L</td><td class="right">¥${escapePrintHtml(displayMoney(totals.fuelAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.maintenance))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.gross))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.net))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
     };
     const submitVehicle = () => {
@@ -2502,8 +2514,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8e9e5] bg-[#f4faf8] px-3 py-2.5"><label className="flex items-center gap-2 text-sm font-medium text-slate-800"><Checkbox checked={aliyunOssPhotoStorageForm.enabled} onCheckedChange={checked => setAliyunOssPhotoStorageForm(current => ({ ...current, enabled: checked === true }))} />启用阿里云 OSS 作为新照片存储</label><Badge variant="outline" className={aliyunOssPhotoStorageConfiguration.data?.configured && aliyunOssPhotoStorageConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-600"}>{aliyunOssPhotoStorageConfiguration.data?.configured ? aliyunOssPhotoStorageConfiguration.data.enabled ? "已启用" : "已保存，未启用" : "待完整配置"}</Badge></div>
             <div className="grid gap-3 md:grid-cols-2"><Field label="OSS 地域"><Input value={aliyunOssPhotoStorageForm.region} placeholder="例如 oss-cn-hangzhou" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, region: event.target.value }))} /></Field><Field label="OSS Endpoint"><Input type="url" value={aliyunOssPhotoStorageForm.endpoint} placeholder="https://oss-cn-hangzhou.aliyuncs.com" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, endpoint: event.target.value }))} /></Field><Field label="Bucket 名称"><Input value={aliyunOssPhotoStorageForm.bucket} placeholder="仅填写 Bucket 名称" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, bucket: event.target.value }))} /></Field><Field label="照片对象前缀"><Input value={aliyunOssPhotoStorageForm.objectPrefix} placeholder="photos" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, objectPrefix: event.target.value }))} /></Field></div>
             <div className="grid gap-3 md:grid-cols-2"><Field label="AccessKey ID"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeyId} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeyIdConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: event.target.value }))} /></Field><Field label="AccessKey Secret"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeySecret} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeySecretConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeySecret: event.target.value }))} /></Field></div>
-            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">建议 Bucket 保持私有读；系统会为受权用户生成短时预览地址。RAM 账号仅需限定到该 Bucket/对象前缀的读取与写入权限。保存后密钥不回显、不会出现在配置列表、历史、审计或 GitHub 中；编辑时两个密钥留空即可保持原值。</div>
-            <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><span className="text-xs text-slate-500">配置完成后请上传一张真实照片验证；未启用或未配置时，新照片继续使用现有存储。</span></div>
+            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">请填写标准 Bucket 公网 Endpoint（例如 `https://oss-cn-地域.aliyuncs.com`），不要填写 OSS 接入点 Endpoint。建议 Bucket 保持私有读；系统会为受权用户生成短时预览地址。RAM 账号仅需限定到该 Bucket/对象前缀的读取与写入权限。保存后密钥不回显、不会出现在配置列表、历史、审计或 GitHub 中；编辑时两个密钥留空即可保持原值。</div>
+            <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><Button type="button" variant="outline" disabled={testAliyunOssPhotoStorageConnection.isPending || !aliyunOssPhotoStorageConfiguration.data?.configured} onClick={() => { setAliyunOssPhotoStorageValidation(null); testAliyunOssPhotoStorageConnection.mutate(); }}>{testAliyunOssPhotoStorageConnection.isPending ? "正在测试…" : "测试 OSS 连接"}</Button><span className="text-xs text-slate-500">测试只读取保留探测对象元数据，不上传、覆盖或删除业务照片。</span></div>
+            {aliyunOssPhotoStorageValidation && <div role="status" className={aliyunOssPhotoStorageValidation.success ? "rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800" : "rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"}>{aliyunOssPhotoStorageValidation.message}</div>}
           </div>
         </SettingsDisclosure>
         <Card className="border-[#d8e3e0]">
@@ -2723,7 +2736,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const rows = wechatLogins.data ?? [];
     const activeCount = rows.filter(item => item.bindingStatus === "active").length;
     const needsActionCount = rows.filter(item => ["unsubscribed", "revoked", "disabled"].includes(item.bindingStatus)).length;
-    const statusLabel: Record<string, string> = { active: "已绑定", pending: "待完成", unsubscribed: "未关注服务号", revoked: "已解除", disabled: "已停用" };
+    const statusLabel = new Proxy<Record<string, string>>({ active: "已绑定", pending: "待完成", unsubscribed: "未关注服务号", revoked: "已解除", disabled: "已停用" }, {
+      get: (labels, status) => typeof status === "string" ? labels[status] ?? "待核验" : undefined,
+    });
     const loginModeLabel: Record<string, string> = { pc: "仅 PC", mobile: "仅手机", both: "PC + 手机" };
     return (
       <div className="space-y-6">
@@ -2848,7 +2863,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const activeOrders = orders.filter(item => !["closed", "void"].includes(item.status));
     const totalInventoryValue = inventoryBalances.reduce((sum, item) => sum + Number(item.totalAmount), 0);
     const pendingSettlementAmount = Object.values(settlementTotals).reduce((sum, item) => sum + Number(item.remainingAmount), 0);
-    const statusLabel = (status: string) => ({ draft: "草稿", pending_approval: "待审核", submitted: "待审核", approved: "已通过", ordered: "已通过", confirmed: "已通过", received: "已收货", stocked: "已收货", closed: "已结算", cancelled: "已作废", void: "已作废", rejected: "已退回" }[status] ?? status);
+    const statusLabel = (status: string) => ({ draft: "草稿", pending_approval: "待审核", submitted: "待审核", approved: "已通过", ordered: "已通过", confirmed: "已通过", received: "已收货", stocked: "已收货", closed: "已结算", cancelled: "已作废", void: "已作废", rejected: "已退回" }[status] ?? getBusinessStatusLabel(status));
     const transactionLabel = (type: string) => type === "inbound" ? "入库" : type === "outbound" ? "领用出库" : "退库";
     const openInventoryDialog = (transactionType: InventoryTransactionForm["transactionType"]) => {
       setInventoryTransactionForm({ ...EMPTY_INVENTORY_TRANSACTION_FORM, projectId: String(workspaceProjectId), transactionType, occurredAt: toLocalDateTimeInput(new Date()) });
@@ -3299,7 +3314,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
           <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
             <div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">项目部供油 · 运输扣款 · 机械油料成本</p><CardTitle className="mt-1 text-base">柴油领用与每日结算</CardTitle><CardDescription className="mt-1">项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。</CardDescription></div>
-            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: toDeviceDateTimeInput() }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3" data-diesel-current-print>

@@ -22,6 +22,15 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).not.toContain("longitude");
   });
 
+  it("为表格、导出和打印复用中文状态回退与中国时区格式", () => {
+    const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
+    expect(source).toContain('import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge"');
+    expect(source).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
+    expect(source).toContain("labels[status] ?? getBusinessStatusLabel(status)");
+    expect(source).toContain("formatChinaDateTime(value, \"未记录\")");
+    expect(source).not.toContain('toLocaleString("zh-CN", { hour12: false })');
+  });
+
   it("提供按车辆汇总和当前筛选导出", () => {
     const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
     expect(source).toContain("按车辆汇总");
