@@ -19,7 +19,7 @@ export type DieselPrintRecord = {
   status: string;
 };
 
-type PrintMode = "daily" | "vehicle" | "machine";
+type PrintMode = "current" | "daily" | "vehicle" | "machine";
 const money = (value: number | string) => `¥${Number(value || 0).toFixed(2)}`;
 const dateTime = (value: Date | string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
 
@@ -32,7 +32,7 @@ export default function DieselRefuelPrintDialog({ open, onOpenChange, mode, proj
   dateLabel: string;
   records: DieselPrintRecord[];
 }) {
-  const modeTitle = mode === "daily" ? "柴油当日加油明细及汇总表" : mode === "vehicle" ? "车辆加油统计明细表" : "机械加油明细及汇总表";
+  const modeTitle = mode === "daily" ? "柴油当日加油明细及汇总表" : mode === "vehicle" ? "车辆加油统计明细表" : mode === "machine" ? "机械加油明细及汇总表" : "柴油加油明细及汇总表";
   const totalLiters = records.reduce((sum, item) => sum + Number(item.liters), 0);
   const totalAmount = records.reduce((sum, item) => sum + Number(item.amount), 0);
   const uniqueAssets = new Set(records.map(item => item.assetName)).size;
