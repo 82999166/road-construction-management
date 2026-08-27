@@ -3,7 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import type { TrpcContext } from "./_core/context";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { changeLocalManagerPassword, loginLocalManager, loginTemporaryAdmin } from "./localAuth";
+import { changeLocalManagerPassword, loginLocalManager, loginPermanentAdmin, loginTemporaryAdmin } from "./localAuth";
 import { adminRouter } from "./routers/admin";
 import { constructionRouter } from "./routers/construction";
 import { evidenceRouter } from "./routers/evidence";
@@ -59,6 +59,12 @@ export const appRouter = router({
         password: z.string().min(1).max(256),
       }))
       .mutation(({ ctx, input }) => loginTemporaryAdmin(ctx, input)),
+    permanentAdminLogin: publicProcedure
+      .input(z.object({
+        username: z.string().trim().min(1).max(64),
+        password: z.string().min(1).max(256),
+      }))
+      .mutation(({ ctx, input }) => loginPermanentAdmin(ctx, input)),
     localManagerLogin: publicProcedure
       .input(z.object({
         username: z.string().trim().min(1).max(64),

@@ -24,6 +24,9 @@ type LoginAuditAction =
   | "temporary_admin_login_failed"
   | "temporary_admin_login_locked"
   | "temporary_admin_login_disabled"
+  | "permanent_admin_login_success"
+  | "permanent_admin_login_failed"
+  | "permanent_admin_login_locked"
   | "local_manager_login_success"
   | "local_manager_login_failed"
   | "local_manager_login_locked"
@@ -67,16 +70,16 @@ function resetAttemptState(state: AttemptState) {
   state.lockedUntil = 0;
 }
 
-function loginAttemptSubjectHash(scope: "temporary_admin" | "local_manager" | "local_driver", subject: string) {
+function loginAttemptSubjectHash(scope: "temporary_admin" | "permanent_admin" | "local_manager" | "local_driver", subject: string) {
   return createHash("sha256").update(`${scope}:${subject}`, "utf8").digest("hex");
 }
 
-async function isPersistentlyLocked(scope: "temporary_admin" | "local_manager" | "local_driver", subjectHash: string, now: number) {
+async function isPersistentlyLocked(scope: "temporary_admin" | "permanent_admin" | "local_manager" | "local_driver", subjectHash: string, now: number) {
   const state = await db.getLoginRateLimitState(scope, subjectHash);
   return Boolean(state?.lockedUntil && state.lockedUntil.getTime() > now);
 }
 
-async function registerPersistentFailure(scope: "temporary_admin" | "local_manager" | "local_driver", subjectHash: string, now: number) {
+async function registerPersistentFailure(scope: "temporary_admin" | "permanent_admin" | "local_manager" | "local_driver", subjectHash: string, now: number) {
   const result = await db.recordLoginRateLimitFailure({
     scope,
     subjectHash,
@@ -87,7 +90,7 @@ async function registerPersistentFailure(scope: "temporary_admin" | "local_manag
   return result?.locked ?? false;
 }
 
-async function clearPersistentFailures(scope: "temporary_admin" | "local_manager" | "local_driver", subjectHash: string) {
+async function clearPersistentFailures(scope: "temporary_admin" | "permanent_admin" | "local_manager" | "local_driver", subjectHash: string) {
   await db.clearLoginRateLimitState(scope, subjectHash);
 }
 
@@ -105,6 +108,9 @@ function loginAuditSummary(action: LoginAuditAction) {
     temporary_admin_login_failed: "临时超级管理员登录失败",
     temporary_admin_login_locked: "临时超级管理员登录尝试受限",
     temporary_admin_login_disabled: "临时超级管理员入口已被安全收口",
+    permanent_admin_login_success: "正式超级管理员登录成功",
+    permanent_admin_login_failed: "正式超级管理员登录失败",
+    permanent_admin_login_locked: "正式超级管理员登录尝试受限",
     local_manager_login_success: "普通管理人员本地账号登录成功",
     local_manager_login_failed: "普通管理人员本地账号登录失败",
     local_manager_login_locked: "普通管理人员本地账号登录尝试受限",
@@ -260,6 +266,36 @@ export async function loginTemporaryAdmin(ctx: TrpcContext, input: { username: s
   return { success: true, expiresInMs: TEMPORARY_ADMIN_SESSION_MS, mustChangePassword: false } as const;
 }
 
+/** 正式超级管理员必须为后台明确创建的本地管理员账号；此入口绝不回退或重新启用临时账号。 */
+export async function loginPermanentAdmin(ctx: TrpcContext, input: { username: string; password: string }) {
+  const username = normalizeLocalManagerUsername(input.username);
+  const now = Date.now();
+  const subject = username || "unknown";
+  const attempts = getLocalManagerAttemptState(`permanent:${subject}`);
+  const subjectHash = loginAttemptSubjectHash("permanent_admin", subject);
+  if (isTemporarilyLocked(attempts, now) || await isPersistentlyLocked("permanent_admin", subjectHash, now)) {
+    await recordLoginAudit("permanent_admin_login_locked", null);
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "登录尝试次数过多，请 15 分钟后再试" });
+  }
+
+  const user = isValidLocalManagerUsername(username) ? await db.getLocalManagerByUsername(username) : undefined;
+  const isPermanentAdmin = user?.loginMethod === "local_manager" && user.role === "admin" && user.localAccountStatus === "active";
+  const passwordMatches = verifyLocalManagerPassword(input.password, user?.localPasswordHash ?? null);
+  if (!isPermanentAdmin || !passwordMatches) {
+    const locked = registerFailure(attempts, now) || await registerPersistentFailure("permanent_admin", subjectHash, now);
+    await recordLoginAudit(locked ? "permanent_admin_login_locked" : "permanent_admin_login_failed", null);
+    throw new TRPCError({ code: locked ? "TOO_MANY_REQUESTS" : "UNAUTHORIZED", message: locked ? "登录尝试次数过多，请 15 分钟后再试" : "账号或密码错误" });
+  }
+
+  assertLocalManagerTerminalAccess(ctx, user);
+  resetAttemptState(attempts);
+  await clearPersistentFailures("permanent_admin", subjectHash);
+  await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
+  await recordLoginAudit("permanent_admin_login_success", user.id);
+  await signInUser(ctx, user.openId, user.name || "正式超级管理员", LOCAL_MANAGER_SESSION_MS);
+  return { success: true, expiresInMs: LOCAL_MANAGER_SESSION_MS, mustChangePassword: Boolean(user.localPasswordChangeRequired) } as const;
+}
+
 /** 普通管理人员仅可使用后台创建、状态为启用且保存了有效摘要的本地账号登录。 */
 export async function loginLocalManager(ctx: TrpcContext, input: { username: string; password: string }) {
   const username = normalizeLocalManagerUsername(input.username);
@@ -273,7 +309,7 @@ export async function loginLocalManager(ctx: TrpcContext, input: { username: str
 
   const user = isValidLocalManagerUsername(username) ? await db.getLocalManagerByUsername(username) : undefined;
   const isDriver = user?.loginMethod === "local_driver";
-  const isSupportedLocalAccount = user?.loginMethod === "local_manager" || isDriver;
+  const isSupportedLocalAccount = (user?.loginMethod === "local_manager" || isDriver) && user?.role !== "admin";
   const passwordMatches = verifyLocalManagerPassword(input.password, user?.localPasswordHash ?? null);
   if (!user || !isSupportedLocalAccount || user.localAccountStatus !== "active" || !passwordMatches) {
     const failureScope = "local_manager";

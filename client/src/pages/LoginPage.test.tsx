@@ -14,6 +14,7 @@ vi.mock("@/lib/trpc", () => ({
     useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
     auth: {
       localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      permanentAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
       localManagerLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
       changeLocalPassword: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
     },
@@ -53,10 +54,13 @@ describe("独立登录页", () => {
     expect(getAuthenticatedLoginRedirectTarget(true, true, "/mobile/labor")).toBeNull();
   });
 
-  it("专用超级管理入口只显示本地超级管理员表单，不泄露测试密码", () => {
+  it("专用超级管理入口只显示正式本地超级管理员表单，不启用临时入口或泄露口令", () => {
     const markup = renderToStaticMarkup(<LoginPage localAdminOnly />);
 
     expect(markup).toContain("超级管理员登录");
+    expect(markup).toContain("正式超级管理员账号登录");
+    expect(markup).toContain("已关闭的临时入口不会被此表单启用");
+    expect(markup).toContain('id="permanent-admin-username"');
     expect(markup).toContain("登录全局管理后台");
     expect(markup).toContain("返回普通管理员登录");
     expect(markup).not.toContain("企业身份登录");
