@@ -144,6 +144,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("visiblePayrolls.map");
   });
 
+  it("将会计日结打印限定为当前封存快照的独立 A4 文档", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const printDailyAccountingSnapshot = () => {");
+    expect(source).toContain('title: `会计日结装订页-${financeClosingDate}`');
+    expect(source).toContain("getBusinessStatusLabel(closure.status)");
+    expect(source).toContain('button?.textContent?.trim() !== "打印日结装订页"');
+    expect(source).toContain("printDailyAccountingSnapshot();");
+    expect(source).toContain("生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}");
+  });
+
   it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     const personnelStart = source.indexOf("人员与授权");

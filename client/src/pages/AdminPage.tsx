@@ -3278,6 +3278,16 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   );
 
   const renderFinance = () => {
+    const printDailyAccountingSnapshot = () => {
+      const report = dailyAccountingReport.data;
+      if (!report) return;
+      const closure = report.closure;
+      const projectName = selectedWorkspaceProject?.name ?? "当前项目";
+      openA4LandscapePrintDocument({
+        title: `会计日结装订页-${financeClosingDate}`,
+        bodyHtml: `<h1>会计日结装订页</h1><p class="sub">项目：${escapePrintHtml(projectName)}　封存日期：${escapePrintHtml(financeClosingDate)}　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th>日结单号</th><th>版本</th><th>封存状态</th><th>收入（元）</th><th>开支（元）</th><th>发票数量</th><th>发票金额（元）</th><th>快照指纹</th></tr></thead><tbody><tr><td>${escapePrintHtml(closure.closingNo)}</td><td class="center">第 ${escapePrintHtml(closure.revision ?? 1)} 版</td><td class="center">${escapePrintHtml(getBusinessStatusLabel(closure.status))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalIncome))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalExpense))}</td><td class="right">${escapePrintHtml(closure.invoiceCount)}</td><td class="right">${escapePrintHtml(displayMoney(closure.invoiceAmount))}</td><td>${escapePrintHtml(closure.snapshotHash)}</td></tr><tr class="summary"><td colspan="3">本次封存快照汇总</td><td class="right">${escapePrintHtml(displayMoney(closure.totalIncome))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalExpense))}</td><td class="right">${escapePrintHtml(closure.invoiceCount)}</td><td class="right">${escapePrintHtml(displayMoney(closure.invoiceAmount))}</td><td>以服务端封存快照为准</td></tr></tbody></table><div class="footer"><span>制表：系统按当前封存快照生成</span><span>审核：________________</span></div>`,
+      });
+    };
     const allFinanceRecords = financeSummary.data?.records ?? [];
     const financeCategories = Array.from(new Set(allFinanceRecords.map(record => record.category).filter(Boolean))).sort();
     const financeSourceTypes = Array.from(new Set(allFinanceRecords.map(record => record.sourceType || "manual").filter(Boolean))).sort();
@@ -3294,7 +3304,13 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const financeLedgerExpense = financeLedgerRows.filter(record => record.direction === "expense" && record.settlementStatus !== "void").reduce((sum, record) => sum + Number(record.amount), 0);
     const settlementStatusLabel: Record<string, string> = { unpaid: "未结清", partial: "部分结清", paid: "已结清", void: "已作废" };
     const sourceTypeLabel: Record<string, string> = { manual: "人工财务流水", measurement_claim: "工程计量申报", measurement_payment: "工程计量回款", purchase_order_payable: "采购订单应付", purchase_order_settlement: "采购订单结算", financial_reversal: "财务冲销" };
-    return <div className="space-y-5">
+    return <div className="space-y-5" onClickCapture={event => {
+      const button = (event.target as HTMLElement).closest("button");
+      if (button?.textContent?.trim() !== "打印日结装订页") return;
+      event.preventDefault();
+      event.stopPropagation();
+      printDailyAccountingSnapshot();
+    }}>
       <Card className="border-[#d8e3e0] shadow-sm">
         <CardHeader><CardTitle className="text-base">{isDiesel ? "柴油管理与加油台账" : "审计级财务管理"}</CardTitle><CardDescription>{isDiesel ? "管理员按每次加油的日期、升数和当天单价登记；系统在服务端固化金额快照并自动归集到机械、车辆、运输扣款和项目成本。" : "按项目和会计期间读取真实费用、成本、应收应付及发票状态。发票台账不重复计入成本；每日日结生成不可变快照，供会计审核与凭证装订打印。"}</CardDescription></CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
