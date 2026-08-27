@@ -25,4 +25,11 @@ describe("移动柴油管理操作窗口", () => {
     expect(source).toContain("为防止重复入账，本次保存已禁用");
     expect(source).toContain("Boolean(recentDuplicateRefuel)");
   });
+
+  it("默认使用手机系统时间，并通过共享中国时区工具展示已保存的柴油记录", () => {
+    expect(source).toContain('import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime"');
+    expect(source).toContain("refueledAt: toDeviceDateTimeInput()");
+    expect(source).toContain("formatChinaDateTime(record.refueledAt)");
+    expect(source).not.toContain("refueledAt: new Date().toISOString().slice(0, 16)");
+  });
 });

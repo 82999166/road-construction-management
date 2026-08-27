@@ -4,6 +4,7 @@ import { z } from "zod";
 import { auditLogs, dieselGuidelinePrices, dieselRefuelRecords, evidenceRecords, machineCostRecords, machines, projects, transportVehicles } from "../../drizzle/schema";
 import { assertProjectInCurrentScope, getCurrentDataScope, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
+import { chinaBusinessDate } from "../services/chinaBusinessTime";
 import { protectedProcedure, router } from "../_core/trpc";
 
 /**
@@ -199,9 +200,9 @@ export const dieselRouter = router({
     if (Number.isNaN(refueledAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "加油时间无效" });
     let appliedUnitPrice = input.actualUnitPrice ?? 0;
     if (input.supplyMethod === "project_supply") {
-      const dateText = input.refueledAt.slice(0, 10);
+      const dateText = chinaBusinessDate(refueledAt);
       const prices = await db.select().from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.projectId, input.projectId)).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
-      const activePrice = prices.find(price => price.status === "active" && new Date(price.effectiveFrom).toISOString().slice(0, 10) <= dateText && (!price.effectiveTo || new Date(price.effectiveTo).toISOString().slice(0, 10) >= dateText));
+      const activePrice = prices.find(price => price.status === "active" && chinaBusinessDate(price.effectiveFrom) <= dateText && (!price.effectiveTo || chinaBusinessDate(price.effectiveTo) >= dateText));
       if (!activePrice) throw new TRPCError({ code: "BAD_REQUEST", message: "项目部供油前请先维护当日有效的柴油指导单价" });
       appliedUnitPrice = Number(activePrice.pricePerLiter);
     }

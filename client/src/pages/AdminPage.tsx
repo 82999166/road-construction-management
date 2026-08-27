@@ -5,6 +5,7 @@ import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintAction
 import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
@@ -239,7 +240,7 @@ function getOfficialAccountTestLabel(settingKey: string) {
 
 /** 兼容 API 返回 Date 或字符串的时间展示方法。 */
 function displayDate(value: Date | string | null | undefined) {
-  return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+  return formatChinaDateTime(value);
 }
 
 /** 考勤业务台账只显示中文详细地址；坐标仅可在有用途说明的争议核验接口中受控读取。 */
@@ -250,8 +251,7 @@ function formatAttendanceLocation(address: string | null | undefined, status: "n
 
 /** 本地日期筛选以用户浏览器日历为准，避免将 UTC 日期偏移带入运输日结算口径。 */
 function toLocalDateInput(value = new Date()) {
-  const localValue = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return localValue.toISOString().slice(0, 10);
+  return toDeviceDateInput(value);
 }
 
 /** 上下班考勤的“当天”由服务端按中国业务日期裁切；后台默认筛选必须使用同一口径。 */
@@ -424,10 +424,7 @@ function isEditableConstructionReport(input: ConstructionReportEditor | null): i
 
 /** 将服务端 UTC 时间转换为 datetime-local 控件可编辑的本地值，避免维护授权有效期时出现时区偏移。 */
 function toLocalDateTimeInput(value: Date | string | null | undefined) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toDeviceDateTimeInput(value);
 }
 
 /** 后台仅展示推导状态；服务端仍以授权记录、角色状态和当前时间作为最终访问边界。 */
@@ -605,7 +602,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [businessWorkspaceProjectId, setBusinessWorkspaceProjectId] = useState("");
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [machineDetailOpen, setMachineDetailOpen] = useState(false);
-  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: new Date().toISOString().slice(0, 7), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
+  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: toChinaMonthInput(), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
@@ -619,15 +616,15 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [measurementTakeoffForm, setMeasurementTakeoffForm] = useState<MeasurementTakeoffForm>(EMPTY_MEASUREMENT_TAKEOFF_FORM);
   const [measurementTakeoffDialogOpen, setMeasurementTakeoffDialogOpen] = useState(false);
   const [financeProjectId, setFinanceProjectId] = useState("");
-  const [financePeriod, setFinancePeriod] = useState(() => new Date().toISOString().slice(0, 7));
+  const [financePeriod, setFinancePeriod] = useState(() => toChinaMonthInput());
   const [financeLedgerFilter, setFinanceLedgerFilter] = useState({ direction: "all", category: "all", settlementStatus: "all", sourceType: "all", keyword: "" });
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
   const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
   const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string; externalFallback?: string | null } | null>(null);
-  const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => new Date().toISOString().slice(0, 7));
-  const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => new Date().toISOString().slice(0, 7));
+  const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => toChinaMonthInput());
+  const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => toChinaMonthInput());
   const [vehicleAnalysisTarget, setVehicleAnalysisTarget] = useState<{ vehicleId: number; projectId: number; plateNo: string } | null>(null);
   const [machineStatementForm, setMachineStatementForm] = useState<MachineMonthlyStatementForm>(EMPTY_MACHINE_MONTHLY_STATEMENT_FORM);
   const [machineStatementDialogOpen, setMachineStatementDialogOpen] = useState(false);
@@ -900,7 +897,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         const projectName = projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? `项目 #${dieselRefuelForm.projectId}`;
         const antiCounterfeitNo = `DIESEL-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
         const watermarkValues: Record<string, string> = {
-          capturedAt: `加油时间：${capturedAt.toLocaleString("zh-CN", { hour12: false })}`,
+          capturedAt: `加油时间：${formatChinaDateTime(capturedAt)}`,
           principal: `操作人：${user?.name || "超级管理员"}`,
           location: `详细地点：${locationAddress}`,
           coordinates: `详细地点：${locationAddress}`,
@@ -1978,7 +1975,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (record.status === "void" || String(record.projectId) !== dieselRefuelForm.projectId || record.assetType !== dieselRefuelForm.assetType) return false;
       const recordAssetId = record.assetType === "vehicle" ? record.vehicleId : record.machineId;
       if (String(recordAssetId ?? "") !== selectedAssetId) return false;
-      const recordDate = new Date(record.refueledAt).toISOString().slice(0, 10);
+      const recordDate = toChinaDateInput(record.refueledAt);
       if (recordDate !== refueledDate) return false;
       if (receiptNo && record.receiptNo === receiptNo) return true;
       const recordTimeMs = new Date(record.refueledAt).getTime();
@@ -2156,7 +2153,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           <Card>
             <CardHeader><CardTitle className="text-base">项目层级</CardTitle><CardDescription>推荐“项目 → 标段/工区 → 单位工程 → 施工段/作业面”；点击条目可维护归属、计划日期和状态。</CardDescription></CardHeader>
             <CardContent className="space-y-3">
-              {projects.data?.length ? projects.data.map(item => <button key={item.id} className="w-full rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setProjectForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", organizationId: item.organizationId ? String(item.organizationId) : "", code: item.code, name: item.name, nodeType: item.nodeType, projectType: item.projectType ?? "other", status: item.status, startDate: item.startDate ? new Date(item.startDate).toISOString().slice(0, 10) : "", endDate: item.endDate ? new Date(item.endDate).toISOString().slice(0, 10) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder) })}><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · 上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {item.status}</p></button>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
+              {projects.data?.length ? projects.data.map(item => <button key={item.id} className="w-full rounded-lg border border-slate-100 px-3 py-2.5 text-left transition-colors hover:border-[#b9ccc6] hover:bg-[#f7faf9]" onClick={() => setProjectForm({ id: item.id, parentId: item.parentId ? String(item.parentId) : "", organizationId: item.organizationId ? String(item.organizationId) : "", code: item.code, name: item.name, nodeType: item.nodeType, projectType: item.projectType ?? "other", status: item.status, startDate: item.startDate ? toDeviceDateInput(item.startDate) : "", endDate: item.endDate ? toDeviceDateInput(item.endDate) : "", costCenterCode: item.costCenterCode ?? "", sortOrder: String(item.sortOrder) })}><p className="text-sm font-medium">{item.name}</p><p className="mt-0.5 text-xs text-slate-500">{item.code} · {item.nodeType} · 上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {item.status}</p></button>) : <EmptyState text="暂无项目层级，请在右侧新增项目或项目节点。" />}
             </CardContent>
           </Card>
         </section>
@@ -3315,7 +3312,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
           <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
             <div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">项目部供油 · 运输扣款 · 机械油料成本</p><CardTitle className="mt-1 text-base">柴油领用与每日结算</CardTitle><CardDescription className="mt-1">项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。</CardDescription></div>
-            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: toDeviceDateTimeInput() }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3" data-diesel-current-print>

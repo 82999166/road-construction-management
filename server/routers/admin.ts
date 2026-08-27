@@ -63,6 +63,7 @@ import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNot
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion, testAliyunOssPhotoStorageConnection } from "../services/aliyunOssPhotoStorage";
+import { chinaBusinessDate, chinaBusinessMonth } from "../services/chinaBusinessTime";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
@@ -900,7 +901,7 @@ export const adminRouter = router({
       if (!db) return [];
       const [rule] = await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1);
       const allRows = await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt));
-      const rows = allRows.filter(row => row.projectId === input.projectId && row.supplyMethod === "external_station" && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 7) === input.period);
+      const rows = allRows.filter(row => row.projectId === input.projectId && row.supplyMethod === "external_station" && row.status !== "void" && chinaBusinessMonth(row.refueledAt) === input.period);
       const groups = new Map<string, { supplierName: string; recordCount: number; liters: number; amount: number; receiptCount: number; alertCount: number; minUnitPrice: number; maxUnitPrice: number }>();
       rows.forEach(row => {
         const supplierName = row.stationOrSupplierName?.trim() || "未登记供应商";
@@ -944,7 +945,7 @@ export const adminRouter = router({
       const matchingMachineIds = new Set(machineKeyword ? (await db.select({ id: machines.id, name: machines.name, code: machines.code }).from(machines)).filter(machine => `${machine.name} ${machine.code ?? ""}`.toLowerCase().includes(machineKeyword)).map(machine => machine.id) : []);
       const supplierKeyword = input?.supplierName?.trim().toLowerCase();
       const filtered = rows.filter(row => {
-        const refueledDate = new Date(row.refueledAt).toISOString().slice(0, 10);
+        const refueledDate = chinaBusinessDate(row.refueledAt);
         return (!input?.projectId || row.projectId === input.projectId)
           && (!input?.assetType || row.assetType === input.assetType)
           && (!input?.status || row.status === input.status)
@@ -970,7 +971,7 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return { totalLiters: 0, totalAmount: 0, projectSupplyLiters: 0, stationLiters: 0, vehicleLiters: 0, machineLiters: 0, deductibleAmount: 0, records: [] };
-      const rows = (await db.select().from(dieselRefuelRecords)).filter(row => row.projectId === input.projectId && row.status !== "void" && new Date(row.refueledAt).toISOString().slice(0, 10) === input.date);
+      const rows = (await db.select().from(dieselRefuelRecords)).filter(row => row.projectId === input.projectId && row.status !== "void" && chinaBusinessDate(row.refueledAt) === input.date);
       const sum = (predicate: (row: typeof rows[number]) => boolean, field: "liters" | "amount") => rows.filter(predicate).reduce((total, row) => total + Number(row[field]), 0);
       return {
         totalLiters: sum(() => true, "liters"),
@@ -1016,11 +1017,11 @@ export const adminRouter = router({
         if (!trip || trip.projectId !== input.projectId || trip.vehicleId !== input.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "运输趟次必须属于所选项目和车辆" });
         if (trip.status === "settled" || trip.status === "void") throw new TRPCError({ code: "BAD_REQUEST", message: "已结算或已作废趟次不得新增柴油扣款" });
       }
-      const refuelDate = input.refueledAt.slice(0, 10);
+      const refuelDate = chinaBusinessDate(input.refueledAt);
       let appliedUnitPrice = input.actualUnitPrice ?? 0;
       if (input.supplyMethod === "project_supply") {
         const prices = await db.select().from(dieselGuidelinePrices).where(eq(dieselGuidelinePrices.projectId, input.projectId)).orderBy(desc(dieselGuidelinePrices.effectiveFrom));
-        const activePrice = prices.find(price => price.status === "active" && new Date(price.effectiveFrom).toISOString().slice(0, 10) <= refuelDate && (!price.effectiveTo || new Date(price.effectiveTo).toISOString().slice(0, 10) >= refuelDate));
+        const activePrice = prices.find(price => price.status === "active" && chinaBusinessDate(price.effectiveFrom) <= refuelDate && (!price.effectiveTo || chinaBusinessDate(price.effectiveTo) >= refuelDate));
         if (!activePrice) throw new TRPCError({ code: "BAD_REQUEST", message: "项目部供油前请先维护当日有效的柴油指导单价" });
         appliedUnitPrice = Number(activePrice.pricePerLiter);
       }
