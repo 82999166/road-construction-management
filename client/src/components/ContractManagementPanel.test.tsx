@@ -14,4 +14,14 @@ describe("外包合同管理入口与草案", () => {
     expect(source).toContain("FullContractTemplates");
     expect(source).toContain("onApply={applyFullTemplate}");
   });
+
+  it("合同编辑日期与表格时间使用统一工具，未知状态不会回显英文", () => {
+    const source = readFileSync(fileURLToPath(new URL("./ContractManagementPanel.tsx", import.meta.url)), "utf8");
+
+    expect(source).toContain('import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime"');
+    expect(source).toContain("startDate: row.startDate ? toDeviceDateInput(row.startDate) : \"\"");
+    expect(source).toContain("formatChinaDate(row.startDate)");
+    expect(source).toContain("{statusLabel[row.status]}</Badge>");
+    expect(source).not.toContain("statusLabel[row.status] ?? row.status");
+  });
 });

@@ -97,4 +97,11 @@ describe("MobileProfilePage", () => {
     expect(markup).toContain("关注后系统才可向该微信发送业务通知");
     expect(hasCapturedButtonLabel("关注后重新绑定")).toBe(true);
   });
+
+  it("将当前岗位内部代码映射为中文且未知代码不直接回显", () => {
+    const markup = renderToStaticMarkup(<MobileProfilePage />);
+
+    expect(markup).toContain("项目经理");
+    expect(markup).not.toContain("PROJECT_MANAGER");
+  });
 });

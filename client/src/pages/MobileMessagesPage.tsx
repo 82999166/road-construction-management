@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Bell, CheckCheck, ChevronRight, HardHat, Inbox, LayoutDashboard, UserRound } from "lucide-react";
 import { toast } from "sonner";
@@ -15,11 +16,9 @@ export const MOBILE_BOTTOM_NAVIGATION = {
   profile: "/mobile/profile",
 } as const;
 
-/** 将服务器 UTC 时间转换为用户可读的本地时间；没有时间时使用安全占位符。 */
+/** 将服务器 UTC 时间统一转换为中国业务时区；没有时间时使用安全占位符。 */
 function formatMessageTime(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return formatChinaDateTime(value);
 }
 
 /**

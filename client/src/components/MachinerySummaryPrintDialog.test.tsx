@@ -9,6 +9,11 @@ describe("机械 A4 汇总打印模板", () => {
     expect(source).toContain("machineId");
     expect(source).toContain("period");
     expect(source).toContain("costTypeLabel");
+    expect(source).toContain("const getCostTypeLabel");
+    expect(source).toContain('getBusinessStatusLabel(record.status)');
+    expect(source).toContain('getCostTypeLabel(record.costType)');
+    expect(source).not.toContain('statusLabel[record.status] ?? record.status');
+    expect(source).not.toContain('costTypeLabel[record.costType] ?? record.costType');
     expect(source).toContain("openA4LandscapePrintDocument");
     expect(source).toContain("合计：记录");
   });

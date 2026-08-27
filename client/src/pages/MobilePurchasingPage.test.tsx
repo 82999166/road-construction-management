@@ -61,4 +61,14 @@ describe("采购仓储当前筛选导出与打印", () => {
     expect(source).toContain("库存余额明细表");
     expect(source).toContain("采购申请明细表");
   });
+
+  it("未知状态不回显内部英文，订单时间使用中国时区且录入默认使用设备时间", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('labels[status] ?? "待处理"');
+    expect(source).toContain("formatChinaDateTime(order.orderedAt)");
+    expect(source).toContain("formatChinaDateTime(selectedOrder.orderedAt)");
+    expect(source).toContain("orderedAt: toDeviceDateTimeInput()");
+    expect(source).toContain("settledAt: toDeviceDateTimeInput()");
+  });
 });

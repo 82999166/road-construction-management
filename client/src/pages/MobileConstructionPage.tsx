@@ -8,6 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
+import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, ImagePlus, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
@@ -29,19 +31,15 @@ const emptyDraft = {
 };
 
 function getTodayText() {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60_000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+  return toDeviceDateInput();
 }
 
-function formatReportDateTime(value: Date) {
-  return value.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+function formatReportDateTime(value: Date | string) {
+  return formatChinaDateTime(value);
 }
 
 function getBusinessDateText(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  if (typeof value === "string") return value.slice(0, 10);
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  return formatChinaDate(value);
 }
 
 function getWeatherLabel(value: Weather) {
@@ -111,14 +109,15 @@ function createWatermarkedImage(file: File, watermarkLines: string[], template: 
   });
 }
 
-function getStatusMeta(value: ReportStatus) {
-  return {
+function getStatusMeta(value: string) {
+  const labels = {
     draft: { label: "草稿", className: "bg-[#f7ead8] text-[#8a542e]" },
     submitted: { label: "待审核", className: "bg-[#f9e6bd] text-[#9c6425]" },
     approved: { label: "已审核", className: "bg-[#e5f1e3] text-[#47744d]" },
     rejected: { label: "已退回", className: "bg-[#f7e5e1] text-[#a34b3a]" },
     locked: { label: "已归档", className: "bg-[#e9ecef] text-[#59636c]" },
-  }[value];
+  } as Record<string, { label: string; className: string }>;
+  return labels[value] ?? { label: "待处理", className: "bg-slate-100 text-slate-600" };
 }
 
 /** 施工现场日报页：所有可见数据均以服务端项目范围为准，页面只提供受控操作入口。 */
@@ -184,7 +183,7 @@ export default function MobileConstructionPage() {
           const capturedAt = new Date();
           const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}`;
           const watermarkValues: Record<string, string> = {
-            capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
+            capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`,
             principal: `施工负责人：${user?.name || "当前管理员"}`,
             weather: `天气：${getWeatherLabel(draft.weather)}`,
             location: `详细地点：${weatherAddress || "未取得"}`,
@@ -319,6 +318,13 @@ export default function MobileConstructionPage() {
     });
   }
 
+  function printCurrentReports() {
+    const printableReports = reports.data ?? [];
+    const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? "当前项目";
+    const rows = printableReports.map((report, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(getBusinessDateText(report.reportDate))}</td><td>${escapePrintHtml(report.workArea)}</td><td>${escapePrintHtml(getWeatherLabel(report.weather))}</td><td class="right">${escapePrintHtml(Number(report.progressPercent ?? 0).toFixed(2))}%</td><td>${escapePrintHtml(getStatusMeta(report.status).label)}</td><td>${escapePrintHtml(report.workContent.slice(0, 240))}</td><td>${escapePrintHtml(report.safetyNotes || "—")}</td><td>${escapePrintHtml(report.issueNotes || "—")}</td></tr>`).join("");
+    openA4LandscapePrintDocument({ title: "施工日报明细表", bodyHtml: `<h1>施工日报明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:5%">序号</th><th style="width:10%">日期</th><th style="width:12%">施工部位</th><th style="width:6%">天气</th><th style="width:8%">累计进度</th><th style="width:9%">状态</th><th style="width:22%">施工内容</th><th style="width:14%">安全情况</th><th style="width:14%">质量/协调问题</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="center">当前项目暂无施工日报</td></tr>'}<tr class="summary"><td colspan="9">合计：当前项目施工日报 ${printableReports.length} 份；待审核 ${summary.data?.submitted ?? 0} 份，已审核 ${summary.data?.approved ?? 0} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
+  }
+
   if (loading || !isAuthenticated || authLoadingTimedOut) {
     return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载施工现场权限…" title="施工现场日报" description="请先登录，系统会按岗位、项目范围与授权有效期展示施工业务。" Icon={HardHat} onRetry={() => void refresh()} />;
   }
@@ -328,7 +334,7 @@ export default function MobileConstructionPage() {
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
       <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
         <header className="bg-[#3a2117] px-5 pb-7 pt-5 text-[#fff7ea]">
-          <div className="flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">施工现场</p><p className="mt-0.5 text-xs text-[#e8cfb2]">日报 · 进度 · 安全问题</p></div><button aria-label="打印当前施工日报" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => window.print()}><Printer className="h-5 w-5" /></button></div>
+          <div className="flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">施工现场</p><p className="mt-0.5 text-xs text-[#e8cfb2]">日报 · 进度 · 安全问题</p></div><button aria-label="打印当前施工日报" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={printCurrentReports}><Printer className="h-5 w-5" /></button></div>
           <div className="mt-6"><Label htmlFor="construction-project" className="text-xs text-[#e8cfb2]">当前项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger id="construction-project" className="mt-1 border-white/15 bg-white/10 text-[#fff7ea]"><SelectValue placeholder="请选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select></div>
         </header>
 

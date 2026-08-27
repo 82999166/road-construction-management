@@ -19,4 +19,15 @@ describe("工程计量移动端终态展示", () => {
     expect(source).toContain("关联计量申报（可选）");
     expect(source).toContain("measurementClaimId: takeoffDraft.measurementClaimId");
   });
+
+  it("使用设备日期、中文状态和独立 A4 汇总打印", async () => {
+    const source = await import("node:fs/promises").then(fs => fs.readFile(new URL("./MobileMeasurementPage.tsx", import.meta.url), "utf8"));
+
+    expect(claimStatus("unknown_internal_state")).toBe("待处理");
+    expect(source).toContain("function getCurrentPeriod() { return toChinaMonthInput(); }");
+    expect(source).toContain("function asDateInput(value: Date | string | null | undefined) { return toDeviceDateInput(value ?? new Date()); }");
+    expect(source).toContain("function printMeasurementSummary()");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).not.toContain("onClick={() => window.print()}");
+  });
 });
