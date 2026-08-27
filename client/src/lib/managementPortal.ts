@@ -4,6 +4,19 @@
  */
 export type ManagementAccessMode = "login" | "checking" | "super-admin" | "scoped-manager" | "unavailable";
 
+const MANAGEMENT_MODULE_PATH_BY_CODE: Record<string, string> = {
+  CONSTRUCTION: "/admin/construction",
+  LABOR: "/admin/labor",
+  MACHINERY: "/admin/machinery",
+  TRANSPORT: "/admin/transport",
+  PURCHASING: "/admin/purchasing",
+  MEASUREMENT: "/admin/subcontract",
+  CONTRACT: "/admin/contracts",
+  FINANCE: "/admin/finance",
+  DIESEL: "/admin/diesel",
+  EVIDENCE: "/admin/evidence",
+};
+
 export function resolveManagementAccessMode(input: {
   isAuthenticated: boolean;
   authLoading: boolean;
@@ -21,17 +34,7 @@ export function resolveManagementAccessMode(input: {
 export function getManagementModulePath(code: string) {
   if (code === "WORKBENCH") return "/admin";
   if (code === "MESSAGES") return "/mobile/messages";
-  const supportedCodes = new Set([
-    "CONSTRUCTION",
-    "LABOR",
-    "MACHINERY",
-    "TRANSPORT",
-    "PURCHASING",
-    "MEASUREMENT",
-    "FINANCE",
-    "EVIDENCE",
-  ]);
-  return supportedCodes.has(code) ? `/mobile/${code.toLowerCase()}` : null;
+  return MANAGEMENT_MODULE_PATH_BY_CODE[code] ?? null;
 }
 
 /** 工作台与消息中心不重复呈现为“业务管理版块”。 */

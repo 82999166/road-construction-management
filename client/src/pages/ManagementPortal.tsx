@@ -9,6 +9,8 @@ import {
   Bell,
   Camera,
   ContactRound,
+  FileText,
+  Fuel,
   HardHat,
   LayoutDashboard,
   MapPin,
@@ -32,7 +34,9 @@ const MANAGEMENT_MODULE_ICONS: Record<string, LucideIcon> = {
   TRANSPORT: Truck,
   PURCHASING: PackageSearch,
   MEASUREMENT: Ruler,
+  CONTRACT: FileText,
   FINANCE: WalletCards,
+  DIESEL: Fuel,
   EVIDENCE: Camera,
 };
 
@@ -85,7 +89,7 @@ export default function ManagementPortal() {
   return <main className="min-h-screen pb-24 bg-[radial-gradient(circle_at_top_right,rgba(204,143,83,.2),transparent_28%),#f7f1e8] text-[#3b2118] lg:pb-0">
     <header className="border-b border-[#e7d6c4] bg-[#342018] text-[#fff7ed]">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-5 py-5 lg:px-8">
-        <div className="flex min-w-0 items-center gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.22)]"><ShieldCheck className="h-5 w-5" /></div><div className="min-w-0"><p className="truncate text-base font-semibold">工程云管 · 统一管理入口</p><p className="mt-0.5 truncate text-xs text-[#e9cfaf]">登录后仅呈现已授权的业务管理版块</p></div></div>
+        <div className="flex min-w-0 items-center gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.22)]"><ShieldCheck className="h-5 w-5" /></div><div className="min-w-0"><p className="truncate text-base font-semibold">悦信云智管 · 统一管理入口</p><p className="mt-0.5 truncate text-xs text-[#e9cfaf]">登录后仅呈现已授权的业务管理版块</p></div></div>
         <div className="flex items-center gap-2"><span className="hidden max-w-44 truncate text-sm text-[#eed9bf] sm:inline">{user?.name || "已登录管理人员"}</span><Button variant="outline" className="border-white/25 bg-white/10 text-white hover:bg-white/20 hover:text-white" onClick={logout}>退出登录</Button></div>
       </div>
     </header>

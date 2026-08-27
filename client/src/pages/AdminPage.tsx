@@ -1,17 +1,13 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
-import SettlementTemplateCalculator from "@/components/SettlementTemplateCalculator";
-import ConstructionToolbox from "@/components/ConstructionToolbox";
-import ContractManagementPanel from "@/components/ContractManagementPanel";
-import RoadRailKnowledgeBase from "@/components/RoadRailKnowledgeBase";
-import RfidLocalWriterPanel from "@/components/RfidLocalWriterPanel";
-import TransportTripLedger, { type TransportLedgerFilter } from "@/components/TransportTripLedger";
-import { TransportRouteSafetySettings } from "@/components/TransportRouteSafetySettings";
-import { TransportRouteConfigurationEditor } from "@/components/TransportRouteConfigurationEditor";
-import TransportVehicleSettlementManager from "@/components/TransportVehicleSettlementManager";
-import MachinePaymentSettlementManager from "@/components/MachinePaymentSettlementManager";
-import SubcontractPaymentSettlementManager from "@/components/SubcontractPaymentSettlementManager";
-import TaxAccountingHandoffManager from "@/components/TaxAccountingHandoffManager";
+import BusinessStatusBadge from "@/components/BusinessStatusBadge";
+import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
+import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
+import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
+import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
+import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
+import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,7 +21,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import * as XLSX from "xlsx";
+import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
+import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
+import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
+import { filterAttendanceRows, getAttendanceTeams } from "@/lib/laborAttendanceFilters";
+import { filterPayrollRows, getPayrollTeams } from "@/lib/payrollLedgerFilters";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import {
   Building2,
@@ -39,6 +39,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Megaphone,
+  Monitor,
   Printer,
   Camera,
   ScrollText,
@@ -50,14 +51,41 @@ import {
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+
+/** 仅在相应后台菜单进入时加载独立工作区，避免财税、结算和工具模块膨胀管理端首屏包。 */
+const AdminMeasurementToolsPanel = lazy(() => import("@/components/AdminMeasurementToolsPanel"));
+const NotificationChannelSettings = lazy(() => import("@/components/NotificationChannelSettings"));
+const ContractManagementPanel = lazy(() => import("@/components/ContractManagementPanel"));
+const RfidLocalWriterPanel = lazy(() => import("@/components/RfidLocalWriterPanel"));
+const TransportTripLedger = lazy(() => import("@/components/TransportTripLedger"));
+const TransportRouteSafetySettings = lazy(() => import("@/components/TransportRouteSafetySettings").then(module => ({ default: module.TransportRouteSafetySettings })));
+const TransportRouteConfigurationEditor = lazy(() => import("@/components/TransportRouteConfigurationEditor").then(module => ({ default: module.TransportRouteConfigurationEditor })));
+const TransportVehicleSettlementManager = lazy(() => import("@/components/TransportVehicleSettlementManager"));
+const MachinePaymentSettlementManager = lazy(() => import("@/components/MachinePaymentSettlementManager"));
+const SubcontractPaymentSettlementManager = lazy(() => import("@/components/SubcontractPaymentSettlementManager"));
+const TaxAccountingHandoffManager = lazy(() => import("@/components/TaxAccountingHandoffManager"));
+const AdminAuditWorkspace = lazy(() => import("@/components/AdminAuditWorkspace"));
+const LaborWorkspaceShell = lazy(() => import("@/components/LaborWorkspaceShell"));
+const LaborWorkspaceLoader = lazy(() => import("@/components/LaborWorkspaceLoader"));
+const LaborCheckInLedger = lazy(() => import("@/components/LaborCheckInLedger"));
+const LaborWorkerRoster = lazy(() => import("@/components/LaborWorkerRoster"));
+const LaborAttendanceLedger = lazy(() => import("@/components/LaborAttendanceLedger"));
+const PayrollStatementLedger = lazy(() => import("@/components/PayrollStatementLedger"));
+const DailyWageLedger = lazy(() => import("@/components/DailyWageLedger"));
+const LaborTeamAuditSummary = lazy(() => import("@/components/LaborTeamAuditSummary"));
+const LaborEntryActionCard = lazy(() => import("@/components/LaborEntryActionCard"));
+const LaborPayrollHeadline = lazy(() => import("@/components/LaborPayrollHeadline").then(module => ({ default: module.LaborPayrollHeadline })));
+const DailyWagePaymentDialog = lazy(() => import("@/components/DailyWagePaymentDialog").then(module => ({ default: module.DailyWagePaymentDialog })));
+const PayrollPaymentDialog = lazy(() => import("@/components/PayrollPaymentDialog").then(module => ({ default: module.PayrollPaymentDialog })));
 
 /**
  * PC 端为统一管理入口中的全局治理工作台。菜单只负责界面导航，服务端仍会对每个全局治理接口执行超级管理员校验。
  */
 const ADMIN_MENU: DashboardMenuItem[] = [
+  { icon: Monitor, label: "数据大屏", path: "/", section: "决策总览" },
   { icon: LayoutDashboard, label: "运营概览", path: "/admin", section: "决策总览" },
   { icon: Building2, label: "组织与项目", path: "/admin/organization", section: "项目执行" },
   { icon: FolderKanban, label: "施工管理", path: "/admin/construction", section: "项目执行" },
@@ -67,11 +95,11 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源协同" },
   { icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "资源协同" },
   { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财与控制" },
-  { icon: ShoppingCart, label: "采购与仓储", path: "/admin/purchasing", section: "业财与控制" },
-  { icon: Calculator, label: "计量工具", path: "/admin/measurement-tools", section: "业财与控制" },
-  { icon: FolderKanban, label: "工程结算与分包", path: "/admin/subcontract", section: "业财与控制" },
+  { icon: ShoppingCart, label: "采购仓储", path: "/admin/purchasing", section: "业财与控制" },
+  { icon: Calculator, label: "工具知识", path: "/admin/measurement-tools", section: "业财与控制" },
+  { icon: FolderKanban, label: "结算分包", path: "/admin/subcontract", section: "业财与控制" },
   { icon: FileText, label: "合同管理", path: "/admin/contracts", section: "业财与控制" },
-  { icon: ShieldCheck, label: "AI 项目风控", path: "/admin/risk", section: "业财与控制" },
+  { icon: ShieldCheck, label: "智能风控", path: "/admin/risk", section: "业财与控制" },
   { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "业财与控制" },
   { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "业财与控制" },
   { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login", section: "平台治理" },
@@ -79,14 +107,6 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Settings2, label: "系统设置", path: "/admin/settings", section: "平台治理" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit", section: "平台治理" },
 ];
-
-/** 超级管理员从业务治理页进入时，优先落在 PC 端受控台账；其他模块仍使用已部署的既有工作台。 */
-export const ADMIN_BUSINESS_ROUTE_BY_MODULE: Record<string, string> = {
-  CONSTRUCTION: "/admin/construction",
-  LABOR: "/admin/labor",
-  MACHINERY: "/admin/machinery",
-  TRANSPORT: "/admin/transport",
-};
 
 type OrganizationType = "group" | "company" | "project_department" | "department" | "team";
 type DepartmentModuleCode = "CONSTRUCTION" | "LABOR" | "MACHINERY" | "TRANSPORT" | "PURCHASING" | "MEASUREMENT" | "FINANCE" | "EVIDENCE";
@@ -124,6 +144,7 @@ type AssignmentForm = { id?: number; userId: string; roleId: string; organizatio
 type RoleForm = { id?: number; code: string; name: string; category: "system" | "business"; description: string; status: OrganizationStatus; isSystem: boolean };
 type SettingForm = { id?: number; expectedVersion?: number; category: string; settingKey: string; displayName: string; value: string; isSensitive: boolean; remarks: string };
 type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
+type OfficialAccountMessagePushForm = { eventToken: string; encodingAesKey: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
@@ -150,6 +171,10 @@ const EMPTY_MACHINE_FORM: MachineForm = { projectId: "", operatorUserId: "", cod
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
 }
+
+function DuplicateEntryNotice({ detail }: { detail?: string }) {
+  return <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><p className="font-semibold">防重复录入提醒</p><p className="mt-1">{detail ?? "保存前请核对项目、对象、日期、数量、单价、凭证号和现场照片；如同一对象同日已有相近记录，请先打开台账确认后再保存，避免重复入账或重复通知。"}</p></div>;
+}
 const EMPTY_RISK_RULE_FORM: RiskRuleForm = { enabled: true, maxFuelFillRatio: "1.1", maxTransportSpeedKmh: "80", maxTransportDurationMinutes: "360", maxOpenCheckInHours: "14", maxPendingReportHours: "24", overdueEscalationEnabled: false, overdueEscalationHourChina: "9" };
 const EMPTY_MACHINE_COST_FORM: MachineCostForm = { machineId: "", projectId: "", costType: "fuel", quantity: "", unitPrice: "", occurredAt: "" };
 const EMPTY_MACHINE_MONTHLY_STATEMENT_FORM: MachineMonthlyStatementForm = { machineId: "", projectId: "", period: "", driverUserId: "", machineWorkDays: "0", machineOvertimeHours: "0", driverMonthlyWage: "0", driverWorkDays: "0", driverOvertimeHours: "0", signatureName: "", remarks: "" };
@@ -164,6 +189,7 @@ const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", de
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
 const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
+const EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM: OfficialAccountMessagePushForm = { eventToken: "", encodingAesKey: "" };
 const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
@@ -178,11 +204,14 @@ const OFFICIAL_ACCOUNT_BASE_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_APP_URL",
   "WECHAT_OFFICIAL_EGRESS_URL",
   "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET",
+  "WECHAT_OFFICIAL_EVENT_TOKEN",
+  "WECHAT_OFFICIAL_EVENT_AES_KEY",
 ]);
 /** 服务号配置的敏感等级由后端契约决定，避免管理员手动误将 AppID 等运行参数保存为密文。 */
 function resolveOfficialAccountSensitivity(settingKey: string, fallback: boolean) {
   if (settingKey === "WECHAT_OFFICIAL_APP_SECRET") return true;
   if (settingKey === "WECHAT_OFFICIAL_EGRESS_SHARED_SECRET") return true;
+  if (settingKey === "WECHAT_OFFICIAL_EVENT_TOKEN" || settingKey === "WECHAT_OFFICIAL_EVENT_AES_KEY") return true;
   if (settingKey.startsWith("WECHAT_OFFICIAL_")) return false;
   return fallback;
 }
@@ -200,19 +229,23 @@ function displayDate(value: Date | string | null | undefined) {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 }
 
-/** 将服务端已校验的上下班坐标展示为人员台账可直接复核的简明位置文本。 */
-function formatAttendanceLocation(longitude: string | number | null | undefined, latitude: string | number | null | undefined, accuracyMeters?: string | number | null) {
-  const lng = Number(longitude);
-  const lat = Number(latitude);
-  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return "未上传定位";
-  const accuracy = Number(accuracyMeters);
-  return `${lat.toFixed(6)}, ${lng.toFixed(6)}${Number.isFinite(accuracy) && accuracy >= 0 ? ` · 精度±${Math.round(accuracy)}m` : ""}`;
+/** 考勤业务台账只显示中文详细地址；坐标仅可在有用途说明的争议核验接口中受控读取。 */
+function formatAttendanceLocation(address: string | null | undefined, status: "normal" | "location_missing" | null | undefined) {
+  if (status !== "normal") return "未上传定位";
+  return address?.trim() || "定位已采集，中文详细地址待解析";
 }
 
 /** 本地日期筛选以用户浏览器日历为准，避免将 UTC 日期偏移带入运输日结算口径。 */
 function toLocalDateInput(value = new Date()) {
   const localValue = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
   return localValue.toISOString().slice(0, 10);
+}
+
+/** 上下班考勤的“当天”由服务端按中国业务日期裁切；后台默认筛选必须使用同一口径。 */
+function toChinaBusinessDateInput(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
+  const dateParts = Object.fromEntries(parts.filter(part => ["year", "month", "day"].includes(part.type)).map(part => [part.type, part.value]));
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
 }
 
 function readImageAsBase64(file: File) {
@@ -297,11 +330,17 @@ type CsvExportScope = {
   filters: Array<[label: string, value: string | number | null | undefined]>;
 };
 
-type ExportScopeWindow = Window & { __roadConstructionExportScope?: CsvExportScope };
+type DailyWageWorkbookFilter = { dateFrom: string; dateTo: string; keyword: string; team: string; status: string };
+type ExportScopeWindow = Window & { __roadConstructionExportScope?: CsvExportScope; __roadConstructionDailyWageExportFilter?: DailyWageWorkbookFilter };
 
 function getActiveCsvExportScope(): CsvExportScope {
   if (typeof window === "undefined") return { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
   return (window as ExportScopeWindow).__roadConstructionExportScope ?? { module: "后台台账", filters: [["页面范围", "当前已授权数据"]] };
+}
+
+function getActiveDailyWageWorkbookFilter(): DailyWageWorkbookFilter | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as ExportScopeWindow).__roadConstructionDailyWageExportFilter;
 }
 
 /** 浏览器端仅导出当前已授权且已筛选的台账数据；CSV 可直接由 Excel 打开，不额外暴露下载接口。 */
@@ -326,14 +365,30 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
   URL.revokeObjectURL(href);
 }
 
-/** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间，避免分类工资报表脱离项目与期间语境。 */
-function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+/** 多工作表 Excel 统一写入授权范围、筛选条件和生成时间；日结分类表在浏览器端再次按当前筛选收敛，防止工作表和筛选栏不一致。 */
+async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: string; headers: string[]; rows: Array<Array<string | number | null | undefined>> }>, scope = getActiveCsvExportScope()) {
+  const dailyFilter = getActiveDailyWageWorkbookFilter();
+  const matchesDailyWageFilter = (row: Array<string | number | null | undefined>) => {
+    if (!dailyFilter) return true;
+    const [workerName, teamName, settlementDate, , , , , , status] = row.map(value => String(value ?? ""));
+    const keyword = dailyFilter.keyword.trim().toLocaleLowerCase();
+    const normalizedTeam = teamName || "未设置班组";
+    return (!dailyFilter.dateFrom || settlementDate >= dailyFilter.dateFrom)
+      && (!dailyFilter.dateTo || settlementDate <= dailyFilter.dateTo)
+      && (!keyword || `${workerName} ${teamName}`.toLocaleLowerCase().includes(keyword))
+      && (dailyFilter.team === "all" || normalizedTeam === dailyFilter.team)
+      && (dailyFilter.status === "all" || status === dailyFilter.status);
+  };
+  const scopedSheets = sheets.map(sheet => sheet.name === "临时日结" && dailyFilter ? { ...sheet, rows: sheet.rows.filter(matchesDailyWageFilter) } : sheet);
+  const scopedFilters: CsvExportScope["filters"] = dailyFilter ? [...scope.filters, ["日结日期起", dailyFilter.dateFrom || "全部"], ["日结日期止", dailyFilter.dateTo || "全部"], ["日结人员/班组", dailyFilter.keyword || "全部"], ["日结班组", dailyFilter.team === "all" ? "全部" : dailyFilter.team], ["日结状态", dailyFilter.status === "all" ? "全部" : dailyFilter.status]] : scope.filters;
+  const exportScope = { ...scope, filters: scopedFilters };
+  const XLSX = await import("@e965/xlsx");
   const workbook = XLSX.utils.book_new();
-  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", scope.module], ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...sheets.map(sheet => [sheet.name, sheet.rows.length])];
+  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);
   overview["!cols"] = [{ wch: 22 }, { wch: 48 }];
   XLSX.utils.book_append_sheet(workbook, overview, "汇总说明");
-  sheets.forEach(sheet => {
+  scopedSheets.forEach(sheet => {
     const worksheet = XLSX.utils.aoa_to_sheet([sheet.headers, ...sheet.rows]);
     worksheet["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(sheet.rows.length, 1), c: Math.max(sheet.headers.length - 1, 0) } }) };
     worksheet["!cols"] = sheet.headers.map(header => ({ wch: Math.min(Math.max(header.length + 4, 12), 28) }));
@@ -372,36 +427,6 @@ function getAssignmentLifecycle(input: { status: string; roleStatus: string; val
   return { label: "有效", tone: "secondary" as const };
 }
 
-/** 空、非整数或非正项目号一律不作为业务查询范围，避免前端误把缺省条件视为全项目。 */
-export function getBusinessWorkspaceProjectState(value: string) {
-  const projectId = Number(value);
-  return {
-    projectId: Number.isSafeInteger(projectId) && projectId > 0 ? projectId : 0,
-    hasProject: Number.isSafeInteger(projectId) && projectId > 0,
-  };
-}
-
-/** 投递审计仅在当前被点击的通知卡片内展开，避免跳转至页面下方的独立区域。 */
-export function isInlineBroadcastDeliveryExpanded(selectedBroadcastId: number | undefined, broadcastId: number) {
-  return selectedBroadcastId === broadcastId;
-}
-
-/**
- * 人员角色授权只能按“部门范围”或“具体项目范围”二选一保存。
- * 若选择具体项目，项目范围始终优先，以防历史双范围组合被误投影为部门授权。
- */
-export function getAssignmentScopeSaveInput(input: { organizationId: string; projectId: string }) {
-  const projectId = Number(input.projectId);
-  if (Number.isSafeInteger(projectId) && projectId > 0) {
-    return { organizationId: null, projectId };
-  }
-  const organizationId = Number(input.organizationId);
-  return {
-    organizationId: Number.isSafeInteger(organizationId) && organizationId > 0 ? organizationId : null,
-    projectId: null,
-  };
-}
-
 function displayMoney(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === "") return "—";
   const amount = Number(value);
@@ -415,21 +440,6 @@ function getBroadcastAudienceInput(form: BroadcastForm) {
   return { audienceType: "role" as const, roleCode: form.scopeValue.trim() };
 }
 
-/** 只用于展示服务端返回的真实状态，按钮是否可操作仍由后端状态机二次判定。 */
-function BusinessStatusBadge({ status }: { status: string }) {
-  const labels: Record<string, string> = {
-    pending: "待进场", active: "可用", left: "已退场", idle: "闲置", working: "作业中", repairing: "维修中", offsite: "场外", retired: "已退役",
-    draft: "草稿", submitted: "待审核", reviewing: "审核中", approved: "已审核", verified: "已核验", paid: "已发放", settled: "已结算", rejected: "已退回", locked: "已归档", void: "已作废", suspended: "已暂停", disabled: "已停用", publishing: "发布中", published: "已发布", partial: "部分失败", failed: "发布失败", cancelled: "已取消", sent: "已投递", skipped: "已跳过",
-  };
-  const tone = ["approved", "verified", "paid", "settled", "active", "working"].includes(status)
-    ? "bg-emerald-50 text-emerald-700"
-    : ["rejected", "void", "disabled", "retired"].includes(status)
-      ? "bg-rose-50 text-rose-700"
-      : ["submitted", "reviewing", "pending", "repairing", "suspended"].includes(status)
-        ? "bg-amber-50 text-amber-700"
-        : "bg-slate-100 text-slate-600";
-  return <Badge className={tone}>{labels[status] ?? status}</Badge>;
-}
 
 /** 用于治理概览的统一统计卡片，不展示任何虚构项目业务数据。 */
 function MetricCard({
@@ -502,17 +512,21 @@ function LedgerTable({ title, description, columns, rows, loading, titleActions,
   );
 }
 
-/** 权限页的组织范围选择必须区分加载中、尚未建节点和可正常选择三种状态，避免空下拉让管理员误以为页面失效。 */
-export function getDepartmentScopePickerState(isLoading: boolean, nodeCount: number) {
-  if (isLoading) return { disabled: true, placeholder: "正在加载组织节点…", needsOrganizationSetup: false };
-  if (nodeCount === 0) return { disabled: true, placeholder: "暂无部门或项目部", needsOrganizationSetup: true };
-  return { disabled: false, placeholder: "选择部门或项目部", needsOrganizationSetup: false };
-}
-
-export default function AdminPage() {
+export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcAdminSection } = {}) {
   const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
-  const activeSection = location.split("/")[2] || "overview";
+  const trpcUtils = trpc.useUtils();
+  const activeSection = scopedSection ?? (location.split("/")[2] || "overview");
+  const scopedMenuItems: DashboardMenuItem[] = scopedSection
+    ? [
+        { icon: LayoutDashboard, label: "业务工作台", path: "/admin", section: "我的工作台" },
+        ...(ADMIN_MENU.filter(item => item.path === `/admin/${activeSection}`).map(item => ({ ...item, section: "当前业务" }))),
+      ]
+    : ADMIN_MENU;
+  const [dieselReceiptPreview, setDieselReceiptPreview] = useState<string | null>(null);
+  const [dieselCameraOpen, setDieselCameraOpen] = useState(false);
+  const [dieselCameraStream, setDieselCameraStream] = useState<MediaStream | null>(null);
+  const dieselCameraVideoRef = useRef<HTMLVideoElement | null>(null);
 
   /**
    * tRPC 会将同一渲染周期内的查询合并为一个批次。后台全部 17 个数据域若在首屏同时请求，任何慢查询都会阻塞运营概览。
@@ -547,7 +561,7 @@ export default function AdminPage() {
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
   const organizations = trpc.admin.organization.list.useQuery(undefined, { enabled: canQuery && needsOrganizations });
   const positions = trpc.admin.position.list.useQuery(undefined, { enabled: canQuery && isOrganization });
-  const projects = trpc.admin.project.list.useQuery(undefined, { enabled: canQuery && needsProjects });
+  const projects = trpc.admin.project.listAccessible.useQuery(undefined, { enabled: canQuery && needsProjects });
   const roles = trpc.admin.role.list.useQuery(undefined, { enabled: canQuery && isPermission });
   const roleTemplates = trpc.admin.role.templates.useQuery(undefined, { enabled: canQuery && isPermission });
   const permissions = trpc.admin.role.permissions.useQuery(undefined, { enabled: canQuery && isPermission });
@@ -557,10 +571,13 @@ export default function AdminPage() {
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
   const externalAiConfiguration = trpc.admin.settings.getExternalAiConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
+  const officialMessagePushConfiguration = trpc.admin.settings.getOfficialAccountMessagePushConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
   const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && (isSettings || isDiesel) });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
   const dailyDigestSettings = trpc.dailyDigest.getSettings.useQuery(undefined, { enabled: canQuery && isSettings });
   const audits = trpc.admin.audit.list.useQuery(undefined, { enabled: canQuery && isAudit });
+  const auditIntegrity = trpc.admin.audit.integrity.useQuery(undefined, { enabled: canQuery && isAudit, retry: false });
+  const sensitiveAccesses = trpc.admin.audit.sensitiveAccesses.useQuery({ limit: 50 }, { enabled: canQuery && isAudit, retry: false });
   const broadcastOptions = trpc.broadcast.formOptions.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const broadcasts = trpc.broadcast.list.useQuery(undefined, { enabled: canQuery && isBroadcast });
   const wechatLogins = trpc.admin.wechatLogin.list.useQuery(undefined, { enabled: canQuery && isWechatLogin });
@@ -577,12 +594,6 @@ export default function AdminPage() {
   const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: new Date().toISOString().slice(0, 7), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
-  const [laborPeriod, setLaborPeriod] = useState("");
-  const [laborAttendanceDate, setLaborAttendanceDate] = useState(() => toLocalDateInput(new Date()));
-  const [laborPayrollSearch, setLaborPayrollSearch] = useState("");
-  const [laborPayrollTeam, setLaborPayrollTeam] = useState("all");
-  const [laborPayrollStatus, setLaborPayrollStatus] = useState("all");
-  const [laborAttendanceFilter, setLaborAttendanceFilter] = useState({ workerName: "", team: "all", category: "all", status: "all" });
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
   const [dailyWagePaymentForm, setDailyWagePaymentForm] = useState({ paidAt: toLocalDateInput(), paymentReference: "" });
   const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
@@ -610,6 +621,9 @@ export default function AdminPage() {
   const [financeReopenReason, setFinanceReopenReason] = useState("");
   const [dieselDate, setDieselDate] = useState(() => toLocalDateInput());
   const [dieselLedgerFilter, setDieselLedgerFilter] = useState({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" });
+  const [dieselMachineName, setDieselMachineName] = useState("");
+  const [dieselPrintMode, setDieselPrintMode] = useState<"current" | "daily" | "vehicle" | "machine">("current");
+  const [dieselPrintOpen, setDieselPrintOpen] = useState(false);
   const [watermarkTemplateForm, setWatermarkTemplateForm] = useState<EvidenceWatermarkTemplate>({ ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] });
   const [broadcastForm, setBroadcastForm] = useState<BroadcastForm>(EMPTY_BROADCAST_FORM);
   const [selectedBroadcastId, setSelectedBroadcastId] = useState<number>();
@@ -628,14 +642,13 @@ export default function AdminPage() {
     period: businessFilter.period || undefined,
   }), [businessFilter.period, businessFilter.projectId]);
   const businessStatistics = trpc.admin.business.statistics.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
+  const operatingDashboard = trpc.admin.business.operatingDashboard.useQuery(businessStatisticsInput, { enabled: canQuery && isBusiness });
   const backups = trpc.admin.backup.list.useQuery(undefined, { enabled: canQuery && isBusiness });
+  const fullDatabaseBackup = trpc.admin.backup.fullStatus.useQuery(undefined, { enabled: canQuery && isBusiness });
   const workspaceProjectState = getBusinessWorkspaceProjectState(businessWorkspaceProjectId);
   const workspaceProjectId = workspaceProjectState.projectId;
   const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
   const workspaceProjectInput = useMemo(() => ({ projectId: workspaceProjectId }), [workspaceProjectId]);
-  const laborWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, includeLeft: true }), [workspaceProjectId]);
-  const payrollWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, period: laborPeriod || undefined }), [laborPeriod, workspaceProjectId]);
-  const laborCheckInWorkspaceInput = useMemo(() => ({ projectId: workspaceProjectId, businessDate: laborAttendanceDate || undefined }), [laborAttendanceDate, workspaceProjectId]);
   const machineCostWorkspaceInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId }), [selectedMachineId, workspaceProjectId]);
   const machineMonthlyStatementsInput = useMemo(() => ({ projectId: workspaceProjectId, period: machineStatementPeriod }), [machineStatementPeriod, workspaceProjectId]);
   const machineAnalysisInput = useMemo(() => ({ machineId: Number(selectedMachineId || 0), projectId: workspaceProjectId, period: machineStatementPeriod }), [machineStatementPeriod, selectedMachineId, workspaceProjectId]);
@@ -664,8 +677,9 @@ export default function AdminPage() {
     month: dieselLedgerFilter.month || undefined,
     supplyMethod: dieselLedgerFilter.supplyMethod === "all" ? undefined : dieselLedgerFilter.supplyMethod as "project_supply" | "external_station",
     assetType: dieselLedgerFilter.assetType === "all" ? undefined : dieselLedgerFilter.assetType as "vehicle" | "machine",
+    machineName: dieselMachineName.trim() || undefined,
     supplierName: dieselLedgerFilter.supplierName.trim() || undefined,
-  }), [dieselLedgerFilter, financeProjectId]);
+  }), [dieselLedgerFilter, dieselMachineName, financeProjectId]);
   const broadcastAudienceInput = useMemo(() => getBroadcastAudienceInput(broadcastForm), [broadcastForm]);
   const validBroadcastScope = broadcastForm.audienceType === "role" ? Boolean(broadcastForm.scopeValue.trim()) : Number.isInteger(Number(broadcastForm.scopeValue)) && Number(broadcastForm.scopeValue) > 0;
   const broadcastAudiencePreview = trpc.broadcast.previewAudience.useQuery(broadcastAudienceInput, { enabled: canQuery && isBroadcast && validBroadcastScope, retry: false });
@@ -680,13 +694,6 @@ export default function AdminPage() {
     (constructionReportEvidence.data ?? []).forEach(item => grouped.set(item.reportId, [...(grouped.get(item.reportId) ?? []), item]));
     return grouped;
   }, [constructionReportEvidence.data]);
-  const laborWorkers = trpc.labor.listWorkers.useQuery(laborWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborAttendance = trpc.labor.attendance.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborCheckIns = trpc.labor.attendance.listCheckIns.useQuery(laborCheckInWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const payrollStatements = trpc.labor.payroll.list.useQuery(payrollWorkspaceInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const laborDailyWages = trpc.labor.dailyWage.list.useQuery(workspaceProjectInput, { enabled: canQuery && isLabor && hasBusinessWorkspaceProject });
-  const payrollWorkbookExport = trpc.labor.dailyWage.exportWorkbookData.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
-  const payrollPaymentListExport = trpc.labor.dailyWage.exportPaymentList.useQuery(payrollWorkspaceInput, { enabled: false, retry: false });
   const machineryLedger = trpc.machinery.listMachines.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
   const machineCosts = trpc.machinery.listCosts.useQuery(machineCostWorkspaceInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject && Boolean(selectedMachineId) });
   const machineCostSummaries = trpc.machinery.listCostSummaries.useQuery(workspaceProjectInput, { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject });
@@ -718,6 +725,7 @@ export default function AdminPage() {
   const dieselGuidelinePrices = trpc.admin.diesel.listGuidelinePrices.useQuery({ projectId: Number(financeProjectId || 0) }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselRefuelRecords = trpc.admin.diesel.listRefuelRecords.useQuery(dieselRefuelRecordsInput, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselDailySummary = trpc.admin.diesel.dailySummary.useQuery({ projectId: Number(financeProjectId || 0), date: dieselDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(dieselDate) });
+  const dieselDailyPrintRecords = trpc.admin.diesel.listRefuelRecords.useQuery({ projectId: Number(financeProjectId || 0), date: dieselDate }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && Boolean(dieselDate) });
   const dieselPriceAlertRule = trpc.admin.diesel.getPriceAlertRule.useQuery({ projectId: Number(financeProjectId || 0) }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
   const dieselSupplierReconciliation = trpc.admin.diesel.supplierReconciliation.useQuery({ projectId: Number(financeProjectId || 0), period: financePeriod }, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 && /^\d{4}-(0[1-9]|1[0-2])$/.test(financePeriod) });
   const dieselVehicleOptions = trpc.admin.vehicle.list.useQuery(undefined, { enabled: canQuery && isFinance && Number(financeProjectId) > 0 });
@@ -736,13 +744,17 @@ export default function AdminPage() {
       description: "运输收入、柴油、维修保养和租赁估算均读取当前项目的服务端业务记录；柴油占比按柴油金额÷运输毛收入计算，已作废记录不参与汇总。",
       fields: [
         { label: "分析期间", value: analysis.period },
-        { label: "运输趟次 / 里程", value: `${analysis.summary.tripCount} 趟 · ${displayMoney(analysis.summary.distanceKm)} km` },
-        { label: "运输毛收入 / 净结算", value: `¥ ${displayMoney(analysis.summary.grossIncome)} / ¥ ${displayMoney(analysis.summary.settlementIncome)}` },
-        { label: "柴油升数 / 金额 / 占比", value: `${displayMoney(analysis.summary.fuelLiters)} L / ¥ ${displayMoney(analysis.summary.fuelAmount)} / ${analysis.summary.fuelCostRatio === null ? "暂无收入基数" : `${displayMoney(analysis.summary.fuelCostRatio)}%`}` },
+        { label: "本期 / 累计总趟数", value: `${analysis.summary.tripCount} 趟 / ${analysis.cumulative.tripCount} 趟` },
+        { label: "本期 / 累计总里程", value: `${displayMoney(analysis.summary.distanceKm)} km / ${displayMoney(analysis.cumulative.distanceKm)} km` },
+        { label: "本期毛收入 / 每趟收入", value: `¥ ${displayMoney(analysis.summary.grossIncome)} / ${analysis.summary.grossIncomePerTrip === null ? "暂无趟次" : `¥ ${displayMoney(analysis.summary.grossIncomePerTrip)}`}` },
+        { label: "柴油升数 / 金额", value: `${displayMoney(analysis.summary.fuelLiters)} L / ¥ ${displayMoney(analysis.summary.fuelAmount)}` },
+        { label: "柴油占比 / 每趟油费", value: `${analysis.summary.fuelCostRatio === null ? "暂无收入基数" : `${displayMoney(analysis.summary.fuelCostRatio)}%`} / ${analysis.summary.fuelCostPerTrip === null ? "暂无趟次" : `¥ ${displayMoney(analysis.summary.fuelCostPerTrip)}`}` },
+        { label: "每公里油费 / 每趟油耗", value: `${analysis.summary.fuelCostPerKm === null ? "暂无里程" : `¥ ${displayMoney(analysis.summary.fuelCostPerKm)}/km`} / ${analysis.summary.fuelLitersPerTrip === null ? "暂无趟次" : `${displayMoney(analysis.summary.fuelLitersPerTrip)} L/趟`}` },
         { label: "维修保养 / 租赁估算", value: `¥ ${displayMoney(analysis.summary.repairAmount + analysis.summary.maintenanceAmount)} / ¥ ${displayMoney(analysis.summary.leaseEstimatedAmount)}${analysis.leaseRule?.estimatePending ? "（小时/台班租赁待按实际结算）" : ""}` },
         { label: "本期净收益", value: `¥ ${displayMoney(analysis.summary.netIncome)}` },
-        { label: "按月汇总", value: <div className="max-h-52 overflow-auto rounded-lg border border-slate-200"><Table className="min-w-[720px] text-xs"><TableHeader><TableRow><TableHead>月份</TableHead><TableHead>趟次</TableHead><TableHead>收入</TableHead><TableHead>柴油 L / 金额</TableHead><TableHead>维修保养</TableHead><TableHead>净收益</TableHead></TableRow></TableHeader><TableBody>{analysis.monthly.length ? analysis.monthly.map(item => <TableRow key={item.date}><TableCell>{item.date}</TableCell><TableCell>{item.tripCount}</TableCell><TableCell>¥{displayMoney(item.grossIncome)}</TableCell><TableCell>{displayMoney(item.fuelLiters)} L / ¥{displayMoney(item.fuelAmount)}</TableCell><TableCell>¥{displayMoney(item.repairAmount + item.maintenanceAmount)}</TableCell><TableCell>¥{displayMoney(item.netIncome)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="text-center text-slate-500">暂无历史运输或成本记录。</TableCell></TableRow>}</TableBody></Table></div> },
-        { label: "按日明细", value: <div className="max-h-64 overflow-auto rounded-lg border border-slate-200"><Table className="min-w-[900px] text-xs"><TableHeader><TableRow><TableHead>日期</TableHead><TableHead>趟次 / 里程</TableHead><TableHead>收入</TableHead><TableHead>柴油 L / 金额</TableHead><TableHead>维修保养</TableHead><TableHead>净收益</TableHead></TableRow></TableHeader><TableBody>{analysis.daily.length ? analysis.daily.map(item => <TableRow key={item.date}><TableCell>{item.date}</TableCell><TableCell>{item.tripCount} 趟 / {displayMoney(item.distanceKm)} km</TableCell><TableCell>¥{displayMoney(item.grossIncome)}</TableCell><TableCell>{displayMoney(item.fuelLiters)} L / ¥{displayMoney(item.fuelAmount)}</TableCell><TableCell>¥{displayMoney(item.repairAmount + item.maintenanceAmount)}</TableCell><TableCell>¥{displayMoney(item.netIncome)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="text-center text-slate-500">当前期间暂无运输、加油或维修记录。</TableCell></TableRow>}</TableBody></Table></div> },
+        { label: "累计经营净收益", value: `¥ ${displayMoney(analysis.cumulative.netIncome)}（不含跨期租赁估算）` },
+        { label: "按月汇总", value: <div className="max-h-64 overflow-auto rounded-lg border border-slate-200"><Table className="min-w-[1120px] text-xs"><TableHeader><TableRow><TableHead>月份</TableHead><TableHead>趟次 / 里程</TableHead><TableHead>收入</TableHead><TableHead>柴油 L / 金额</TableHead><TableHead>油费占比</TableHead><TableHead>每趟 / 每公里油费</TableHead><TableHead>维修保养</TableHead><TableHead>净收益</TableHead></TableRow></TableHeader><TableBody>{analysis.monthly.length ? analysis.monthly.map(item => <TableRow key={item.date}><TableCell>{item.date}</TableCell><TableCell>{item.tripCount} 趟 / {displayMoney(item.distanceKm)} km</TableCell><TableCell>¥{displayMoney(item.grossIncome)}</TableCell><TableCell>{displayMoney(item.fuelLiters)} L / ¥{displayMoney(item.fuelAmount)}</TableCell><TableCell>{item.fuelCostRatio === null ? "—" : `${displayMoney(item.fuelCostRatio)}%`}</TableCell><TableCell>{item.fuelCostPerTrip === null ? "—" : `¥${displayMoney(item.fuelCostPerTrip)}/趟`} / {item.fuelCostPerKm === null ? "—" : `¥${displayMoney(item.fuelCostPerKm)}/km`}</TableCell><TableCell>¥{displayMoney(item.repairAmount + item.maintenanceAmount)}</TableCell><TableCell>¥{displayMoney(item.netIncome)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={8} className="text-center text-slate-500">暂无历史运输或成本记录。</TableCell></TableRow>}</TableBody></Table></div> },
+        { label: "按日明细", value: <div className="max-h-72 overflow-auto rounded-lg border border-slate-200"><Table className="min-w-[1180px] text-xs"><TableHeader><TableRow><TableHead>日期</TableHead><TableHead>趟次 / 里程</TableHead><TableHead>收入</TableHead><TableHead>柴油 L / 金额</TableHead><TableHead>油费占比</TableHead><TableHead>每趟 / 每公里油费</TableHead><TableHead>维修保养</TableHead><TableHead>净收益</TableHead></TableRow></TableHeader><TableBody>{analysis.daily.length ? analysis.daily.map(item => <TableRow key={item.date}><TableCell>{item.date}</TableCell><TableCell>{item.tripCount} 趟 / {displayMoney(item.distanceKm)} km</TableCell><TableCell>¥{displayMoney(item.grossIncome)}</TableCell><TableCell>{displayMoney(item.fuelLiters)} L / ¥{displayMoney(item.fuelAmount)}</TableCell><TableCell>{item.fuelCostRatio === null ? "—" : `${displayMoney(item.fuelCostRatio)}%`}</TableCell><TableCell>{item.fuelCostPerTrip === null ? "—" : `¥${displayMoney(item.fuelCostPerTrip)}/趟`} / {item.fuelCostPerKm === null ? "—" : `¥${displayMoney(item.fuelCostPerKm)}/km`}</TableCell><TableCell>¥{displayMoney(item.repairAmount + item.maintenanceAmount)}</TableCell><TableCell>¥{displayMoney(item.netIncome)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={8} className="text-center text-slate-500">当前期间暂无运输、加油或维修记录。</TableCell></TableRow>}</TableBody></Table></div> },
       ],
       note: "外租车的月租、日租按有效租赁规则折算；小时租或台班租因缺少实际结算工时，不计入净收益并在详情中明确提示。",
     });
@@ -772,6 +784,53 @@ export default function AdminPage() {
   const refreshDieselLedger = async () => {
     await Promise.all([dieselGuidelinePrices.refetch(), dieselRefuelRecords.refetch(), dieselDailySummary.refetch(), dieselPriceAlertRule.refetch(), dieselSupplierReconciliation.refetch(), financeSummary.refetch(), audits.refetch()]);
   };
+  const stopDieselCamera = () => {
+    dieselCameraStream?.getTracks().forEach(track => track.stop());
+    setDieselCameraStream(null);
+    setDieselCameraOpen(false);
+  };
+  const resetDieselReceiptCapture = () => {
+    stopDieselCamera();
+    if (dieselReceiptPreview) URL.revokeObjectURL(dieselReceiptPreview);
+    setDieselReceiptPreview(null);
+    setDieselReceiptFile(null);
+  };
+  const startDieselCamera = async () => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前浏览器不支持后置相机直拍，请使用支持相机授权的手机浏览器");
+      stopDieselCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      setDieselCameraStream(stream);
+      setDieselCameraOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "后置相机无法打开");
+    }
+  };
+  const captureDieselMeterPhoto = () => {
+    const video = dieselCameraVideoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) { toast.error("相机尚未就绪，请稍后重新拍摄"); return; }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) { toast.error("当前浏览器不支持相机照片处理"); return; }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) { toast.error("加油表照片生成失败，请重新拍摄"); return; }
+      if (dieselReceiptPreview) URL.revokeObjectURL(dieselReceiptPreview);
+      const file = new File([blob], `diesel-meter-${Date.now()}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+      setDieselReceiptFile(file);
+      setDieselReceiptPreview(URL.createObjectURL(file));
+      stopDieselCamera();
+    }, "image/jpeg", 0.92);
+  };
+  useEffect(() => {
+    const video = dieselCameraVideoRef.current;
+    if (!dieselCameraOpen || !dieselCameraStream || !video) return;
+    video.srcObject = dieselCameraStream;
+    void video.play().catch(() => undefined);
+    return () => { if (video.srcObject === dieselCameraStream) video.srcObject = null; };
+  }, [dieselCameraOpen, dieselCameraStream]);
   const uploadDieselReceipt = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation();
   const saveDieselPriceAlertRule = trpc.admin.diesel.savePriceAlertRule.useMutation({
@@ -793,7 +852,7 @@ export default function AdminPage() {
       if (result.priceAlert?.isAlert) toast.warning(`油价异常：相对同供应商上一笔波动 ${result.priceAlert.deviationPercent}%`);
       setDieselRefuelDialogOpen(false);
       setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM);
-      setDieselReceiptFile(null);
+      resetDieselReceiptCapture();
       await refreshDieselLedger();
     },
     onError: error => toast.error(error.message),
@@ -801,6 +860,13 @@ export default function AdminPage() {
   const submitDieselRefuel = async () => {
     try {
       let evidenceId: number | null = null;
+      if (!dieselRefuelForm.id && dieselDuplicateCandidates.length > 0 && !window.confirm("系统检测到同一资源同日已有相近柴油领用记录。请确认不是重复录入后再继续保存。")) {
+        return;
+      }
+      if (!dieselReceiptFile && !dieselRefuelForm.id && dieselRefuelForm.status !== "void") {
+        toast.error("请使用后置相机现场拍摄清晰的加油表照片后再保存");
+        return;
+      }
       if (dieselReceiptFile) {
         if (!["image/jpeg", "image/png"].includes(dieselReceiptFile.type)) {
           toast.error("加油表照片仅支持 JPG 或 PNG 图片");
@@ -846,7 +912,7 @@ export default function AdminPage() {
         assetType: dieselRefuelForm.assetType,
         vehicleId: dieselRefuelForm.assetType === "vehicle" && dieselRefuelForm.vehicleId ? Number(dieselRefuelForm.vehicleId) : null,
         machineId: dieselRefuelForm.assetType === "machine" && dieselRefuelForm.machineId ? Number(dieselRefuelForm.machineId) : null,
-        transportTripId: dieselRefuelForm.deductFromFreight && dieselRefuelForm.transportTripId ? Number(dieselRefuelForm.transportTripId) : null,
+        transportTripId: null,
         supplyMethod: dieselRefuelForm.supplyMethod,
         stationOrSupplierName: dieselRefuelForm.stationOrSupplierName.trim() || null,
         liters: Number(dieselRefuelForm.liters),
@@ -954,6 +1020,8 @@ export default function AdminPage() {
   const [settingForm, setSettingForm] = useState<SettingForm>(EMPTY_SETTING_FORM);
   const [officialAccountConfigurationForm, setOfficialAccountConfigurationForm] = useState<OfficialAccountConfigurationForm>(EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM);
   const [officialAccountConfigurationValidation, setOfficialAccountConfigurationValidation] = useState<{ success: boolean; message: string; statusCode?: number } | null>(null);
+  const [officialAccountMessagePushForm, setOfficialAccountMessagePushForm] = useState<OfficialAccountMessagePushForm>(EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM);
+  const [officialAccountMessagePushValidation, setOfficialAccountMessagePushValidation] = useState<{ success: boolean; message: string; statusCode?: number; callbackUrl?: string | null } | null>(null);
   const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
   const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
@@ -1079,9 +1147,7 @@ export default function AdminPage() {
         module: "劳务考勤与工资台账",
         filters: [
           ["项目范围", workspaceProjectLabel],
-          ["考勤日期", laborAttendanceDate || "全部日期"],
-          ["工资期间", laborPeriod || "全部期间"],
-          ["工资检索", laborPayrollSearch || "未设置"],
+          ["劳务工作区筛选", "以当前劳务菜单内的期间、人员、班组与状态筛选为准"],
         ],
       };
     }
@@ -1114,7 +1180,7 @@ export default function AdminPage() {
       };
     }
     return { module: "后台台账", filters: [["项目范围", workspaceProjectLabel], ["数据范围", "当前管理员已授权数据"]] };
-  }, [activeSection, dieselDate, dieselLedgerFilter, employeeLedgerFilter, financePeriod, financeProjectId, laborAttendanceDate, laborPayrollSearch, laborPeriod, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
+  }, [activeSection, dieselDate, dieselLedgerFilter, employeeLedgerFilter, financePeriod, financeProjectId, machineLedgerFilter, machineStatementPeriod, projects.data, selectedWorkspaceProject?.name, vehicleAnalysisPeriod, vehicleLedgerFilter]);
   useEffect(() => {
     const exportWindow = window as ExportScopeWindow;
     exportWindow.__roadConstructionExportScope = activeCsvExportScope;
@@ -1162,6 +1228,13 @@ export default function AdminPage() {
       setVehicleForm(EMPTY_VEHICLE_FORM);
       setVehicleEditorOpen(false);
       await Promise.all([vehicles.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const revokeDriverWechatBinding = trpc.admin.vehicle.revokeDriverWechatBinding.useMutation({
+    onSuccess: async () => {
+      toast.success("司机微信绑定已解除；司机可在服务号重新发送“绑定”获取新链接");
+      await Promise.all([vehicles.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -1494,6 +1567,29 @@ export default function AdminPage() {
       toast.error(error.message);
     },
   });
+  const saveOfficialAccountMessagePushConfiguration = trpc.admin.settings.saveOfficialAccountMessagePushConfiguration.useMutation({
+    onSuccess: async result => {
+      setOfficialAccountMessagePushValidation({ success: result.success, message: result.message });
+      toast.success("消息推送 Token 已保存；微信后台请填同一 Token");
+      setOfficialAccountMessagePushForm(EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM);
+      await Promise.all([officialMessagePushConfiguration.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => {
+      setOfficialAccountMessagePushValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
+  });
+  const testOfficialAccountMessagePushConfiguration = trpc.admin.settings.testOfficialAccountMessagePushConfiguration.useMutation({
+    onSuccess: async result => {
+      setOfficialAccountMessagePushValidation(result);
+      result.success ? toast.success("消息推送回调验签通过") : toast.error(result.message);
+      await audits.refetch();
+    },
+    onError: error => {
+      setOfficialAccountMessagePushValidation({ success: false, message: error.message });
+      toast.error(error.message);
+    },
+  });
   const saveExternalAiConfiguration = trpc.admin.settings.saveExternalAiConfiguration.useMutation({
     onSuccess: async () => {
       toast.success("外部 AI API 配置已加密保存；启用后新的 AI 管理摘要将优先使用该模型");
@@ -1707,6 +1803,13 @@ export default function AdminPage() {
     },
     onError: error => toast.error(error.message),
   });
+  const createFullDatabaseBackup = trpc.admin.backup.createFull.useMutation({
+    onSuccess: async backup => {
+      toast.success(`完整数据库备份已完成：${backup.tableCount} 张表已逐表校验`);
+      await Promise.all([fullDatabaseBackup.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
+  });
   const transitionConstructionReport = trpc.construction.transitionReport.useMutation({
     onSuccess: async () => {
       toast.success("施工日报状态已更新");
@@ -1725,14 +1828,14 @@ export default function AdminPage() {
   const submitPayroll = trpc.labor.payroll.submit.useMutation({
     onSuccess: async () => {
       toast.success("工资条已提交会计审核");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const approvePayroll = trpc.labor.payroll.approve.useMutation({
     onSuccess: async () => {
       toast.success("工资条审核状态已更新");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -1741,21 +1844,21 @@ export default function AdminPage() {
       toast.success("工资条已确认发放");
       setPayrollPaymentTarget(null);
       setPaymentReference("");
-      await payrollStatements.refetch();
+      await trpcUtils.labor.payroll.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
     onSuccess: async () => {
       toast.success("临时日结已提交会计/财务审核");
-      await laborDailyWages.refetch();
+      await trpcUtils.labor.dailyWage.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
   const reviewDailyWage = trpc.labor.dailyWage.review.useMutation({
     onSuccess: async result => {
       toast.success(result.status === "approved" ? "临时日结已审核通过，待登记付款" : "临时日结已退回草稿，可修改后重新提交");
-      await laborDailyWages.refetch();
+      await trpcUtils.labor.dailyWage.list.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -1764,7 +1867,7 @@ export default function AdminPage() {
       toast.success("临时日结已登记实际付款并完成结算");
       setDailyWagePaymentTarget(null);
       setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" });
-      await Promise.all([laborDailyWages.refetch(), payrollStatements.refetch()]);
+      await Promise.all([trpcUtils.labor.dailyWage.list.invalidate(), trpcUtils.labor.payroll.list.invalidate()]);
     },
     onError: error => toast.error(error.message),
   });
@@ -1783,7 +1886,7 @@ export default function AdminPage() {
     onError: error => toast.error(error.message),
   });
 
-  const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", evidence: "影像取证", message: "消息中心" };
+  const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", diesel: "柴油管理", evidence: "影像取证", message: "消息中心" };
   const permissionActionLabels: Record<string, string> = { read: "查看", create: "新增", edit: "编辑", submit: "提交", review: "审核", settle: "结算/发放", void: "作废/归档", export: "导出", print: "打印", manage: "全量办理", publish: "发布", rollback: "回滚", test: "测试" };
   // 按功能模块分组展示权限，避免管理员在长列表中难以辨识业务归属。
   const permissionGroups = useMemo(() => {
@@ -1806,6 +1909,29 @@ export default function AdminPage() {
     () => new Map((users.data ?? []).map(user => [user.id, user.name || `用户 #${user.id}`])),
     [users.data],
   );
+  const dieselDuplicateCandidates = useMemo(() => {
+    if (!dieselRefuelDialogOpen || dieselRefuelForm.id || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt) return [];
+    const selectedAssetId = dieselRefuelForm.assetType === "vehicle" ? dieselRefuelForm.vehicleId : dieselRefuelForm.machineId;
+    if (!selectedAssetId) return [];
+    const refueledDate = dieselRefuelForm.refueledAt.slice(0, 10);
+    const refueledAtMs = new Date(dieselRefuelForm.refueledAt).getTime();
+    const liters = Number(dieselRefuelForm.liters || 0);
+    const receiptNo = dieselRefuelForm.receiptNo.trim();
+    const supplierName = dieselRefuelForm.stationOrSupplierName.trim();
+    return (dieselRefuelRecords.data ?? []).filter(record => {
+      if (record.status === "void" || String(record.projectId) !== dieselRefuelForm.projectId || record.assetType !== dieselRefuelForm.assetType) return false;
+      const recordAssetId = record.assetType === "vehicle" ? record.vehicleId : record.machineId;
+      if (String(recordAssetId ?? "") !== selectedAssetId) return false;
+      const recordDate = new Date(record.refueledAt).toISOString().slice(0, 10);
+      if (recordDate !== refueledDate) return false;
+      if (receiptNo && record.receiptNo === receiptNo) return true;
+      const recordTimeMs = new Date(record.refueledAt).getTime();
+      const withinTwoHours = Number.isFinite(recordTimeMs) && Number.isFinite(refueledAtMs) && Math.abs(recordTimeMs - refueledAtMs) <= 2 * 60 * 60 * 1000;
+      const sameLiters = liters > 0 && Math.abs(Number(record.liters) - liters) < 0.001;
+      const sameSupplier = supplierName && (record.stationOrSupplierName ?? "") === supplierName;
+      return withinTwoHours || (sameLiters && (dieselRefuelForm.supplyMethod === "project_supply" || sameSupplier));
+    }).slice(0, 3);
+  }, [dieselRefuelDialogOpen, dieselRefuelForm, dieselRefuelRecords.data]);
   const selectedAssignmentRole = useMemo(
     () => roles.data?.find(role => role.id === Number(assignmentForm.roleId)),
     [assignmentForm.roleId, roles.data],
@@ -2033,6 +2159,28 @@ export default function AdminPage() {
     const toggleVehicleSelection = (id: number, checked: boolean) => setSelectedVehicleIds(current => checked ? Array.from(new Set([...current, id])) : current.filter(item => item !== id));
     const toggleAllVisibleVehicles = (checked: boolean) => setSelectedVehicleIds(checked ? filteredRows.map(item => item.id) : []);
     const requestRemoveVehicle = (item: NonNullable<typeof vehicles.data>[number]) => setMasterDataDeleteTarget({ resource: "vehicle", id: item.id, label: `车辆 ${item.plateNo}`, description: `确认删除车辆“${item.plateNo}”？系统将先核验运输趟次、RFID 绑定及其他业务关联；有关联时会拒绝删除，您可改为停用车辆。` });
+    const printFilteredVehicles = () => {
+      if (!filteredRows.length) return;
+      const selectedProject = vehicleLedgerFilter.projectId === "all" ? "全部已授权项目" : projects.data?.find(project => String(project.id) === vehicleLedgerFilter.projectId)?.name ?? "已选项目";
+      const rowsHtml = filteredRows.map((item, index) => {
+        const summary = vehicleSummaryById.get(item.id);
+        return `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(item.plateNo)}</td><td>${escapePrintHtml(projects.data?.find(project => project.id === item.projectId)?.name ?? `#${item.projectId}`)}</td><td>${escapePrintHtml(vehicleTypeLabel[item.vehicleType])}</td><td>${escapePrintHtml(item.ownership === "owned" ? "公司自有" : item.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</td><td>${escapePrintHtml(vehicleStatusLabel[item.status])}</td><td>${escapePrintHtml(item.ownerName || "未登记")}</td><td>${escapePrintHtml(item.driverName || (item.driverUserId ? userNameById.get(item.driverUserId) ?? "已绑定账号" : "未登记"))}</td><td class="right">${escapePrintHtml(String(summary?.tripCount ?? 0))}</td><td class="right">${escapePrintHtml(displayMoney(summary?.fuelLiters ?? 0))} L</td><td class="right">¥${escapePrintHtml(displayMoney(summary?.fuelAmount ?? 0))}</td><td class="right">¥${escapePrintHtml(displayMoney(vehicleMaintenanceAmountById.get(item.id) ?? 0))}</td><td class="right">¥${escapePrintHtml(displayMoney(summary?.grossIncome ?? 0))}</td><td class="right">¥${escapePrintHtml(displayMoney(summary?.netIncome ?? 0))}</td></tr>`;
+      }).join("");
+      const totals = filteredRows.reduce((current, item) => {
+        const summary = vehicleSummaryById.get(item.id);
+        current.trips += Number(summary?.tripCount ?? 0);
+        current.fuelLiters += Number(summary?.fuelLiters ?? 0);
+        current.fuelAmount += Number(summary?.fuelAmount ?? 0);
+        current.maintenance += Number(vehicleMaintenanceAmountById.get(item.id) ?? 0);
+        current.gross += Number(summary?.grossIncome ?? 0);
+        current.net += Number(summary?.netIncome ?? 0);
+        return current;
+      }, { trips: 0, fuelLiters: 0, fuelAmount: 0, maintenance: 0, gross: 0, net: 0 });
+      openA4LandscapePrintDocument({
+        title: "车辆资源台账明细表",
+        bodyHtml: `<h1>车辆资源台账明细表</h1><p class="sub">项目：${escapePrintHtml(selectedProject)}　|　查询：${escapePrintHtml(vehicleLedgerFilter.search || "全部车辆")}　|　资源性质：${escapePrintHtml(vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : vehicleLedgerFilter.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</p><p class="sub">调度状态：${escapePrintHtml(vehicleLedgerFilter.status === "all" ? "全部" : vehicleStatusLabel[vehicleLedgerFilter.status as VehicleStatus])}　|　分析期间：${escapePrintHtml(vehicleAnalysisPeriod)}　|　生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>车牌</th><th>项目</th><th>类型</th><th>资源性质</th><th>状态</th><th>所属人/出租方</th><th>司机</th><th>运输趟次</th><th>柴油升数</th><th>柴油金额</th><th>维修保养</th><th>毛收入</th><th>净收益</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="8">合计：车辆数 ${filteredRows.length} 辆</td><td class="right">${escapePrintHtml(String(totals.trips))}</td><td class="right">${escapePrintHtml(displayMoney(totals.fuelLiters))} L</td><td class="right">¥${escapePrintHtml(displayMoney(totals.fuelAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.maintenance))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.gross))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.net))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+      });
+    };
     const submitVehicle = () => {
       if (!vehicleForm.projectId || !vehicleForm.plateNo.trim()) return toast.error("请填写车辆归属项目和车牌号");
       if (!vehicleForm.boxLengthMeters || !vehicleForm.boxWidthMeters || !vehicleForm.boxHeightMeters) return toast.error("请填写货厢长、宽、高");
@@ -2090,6 +2238,7 @@ export default function AdminPage() {
         { label: "车辆类型", value: vehicleTypeLabel[item.vehicleType] },
         { label: "产权/所属人", value: item.ownerName || "未登记" },
         { label: "外部司机", value: item.driverName || "未登记" },
+        { label: "司机微信绑定", value: item.driverWechatBinding?.status === "active" ? `已绑定${item.driverWechatBinding.boundAt ? `（${displayDate(item.driverWechatBinding.boundAt)}）` : ""}` : "未绑定；司机关注服务号后发送“绑定”可自助绑定" },
         { label: "货厢尺寸", value: `${item.boxLengthMeters} × ${item.boxWidthMeters} × ${item.boxHeightMeters} m` },
         { label: "理论方量", value: `${item.theoreticalVolumeCubicMeters} m³` },
         { label: "核定油箱容量", value: item.fuelTankCapacityLiters ? `${displayMoney(item.fuelTankCapacityLiters)} L` : "未维护（柴油超量检测将跳过该车辆）" },
@@ -2105,9 +2254,10 @@ export default function AdminPage() {
         <div className="flex flex-col gap-6">
           <Card className="order-2 w-full border-[#d8e3e0] shadow-sm">
             <CardHeader><div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">车辆资源 · 全宽台账</p><CardTitle className="mt-1 text-base">车辆资源列表</CardTitle><CardDescription className="mt-1">每行汇总单车运输、柴油、维修、租赁与净收益；详情查看按日、按月分析。期间为 {vehicleAnalysisPeriod}。</CardDescription></div><div className="flex w-full flex-wrap gap-2 sm:w-auto"><Button className="min-h-11 flex-1 text-sm sm:min-h-8 sm:flex-none" size="sm" variant="outline" disabled={!filteredRows.length} onClick={() => downloadCsvFile(`车辆台账-${vehicleAnalysisPeriod}.csv`, ["车牌", "项目", "车辆类型", "资源性质", "调度状态", "出租方/所属人", "司机", "运输趟次", "运输毛收入", "柴油升数", "柴油金额", "柴油占比", "维修保养", "租赁估算", "净收益"], filteredRows.map(item => { const summary = vehicleSummaryById.get(item.id); return [item.plateNo, projects.data?.find(project => project.id === item.projectId)?.name ?? item.projectId, vehicleTypeLabel[item.vehicleType], item.ownership === "owned" ? "公司自有" : "外租", vehicleStatusLabel[item.status], item.ownerName, item.driverUserId ? userNameById.get(item.driverUserId) : "", summary?.tripCount ?? 0, summary?.grossIncome ?? 0, summary?.fuelLiters ?? 0, summary?.fuelAmount ?? 0, summary?.fuelCostRatio ?? "", (summary?.repairAmount ?? 0) + (summary?.maintenanceAmount ?? 0), summary?.leaseEstimatedAmount ?? 0, summary?.netIncome ?? 0]; }))}>导出详细 CSV</Button><Button className="min-h-11 flex-1 text-sm sm:min-h-8 sm:flex-none" size="sm" variant="outline" disabled={!selectedVehicleRows.length} onClick={() => batchRemoveVehicles(selectedVehicleRows.map(item => ({ id: item.id, cells: [] })))}>批量受控删除（{selectedVehicleRows.length}）</Button><Button className="min-h-11 flex-1 bg-[#203c48] text-sm text-white hover:bg-[#17313b] sm:min-h-8 sm:flex-none" size="sm" onClick={() => { setVehicleForm(EMPTY_VEHICLE_FORM); setVehicleEditorOpen(true); }}><Truck className="mr-2 h-4 w-4" />新增车辆档案</Button></div></div></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5"><Input className="min-h-11" value={vehicleLedgerFilter.search} onChange={event => setVehicleLedgerFilter(current => ({ ...current, search: event.target.value }))} placeholder="车牌或所属人" /><Select value={vehicleLedgerFilter.projectId} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, projectId: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部项目</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Select value={vehicleLedgerFilter.ownership} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, ownership: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部资源性质</SelectItem><SelectItem value="owned">公司自有</SelectItem><SelectItem value="leased">外租车辆</SelectItem><SelectItem value="trip_settlement">渣土车（按趟结算）</SelectItem></SelectContent></Select><Select value={vehicleLedgerFilter.status} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, status: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部调度状态</SelectItem><SelectItem value="active">可调度</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select><Input className="min-h-11" type="month" aria-label="车辆分析期间" value={vehicleAnalysisPeriod} onChange={event => setVehicleAnalysisPeriod(event.target.value)} /></div>
-              <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1460px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow className="border-[#dce3de] hover:bg-[#edf1ed]"><TableHead className="h-11 w-11 px-3"><input aria-label="全选当前筛选车辆" type="checkbox" checked={Boolean(filteredRows.length) && selectedVehicleRows.length === filteredRows.length} onChange={event => toggleAllVisibleVehicles(event.target.checked)} /></TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">车牌 / 类型</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">归属项目</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">资源性质</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">所属人 / 出租方</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">绑定司机</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">货厢 / 方量</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">调度状态</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">维修保养</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">加油升数 / 金额</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">本月收益 / 净收益</TableHead><TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">操作</TableHead></TableRow></TableHeader><TableBody>{filteredRows.length ? filteredRows.map(item => { const summary = vehicleSummaryById.get(item.id); return <TableRow className="border-[#edf0ee] hover:bg-[#fbfaf1]" key={item.id}><TableCell className="w-11 px-3"><input aria-label={`选择车辆 ${item.plateNo}`} type="checkbox" checked={selectedVehicleIds.includes(item.id)} onChange={event => toggleVehicleSelection(item.id, event.target.checked)} /></TableCell><TableCell className="px-4 py-3"><p className="font-semibold text-[#203c48]">{item.plateNo}</p><p className="mt-1 text-slate-500">{vehicleTypeLabel[item.vehicleType]}</p></TableCell><TableCell className="px-4 py-3 text-slate-700">{projects.data?.find(project => project.id === item.projectId)?.name ?? `#${item.projectId}`}</TableCell><TableCell className="px-4 py-3"><Badge variant="outline">{item.ownership === "owned" ? "公司自有" : item.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）"}</Badge></TableCell><TableCell className="px-4 py-3 text-slate-700">{item.ownerName || "未登记"}</TableCell><TableCell className="px-4 py-3 text-slate-700">{item.driverName || (item.driverUserId ? userNameById.get(item.driverUserId) ?? `#${item.driverUserId}` : "未登记")}</TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{item.boxLengthMeters} × {item.boxWidthMeters} × {item.boxHeightMeters} m</p><p className="mt-1 text-slate-500">理论 {item.theoreticalVolumeCubicMeters} m³</p></TableCell><TableCell className="px-4 py-3"><Badge className={vehicleStatusClass[item.status]}>{vehicleStatusLabel[item.status]}</Badge></TableCell><TableCell className="px-4 py-3 text-slate-700">¥{displayMoney(vehicleMaintenanceAmountById.get(item.id) ?? 0)}</TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{displayMoney(summary?.fuelLiters ?? 0)} L</p><p className="mt-1 text-slate-500">¥{displayMoney(summary?.fuelAmount ?? 0)}</p></TableCell><TableCell className="px-4 py-3 text-slate-700"><p>¥{displayMoney(summary?.grossIncome ?? 0)} / ¥{displayMoney(summary?.netIncome ?? 0)}</p><p className="mt-1 text-slate-500">油费 {summary?.fuelCostRatio === null || summary?.fuelCostRatio === undefined ? "—" : `${displayMoney(summary.fuelCostRatio)}%`}</p></TableCell><TableCell className="px-4 py-3 text-right"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setVehicleAnalysisTarget({ vehicleId: item.id, projectId: item.projectId, plateNo: item.plateNo }); showVehicleDetail(item); }}>详情</Button><Button size="sm" variant="outline" onClick={() => openVehicle(item)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => requestRemoveVehicle(item)}>删除</Button></div></TableCell></TableRow>; }) : <TableRow><TableCell className="px-4 py-8 text-center text-slate-500" colSpan={12}>{rows.length ? "当前筛选条件下没有车辆。" : "尚无真实车辆台账。请使用上方“新增车辆档案”录入已授权项目的真实车辆资料。"}</TableCell></TableRow>}</TableBody></Table></div>
+	          <CardContent className="space-y-3">
+	              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-[#f8fcfb] px-3 py-2.5"><p className="text-xs leading-5 text-slate-600">导出与打印严格使用下方当前筛选的真实车辆台账、车辆分析期间和汇总金额。</p><CurrentFilterPrintActions disabled={!filteredRows.length} printLabel="打印当前筛选明细与汇总" exportLabel="导出当前筛选 CSV" onPrint={printFilteredVehicles} onExport={() => downloadCsvFile(`车辆台账-${vehicleAnalysisPeriod}.csv`, ["车牌", "项目", "车辆类型", "资源性质", "调度状态", "出租方/所属人", "司机", "运输趟次", "运输毛收入", "柴油升数", "柴油金额", "柴油占比", "维修保养", "租赁估算", "净收益"], filteredRows.map(item => { const summary = vehicleSummaryById.get(item.id); return [item.plateNo, projects.data?.find(project => project.id === item.projectId)?.name ?? item.projectId, vehicleTypeLabel[item.vehicleType], item.ownership === "owned" ? "公司自有" : "外租", vehicleStatusLabel[item.status], item.ownerName, item.driverUserId ? userNameById.get(item.driverUserId) : "", summary?.tripCount ?? 0, summary?.grossIncome ?? 0, summary?.fuelLiters ?? 0, summary?.fuelAmount ?? 0, summary?.fuelCostRatio ?? "", (summary?.repairAmount ?? 0) + (summary?.maintenanceAmount ?? 0), summary?.leaseEstimatedAmount ?? 0, summary?.netIncome ?? 0]; }))} /></div>
+	              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5"><Input className="min-h-11" value={vehicleLedgerFilter.search} onChange={event => setVehicleLedgerFilter(current => ({ ...current, search: event.target.value }))} placeholder="车牌或所属人" /><Select value={vehicleLedgerFilter.projectId} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, projectId: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部项目</SelectItem>{projects.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Select value={vehicleLedgerFilter.ownership} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, ownership: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部资源性质</SelectItem><SelectItem value="owned">公司自有</SelectItem><SelectItem value="leased">外租车辆</SelectItem><SelectItem value="trip_settlement">渣土车（按趟结算）</SelectItem></SelectContent></Select><Select value={vehicleLedgerFilter.status} onValueChange={value => setVehicleLedgerFilter(current => ({ ...current, status: value }))}><SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部调度状态</SelectItem><SelectItem value="active">可调度</SelectItem><SelectItem value="suspended">暂停</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select><Input className="min-h-11" type="month" aria-label="车辆分析期间" value={vehicleAnalysisPeriod} onChange={event => setVehicleAnalysisPeriod(event.target.value)} /></div>
+              <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1460px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow className="border-[#dce3de] hover:bg-[#edf1ed]"><TableHead className="h-11 w-11 px-3"><input aria-label="全选当前筛选车辆" type="checkbox" checked={Boolean(filteredRows.length) && selectedVehicleRows.length === filteredRows.length} onChange={event => toggleAllVisibleVehicles(event.target.checked)} /></TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">车牌 / 类型</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">归属项目</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">资源性质</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">所属人 / 出租方</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">绑定司机</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">货厢 / 方量</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">调度状态</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">维修保养</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">加油升数 / 金额</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">本月收益 / 净收益</TableHead><TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">操作</TableHead></TableRow></TableHeader><TableBody>{filteredRows.length ? filteredRows.map(item => { const summary = vehicleSummaryById.get(item.id); return <TableRow className="border-[#edf0ee] hover:bg-[#fbfaf1]" key={item.id}><TableCell className="w-11 px-3"><input aria-label={`选择车辆 ${item.plateNo}`} type="checkbox" checked={selectedVehicleIds.includes(item.id)} onChange={event => toggleVehicleSelection(item.id, event.target.checked)} /></TableCell><TableCell className="px-4 py-3"><p className="font-semibold text-[#203c48]">{item.plateNo}</p><p className="mt-1 text-slate-500">{vehicleTypeLabel[item.vehicleType]}</p></TableCell><TableCell className="px-4 py-3 text-slate-700">{projects.data?.find(project => project.id === item.projectId)?.name ?? `#${item.projectId}`}</TableCell><TableCell className="px-4 py-3"><Badge variant="outline">{item.ownership === "owned" ? "公司自有" : item.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）"}</Badge></TableCell><TableCell className="px-4 py-3 text-slate-700">{item.ownerName || "未登记"}</TableCell><TableCell className="px-4 py-3 text-slate-700"><div className="space-y-1"><p>{item.driverName || (item.driverUserId ? userNameById.get(item.driverUserId) ?? `#${item.driverUserId}` : "未登记")}</p>{item.driverWechatBinding?.status === "active" ? <Badge className="bg-emerald-100 text-emerald-700">微信已绑定</Badge> : <Badge variant="outline" className="border-amber-200 text-amber-700">微信未绑定</Badge>}</div></TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{item.boxLengthMeters} × {item.boxWidthMeters} × {item.boxHeightMeters} m</p><p className="mt-1 text-slate-500">理论 {item.theoreticalVolumeCubicMeters} m³</p></TableCell><TableCell className="px-4 py-3"><Badge className={vehicleStatusClass[item.status]}>{vehicleStatusLabel[item.status]}</Badge></TableCell><TableCell className="px-4 py-3 text-slate-700">¥{displayMoney(vehicleMaintenanceAmountById.get(item.id) ?? 0)}</TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{displayMoney(summary?.fuelLiters ?? 0)} L</p><p className="mt-1 text-slate-500">¥{displayMoney(summary?.fuelAmount ?? 0)}</p></TableCell><TableCell className="px-4 py-3 text-slate-700"><p>¥{displayMoney(summary?.grossIncome ?? 0)} / ¥{displayMoney(summary?.netIncome ?? 0)}</p><p className="mt-1 text-slate-500">油费 {summary?.fuelCostRatio === null || summary?.fuelCostRatio === undefined ? "—" : `${displayMoney(summary.fuelCostRatio)}%`}</p></TableCell><TableCell className="px-4 py-3 text-right"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setVehicleAnalysisTarget({ vehicleId: item.id, projectId: item.projectId, plateNo: item.plateNo }); showVehicleDetail(item); }}>详情</Button><Button size="sm" variant="outline" onClick={() => openVehicle(item)}>编辑</Button>{item.driverWechatBinding?.status === "active" ? <Button size="sm" variant="outline" className="border-amber-200 text-amber-700 hover:bg-amber-50" disabled={revokeDriverWechatBinding.isPending} onClick={() => { if (window.confirm(`确认解除车辆 ${item.plateNo} 的司机微信绑定吗？司机可在服务号重新发送“绑定”再绑定。`)) revokeDriverWechatBinding.mutate({ vehicleId: item.id }); }}>解绑微信</Button> : null}<Button size="sm" variant="destructive" onClick={() => requestRemoveVehicle(item)}>删除</Button></div></TableCell></TableRow>; }) : <TableRow><TableCell className="px-4 py-8 text-center text-slate-500" colSpan={12}>{rows.length ? "当前筛选条件下没有车辆。" : "尚无真实车辆台账。请使用上方“新增车辆档案”录入已授权项目的真实车辆资料。"}</TableCell></TableRow>}</TableBody></Table></div>
               <p className="text-xs text-slate-500">手机端可左右滑动查看完整字段；详情、编辑、删除和状态变更仍由服务端逐条校验项目范围、关联趟次与审计要求。</p>
             </CardContent>
           </Card>
@@ -2176,7 +2326,7 @@ export default function AdminPage() {
           <div className="mt-3 grid gap-2 md:grid-cols-3"><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第一级 · 菜单</p><p className="mt-1 text-xs leading-5 text-slate-500">部门业务范围与岗位模板决定可见业务菜单；前端只做导航投影，不能代替服务端拦截。</p></div><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第二级 · 页面</p><p className="mt-1 text-xs leading-5 text-slate-500">项目范围与账号有效期决定可查看的项目台账和页面数据；跨项目查询会被服务端拒绝。</p></div><div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3"><p className="text-xs font-semibold text-[#203c48]">第三级 · 操作</p><p className="mt-1 text-xs leading-5 text-slate-500">本页勾选查看、新增、编辑、提交、审核、结算、作废、导出、打印；用户专属权限仅覆盖本模块操作，不扩大项目范围。</p></div></div>
           <div className="mt-2 space-y-3">
         <Card>
-          <CardHeader><CardTitle className="text-base">角色详细操作权限</CardTitle><CardDescription>选择角色后，按业务模块勾选查看、新增、编辑、提交、审核、结算、作废、导出或打印等动作。角色一旦配置某业务域的详细权限，服务端将拒绝该域未勾选的直接接口调用；岗位、部门和项目范围仍同时校验。</CardDescription></CardHeader>
+          <CardHeader><CardTitle className="text-base">角色详细操作权限</CardTitle><CardDescription>选择角色后，按业务模块勾选查看、新增、编辑、提交、审核、结算、作废、导出或打印等动作。角色一旦配置某业务域的详细权限，服务端将拒绝该域未勾选的直接接口调用；岗位、部门和项目范围仍同时校验。柴油管理已独立拆分为台账查看、领用登记、指导价、预警、扣油结算、作废、导出和打印，便于按岗位细分授权。</CardDescription></CardHeader>
           <CardContent>
             {selectedRoleId === undefined ? <EmptyState text="正在加载可分配角色…" /> : (
               <div className="space-y-5">
@@ -2302,7 +2452,10 @@ export default function AdminPage() {
   const renderSettings = () => (
     <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
       <section className="space-y-6">
-        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">微信公众号服务号是唯一通知通道；地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">站内通知为基础通道；短信和服务号即时通知可在下方按模块配置。地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
+          <NotificationChannelSettings />
+        </Suspense>
         <Card className="border-[#d8e3e0]">
           <CardHeader><CardTitle className="text-base">每日项目站内汇总</CardTitle><CardDescription>每天按中国标准时间汇总施工日报、收入开支、计量申报与运输装卸数据，并写入项目负责人的站内消息中心。定时任务、运行结果和配置修改均保留审计记录。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
@@ -2342,7 +2495,7 @@ export default function AdminPage() {
               })}</div></div>
               <Button className="bg-[#2177d3] hover:bg-[#185fae]" disabled={saveEvidenceWatermarkTemplate.isPending || watermarkTemplateForm.fields.length < 2 || !watermarkTemplateForm.title.trim() || !watermarkTemplateForm.organizationLabel.trim() || !watermarkTemplateForm.footerLabel.trim()} onClick={() => saveEvidenceWatermarkTemplate.mutate({ title: watermarkTemplateForm.title, organizationLabel: watermarkTemplateForm.organizationLabel, footerLabel: watermarkTemplateForm.footerLabel, fields: watermarkTemplateForm.fields })}>{saveEvidenceWatermarkTemplate.isPending ? "正在发布水印模板…" : "保存并发布水印模板"}</Button>
             </div>
-            <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "工程云管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
+            <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
         </Card>
         <Card>
@@ -2399,7 +2552,7 @@ export default function AdminPage() {
                 return <div key={template.templateId} className="rounded border border-slate-200 bg-white p-2"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-medium text-slate-800">{template.title}</div><Badge variant="outline" className={template.persistentBusinessEligible === false ? "border-amber-300 bg-amber-50 text-amber-700" : "border-emerald-300 bg-emerald-50 text-emerald-700"}>{template.persistentBusinessEligible === false ? "不可用于持续业务通知" : "可按模块自动映射"}</Badge></div><p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-600">{template.content}</p><p className="mt-1 text-[11px] text-slate-500">微信字段：{Object.keys(template.fieldMapping).join("、") || "未识别"}</p>{template.eligibilityMessage ? <p className="mt-1 text-[11px] leading-5 text-amber-700">{template.eligibilityMessage}</p> : null}<div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]"><Select value={module} onValueChange={value => setOfficialTemplateModuleById(current => ({ ...current, [template.templateId]: value as typeof module }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="transport">运输刷卡与趟次</SelectItem><SelectItem value="machinery">机械/车辆维保审核</SelectItem><SelectItem value="purchasing">采购申请与订单审核</SelectItem><SelectItem value="measurement">收方、计量与回款</SelectItem><SelectItem value="finance">财务流水与审计</SelectItem><SelectItem value="labor">劳务实名与工资</SelectItem><SelectItem value="construction">施工日报与现场审核</SelectItem><SelectItem value="security">系统安全与连接告警</SelectItem></SelectContent></Select><Button size="sm" variant="outline" disabled={bindOfficialModuleTemplate.isPending || template.persistentBusinessEligible === false} onClick={() => bindOfficialModuleTemplate.mutate({ templateId: template.templateId, module })}>{bindOfficialModuleTemplate.isPending ? "正在绑定…" : template.persistentBusinessEligible === false ? "该模板不可用" : "绑定并自动映射"}</Button></div></div>;
               })}</div> : null}
             </div>
-            <div className="rounded-lg border border-[#d7e8e3] bg-[#f8fbfa] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-slate-800">业务通知模板矩阵</p><Badge variant="outline" className={officialTemplateCoverage.data?.configured ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialTemplateCoverage.data?.configured ? "已发布模块模板" : "待绑定业务模板"}</Badge></div><p className="mt-1 text-xs leading-5 text-slate-600">每个业务模块可绑定自己的服务号模板，系统按模板 `.DATA` 字段自动映射，不再要求手填内部占位符；范围通知和每日汇总继续使用站内消息。</p><div className="mt-3 space-y-2">{officialTemplateCoverage.isLoading ? <p className="text-xs text-slate-500">正在核验各业务模板…</p> : officialTemplateCoverage.data?.matrix.map(item => <div key={item.module} className="rounded-md border border-slate-200 bg-white px-3 py-2"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{item.name}</p><Badge variant="outline" className={item.ready ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{item.ready ? "已绑定模板" : "待绑定对应模板"}</Badge></div><p className="mt-1 text-xs leading-5 text-slate-600">{item.purpose}</p>{item.templateTitle ? <p className="mt-1 text-[11px] text-emerald-700">当前模板：{item.templateTitle}</p> : <p className="mt-1 text-[11px] text-amber-700">请从上方私有模板列表选择该业务模块并点击“绑定并自动映射”。</p>}<p className="mt-1 text-[11px] text-slate-500">事件：{item.events.join("、")}</p></div>) ?? <p className="text-xs text-slate-500">模板矩阵暂不可读取，请先检查已发布服务号配置。</p>}</div></div>
+            <div className="rounded-lg border border-[#d7e8e3] bg-[#f8fbfa] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-slate-800">业务通知模板矩阵</p><Badge variant="outline" className={officialTemplateCoverage.data?.configured ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialTemplateCoverage.data?.configured ? "已发布模块模板" : "待绑定业务模板"}</Badge></div><p className="mt-1 text-xs leading-5 text-slate-600">每个业务模块可绑定自己的服务号模板，系统按模板 `.DATA` 字段自动映射，不再要求手填内部占位符；范围通知和每日汇总继续使用站内消息。</p><div className="mt-3 space-y-2">{officialTemplateCoverage.isLoading ? <p className="text-xs text-slate-500">正在核验各业务模板…</p> : officialTemplateCoverage.data?.matrix.map(item => <div key={item.module} className="rounded-md border border-slate-200 bg-white px-3 py-2"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{item.name}</p><Badge variant="outline" className={item.ready ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{item.ready ? "已绑定模板" : "待绑定对应模板"}</Badge></div><p className="mt-1 text-xs leading-5 text-slate-600">{item.purpose}</p>{item.templateTitle ? <p className={`mt-1 text-[11px] ${item.semanticMismatch ? "text-red-700" : "text-emerald-700"}`}>当前模板：{item.templateTitle}{item.semanticMismatch ? "（语义不匹配，已暂停服务号投递）" : ""}</p> : <p className="mt-1 text-[11px] text-amber-700">请从上方私有模板列表选择该业务模块并点击“绑定并自动映射”。</p>}<p className="mt-1 text-[11px] text-slate-500">事件：{item.events.join("、")}</p></div>) ?? <p className="text-xs text-slate-500">模板矩阵暂不可读取，请先检查已发布服务号配置。</p>}</div></div>
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>
@@ -2415,6 +2568,48 @@ export default function AdminPage() {
               <p className="rounded-lg bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">密钥仅在服务端加密保存，不会回显、写入日志或出现在版本记录中。保存后系统会自动校验服务号凭据，不会向员工发送测试消息。</p>
               <Button type="submit" className="min-h-11 w-full bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountConfiguration.isPending || !officialAccountConfigurationForm.appId.trim() || !officialAccountConfigurationForm.appUrl.trim() || !officialAccountConfigurationForm.egressUrl.trim()}>{saveOfficialAccountConfiguration.isPending ? "正在保存并校验…" : "保存并校验服务号配置"}</Button>
               {officialAccountConfigurationValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountConfigurationValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountConfigurationValidation.success ? "校验通过：" : "需要处理："}{officialAccountConfigurationValidation.message}</div> : null}
+            </form>
+          </CardContent>
+        </Card>
+        <Card className="border-[#cbded9] bg-[#f4faf8]">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle className="text-base">域名与消息推送配置</CardTitle>
+                <CardDescription className="mt-1">对应微信公众平台“域名与消息推送配置 → 消息推送”。以后更换服务号或重置 Token，可直接在这里维护，不再依赖服务器临时改配置。</CardDescription>
+              </div>
+              <Badge variant="outline" className={officialMessagePushConfiguration.data?.configured ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{officialMessagePushConfiguration.data?.configured ? "可保存微信后台" : "待配置"}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-xl border border-[#d7e8e3] bg-white p-3 text-sm text-slate-700">
+              <div className="grid gap-3">
+                <div>
+                  <p className="text-xs font-semibold text-slate-500">微信后台 URL</p>
+                  <p className="mt-1 break-all font-mono text-xs text-[#1f5e55]">{officialMessagePushConfiguration.data?.callbackUrl || "请先发布公众号业务跳转地址"}</p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <p><span className="text-slate-400">Token：</span>{officialMessagePushConfiguration.data?.tokenConfigured ? officialMessagePushConfiguration.data.tokenPreview || "已加密托管" : "未配置"}</p>
+                  <p><span className="text-slate-400">EncodingAESKey：</span>{officialMessagePushConfiguration.data?.encodingAesKeyConfigured ? officialMessagePushConfiguration.data.encodingAesKeyPreview || "已加密托管" : "明文模式可留空"}</p>
+                  <p><span className="text-slate-400">加解密方式：</span>{officialMessagePushConfiguration.data?.mode || "明文模式"}</p>
+                  <p><span className="text-slate-400">数据格式：</span>{officialMessagePushConfiguration.data?.dataFormat || "XML"}</p>
+                </div>
+                <p className="rounded-lg bg-[#eef7f4] px-3 py-2 text-xs leading-5 text-[#28584f]">微信后台保存时，URL 填上方地址，Token 和 EncodingAESKey 填本系统保存的同一组值，消息加解密方式选择“明文模式”，数据格式选择“XML”。明文模式下 EncodingAESKey 不参与验签，但保留配置入口便于微信页面强制填写或后续切换加密模式。</p>
+                <p className="text-xs text-slate-500">当前状态：{officialMessagePushConfiguration.data?.statusText || "正在读取配置状态…"}</p>
+              </div>
+            </div>
+            <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountMessagePushValidation(null); saveOfficialAccountMessagePushConfiguration.mutate(officialAccountMessagePushForm); }}>
+              <Field label="消息推送 Token">
+                <Input type="password" value={officialAccountMessagePushForm.eventToken} placeholder={officialMessagePushConfiguration.data?.tokenConfigured ? "已安全托管；留空保持不变" : "填写 3–32 位英文或数字"} autoComplete="new-password" maxLength={32} onChange={event => setOfficialAccountMessagePushForm(current => ({ ...current, eventToken: event.target.value }))} />
+              </Field>
+              <Field label="EncodingAESKey">
+                <Input type="password" value={officialAccountMessagePushForm.encodingAesKey} placeholder={officialMessagePushConfiguration.data?.encodingAesKeyConfigured ? "已安全托管；留空保持不变" : "明文模式可留空；微信页面要求时填 43 位英文数字"} autoComplete="new-password" maxLength={43} onChange={event => setOfficialAccountMessagePushForm(current => ({ ...current, encodingAesKey: event.target.value }))} />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit" className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveOfficialAccountMessagePushConfiguration.isPending || (!officialAccountMessagePushForm.eventToken.trim() && !officialMessagePushConfiguration.data?.tokenConfigured)}>{saveOfficialAccountMessagePushConfiguration.isPending ? "正在保存…" : "保存三项参数"}</Button>
+                <Button type="button" variant="outline" disabled={!officialMessagePushConfiguration.data?.configured || testOfficialAccountMessagePushConfiguration.isPending} onClick={() => testOfficialAccountMessagePushConfiguration.mutate()}>{testOfficialAccountMessagePushConfiguration.isPending ? "正在校验…" : "校验回调 200"}</Button>
+              </div>
+              {officialAccountMessagePushValidation ? <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${officialAccountMessagePushValidation.success ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{officialAccountMessagePushValidation.success ? "校验通过：" : "需要处理："}{officialAccountMessagePushValidation.message}</div> : null}
             </form>
           </CardContent>
         </Card>
@@ -2469,17 +2664,7 @@ export default function AdminPage() {
     </div>
   );
 
-  const renderAudit = () => (
-    <div className="space-y-6">
-      <div><p className="text-sm font-medium text-[#203c48]">治理留痕</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">配置发布与审计日志</h1><p className="mt-2 text-sm text-slate-500">所有组织、角色、授权和系统设置的关键操作都会写入服务端审计记录。</p></div>
-      <Card>
-        <CardHeader><CardTitle className="text-base">最近操作</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {audits.data?.length ? audits.data.map(item => <div key={item.id} className="grid gap-1 rounded-xl border border-slate-100 p-3 md:grid-cols-[1fr_auto]"><div><p className="text-sm font-medium text-slate-700">{item.summary}</p><p className="mt-1 text-xs text-slate-400">{item.module} · {item.action} · 操作人 #{item.userId ?? "系统"}</p></div><p className="text-xs text-slate-400">{displayDate(item.createdAt)}</p></div>) : <EmptyState text="尚无审计记录；首次保存组织、角色或配置后将自动生成。" />}
-        </CardContent>
-      </Card>
-    </div>
-  );
+  const renderAudit = () => <AdminAuditWorkspace audits={audits.data ?? []} integrity={auditIntegrity.data} isIntegrityLoading={auditIntegrity.isLoading} isRefreshing={auditIntegrity.isFetching || sensitiveAccesses.isFetching} sensitiveAccesses={sensitiveAccesses.data ?? []} onRefresh={() => { void auditIntegrity.refetch(); void sensitiveAccesses.refetch(); }} />;
 
   /** 微信登录台账只展示可读状态和业务范围；OpenID、令牌及设备原始指纹始终不进入浏览器。 */
   const renderWechatLogin = () => {
@@ -2611,7 +2796,7 @@ export default function AdminPage() {
     const activeOrders = orders.filter(item => !["closed", "void"].includes(item.status));
     const totalInventoryValue = inventoryBalances.reduce((sum, item) => sum + Number(item.totalAmount), 0);
     const pendingSettlementAmount = Object.values(settlementTotals).reduce((sum, item) => sum + Number(item.remainingAmount), 0);
-    const statusLabel = (status: string) => ({ draft: "草稿", submitted: "待审批", approved: "已批准", ordered: "已下单", received: "已收货", stocked: "已入库", closed: "已关闭", rejected: "已退回", confirmed: "已确认", void: "已作废" }[status] ?? status);
+    const statusLabel = (status: string) => ({ draft: "草稿", pending_approval: "待审核", submitted: "待审核", approved: "已通过", ordered: "已通过", confirmed: "已通过", received: "已收货", stocked: "已收货", closed: "已结算", cancelled: "已作废", void: "已作废", rejected: "已退回" }[status] ?? status);
     const transactionLabel = (type: string) => type === "inbound" ? "入库" : type === "outbound" ? "领用出库" : "退库";
     const openInventoryDialog = (transactionType: InventoryTransactionForm["transactionType"]) => {
       setInventoryTransactionForm({ ...EMPTY_INVENTORY_TRANSACTION_FORM, projectId: String(workspaceProjectId), transactionType, occurredAt: toLocalDateTimeInput(new Date()) });
@@ -2623,8 +2808,7 @@ export default function AdminPage() {
       {renderWorkspaceProjectFilter("采购仓储项目范围", "选择项目后读取该项目采购申请、采购订单、实际结算与库存收发流水；未选择项目不会显示或办理库存数据。")}
       {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取采购申请、订单、仓储余额和出入库台账。" /> : purchasingRequests.isLoading || purchasingOrders.isLoading || purchasingInventory.isLoading || purchasingSettlements.isLoading ? <EmptyState text="正在读取采购与仓储台账…" /> : purchasingRequests.isError || purchasingOrders.isError || purchasingInventory.isError || purchasingSettlements.isError ? <EmptyState text="暂无法读取采购与仓储数据，请确认当前账号的采购模块、岗位与项目范围授权。" /> : <>
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="待审批申请" value={submittedRequests.length} description={`采购申请共 ${requests.length} 单`} icon={ScrollText} /><MetricCard title="在途采购订单" value={activeOrders.length} description={`订单总金额 ¥${displayMoney(activeOrders.reduce((sum, item) => sum + Number(item.amount), 0))}`} icon={ShoppingCart} /><MetricCard title="库存物料品种" value={inventoryBalances.filter(item => Number(item.balanceQuantity) > 0).length} description="按物料名称与单位汇总" icon={DatabaseBackup} /><MetricCard title="库存账面金额" value={`¥${displayMoney(totalInventoryValue)}`} description={`待结算 ¥${displayMoney(pendingSettlementAmount)}`} icon={BarChart3} /></section>
-        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">采购申请与订单闭环</CardTitle><CardDescription>采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和普通单据影像归档规则；本页用于项目级全流程复核。</CardDescription></div><Button size="sm" variant="outline" onClick={() => Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingSettlements.refetch()])}>刷新采购台账</Button></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[980px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购申请</TableHead><TableHead>金额</TableHead><TableHead>说明</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead></TableRow></TableHeader><TableBody>{requests.length ? requests.map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.requestNo}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell className="max-w-[440px] truncate">{item.description}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{displayDate(item.updatedAt)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无采购申请记录。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1080px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购订单</TableHead><TableHead>模式 / 物资</TableHead><TableHead>订单金额</TableHead><TableHead>已结算 / 待结算</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{orders.length ? orders.map(item => { const settlement = settlementTotals[String(item.id)] ?? { settledAmount: 0, remainingAmount: Number(item.amount) }; return <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.orderNo}</TableCell><TableCell><p>{item.procurementMode === "small_direct" ? "小额直接采购" : "申请转订单"}</p><p className="mt-1 max-w-[260px] truncate text-slate-500">{item.itemDescription || "采购申请关联订单"}</p></TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell><p>¥{displayMoney(settlement.settledAmount)}</p><p className="mt-1 text-slate-500">待 ¥{displayMoney(settlement.remainingAmount)}</p></TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `采购订单详情 · ${item.orderNo}`, description: "采购金额、结算余额和状态均来自服务端受控业务记录。", fields: [{ label: "采购模式", value: item.procurementMode === "small_direct" ? "小额直接采购" : "采购申请转订单" }, { label: "物资说明", value: item.itemDescription || "—" }, { label: "订单金额", value: `¥ ${displayMoney(item.amount)}` }, { label: "已结算", value: `¥ ${displayMoney(settlement.settledAmount)}` }, { label: "待结算", value: `¥ ${displayMoney(settlement.remainingAmount)}` }, { label: "当前状态", value: statusLabel(item.status) }] })}>详情</Button></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={6} className="h-20 text-center text-slate-500">当前项目暂无采购订单记录。</TableCell></TableRow>}</TableBody></Table></div><div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbfa] p-3"><div className="mb-3 flex flex-wrap items-start justify-between gap-2"><div><p className="text-sm font-semibold text-[#203c48]">订单单据与发票影像</p><p className="mt-1 text-xs leading-5 text-slate-500">仅显示当前项目订单的受控附件。图片可直接预览并新窗口放大；PDF 仅提供受控打开入口。</p></div><Badge variant="outline">{orders.filter(item => item.documentAttachment || item.invoiceAttachment).length} 单已归档附件</Badge></div>{orders.length ? <div className="grid gap-3 lg:grid-cols-2">{orders.map(item => <div key={`attachment-${item.id}`} className="rounded-lg border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-medium text-[#203c48]">{item.orderNo}</p><p className="mt-1 text-xs text-slate-500">{item.itemDescription || "采购申请关联订单"} · 数量 {item.quantity === null ? "—" : displayMoney(item.quantity)} · 单价 ¥{item.unitPrice === null ? "—" : displayMoney(item.unitPrice)} · 金额 ¥{displayMoney(item.amount)}</p></div>{item.hasInvoice ? <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700" variant="outline">有发票</Badge> : <Badge variant="outline">无发票</Badge>}</div><div className="mt-3 grid gap-3 sm:grid-cols-2"><div><p className="mb-1 text-xs font-medium text-slate-700">采购单据</p>{item.documentAttachment ? <><a className="text-xs font-medium text-[#2b6660] underline" href={item.documentAttachment.url} target="_blank" rel="noreferrer">打开：{item.documentAttachment.fileName}</a>{item.documentAttachment.mimeType.startsWith("image/") ? <a href={item.documentAttachment.url} target="_blank" rel="noreferrer"><img className="mt-2 h-32 w-full rounded-md border border-slate-200 object-cover" src={item.documentAttachment.url} alt={`采购单据 ${item.orderNo}`} /></a> : <p className="mt-2 text-xs text-slate-500">PDF 单据将在新窗口打开。</p>}</> : <p className="text-xs text-slate-500">未关联单据照片</p>}</div><div><p className="mb-1 text-xs font-medium text-slate-700">发票附件</p>{item.hasInvoice && item.invoiceAttachment ? <><a className="text-xs font-medium text-[#2b6660] underline" href={item.invoiceAttachment.url} target="_blank" rel="noreferrer">打开：{item.invoiceAttachment.fileName}</a>{item.invoiceAttachment.mimeType.startsWith("image/") ? <a href={item.invoiceAttachment.url} target="_blank" rel="noreferrer"><img className="mt-2 h-32 w-full rounded-md border border-slate-200 object-cover" src={item.invoiceAttachment.url} alt={`发票附件 ${item.orderNo}`} /></a> : <p className="mt-2 text-xs text-slate-500">电子发票 PDF 将在新窗口打开。</p>}</> : <p className="text-xs text-slate-500">{item.hasInvoice ? "已登记有发票，但未找到归档附件" : "本单未登记发票"}</p>}</div></div></div>)}</div> : <p className="text-sm text-slate-500">当前项目暂无采购订单。</p>}</div></CardContent></Card>
-        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">仓储余额与收发流水</CardTitle><CardDescription>入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openInventoryDialog("return")}>登记退库</Button><Button size="sm" variant="outline" onClick={() => purchasingInventory.refetch()}>刷新库存</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[820px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>物料</TableHead><TableHead>单位</TableHead><TableHead>库存余额</TableHead><TableHead>库存账面金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{inventoryBalances.length ? inventoryBalances.map(item => <TableRow key={`${item.itemName}-${item.unit}`}><TableCell className="font-medium text-[#203c48]">{item.itemName}</TableCell><TableCell>{item.unit}</TableCell><TableCell className={Number(item.balanceQuantity) < 0 ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>{displayMoney(item.balanceQuantity)}</TableCell><TableCell>¥{displayMoney(item.totalAmount)}</TableCell><TableCell>{Number(item.balanceQuantity) < 0 ? <Badge variant="outline" className="border-rose-200 text-rose-700">账面负库存待核查</Badge> : Number(item.balanceQuantity) === 0 ? <Badge variant="outline">无库存</Badge> : <Badge variant="outline" className="border-emerald-200 text-emerald-700">可用</Badge>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无库存流水；请从入库、领用出库或退库开始登记。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[920px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>流水单号</TableHead><TableHead>类型</TableHead><TableHead>物料</TableHead><TableHead>数量 / 单位</TableHead><TableHead>金额</TableHead><TableHead>发生时间</TableHead><TableHead>备注</TableHead></TableRow></TableHeader><TableBody>{inventoryTransactions.length ? inventoryTransactions.slice(0, 30).map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.transactionNo}</TableCell><TableCell>{transactionLabel(item.transactionType)}</TableCell><TableCell>{item.itemName}</TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell>{displayDate(item.occurredAt)}</TableCell><TableCell className="max-w-[260px] truncate">{item.remarks || "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">暂无库存收发流水。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">采购申请与订单闭环</CardTitle><CardDescription>采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和普通单据影像归档规则；本页用于项目级全流程复核。</CardDescription></div><Button size="sm" variant="outline" onClick={() => Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingSettlements.refetch()])}>刷新采购台账</Button></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[980px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购申请</TableHead><TableHead>金额</TableHead><TableHead>说明</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead></TableRow></TableHeader><TableBody>{requests.length ? requests.map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.requestNo}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell className="max-w-[440px] truncate">{item.description}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{displayDate(item.updatedAt)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无采购申请记录。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1080px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购订单</TableHead><TableHead>模式 / 物资</TableHead><TableHead>订单金额</TableHead><TableHead>已结算 / 待结算</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{orders.length ? orders.map(item => { const settlement = settlementTotals[String(item.id)] ?? { settledAmount: 0, remainingAmount: Number(item.amount) }; return <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.orderNo}</TableCell><TableCell><p>{item.procurementMode === "small_direct" ? "小额直接采购" : "申请转订单"}</p><p className="mt-1 max-w-[260px] truncate text-slate-500">{item.itemDescription || "采购申请关联订单"}</p></TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell><p>¥{displayMoney(settlement.settledAmount)}</p><p className="mt-1 text-slate-500">待 ¥{displayMoney(settlement.remainingAmount)}</p></TableCell><TableCell><Badge variant="outline" className={item.status === "received" || item.status === "closed" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : item.status === "void" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700"}>{statusLabel(item.status)}</Badge></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `采购订单详情 · ${item.orderNo}`, description: "采购金额、结算余额和状态均来自服务端受控业务记录。", fields: [{ label: "采购模式", value: item.procurementMode === "small_direct" ? "小额直接采购" : "采购申请转订单" }, { label: "物资说明", value: item.itemDescription || "—" }, { label: "数量", value: item.quantity === null ? "—" : displayMoney(item.quantity) }, { label: "单价", value: item.unitPrice === null ? "—" : `¥ ${displayMoney(item.unitPrice)}` }, { label: "下单时间", value: displayDate(item.orderedAt) }, { label: "订单金额", value: `¥ ${displayMoney(item.amount)}` }, { label: "已结算", value: `¥ ${displayMoney(settlement.settledAmount)}` }, { label: "待结算", value: `¥ ${displayMoney(settlement.remainingAmount)}` }, { label: "当前状态", value: statusLabel(item.status) }, { label: "采购单据", value: item.documentAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.documentAttachment.url} target="_blank" rel="noreferrer">查看/下载文件：{item.documentAttachment.fileName}</a> : "未关联采购单据" }, { label: "发票附件", value: item.hasInvoice ? (item.invoiceAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.invoiceAttachment.url} target="_blank" rel="noreferrer">查看/下载文件：{item.invoiceAttachment.fileName}</a> : "已登记发票，但未找到归档附件") : "本单未登记发票" }] })}>详情</Button></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={6} className="h-20 text-center text-slate-500">当前项目暂无采购订单记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card><Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">仓储余额与收发流水</CardTitle><CardDescription>入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openInventoryDialog("return")}>登记退库</Button><Button size="sm" variant="outline" onClick={() => purchasingInventory.refetch()}>刷新库存</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[820px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>物料</TableHead><TableHead>单位</TableHead><TableHead>库存余额</TableHead><TableHead>库存账面金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{inventoryBalances.length ? inventoryBalances.map(item => <TableRow key={`${item.itemName}-${item.unit}`}><TableCell className="font-medium text-[#203c48]">{item.itemName}</TableCell><TableCell>{item.unit}</TableCell><TableCell className={Number(item.balanceQuantity) < 0 ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>{displayMoney(item.balanceQuantity)}</TableCell><TableCell>¥{displayMoney(item.totalAmount)}</TableCell><TableCell>{Number(item.balanceQuantity) < 0 ? <Badge variant="outline" className="border-rose-200 text-rose-700">账面负库存待核查</Badge> : Number(item.balanceQuantity) === 0 ? <Badge variant="outline">无库存</Badge> : <Badge variant="outline" className="border-emerald-200 text-emerald-700">可用</Badge>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无库存流水；请从入库、领用出库或退库开始登记。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[920px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>流水单号</TableHead><TableHead>类型</TableHead><TableHead>物料</TableHead><TableHead>数量 / 单位</TableHead><TableHead>金额</TableHead><TableHead>发生时间</TableHead><TableHead>备注</TableHead></TableRow></TableHeader><TableBody>{inventoryTransactions.length ? inventoryTransactions.slice(0, 30).map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.transactionNo}</TableCell><TableCell>{transactionLabel(item.transactionType)}</TableCell><TableCell>{item.itemName}</TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell>{displayDate(item.occurredAt)}</TableCell><TableCell className="max-w-[260px] truncate">{item.remarks || "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">暂无库存收发流水。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
       </>}
       <Dialog open={inventoryTransactionDialogOpen} onOpenChange={open => { setInventoryTransactionDialogOpen(open); if (!open) setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM); }}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>登记库存{transactionLabel(inventoryTransactionForm.transactionType)}</DialogTitle><DialogDescription>库存金额由数量 × 单价在服务器重新计算并写入不可变流水。请以实际物料、数量和发生时间为准，禁止用负数冲销。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveInventoryTransaction.mutate({ projectId: Number(inventoryTransactionForm.projectId), transactionType: inventoryTransactionForm.transactionType, itemName: inventoryTransactionForm.itemName.trim(), unit: inventoryTransactionForm.unit.trim(), quantity: Number(inventoryTransactionForm.quantity), unitCost: Number(inventoryTransactionForm.unitCost), occurredAt: new Date(inventoryTransactionForm.occurredAt).toISOString(), remarks: inventoryTransactionForm.remarks.trim() || null }); }}><div className="grid gap-4 sm:grid-cols-2"><Field label="项目"><Input value={selectedWorkspaceProject?.name ?? ""} disabled /></Field><Field label="收发类型"><Select value={inventoryTransactionForm.transactionType} onValueChange={value => setInventoryTransactionForm(current => ({ ...current, transactionType: value as InventoryTransactionForm["transactionType"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="inbound">入库</SelectItem><SelectItem value="outbound">领用出库</SelectItem><SelectItem value="return">退库</SelectItem></SelectContent></Select></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="物料名称"><Input value={inventoryTransactionForm.itemName} maxLength={200} placeholder="例如：水泥 P.O 42.5" onChange={event => setInventoryTransactionForm(current => ({ ...current, itemName: event.target.value }))} /></Field><Field label="计量单位"><Input value={inventoryTransactionForm.unit} maxLength={32} placeholder="例如：袋、吨、件" onChange={event => setInventoryTransactionForm(current => ({ ...current, unit: event.target.value }))} /></Field></div><div className="grid gap-4 sm:grid-cols-3"><Field label="数量"><Input type="number" min="0.001" step="0.001" value={inventoryTransactionForm.quantity} onChange={event => setInventoryTransactionForm(current => ({ ...current, quantity: event.target.value }))} /></Field><Field label="单价（元）"><Input type="number" min="0" step="0.01" value={inventoryTransactionForm.unitCost} onChange={event => setInventoryTransactionForm(current => ({ ...current, unitCost: event.target.value }))} /></Field><Field label="发生时间"><Input type="datetime-local" value={inventoryTransactionForm.occurredAt} onChange={event => setInventoryTransactionForm(current => ({ ...current, occurredAt: event.target.value }))} /></Field></div><Field label="备注"><Textarea value={inventoryTransactionForm.remarks} maxLength={500} placeholder="可填写领用班组、存放位置、单据号或退库原因" onChange={event => setInventoryTransactionForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setInventoryTransactionDialogOpen(false)}>取消</Button><Button type="submit" disabled={!inventoryTransactionForm.projectId || !inventoryTransactionForm.itemName.trim() || !inventoryTransactionForm.unit.trim() || !Number.isFinite(Number(inventoryTransactionForm.quantity)) || Number(inventoryTransactionForm.quantity) <= 0 || !Number.isFinite(Number(inventoryTransactionForm.unitCost)) || Number(inventoryTransactionForm.unitCost) < 0 || !inventoryTransactionForm.occurredAt || saveInventoryTransaction.isPending}>{saveInventoryTransaction.isPending ? "正在登记…" : `确认${transactionLabel(inventoryTransactionForm.transactionType)}`}</Button></DialogFooter></form></DialogContent></Dialog>
     </div>;
@@ -2683,55 +2867,59 @@ export default function AdminPage() {
     );
   };
 
-  const renderLabor = () => {
+  const renderLaborContent = ({ filters, queries }: LaborWorkspaceRenderState) => {
+    const { laborPeriod, setLaborPeriod, laborAttendanceDate, setLaborAttendanceDate, laborPayrollSearch, setLaborPayrollSearch, laborPayrollTeam, setLaborPayrollTeam, laborPayrollStatus, setLaborPayrollStatus, laborAttendanceFilter, setLaborAttendanceFilter } = filters;
+    const { laborWorkers, laborAttendance, laborCheckIns, payrollStatements, laborDailyWages, payrollWorkbookExport, payrollPaymentListExport } = queries;
     const workers = laborWorkers.data ?? [];
     const attendance = laborAttendance.data ?? [];
     const workerById = new Map(workers.map(worker => [worker.id, worker]));
-    const attendanceTeams = Array.from(new Set(attendance.map(item => item.teamName || "未设置班组"))).sort();
-    const visibleAttendance = attendance.filter(item => {
-      const worker = workerById.get(item.workerId);
-      const keyword = laborAttendanceFilter.workerName.trim().toLowerCase();
-      return (!keyword || [item.workerName, item.teamName, worker?.realName].some(value => String(value ?? "").toLowerCase().includes(keyword))) && (laborAttendanceFilter.team === "all" || (item.teamName || "未设置班组") === laborAttendanceFilter.team) && (laborAttendanceFilter.category === "all" || worker?.workerCategory === laborAttendanceFilter.category) && (laborAttendanceFilter.status === "all" || item.status === laborAttendanceFilter.status);
-    });
+    const attendanceTeams = getAttendanceTeams(attendance);
+    const visibleAttendance = filterAttendanceRows(attendance, workerById, laborAttendanceFilter);
     const payrolls = payrollStatements.data ?? [];
     const dailyWages = laborDailyWages.data ?? [];
     const checkIns = laborCheckIns.data ?? [];
-    const visiblePayrolls = payrolls.filter(item => {
-      const keyword = laborPayrollSearch.trim().toLowerCase();
-      return (!keyword || [item.workerName, item.teamName, item.period, item.status].some(value => String(value ?? "").toLowerCase().includes(keyword))) && (laborPayrollTeam === "all" || (item.teamName || "未设置班组") === laborPayrollTeam) && (laborPayrollStatus === "all" || item.status === laborPayrollStatus);
-    });
-    const payrollSummary = visiblePayrolls.reduce((summary, item) => ({ payable: summary.payable + Number(item.payableAmount || 0), deduction: summary.deduction + Number(item.deductionAmount || 0), actual: summary.actual + Number(item.actualAmount || 0), approved: summary.approved + (item.status === "approved" ? Number(item.actualAmount || 0) : 0), paid: summary.paid + (item.status === "paid" ? Number(item.actualAmount || 0) : 0), pending: summary.pending + (["draft", "reviewing"].includes(item.status) ? Number(item.actualAmount || 0) : 0) }), { payable: 0, deduction: 0, actual: 0, approved: 0, paid: 0, pending: 0 });
-    const summarizeAmounts = (records: Array<{ payableAmount: string | number; deductionAmount: string | number; actualAmount: string | number; status: string }>) => records.reduce((summary, item) => ({ payable: summary.payable + Number(item.payableAmount || 0), deduction: summary.deduction + Number(item.deductionAmount || 0), actual: summary.actual + Number(item.actualAmount || 0), approved: summary.approved + (item.status === "approved" ? Number(item.actualAmount || 0) : 0), paid: summary.paid + (item.status === "paid" ? Number(item.actualAmount || 0) : 0) }), { payable: 0, deduction: 0, actual: 0, approved: 0, paid: 0 });
-    const companyPayrollSummary = summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "company_admin"));
-    const laborTeamPayrollSummary = summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team"));
-    const temporaryDailySummary = summarizeAmounts(dailyWages);
-    const laborTeamAuditRows = Array.from(new Set(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team").map(item => item.teamName || "未设置班组"))).sort().map(teamName => ({ teamName, summary: summarizeAmounts(visiblePayrolls.filter(item => workerById.get(item.workerId)?.workerCategory === "labor_team" && (item.teamName || "未设置班组") === teamName)) }));
-    const payrollTeams = Array.from(new Set(payrolls.map(item => item.teamName || "未设置班组"))).sort();
+    const visiblePayrolls = filterPayrollRows(payrolls, { search: laborPayrollSearch, team: laborPayrollTeam, status: laborPayrollStatus });
+    const payrollSummary = summarizePayrollAmounts(visiblePayrolls);
+    const payrollCategories = summarizeLaborPayrollCategories(payrolls, new Map(workers.map(worker => [worker.id, worker.workerCategory])));
+    const companyPayrollSummary = payrollCategories.company;
+    const laborTeamPayrollSummary = payrollCategories.laborTeam;
+    const temporaryDailySummary = summarizePayrollAmounts(dailyWages);
+    const laborTeamAuditRows = payrollCategories.laborTeamRows;
+    const payrollTeams = getPayrollTeams(payrolls);
     const dailyWageSummary = dailyWages.reduce((summary, item) => ({ actual: summary.actual + Number(item.actualAmount || 0), reviewing: summary.reviewing + (item.status === "reviewing" ? 1 : 0), approved: summary.approved + (item.status === "approved" ? 1 : 0), paid: summary.paid + (item.status === "paid" ? 1 : 0) }), { actual: 0, reviewing: 0, approved: 0, paid: 0 });
+    const laborWorkspaceQueryEnabled = canQuery && isLabor && hasBusinessWorkspaceProject;
+    const laborWorkspaceLoading = laborWorkspaceQueryEnabled && (laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading || laborDailyWages.isLoading);
+    const laborWorkspaceHasError = laborWorkspaceQueryEnabled && (laborWorkers.isError || laborAttendance.isError || laborCheckIns.isError || payrollStatements.isError || laborDailyWages.isError);
+    const laborWorkspaceRefreshing = laborWorkers.isFetching || laborAttendance.isFetching || laborCheckIns.isFetching || payrollStatements.isFetching || laborDailyWages.isFetching;
+    const retryLaborWorkspace = () => Promise.all([laborWorkers.refetch(), laborAttendance.refetch(), laborCheckIns.refetch(), payrollStatements.refetch(), laborDailyWages.refetch()]);
     return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">劳务工资 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">实名制、考勤与工资条</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">人员证件、手机号和银行卡均由服务端脱敏后返回；工资发放只保存付款凭证引用，不会在系统内发起转账。档案和工资条详情均在当前 PC 台账中查看。</p></div></div>
-        {renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")}
-        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实劳务工资台账。" /> : laborWorkers.isLoading || laborAttendance.isLoading || laborCheckIns.isLoading || payrollStatements.isLoading ? <EmptyState text="正在读取实名制、上下班考勤和工资条数据…" /> : laborWorkers.isError || laborAttendance.isError || laborCheckIns.isError || payrollStatements.isError ? <EmptyState text="暂无法读取劳务工资数据，请确认当前账号的服务端授权后重试。" /> : (
+      <LaborWorkspaceShell projectFilter={renderWorkspaceProjectFilter("劳务项目范围", "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。")} hasProject={hasBusinessWorkspaceProject} queryEnabled={laborWorkspaceQueryEnabled} loading={laborWorkspaceLoading} hasError={laborWorkspaceHasError} refreshing={laborWorkspaceRefreshing} onRetry={() => void retryLaborWorkspace()}>
+        {!laborWorkspaceLoading && !laborWorkspaceHasError && laborWorkspaceQueryEnabled && hasBusinessWorkspaceProject ? (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="实名制人员" value={workers.length} description="已按敏感字段脱敏" icon={UsersRound} /><MetricCard title="在场人员" value={workers.filter(item => item.attendanceStatus === "active").length} description="可计入当前项目考勤" icon={ShieldCheck} /><MetricCard title="今日已上班" value={checkIns.length} description={`${checkIns.filter(item => item.checkedOutAt).length} 人已完成下班打卡`} icon={ScrollText} /><MetricCard title="待会计处理" value={payrolls.filter(item => item.status === "reviewing").length} description="审核中工资条" icon={BarChart3} /></section>
-            <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">全员上下班考勤台账</CardTitle><CardDescription>管理员、操作员等登录人员的上班/下班打卡统一在此核验；施工队工人无账号时继续由劳资人员在下方考勤工时台账录入。</CardDescription></div><div className="flex flex-wrap gap-2"><Input aria-label="考勤日期" className="w-[160px]" type="date" value={laborAttendanceDate} onChange={event => setLaborAttendanceDate(event.target.value)} /><Button size="sm" variant="outline" disabled={!checkIns.length} onClick={() => downloadCsvFile(`上下班考勤-${laborAttendanceDate || toLocalDateInput()}.csv`, ["人员", "日期", "上班时间", "下班时间", "上班打卡位置", "下班打卡位置", "定位复核", "设备"], checkIns.map(item => [item.userName || `用户 #${item.userId}`, displayDate(item.businessDate), displayDate(item.checkedInAt), item.checkedOutAt ? displayDate(item.checkedOutAt) : "未打卡", formatAttendanceLocation(item.longitude, item.latitude, item.locationAccuracyMeters), item.checkedOutAt ? formatAttendanceLocation(item.checkoutLongitude, item.checkoutLatitude, item.checkoutLocationAccuracyMeters) : "未打卡", `${item.status === "normal" ? "上班定位正常" : "上班缺少定位"}${item.checkoutStatus ? ` · ${item.checkoutStatus === "normal" ? "下班定位正常" : "下班缺少定位"}` : ""}`, item.deviceLabel || "未记录"]))}>导出 CSV</Button></div></CardHeader><CardContent><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>人员</TableHead><TableHead>考勤日期</TableHead><TableHead>上班打卡</TableHead><TableHead>下班打卡</TableHead><TableHead>上班位置</TableHead><TableHead>下班位置</TableHead><TableHead>定位复核</TableHead><TableHead>设备</TableHead></TableRow></TableHeader><TableBody>{checkIns.length ? checkIns.map(item => <TableRow key={item.id}><TableCell className="font-medium">{item.userName || `用户 #${item.userId}`}</TableCell><TableCell>{displayDate(item.businessDate)}</TableCell><TableCell>{displayDate(item.checkedInAt)}</TableCell><TableCell>{item.checkedOutAt ? displayDate(item.checkedOutAt) : <span className="text-amber-700">待下班打卡</span>}</TableCell><TableCell className="min-w-[168px] text-xs text-slate-600">{formatAttendanceLocation(item.longitude, item.latitude, item.locationAccuracyMeters)}</TableCell><TableCell className="min-w-[168px] text-xs text-slate-600">{item.checkedOutAt ? formatAttendanceLocation(item.checkoutLongitude, item.checkoutLatitude, item.checkoutLocationAccuracyMeters) : <span className="text-amber-700">待下班打卡</span>}</TableCell><TableCell><span className={item.status === "normal" && (!item.checkoutStatus || item.checkoutStatus === "normal") ? "text-emerald-700" : "text-amber-700"}>{item.status === "normal" ? "上班定位正常" : "上班缺少定位"}{item.checkoutStatus ? ` · ${item.checkoutStatus === "normal" ? "下班定位正常" : "下班缺少定位"}` : ""}</span></TableCell><TableCell className="text-xs text-slate-500">{item.deviceLabel || "未记录"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-slate-500">所选日期暂无登录人员上下班打卡记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"><MetricCard title="当前筛选应发总额" value={`¥${displayMoney(payrollSummary.payable)}`} description={`扣款 ¥${displayMoney(payrollSummary.deduction)} · 实发 ¥${displayMoney(payrollSummary.actual)}`} icon={BarChart3} /><MetricCard title="待处理金额" value={`¥${displayMoney(payrollSummary.pending)}`} description="草稿及会计审核中" icon={ScrollText} /><MetricCard title="已结算金额" value={`¥${displayMoney(payrollSummary.paid)}`} description={`已审核待付款 ¥${displayMoney(payrollSummary.approved)}`} icon={ShieldCheck} /></section>
-            <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">人员分类与劳务队审计汇总</CardTitle><CardDescription>公司管理人员、劳务队人员和临时日结分口径汇总；金额均来自当前项目、工资期间和筛选范围内的真实服务端记录。</CardDescription></CardHeader><CardContent className="space-y-4"><section className="grid gap-3 md:grid-cols-3"><MetricCard title="公司管理人员" value={`¥${displayMoney(companyPayrollSummary.actual)}`} description={`应发 ¥${displayMoney(companyPayrollSummary.payable)} · 已付款 ¥${displayMoney(companyPayrollSummary.paid)}`} icon={UsersRound} /><MetricCard title="劳务队人员" value={`¥${displayMoney(laborTeamPayrollSummary.actual)}`} description={`应发 ¥${displayMoney(laborTeamPayrollSummary.payable)} · 已付款 ¥${displayMoney(laborTeamPayrollSummary.paid)}`} icon={ScrollText} /><MetricCard title="临时日结" value={`¥${displayMoney(temporaryDailySummary.actual)}`} description={`待付款 ¥${displayMoney(temporaryDailySummary.approved)} · 已付款 ¥${displayMoney(temporaryDailySummary.paid)}`} icon={BarChart3} /></section><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[720px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>劳务队</TableHead><TableHead>应发</TableHead><TableHead>扣款</TableHead><TableHead>实发</TableHead><TableHead>已审核待付款</TableHead><TableHead>已付款</TableHead></TableRow></TableHeader><TableBody>{laborTeamAuditRows.length ? laborTeamAuditRows.map(item => <TableRow key={item.teamName}><TableCell className="font-medium">{item.teamName}</TableCell><TableCell>¥{displayMoney(item.summary.payable)}</TableCell><TableCell>¥{displayMoney(item.summary.deduction)}</TableCell><TableCell className="font-semibold">¥{displayMoney(item.summary.actual)}</TableCell><TableCell>¥{displayMoney(item.summary.approved)}</TableCell><TableCell className="text-emerald-700">¥{displayMoney(item.summary.paid)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="h-16 text-center text-slate-500">当前工资筛选范围内暂无劳务队工资记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
-            <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">临时日结审核与付款台账</CardTitle><CardDescription>当天录入后按“草稿→审核中→已审核→已付款”办理；已审核未付款可退回草稿修改重审，付款后为最终结算状态。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => laborDailyWages.refetch()} disabled={laborDailyWages.isFetching}>刷新日结</Button><Button size="sm" variant="outline" disabled={payrollWorkbookExport.isFetching} onClick={async () => { const response = await payrollWorkbookExport.refetch(); const data = response.data; if (!data) return toast.error("工资分类报表数据读取失败"); const standardHeaders = ["人员", "班组", "期间/日期", "应发", "扣款", "实发", "开户行", "脱敏银行卡", "状态", "实际付款日期"]; const toPayrollRows = (rows: typeof data.payrollRows) => rows.map(row => [row.workerName, row.teamName || "", row.period, row.payableAmount, row.deductionAmount, row.actualAmount, row.bankName || "", row.bankAccountMasked || "", row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const toDailyRows = (rows: typeof data.dailyRows) => rows.map(row => [row.workerName, row.teamName || "", toBusinessDateInput(row.settlementDate), row.payableAmount, row.deductionAmount, row.actualAmount, row.bankName || "", row.bankAccountMasked || "", row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const laborTeamNames = Array.from(new Set(data.payrollRows.filter(row => row.workerCategory === "labor_team").map(row => row.teamName || "未设置班组"))); downloadXlsxWorkbook(`工资分类报表-${laborPeriod || "全部期间"}.xlsx`, [{ name: "公司管理人员", headers: standardHeaders, rows: toPayrollRows(data.payrollRows.filter(row => row.workerCategory === "company_admin")) }, { name: "临时日结", headers: standardHeaders, rows: toDailyRows(data.dailyRows) }, ...laborTeamNames.map(teamName => ({ name: `劳务队-${teamName}`, headers: standardHeaders, rows: toPayrollRows(data.payrollRows.filter(row => row.workerCategory === "labor_team" && (row.teamName || "未设置班组") === teamName)) }))]); toast.success("分类工资 Excel 已生成，普通报表仅含脱敏银行卡"); }}>导出分类 Excel</Button><Button size="sm" className="bg-[#203c48] hover:bg-[#17313b]" disabled={payrollPaymentListExport.isFetching} onClick={async () => { const response = await payrollPaymentListExport.refetch(); const data = response.data; if (!data) return toast.error("付款专用清单无权限或数据读取失败"); const headers = ["来源", "人员", "人员类型", "班组", "期间/日结日期", "开户行", "完整银行卡号", "实发金额", "状态", "实际付款日期"]; const payrollRows = data.payrollRows.map(row => ["月度工资", row.workerName, row.workerCategory, row.teamName || "", toBusinessDateInput(row.settlementDate), row.bankName || "", row.bankAccount || "未登记", row.actualAmount, row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const dailyRows = data.dailyRows.map(row => ["临时日结", row.workerName, row.workerCategory, row.teamName || "", toBusinessDateInput(row.settlementDate), row.bankName || "", row.bankAccount || "未登记", row.actualAmount, row.status, row.paidAt ? displayDate(row.paidAt) : ""]); downloadXlsxWorkbook(`付款专用清单-${laborPeriod || "全部期间"}.xlsx`, [{ name: "付款专用清单", headers, rows: [...payrollRows, ...dailyRows] }]); toast.success("付款专用 Excel 已生成，生成行为已写入审计日志"); }}>生成付款专用 Excel</Button></div></CardHeader><CardContent><section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="日结实发总额" value={`¥${displayMoney(dailyWageSummary.actual)}`} description="当前项目全部日结记录" icon={BarChart3} /><MetricCard title="待审核" value={dailyWageSummary.reviewing} description="会计/财务待处理" icon={ScrollText} /><MetricCard title="待付款" value={dailyWageSummary.approved} description="审核通过，未登记付款" icon={ShieldCheck} /><MetricCard title="已付款" value={dailyWageSummary.paid} description="最终结算状态" icon={UsersRound} /></section><div className="mt-4 overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1100px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>人员 / 班组</TableHead><TableHead>日结日期</TableHead><TableHead>应发 / 扣款 / 实发</TableHead><TableHead>状态</TableHead><TableHead>审核 / 付款</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{dailyWages.length ? dailyWages.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.workerName}</p><p className="mt-1 text-slate-500">{item.teamName || "临时日结"}</p></TableCell><TableCell>{toBusinessDateInput(item.settlementDate)}</TableCell><TableCell>¥{displayMoney(item.payableAmount)} / ¥{displayMoney(item.deductionAmount)} / <span className="font-semibold">¥{displayMoney(item.actualAmount)}</span></TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{item.reviewedAt ? `审核：${displayDate(item.reviewedAt)}` : "待审核"}{item.paidAt ? <p className="mt-1 text-emerald-700">付款：{displayDate(item.paidAt)}</p> : null}</TableCell><TableCell className="text-right"><div className="flex justify-end gap-2">{item.status === "draft" ? <Button size="sm" variant="outline" onClick={() => submitDailyWage.mutate({ id: item.id })} disabled={submitDailyWage.isPending}>提交审核</Button> : null}{item.status === "reviewing" ? <><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "returned" })} disabled={reviewDailyWage.isPending}>退回草稿</Button><Button size="sm" onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "approved" })} disabled={reviewDailyWage.isPending}>审核通过</Button></> : null}{item.status === "approved" ? <Button size="sm" className="bg-[#3e746a] hover:bg-[#315f57]" onClick={() => { setDailyWagePaymentTarget({ id: item.id, workerName: item.workerName }); setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" }); }} disabled={payDailyWage.isPending}>登记付款</Button> : null}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="h-24 text-center text-slate-500">当前项目暂无临时日结记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
-            <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><CardTitle className="text-base">工资条详细台账</CardTitle><CardDescription>按工资月份、人员、班组或状态筛选；导出仅包含当前项目范围内的真实工资条。</CardDescription></div><div className="flex flex-wrap gap-2"><Input aria-label="工资期间" className="w-[150px]" type="month" value={laborPeriod} onChange={event => setLaborPeriod(event.target.value)} /><Input aria-label="检索工资人员" className="w-[180px]" value={laborPayrollSearch} onChange={event => setLaborPayrollSearch(event.target.value)} placeholder="人员、班组或状态" /><Select value={laborPayrollTeam} onValueChange={setLaborPayrollTeam}><SelectTrigger className="w-[150px]"><SelectValue placeholder="全部班组" /></SelectTrigger><SelectContent><SelectItem value="all">全部班组</SelectItem>{payrollTeams.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select><Select value={laborPayrollStatus} onValueChange={setLaborPayrollStatus}><SelectTrigger className="w-[140px]"><SelectValue placeholder="全部状态" /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="reviewing">审核中</SelectItem><SelectItem value="approved">已审核</SelectItem><SelectItem value="paid">已付款</SelectItem><SelectItem value="void">已作废</SelectItem></SelectContent></Select><Button size="sm" variant="outline" disabled={!visiblePayrolls.length} onClick={() => downloadCsvFile(`工资条-${laborPeriod || "全部期间"}.csv`, ["项目范围", "筛选期间", "人员", "班组", "工资期间", "应发金额", "扣款", "实发金额", "付款凭证", "状态"], visiblePayrolls.map(item => [workspaceProjectId ? `项目 #${workspaceProjectId}` : "当前项目", laborPeriod || "全部期间", item.workerName, item.teamName || "", item.period, item.payableAmount, item.deductionAmount, item.actualAmount, item.paymentReference || "", item.status]))}>按当前筛选导出 CSV</Button></div></CardHeader><CardContent><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>人员</TableHead><TableHead>工资期间</TableHead><TableHead>应发金额</TableHead><TableHead>扣款</TableHead><TableHead>实发金额</TableHead><TableHead>付款凭证</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{visiblePayrolls.length ? visiblePayrolls.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.workerName}</p><p className="text-xs text-slate-500">{item.teamName || "未设置班组"}</p></TableCell><TableCell>{item.period}</TableCell><TableCell>¥{displayMoney(item.payableAmount)}</TableCell><TableCell>¥{displayMoney(item.deductionAmount)}</TableCell><TableCell className="font-medium">¥{displayMoney(item.actualAmount)}</TableCell><TableCell>{item.paymentReference || "—"}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `工资条明细 · ${item.workerName}`, description: "工资金额由服务端计算，付款凭证与敏感账户字段仅向获授权岗位展示。", fields: [{ label: "工资期间", value: item.period }, { label: "状态", value: <BusinessStatusBadge status={item.status} /> }, { label: "应发金额", value: `¥ ${displayMoney(item.payableAmount)}` }, { label: "扣款金额", value: `¥ ${displayMoney(item.deductionAmount)}` }, { label: "实发金额", value: `¥ ${displayMoney(item.actualAmount)}` }, { label: "付款凭证", value: item.paymentReference || "尚未发放" }] })}>查看</Button></TableCell></TableRow>) : <TableRow><TableCell colSpan={8} className="h-24 text-center text-sm text-slate-500">当前筛选条件下暂无工资条记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
-            <Card className="border-[#d8e3e0]"><CardContent className="flex flex-wrap items-center justify-between gap-3 p-4"><div><p className="text-sm font-semibold text-[#203c48]">员工与工人信息录入</p><p className="mt-1 text-xs text-slate-500">新增公司管理人员、劳务队工人或临时日结人员档案；档案将同步用于工资、考勤与日结。</p></div><Button onClick={() => { setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM); setEmployeeProfileDialogOpen(true); setLocation("/admin/permissions"); }}>添加员工/工人</Button></CardContent></Card>
+            <LaborCheckInLedger checkIns={checkIns} businessDate={laborAttendanceDate} onBusinessDateChange={setLaborAttendanceDate} fallbackBusinessDate={toChinaBusinessDateInput()} displayDate={displayDate} formatAttendanceLocation={formatAttendanceLocation} onExportCsv={downloadCsvFile} />
+            <LaborPayrollHeadline summary={payrollSummary} formatMoney={displayMoney} />
+            <LaborTeamAuditSummary companyActual={companyPayrollSummary.actual} companyPayable={companyPayrollSummary.payable} companyPaid={companyPayrollSummary.paid} laborActual={laborTeamPayrollSummary.actual} laborPayable={laborTeamPayrollSummary.payable} laborPaid={laborTeamPayrollSummary.paid} temporaryActual={temporaryDailySummary.actual} temporaryApproved={temporaryDailySummary.approved} temporaryPaid={temporaryDailySummary.paid} rows={laborTeamAuditRows} formatMoney={displayMoney} />
+            <DailyWageLedger summary={dailyWageSummary} rows={dailyWages} refreshing={laborDailyWages.isFetching} workbookPending={payrollWorkbookExport.isFetching} paymentListPending={payrollPaymentListExport.isFetching} submitPending={submitDailyWage.isPending} reviewPending={reviewDailyWage.isPending} payPending={payDailyWage.isPending} formatMoney={displayMoney} displayDate={displayDate} toBusinessDateInput={toBusinessDateInput} onRefresh={() => laborDailyWages.refetch()} onExportWorkbook={async () => { const response = await payrollWorkbookExport.refetch(); const data = response.data; if (!data) return toast.error("工资分类报表数据读取失败"); const standardHeaders = ["人员", "班组", "期间/日期", "应发", "扣款", "实发", "开户行", "脱敏银行卡", "状态", "实际付款日期"]; const toPayrollRows = (rows: typeof data.payrollRows) => rows.map(row => [row.workerName, row.teamName || "", row.period, row.payableAmount, row.deductionAmount, row.actualAmount, row.bankName || "", row.bankAccountMasked || "", row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const toDailyRows = (rows: typeof data.dailyRows) => rows.map(row => [row.workerName, row.teamName || "", toBusinessDateInput(row.settlementDate), row.payableAmount, row.deductionAmount, row.actualAmount, row.bankName || "", row.bankAccountMasked || "", row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const laborTeamNames = Array.from(new Set(data.payrollRows.filter(row => row.workerCategory === "labor_team").map(row => row.teamName || "未设置班组"))); downloadXlsxWorkbook(`工资分类报表-${laborPeriod || "全部期间"}.xlsx`, [{ name: "公司管理人员", headers: standardHeaders, rows: toPayrollRows(data.payrollRows.filter(row => row.workerCategory === "company_admin")) }, { name: "临时日结", headers: standardHeaders, rows: toDailyRows(data.dailyRows) }, ...laborTeamNames.map(teamName => ({ name: `劳务队-${teamName}`, headers: standardHeaders, rows: toPayrollRows(data.payrollRows.filter(row => row.workerCategory === "labor_team" && (row.teamName || "未设置班组") === teamName)) }))]); toast.success("分类工资 Excel 已生成，普通报表仅含脱敏银行卡"); }} onExportPaymentList={async () => { const response = await payrollPaymentListExport.refetch(); const data = response.data; if (!data) return toast.error("付款专用清单无权限或数据读取失败"); const headers = ["来源", "人员", "人员类型", "班组", "期间/日结日期", "开户行", "完整银行卡号", "实发金额", "状态", "实际付款日期"]; const payrollRows = data.payrollRows.map(row => ["月度工资", row.workerName, row.workerCategory, row.teamName || "", toBusinessDateInput(row.settlementDate), row.bankName || "", row.bankAccount || "未登记", row.actualAmount, row.status, row.paidAt ? displayDate(row.paidAt) : ""]); const dailyRows = data.dailyRows.map(row => ["临时日结", row.workerName, row.workerCategory, row.teamName || "", toBusinessDateInput(row.settlementDate), row.bankName || "", row.bankAccount || "未登记", row.actualAmount, row.status, row.paidAt ? displayDate(row.paidAt) : ""]); downloadXlsxWorkbook(`付款专用清单-${laborPeriod || "全部期间"}.xlsx`, [{ name: "付款专用清单", headers, rows: [...payrollRows, ...dailyRows] }]); toast.success("付款专用 Excel 已生成，生成行为已写入审计日志"); }} onSubmit={id => submitDailyWage.mutate({ id })} onReturnDraft={id => reviewDailyWage.mutate({ id, decision: "returned" })} onApprove={id => reviewDailyWage.mutate({ id, decision: "approved" })} onRegisterPayment={item => { setDailyWagePaymentTarget({ id: item.id, workerName: item.workerName }); setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" }); }} />
+            <PayrollStatementLedger period={laborPeriod} onPeriodChange={setLaborPeriod} search={laborPayrollSearch} onSearchChange={setLaborPayrollSearch} team={laborPayrollTeam} onTeamChange={setLaborPayrollTeam} status={laborPayrollStatus} onStatusChange={setLaborPayrollStatus} teams={payrollTeams} rows={visiblePayrolls} formatMoney={displayMoney} onExport={() => downloadCsvFile(`工资条-${laborPeriod || "全部期间"}.csv`, ["项目范围", "筛选期间", "人员", "班组", "工资期间", "应发金额", "扣款", "实发金额", "付款凭证", "状态"], visiblePayrolls.map(item => [workspaceProjectId ? `项目 #${workspaceProjectId}` : "当前项目", laborPeriod || "全部期间", item.workerName, item.teamName || "", item.period, item.payableAmount, item.deductionAmount, item.actualAmount, item.paymentReference || "", item.status]))} onOpenDetail={item => setDesktopRecordDetail({ title: `工资条明细 · ${item.workerName}`, description: "工资金额由服务端计算，付款凭证与敏感账户字段仅向获授权岗位展示。", fields: [{ label: "工资期间", value: item.period }, { label: "状态", value: <BusinessStatusBadge status={item.status} /> }, { label: "应发金额", value: `¥ ${displayMoney(item.payableAmount)}` }, { label: "扣款金额", value: `¥ ${displayMoney(item.deductionAmount)}` }, { label: "实发金额", value: `¥ ${displayMoney(item.actualAmount)}` }, { label: "付款凭证", value: item.paymentReference || "尚未发放" }] })} />
+            <LaborEntryActionCard onAdd={() => { setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM); setEmployeeProfileDialogOpen(true); setLocation("/admin/permission"); }} />
             <div className="grid gap-6 xl:grid-cols-2">
-              <Card><CardHeader><CardTitle className="text-base">劳务人员台账</CardTitle><CardDescription>展示实名核验与进退场状态；个人身份和资金字段保持脱敏。</CardDescription></CardHeader><CardContent className="space-y-2">{workers.length ? workers.map(worker => <div key={worker.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{worker.realName}</p><BusinessStatusBadge status={worker.attendanceStatus} /><Badge variant="outline">实名：{worker.identityVerificationStatus === "verified" ? "已核验" : worker.identityVerificationStatus === "rejected" ? "已驳回" : "待核验"}</Badge></div><p className="mt-1 text-xs text-slate-500">班组：{worker.teamName || "未设置"} · 入场：{worker.entryDate ? displayDate(worker.entryDate) : "未登记"} · 退场：{worker.exitDate ? displayDate(worker.exitDate) : "—"}</p></div><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `劳务人员档案 · ${worker.realName}`, description: "此为 PC 后台的受控脱敏档案视图。人员资料变更继续受岗位与项目范围校验。", fields: [{ label: "班组", value: worker.teamName || "未设置" }, { label: "实名状态", value: worker.identityVerificationStatus === "verified" ? "已核验" : worker.identityVerificationStatus === "rejected" ? "已驳回" : "待核验" }, { label: "出勤状态", value: <BusinessStatusBadge status={worker.attendanceStatus} /> }, { label: "入场日期", value: worker.entryDate ? displayDate(worker.entryDate) : "未登记" }, { label: "退场日期", value: worker.exitDate ? displayDate(worker.exitDate) : "—" }] })}>查看档案</Button></div>) : <EmptyState text="当前项目尚无真实劳务人员档案。" />}</CardContent></Card>
+              {/* 旧版内联台账保留为本次拆分的受控回退参照；不参与运行时渲染。 */}
+              <LaborWorkerRoster workers={workers} displayDate={displayDate} onOpenProfile={worker => setDesktopRecordDetail({ title: `劳务人员档案 · ${worker.realName}`, description: "此为 PC 后台的受控脱敏档案视图。人员资料变更继续受岗位与项目范围校验。", fields: [{ label: "班组", value: worker.teamName || "未设置" }, { label: "实名状态", value: worker.identityVerificationStatus === "verified" ? "已核验" : worker.identityVerificationStatus === "rejected" ? "已驳回" : "待核验" }, { label: "出勤状态", value: <BusinessStatusBadge status={worker.attendanceStatus} /> }, { label: "入场日期", value: worker.entryDate ? displayDate(worker.entryDate) : "未登记" }, { label: "退场日期", value: worker.exitDate ? displayDate(worker.exitDate) : "—" }] })} />
+              {false && <>
               <Card><CardHeader className="space-y-3"><div><CardTitle className="text-base">考勤记录</CardTitle><CardDescription>可按姓名、班组、人员类型与考勤状态组合筛选；导出仅包含当前项目与实际筛选范围，锁定记录不可由前端覆盖。</CardDescription></div><div className="flex flex-wrap gap-2"><Input className="w-[145px]" value={laborAttendanceFilter.workerName} placeholder="姓名或班组" onChange={event => setLaborAttendanceFilter(current => ({ ...current, workerName: event.target.value }))} /><Select value={laborAttendanceFilter.team} onValueChange={value => setLaborAttendanceFilter(current => ({ ...current, team: value }))}><SelectTrigger className="w-[130px]"><SelectValue placeholder="全部班组" /></SelectTrigger><SelectContent><SelectItem value="all">全部班组</SelectItem>{attendanceTeams.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select><Select value={laborAttendanceFilter.category} onValueChange={value => setLaborAttendanceFilter(current => ({ ...current, category: value }))}><SelectTrigger className="w-[140px]"><SelectValue placeholder="全部人员类型" /></SelectTrigger><SelectContent><SelectItem value="all">全部人员类型</SelectItem><SelectItem value="company_admin">公司管理人员</SelectItem><SelectItem value="labor_team">劳务队人员</SelectItem><SelectItem value="temporary_daily">临时日结人员</SelectItem></SelectContent></Select><Select value={laborAttendanceFilter.status} onValueChange={value => setLaborAttendanceFilter(current => ({ ...current, status: value }))}><SelectTrigger className="w-[120px]"><SelectValue placeholder="全部状态" /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="confirmed">已确认</SelectItem><SelectItem value="locked">已锁定</SelectItem></SelectContent></Select><Button size="sm" variant="outline" disabled={!visibleAttendance.length} onClick={() => downloadCsvFile(`劳务考勤-${laborAttendanceDate || "全部日期"}.csv`, ["人员", "班组", "人员类型", "考勤日期", "正常工时", "加班工时", "来源", "状态", "备注"], visibleAttendance.map(item => { const worker = workerById.get(item.workerId); return [item.workerName, item.teamName || "未设置班组", worker?.workerCategory === "company_admin" ? "公司管理人员" : worker?.workerCategory === "temporary_daily" ? "临时日结人员" : "劳务队人员", toBusinessDateInput(item.attendanceDate), item.workHours, item.overtimeHours, item.source, item.status, item.note || ""]; }), { module: "劳务考勤高级筛选导出", filters: [["项目", selectedWorkspaceProject?.name || `项目 #${workspaceProjectId}`], ["考勤日期", laborAttendanceDate || "全部日期"], ["姓名/班组", laborAttendanceFilter.workerName || "全部"], ["班组", laborAttendanceFilter.team === "all" ? "全部" : laborAttendanceFilter.team], ["人员类型", laborAttendanceFilter.category === "all" ? "全部" : laborAttendanceFilter.category], ["考勤状态", laborAttendanceFilter.status === "all" ? "全部" : laborAttendanceFilter.status]] })}>导出当前筛选</Button></div></CardHeader><CardContent className="space-y-2">{visibleAttendance.length ? visibleAttendance.map(item => { const worker = workerById.get(item.workerId); return <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><p className="text-sm font-medium text-slate-800">{item.workerName} <span className="font-normal text-slate-400">{item.teamName ? `· ${item.teamName}` : ""}</span></p><p className="mt-1 text-xs text-slate-500">{displayDate(item.attendanceDate)} · 正常 {item.workHours} h · 加班 {item.overtimeHours} h · {item.source} · {worker?.workerCategory === "company_admin" ? "公司管理人员" : worker?.workerCategory === "temporary_daily" ? "临时日结" : "劳务队人员"}</p></div><BusinessStatusBadge status={item.status} /></div>; }) : <EmptyState text={attendance.length ? "当前筛选条件下没有考勤记录。" : "当前项目尚无真实考勤记录。"} />}</CardContent></Card>
+              </>}
+              <LaborAttendanceLedger filter={laborAttendanceFilter} onFilterChange={setLaborAttendanceFilter} teams={attendanceTeams} rows={visibleAttendance} hasAttendance={attendance.length > 0} getWorkerCategory={workerId => workerById.get(workerId)?.workerCategory} displayDate={displayDate} onExport={() => downloadCsvFile(`劳务考勤-${laborAttendanceDate || "全部日期"}.csv`, ["人员", "班组", "人员类型", "考勤日期", "正常工时", "加班工时", "来源", "状态", "备注"], visibleAttendance.map(item => { const worker = workerById.get(item.workerId); return [item.workerName, item.teamName || "未设置班组", worker?.workerCategory === "company_admin" ? "公司管理人员" : worker?.workerCategory === "temporary_daily" ? "临时日结人员" : "劳务队人员", toBusinessDateInput(item.attendanceDate), item.workHours, item.overtimeHours, item.source, item.status, item.note || ""]; }), { module: "劳务考勤高级筛选导出", filters: [["项目", selectedWorkspaceProject?.name || `项目 #${workspaceProjectId}`], ["考勤日期", laborAttendanceDate || "全部日期"], ["姓名/班组", laborAttendanceFilter.workerName || "全部"], ["班组", laborAttendanceFilter.team === "all" ? "全部" : laborAttendanceFilter.team], ["人员类型", laborAttendanceFilter.category === "all" ? "全部" : laborAttendanceFilter.category], ["考勤状态", laborAttendanceFilter.status === "all" ? "全部" : laborAttendanceFilter.status]] })} />
             </div>
           </>
-        )}
-        <Dialog open={Boolean(dailyWagePaymentTarget)} onOpenChange={open => { if (!open) { setDailyWagePaymentTarget(null); setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" }); } }}><DialogContent><DialogHeader><DialogTitle>登记临时日结实际付款</DialogTitle><DialogDescription>付款日期为必填，付款参考说明可选；系统不发起转账。登记后该日结进入最终已付款状态，不能作废或回写。</DialogDescription></DialogHeader><div className="grid gap-3"><Field label="实际付款日期"><Input type="date" value={dailyWagePaymentForm.paidAt} onChange={event => setDailyWagePaymentForm(current => ({ ...current, paidAt: event.target.value }))} /></Field><Field label="付款参考说明（可选）"><Input value={dailyWagePaymentForm.paymentReference} maxLength={64} placeholder="如银行流水号或付款批次" onChange={event => setDailyWagePaymentForm(current => ({ ...current, paymentReference: event.target.value }))} /></Field></div><DialogFooter><Button variant="outline" onClick={() => setDailyWagePaymentTarget(null)} disabled={payDailyWage.isPending}>取消</Button><Button disabled={!dailyWagePaymentTarget || !dailyWagePaymentForm.paidAt || payDailyWage.isPending} onClick={() => dailyWagePaymentTarget && payDailyWage.mutate({ id: dailyWagePaymentTarget.id, paidAt: new Date(`${dailyWagePaymentForm.paidAt}T00:00:00.000Z`), paymentReference: dailyWagePaymentForm.paymentReference.trim() || null })}>{payDailyWage.isPending ? "正在登记…" : `确认 ${dailyWagePaymentTarget?.workerName ?? "日结"} 已付款`}</Button></DialogFooter></DialogContent></Dialog>
-        <Dialog open={Boolean(payrollPaymentTarget)} onOpenChange={open => { if (!open) { setPayrollPaymentTarget(null); setPaymentReference(""); } }}><DialogContent><DialogHeader><DialogTitle>确认工资发放</DialogTitle><DialogDescription>系统不会发起银行转账。请在外部资金流程完成后，填写付款凭证号或资金流水号，服务端会复核财务岗位、项目范围和工资条状态。</DialogDescription></DialogHeader><div className="space-y-2"><Label htmlFor="payment-reference">付款凭证号 / 资金流水号</Label><Input id="payment-reference" value={paymentReference} placeholder="至少 4 个字符" onChange={event => setPaymentReference(event.target.value)} /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollPaymentTarget(null)} disabled={payPayroll.isPending}>取消</Button><Button disabled={!payrollPaymentTarget || paymentReference.trim().length < 4 || payPayroll.isPending} onClick={() => payrollPaymentTarget && payPayroll.mutate({ id: payrollPaymentTarget.id, paymentReference: paymentReference.trim() })}>{payPayroll.isPending ? "正在确认…" : `确认 ${payrollPaymentTarget?.workerName ?? "工资条"} 发放`}</Button></DialogFooter></DialogContent></Dialog>
-      </div>
+        ) : null}
+        <DailyWagePaymentDialog target={dailyWagePaymentTarget} paidAt={dailyWagePaymentForm.paidAt} paymentReference={dailyWagePaymentForm.paymentReference} pending={payDailyWage.isPending} onClose={() => { setDailyWagePaymentTarget(null); setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" }); }} onPaidAtChange={paidAt => setDailyWagePaymentForm(current => ({ ...current, paidAt }))} onPaymentReferenceChange={paymentReference => setDailyWagePaymentForm(current => ({ ...current, paymentReference }))} onConfirm={() => { if (!dailyWagePaymentTarget) return; payDailyWage.mutate({ id: dailyWagePaymentTarget.id, paidAt: new Date(`${dailyWagePaymentForm.paidAt}T00:00:00.000Z`), paymentReference: dailyWagePaymentForm.paymentReference.trim() || null }); }} />
+        <PayrollPaymentDialog target={payrollPaymentTarget} paymentReference={paymentReference} pending={payPayroll.isPending} onClose={() => { setPayrollPaymentTarget(null); setPaymentReference(""); }} onPaymentReferenceChange={setPaymentReference} onConfirm={() => { if (!payrollPaymentTarget) return; payPayroll.mutate({ id: payrollPaymentTarget.id, paymentReference: paymentReference.trim() }); }} />
+      </LaborWorkspaceShell>
     );
   };
+
+  const renderLabor = () => <LaborWorkspaceLoader enabled={canQuery && isLabor && hasBusinessWorkspaceProject} projectId={workspaceProjectId} initialAttendanceDate={toChinaBusinessDateInput()}>{renderLaborContent}</LaborWorkspaceLoader>;
 
   const renderMachinery = () => {
     const allMachines = machineryLedger.data ?? [];
@@ -2817,13 +3005,11 @@ export default function AdminPage() {
       <div className="space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">运输调度 · 真实业务台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">车辆、趟次与结算状态</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">展示真实车辆资源与指定自然日趟次。运价快照、理论方量、异常检测、核验、详情查看和结算均在当前 PC 台账中完成。</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={!hasBusinessWorkspaceProject} onClick={() => { setVehicleForm({ ...EMPTY_VEHICLE_FORM, projectId: String(workspaceProjectId) }); setVehicleEditorOpen(true); setLocation("/admin/vehicles"); }}><Truck className="mr-1.5 h-4 w-4" />录入车辆档案</Button><Button size="sm" variant="outline" onClick={() => setLocation("/admin/vehicles")}>单车柴油分析</Button></div></div>
         {renderWorkspaceProjectFilter("运输项目范围", "选择项目后读取车辆台账和实际运输趟次。司机、运输管理和财务操作由服务端按角色、项目和状态分别校验。")}
-        {/* 装卸土点与路线统一配置器放在下方运输业务区，避免项目筛选后出现两个重复配置入口。 */}
+        {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以配置装卸土点、运输路线和安全规则。" /> : <Suspense fallback={<EmptyState text="正在加载装卸土点与运输路线配置…" />}><TransportRouteConfigurationEditor projectId={workspaceProjectId} /></Suspense>}
         {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取真实运输调度台账。" /> : transportVehicleLedger.isLoading || transportTrips.isLoading ? <EmptyState text="正在读取车辆和运输趟次…" /> : transportVehicleLedger.isError || transportTrips.isError ? <EmptyState text="暂无法读取运输调度数据，请确认当前账号的服务端授权后重试。" /> : (
           <>
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="可见车辆" value={vehiclesForProject.length} description={selectedWorkspaceProject?.name ?? "当前项目"} icon={Truck} /><MetricCard title="可调度车辆" value={vehiclesForProject.filter(item => item.status === "active").length} description="车辆状态来自真实台账" icon={ShieldCheck} /><MetricCard title="当日有效趟次" value={activeTrips.length} description={transportDate || "全部日期"} icon={ScrollText} /><MetricCard title="可结算金额" value={Math.round(totalAmount * 100) / 100} description="非作废趟次金额合计" icon={BarChart3} /></section>
-            <TransportRouteConfigurationEditor projectId={workspaceProjectId} />
-            <Card className="w-full border-[#d8e3e0] shadow-sm"><CardHeader className="flex flex-wrap items-end justify-between gap-3 space-y-0"><div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">运输调度 · 综合台账</p><CardTitle className="mt-1 text-base">车辆趟次、异常与结算台账</CardTitle><CardDescription className="mt-1">车辆主档只在“车辆资源”维护；本页按趟次集中展示车辆、方量、里程、异常、运费和结算状态，避免重复车辆列表。</CardDescription></div><div className="min-w-[170px]"><Label htmlFor="transport-date">运输日期</Label><Input id="transport-date" className="mt-1" type="date" value={transportDate} onChange={event => setTransportDate(event.target.value)} /></div></CardHeader><CardContent><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1280px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow className="border-[#dce3de] hover:bg-[#edf1ed]"><TableHead className="h-11 px-4 font-semibold text-[#46615a]">趟次单号</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">车辆</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">开始时间</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">里程 / 方量</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">结算金额</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">异常</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">状态</TableHead><TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">操作</TableHead></TableRow></TableHeader><TableBody>{trips.length ? trips.map(item => { const vehicle = vehiclesForProject.find(candidate => candidate.id === item.vehicleId); return <TableRow key={item.id} className="border-[#edf0ee] hover:bg-[#fbfaf1]"><TableCell className="px-4 py-3 font-semibold text-[#203c48]">{item.tripNo}</TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{vehicle?.plateNo || `车辆 #${item.vehicleId}`}</p><p className="mt-1 text-slate-500">{vehicle?.vehicleType || "—"} · 理论 {vehicle?.theoreticalVolumeCubicMeters ?? "—"} m³</p></TableCell><TableCell className="px-4 py-3 text-slate-700">{displayDate(item.startAt)}</TableCell><TableCell className="px-4 py-3 text-slate-700"><p>{item.actualDistanceKm ?? "—"} km</p><p className="mt-1 text-slate-500">{item.volumeCubicMeters ?? "—"} m³</p></TableCell><TableCell className="px-4 py-3 font-medium text-slate-800">¥{displayMoney(item.calculatedAmount)}</TableCell><TableCell className="px-4 py-3">{item.anomalies.length ? <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">{item.anomalies.length} 项提示</Badge> : <span className="text-slate-500">无</span>}</TableCell><TableCell className="px-4 py-3"><BusinessStatusBadge status={item.status} /></TableCell><TableCell className="px-4 py-3 text-right"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `运输趟次明细 · ${item.tripNo}`, description: "此为 PC 后台的运输趟次快照。金额、状态和异常均以服务端记录为准。", fields: [{ label: "状态", value: <BusinessStatusBadge status={item.status} /> }, { label: "车辆", value: vehicle?.plateNo || `#${item.vehicleId}` }, { label: "开始时间", value: displayDate(item.startAt) }, { label: "实际距离", value: item.actualDistanceKm === null ? "未记录" : `${item.actualDistanceKm} km` }, { label: "方量", value: item.volumeCubicMeters === null ? "未记录" : `${item.volumeCubicMeters} m³` }, { label: "重量", value: item.weightTons === null ? "未记录" : `${item.weightTons} t` }, { label: "结算金额", value: `¥ ${displayMoney(item.calculatedAmount)}` }, { label: "异常提示", value: item.anomalies.length ? item.anomalies.join("；") : "无" }] })}>详情</Button>{item.status === "draft" ? <Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "submitted" })} disabled={transitionTransportTrip.isPending}>提交</Button> : null}{item.status === "submitted" ? <><Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "verified" })} disabled={transitionTransportTrip.isPending}>核验</Button><Button size="sm" variant="outline" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionTransportTrip.isPending}>作废</Button></> : null}{item.status === "verified" ? <><Button size="sm" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "settled" })} disabled={transitionTransportTrip.isPending}>结算</Button><Button size="sm" variant="outline" onClick={() => transitionTransportTrip.mutate({ id: item.id, projectId: workspaceProjectId, nextStatus: "void" })} disabled={transitionTransportTrip.isPending}>作废</Button></> : null}</div></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={8} className="px-4 py-10 text-center text-slate-500">{transportDate ? "当前项目和日期尚无真实运输趟次。" : "当前项目尚无真实运输趟次。"}</TableCell></TableRow>}</TableBody></Table></div><p className="mt-3 text-xs text-slate-500">车辆档案、RFID 卡和维修成本通过相应资源台账维护；趟次状态、异常和结算均由服务端复核。</p></CardContent></Card>
-            <TransportRouteSafetySettings projectId={workspaceProjectId} />
+            {/* 运输完整明细、筛选、导出与状态操作统一由下方 TransportTripLedger 承担；简版车辆趟次卡已移除，避免同一运单重复展示。 */}
             <div id="transport-trip-ledger-upgrade">
               <TransportTripLedger
                 filter={transportLedgerFilter}
@@ -2864,7 +3050,7 @@ export default function AdminPage() {
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>绑定车辆射频卡</DialogTitle>
-              <DialogDescription>卡 ID/UID、车牌与驾驶员信息用于本次受控绑定和 RC3 签名写卡。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
+              <DialogDescription>此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -2885,14 +3071,14 @@ export default function AdminPage() {
                 </Field>
               </div>
               <div className="grid gap-3 rounded-xl border border-cyan-200 bg-cyan-50/60 p-3 sm:grid-cols-2">
-                <Field label="车牌号"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
-                <Field label="驾驶员姓名"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
-                <Field label="驾驶员联系电话"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
-                <Field label="卡 ID / UID"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
+                <Field label="车牌号（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
+                <Field label="驾驶员姓名（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
+                <Field label="驾驶员联系电话（车辆表单预填）"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
+                <Field label="卡 ID / UID（芯片固定标识）"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
                 <Field label="卡片状态"><Input disabled value={rfidCardForm.status === "active" ? "启用" : rfidCardForm.status === "suspended" ? "暂停" : "已停用"} /></Field>
                 <Field label="签名版本"><Input disabled value="RC3 · 服务端签名校验" /></Field>
               </div>
-              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">写入正式卡时，卡内仅包含车牌号、驾驶员姓名、联系电话、卡绑定引用、项目引用、修订号、随机挑战值与签名。路线、方量、单价、金额和结算状态不写入卡片。</p>
+              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">恢复初卡后，NDEF 用户区已经清空；本窗口仍显示的车辆信息只用于准备下一次绑定，不代表卡内残留内容。UID 始终保留为芯片固定标识。写入正式卡时，卡内仅包含车牌号、驾驶员姓名、联系电话、卡绑定引用、项目引用、修订号、随机挑战值与签名。路线、方量、单价、金额和结算状态不写入卡片。</p>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button>
@@ -2915,7 +3101,7 @@ export default function AdminPage() {
           <p className="mt-2 max-w-3xl text-sm text-slate-500">超级管理员可从本页进入各业务模块维护真实数据。原有审批、状态流转、项目范围与敏感字段保护仍由服务端执行，不因后台入口而放宽。</p>
         </div>
         <div className="flex gap-2 print:hidden">
-          <Button size="sm" variant="outline" onClick={() => businessStatistics.refetch()} disabled={businessStatistics.isFetching}>刷新统计</Button>
+          <Button size="sm" variant="outline" onClick={() => { void businessStatistics.refetch(); void operatingDashboard.refetch(); }} disabled={businessStatistics.isFetching || operatingDashboard.isFetching}>刷新统计</Button>
           <Button size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>
         </div>
       </div>
@@ -2938,6 +3124,17 @@ export default function AdminPage() {
           </div>
           <Button className="print:hidden" size="sm" variant="outline" onClick={() => setBusinessFilter({ projectId: "all", period: "" })} disabled={businessFilter.projectId === "all" && !businessFilter.period}>清除筛选</Button>
           <p className="w-full text-xs text-slate-500">当前统计与打印口径：{businessFilterLabel}。基础档案按创建时间、业务单据按发生日期或结算期间统计。</p>
+        </CardContent>
+      </Card>
+
+      <Card className="border-[#d8e3e0]" id="operating-dashboard">
+        <CardHeader><CardTitle className="text-base">经营数据汇总</CardTitle><CardDescription>汇总当前项目和期间范围内的真实财务、发票、计量、施工日报、工资与运输台账。金额单位：元；结算比＝已结算计量÷核定计量，付款比＝已付支出÷有效支出。</CardDescription></CardHeader>
+        <CardContent>
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取经营数据。" /> : operatingDashboard.isLoading ? <EmptyState text="正在汇总真实经营数据…" /> : operatingDashboard.isError || !operatingDashboard.data ? <EmptyState text="暂无法读取经营数据，请确认超级管理员权限与真实台账连接。" /> : <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[["总收入", operatingDashboard.data.finance.totalIncome, "/admin/finance"], ["已开发票", operatingDashboard.data.finance.invoiceAmount, "/admin/finance"], ["总欠款（应收+应付）", operatingDashboard.data.finance.receivable + operatingDashboard.data.finance.payable, "/admin/finance"], ["各类已付", operatingDashboard.data.finance.paidAmount, "/admin/finance"], ["结算比", operatingDashboard.data.finance.settlementRatio === null ? "—" : `${operatingDashboard.data.finance.settlementRatio}%`, "/admin/measurement-tools"], ["付款比", operatingDashboard.data.finance.paymentRatio === null ? "—" : `${operatingDashboard.data.finance.paymentRatio}%`, "/admin/finance"], ["项目进度", operatingDashboard.data.progress.averageProgressPercent === null ? "未提交" : `${operatingDashboard.data.progress.averageProgressPercent}%`, "/admin/construction"], ["运输趟次", operatingDashboard.data.resources.transportTripCount, "/admin/transport"]].map(([label, value, path]) => <button key={String(label)} type="button" onClick={() => setLocation(String(path))} className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-[#3e746a] hover:shadow"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-[#203c48]">{typeof value === "number" && !String(label).includes("趟次") ? `¥${displayMoney(value)}` : value}</p><p className="mt-1 text-xs text-[#3e746a]">点击查看明细</p></button>)}</div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-2"><div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">计量、产值与施工日报</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>申报计量：<b>¥{displayMoney(operatingDashboard.data.measurement.declaredAmount)}</b></p><p>核定计量：<b>¥{displayMoney(operatingDashboard.data.measurement.approvedAmount)}</b></p><p>已结算：<b>¥{displayMoney(operatingDashboard.data.measurement.settledAmount)}</b></p><p>待处理：<b>{operatingDashboard.data.measurement.pendingCount} 笔</b></p><p>施工日报：<b>{operatingDashboard.data.progress.reportCount} 条</b></p><p>已审核日报：<b>{operatingDashboard.data.progress.approvedReportCount} 条</b></p></div></div><div className="rounded-xl border border-slate-200 p-4"><p className="font-medium text-slate-800">劳务与资源投入</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><p>月度工资实发：<b>¥{displayMoney(operatingDashboard.data.resources.payrollActualAmount)}</b></p><p>临时日结实发：<b>¥{displayMoney(operatingDashboard.data.resources.dailyWageActualAmount)}</b></p><p>运输趟次：<b>{operatingDashboard.data.resources.transportTripCount} 趟</b></p><p>当前范围：<b>{businessFilterLabel}</b></p></div></div></div>
+            <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200"><Table><TableHeader><TableRow><TableHead>支出类别</TableHead><TableHead className="text-right">有效支出</TableHead><TableHead className="text-right">待付</TableHead><TableHead className="text-right">已付</TableHead></TableRow></TableHeader><TableBody>{operatingDashboard.data.finance.categories.length ? operatingDashboard.data.finance.categories.map(item => <TableRow key={item.category}><TableCell>{item.category}</TableCell><TableCell className="text-right">¥{displayMoney(item.amount)}</TableCell><TableCell className="text-right text-amber-700">¥{displayMoney(item.unpaid)}</TableCell><TableCell className="text-right text-emerald-700">¥{displayMoney(item.paid)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={4} className="h-20 text-center text-slate-500">当前范围暂无有效支出分类记录。</TableCell></TableRow>}</TableBody></Table></div>
+          </>}
         </CardContent>
       </Card>
 
@@ -2975,6 +3172,24 @@ export default function AdminPage() {
               <Button className="print:hidden" size="sm" variant="outline" onClick={() => downloadBackup.mutate({ id: Number(backup.id) })} disabled={downloadBackup.isPending}>下载</Button>
             </div>
           )) : <EmptyState text="尚无已归档备份。首次创建备份前不会生成任何示例文件。" />}
+        </CardContent>
+      </Card>
+
+      <Card className="border-[#b7d3cc] bg-[#f7fcfa]">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle className="text-base">完整数据库灾备（服务器端）</CardTitle>
+            <CardDescription>导出完整 MySQL 数据库的全部表、表结构、触发器、例程和事件，并校验压缩、SHA-256 与每张表定义。数据库凭据、服务器路径和恢复口令不会返回浏览器。</CardDescription>
+          </div>
+          <Button className="shrink-0 print:hidden" size="sm" onClick={() => createFullDatabaseBackup.mutate()} disabled={createFullDatabaseBackup.isPending || !fullDatabaseBackup.data?.configured || !fullDatabaseBackup.data?.executable}><DatabaseBackup className="mr-1.5 h-4 w-4" />{createFullDatabaseBackup.isPending ? "正在执行完整备份…" : "执行完整备份"}</Button>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {!isAuthenticated ? <EmptyState text="请先登录超级管理员账号后读取完整数据库备份状态。" /> : fullDatabaseBackup.isLoading ? <EmptyState text="正在读取服务器端完整数据库备份状态…" /> : fullDatabaseBackup.isError || !fullDatabaseBackup.data ? <EmptyState text="暂无法读取完整数据库备份状态，请确认服务器备份组件已部署。" /> : <>
+            {!fullDatabaseBackup.data.configured || !fullDatabaseBackup.data.executable ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"><p className="font-medium">服务器端完整备份尚未就绪</p><p className="mt-1 text-xs">请由服务器管理员配置备份专用 MySQL 凭据、备份目录与定时任务；配置完成后本按钮才会启用。页面不会显示凭据或服务器路径。</p></div> : null}
+            {fullDatabaseBackup.data.latestSuccess ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium text-emerald-900">最近完整备份校验通过</p><Badge className="bg-emerald-700">逐表校验通过</Badge></div><p className="mt-1 text-xs text-emerald-900">{displayDate(fullDatabaseBackup.data.latestSuccess.createdAt)} · {fullDatabaseBackup.data.latestSuccess.tableCount} 张表 · gzip {fullDatabaseBackup.data.latestSuccess.verification.gzipIntegrity === "passed" ? "通过" : "异常"} · SHA-256 {fullDatabaseBackup.data.latestSuccess.sha256.slice(0, 12)}…</p><p className="mt-1 text-xs text-emerald-800">保留策略：{fullDatabaseBackup.data.latestSuccess.retention.keepDays} 天；最近轮换清理 {fullDatabaseBackup.data.latestSuccess.retention.removedFiles.length} 个过期文件。</p></div> : <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">尚未生成经过逐表校验的完整数据库备份。首次执行完成后，此处将显示表数量、校验和保留状态。</div>}
+            {fullDatabaseBackup.data.latestFailure ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900"><p className="font-medium">最近一次完整备份未成功</p><p className="mt-1 text-xs">{displayDate(fullDatabaseBackup.data.latestFailure.failedAt)} · {fullDatabaseBackup.data.latestFailure.error}</p></div> : null}
+            <p className="text-xs text-slate-500">完整备份用于灾难恢复，不开放浏览器直接下载或在线恢复；恢复必须在非生产演练库中由服务器管理员执行。</p>
+          </>}
         </CardContent>
       </Card>
     </div>
@@ -3032,13 +3247,26 @@ export default function AdminPage() {
         <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
           <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
             <div><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">项目部供油 · 运输扣款 · 机械油料成本</p><CardTitle className="mt-1 text-base">柴油领用与每日结算</CardTitle><CardDescription className="mt-1">项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。</CardDescription></div>
-            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto"><Button className="min-h-11 sm:min-h-8" size="sm" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: financeProjectId, effectiveFrom: dieselDate }); setDieselPriceDialogOpen(true); }}>维护指导价</Button><Button className="min-h-11 sm:min-h-8" size="sm" onClick={() => { resetDieselReceiptCapture(); setDieselRefuelForm({ ...EMPTY_DIESEL_REFUEL_FORM, projectId: financeProjectId, refueledAt: `${dieselDate}T08:00` }); setDieselRefuelDialogOpen(true); }}>登记柴油领用</Button></div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">可同时按车牌、加油日期区间、月份、供油方式、车辆/机械和供应商筛选；导出内容与当前明细完全一致。</p></div><Button size="sm" variant="ghost" onClick={() => setDieselLedgerFilter({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" })}>清除筛选</Button></div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><Input value={dieselLedgerFilter.plateNo} aria-label="柴油筛选车牌" placeholder="车牌（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, plateNo: event.target.value.toUpperCase() }))} /><Input type="date" max={dieselLedgerFilter.dateTo || undefined} value={dieselLedgerFilter.dateFrom} aria-label="柴油加油开始日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateFrom: event.target.value }))} /><Input type="date" min={dieselLedgerFilter.dateFrom || undefined} value={dieselLedgerFilter.dateTo} aria-label="柴油加油结束日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateTo: event.target.value }))} /><Input type="month" value={dieselLedgerFilter.month} aria-label="柴油加油月份" onChange={event => setDieselLedgerFilter(current => ({ ...current, month: event.target.value }))} /><Select value={dieselLedgerFilter.supplyMethod} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, supplyMethod: value }))}><SelectTrigger aria-label="柴油供油方式"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部供油方式</SelectItem><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select><Select value={dieselLedgerFilter.assetType} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, assetType: value }))}><SelectTrigger aria-label="柴油车辆机械"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部车辆 / 机械</SelectItem><SelectItem value="vehicle">仅车辆</SelectItem><SelectItem value="machine">仅机械</SelectItem></SelectContent></Select><Input value={dieselLedgerFilter.supplierName} aria-label="柴油筛选供应商" placeholder="供应商 / 加油站（模糊查询）" onChange={event => setDieselLedgerFilter(current => ({ ...current, supplierName: event.target.value }))} /></div></div>
+            <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3" data-diesel-current-print>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">先在这里选择日期、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。</p></div><Button size="sm" variant="ghost" onClick={() => { setDieselLedgerFilter({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" }); setDieselMachineName(""); }}>清除筛选</Button></div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <Select value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"} disabled={dieselLedgerFilter.assetType === "machine"} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, plateNo: value === "ALL_VEHICLES" ? "" : value, assetType: value === "ALL_VEHICLES" ? current.assetType : "vehicle" }))}><SelectTrigger aria-label="柴油筛选车牌"><SelectValue placeholder="全部车辆" /></SelectTrigger><SelectContent><SelectItem value="ALL_VEHICLES">全部车辆</SelectItem>{(dieselVehicleOptions.data ?? []).filter(vehicle => String(vehicle.projectId) === financeProjectId).map(vehicle => <SelectItem key={vehicle.id} value={vehicle.plateNo}>{vehicle.plateNo}</SelectItem>)}</SelectContent></Select>
+                <Input type="date" max={dieselLedgerFilter.dateTo || undefined} value={dieselLedgerFilter.dateFrom} aria-label="柴油加油开始日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateFrom: event.target.value }))} />
+                <Input type="date" min={dieselLedgerFilter.dateFrom || undefined} value={dieselLedgerFilter.dateTo} aria-label="柴油加油结束日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateTo: event.target.value }))} />
+                <Input type="month" value={dieselLedgerFilter.month} aria-label="柴油加油月份" onChange={event => setDieselLedgerFilter(current => ({ ...current, month: event.target.value }))} />
+                <Select value={dieselLedgerFilter.supplyMethod} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, supplyMethod: value }))}><SelectTrigger aria-label="柴油供油方式"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部供油方式</SelectItem><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select>
+                <Select value={dieselLedgerFilter.assetType} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, assetType: value, plateNo: value === "machine" ? "" : current.plateNo }))}><SelectTrigger aria-label="柴油车辆机械"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部车辆 / 机械</SelectItem><SelectItem value="vehicle">仅车辆</SelectItem><SelectItem value="machine">仅机械</SelectItem></SelectContent></Select>
+                <Input value={dieselMachineName} aria-label="柴油顶部机械名称筛选" placeholder="机械名称 / 编号（可选）" disabled={dieselLedgerFilter.assetType === "vehicle"} onChange={event => { setDieselMachineName(event.target.value); if (event.target.value.trim()) setDieselLedgerFilter(current => ({ ...current, assetType: "machine", plateNo: "" })); }} />
+                <Input value={dieselLedgerFilter.supplierName} aria-label="柴油筛选供应商" placeholder="供应商 / 加油站（可选）" onChange={event => setDieselLedgerFilter(current => ({ ...current, supplierName: event.target.value }))} />
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#d8e3e0] pt-3 print:hidden"><p className="text-xs text-slate-500">打印、导出和台账始终使用以上当前筛选条件。</p><Button disabled={!dieselRefuelRecords.data?.length} onClick={() => { setDieselPrintMode(dieselLedgerFilter.assetType === "vehicle" ? "vehicle" : dieselLedgerFilter.assetType === "machine" ? "machine" : "current"); setDieselPrintOpen(true); }}>打印当前筛选明细与汇总</Button></div>
+            </div>
             <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]"><Input type="date" value={dieselDate} aria-label="柴油每日汇总日期" onChange={event => setDieselDate(event.target.value)} /><Button variant="outline" onClick={() => { void dieselRefuelRecords.refetch(); void dieselDailySummary.refetch(); void dieselGuidelinePrices.refetch(); }}>刷新柴油台账</Button><Button variant="outline" disabled={!dieselRefuelRecords.data?.length} onClick={() => downloadCsvFile(`柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || dieselDate}.csv`, ["单号", "资源", "资源类型", "供油方式", "供应商/供油点", "升数", "适用单价", "金额", "是否扣运费", "加油时间", "状态"], (dieselRefuelRecords.data ?? []).map(item => [item.recordNo, item.assetName, item.assetType === "vehicle" ? "车辆" : "机械", item.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油", item.stationOrSupplierName ?? "", Number(item.liters), Number(item.appliedUnitPrice), Number(item.amount), item.deductFromFreight ? "是" : "否", displayDate(item.refueledAt), item.status]))}>导出当前筛选明细</Button></div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><MetricCard title="当日供油量" value={`${Number(dieselDailySummary.data?.totalLiters ?? 0).toFixed(2)} L`} description={`项目部 ${Number(dieselDailySummary.data?.projectSupplyLiters ?? 0).toFixed(2)} L · 加油站 ${Number(dieselDailySummary.data?.stationLiters ?? 0).toFixed(2)} L`} icon={Truck} /><MetricCard title="当日柴油金额" value={dieselDailySummary.data?.totalAmount} description="作废记录不计入" icon={BarChart3} /><MetricCard title="车辆 / 机械领用" value={`${Number(dieselDailySummary.data?.vehicleLiters ?? 0).toFixed(2)} / ${Number(dieselDailySummary.data?.machineLiters ?? 0).toFixed(2)} L`} description="车辆油料可关联趟次；机械油料自动进入成本台账" icon={Settings2} /><MetricCard title="待扣运费油款" value={dieselDailySummary.data?.deductibleAmount} description="结算运输趟次时从总运费扣减" icon={ScrollText} /></div>
-            <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]"><p><span className="font-medium">项目部供油：</span>{dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）` : "尚未维护有效指导价；项目部供油登记前请先维护。"}</p><p className="mt-1"><span className="font-medium">加油站现金加油：</span>每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。</p><Button className="mt-2 print:hidden" size="sm" variant="outline" disabled={!dieselDailySummary.data} onClick={() => window.print()}>打印每日供油单</Button></div>
+            <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]"><p><span className="font-medium">项目部供油：</span>{dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）` : "尚未维护有效指导价；项目部供油登记前请先维护。"}</p><p className="mt-1"><span className="font-medium">加油站现金加油：</span>每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。</p><DieselRefuelPrintDialog open={dieselPrintOpen} onOpenChange={setDieselPrintOpen} mode={dieselPrintMode} projectName={selectedWorkspaceProject?.name ?? "当前项目"} dateLabel={dieselPrintMode === "daily" ? `日期：${dieselDate}` : `筛选日期：${dieselLedgerFilter.dateFrom || dieselLedgerFilter.month || "全部"} 至 ${dieselLedgerFilter.dateTo || dieselLedgerFilter.month || "当前"}`} records={((dieselPrintMode === "daily" ? dieselDailyPrintRecords.data ?? [] : dieselPrintMode === "vehicle" ? (dieselRefuelRecords.data ?? []).filter(item => item.assetType === "vehicle") : dieselPrintMode === "machine" ? (dieselRefuelRecords.data ?? []).filter(item => item.assetType === "machine") : dieselRefuelRecords.data ?? []) as DieselPrintRecord[])} /></div>
             <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
               <Card className="border-amber-200 bg-amber-50/50 shadow-none"><CardHeader className="pb-3"><CardTitle className="text-sm">现金油价异常预警</CardTitle><CardDescription>同项目、同一供应商当前价格相对上一笔有效现金价格的波动达到阈值时，柴油记录和采购对账将显示预警并写入审计。</CardDescription></CardHeader><CardContent className="flex flex-wrap items-end gap-2"><div className="grid gap-1.5"><Label>波动阈值（%）</Label><Input className="w-36" type="number" min="0.01" step="0.01" value={dieselAlertThreshold} onChange={event => setDieselAlertThreshold(event.target.value)} /></div><Button size="sm" disabled={saveDieselPriceAlertRule.isPending || !Number(dieselAlertThreshold)} onClick={() => saveDieselPriceAlertRule.mutate({ projectId: Number(financeProjectId), thresholdPercent: Number(dieselAlertThreshold), enabled: dieselPriceAlertRule.data?.enabled ?? true })}>{saveDieselPriceAlertRule.isPending ? "正在保存…" : `保存${dieselPriceAlertRule.data?.enabled === false ? "并启用" : "阈值"}`}</Button><p className="basis-full text-xs text-amber-900">当前：{dieselPriceAlertRule.data?.enabled === false ? "已停用预警" : `波动达到 ${dieselPriceAlertRule.data?.thresholdPercent ?? 10}% 时预警`}</p></CardContent></Card>
               <Card className="border-[#d8e3e0] shadow-none"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-sm">供应商柴油采购对账</CardTitle><CardDescription>按当前会计期间汇总加油站现金采购的升数、金额、加权均价、凭证和异常数量。</CardDescription></div><Button size="sm" variant="outline" disabled={!dieselSupplierReconciliation.data?.length} onClick={() => downloadCsvFile(`柴油供应商对账-${financePeriod}.csv`, ["供应商", "笔数", "升数", "金额", "加权均价", "最低单价", "最高单价", "价差", "凭证数", "异常数"], (dieselSupplierReconciliation.data ?? []).map(item => [item.supplierName, item.recordCount, item.liters.toFixed(3), item.amount.toFixed(2), item.averageUnitPrice.toFixed(2), item.minUnitPrice.toFixed(2), item.maxUnitPrice.toFixed(2), item.priceSpread.toFixed(2), item.receiptCount, item.alertCount]))}>导出对账</Button></CardHeader><CardContent>{dieselSupplierReconciliation.isLoading ? <p className="text-sm text-slate-500">正在汇总供应商采购…</p> : dieselSupplierReconciliation.data?.length ? <div className="overflow-x-auto"><Table className="min-w-[760px] text-xs"><TableHeader><TableRow><TableHead>供应商</TableHead><TableHead>升数 / 金额</TableHead><TableHead>加权均价</TableHead><TableHead>价格区间</TableHead><TableHead>凭证</TableHead><TableHead>异常</TableHead></TableRow></TableHeader><TableBody>{dieselSupplierReconciliation.data.map(item => <TableRow key={item.supplierName}><TableCell className="font-medium">{item.supplierName}</TableCell><TableCell>{item.liters.toFixed(2)} L / ¥{displayMoney(item.amount)}</TableCell><TableCell>¥{displayMoney(item.averageUnitPrice)}/L</TableCell><TableCell>¥{displayMoney(item.minUnitPrice)}–{displayMoney(item.maxUnitPrice)}</TableCell><TableCell>{item.receiptCount} / {item.recordCount}</TableCell><TableCell className={item.alertCount ? "font-medium text-rose-700" : "text-emerald-700"}>{item.alertCount ? `${item.alertCount} 条预警` : "无异常"}</TableCell></TableRow>)}</TableBody></Table></div> : <p className="text-sm text-slate-500">当前期间暂无加油站现金采购记录。</p>}</CardContent></Card>
@@ -3115,14 +3343,12 @@ export default function AdminPage() {
     </div>;
   };
 
-  const renderMeasurementTools = () => <div className="space-y-6"><div><p className="text-sm font-medium text-[#203c48]">计量工具 · 独立测算工作区</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">工程计量与施工辅助工具</h1><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500">集中提供土石方、附属工程、混凝土材料、机械台班、运输运价和公路铁路施工知识。所有工具仅用于方案测算、学习和打印，不会自动写入项目部收方、施工队分包批次或财务结算台账。</p></div><Card className="border-[#d8e3e0] bg-[#f8fbfa]"><CardContent className="grid gap-3 p-4 md:grid-cols-4"><div><p className="font-medium text-[#203c48]">一、土石方结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按桩号录入天然方土石方，结合土石系数计算运输、填方和分包双价。</p></div><div><p className="font-medium text-[#203c48]">二、附属工程结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按里程、涵洞、边沟、挡墙等构件录入图纸参数并自动计算方量。</p></div><div><p className="font-medium text-[#203c48]">三、施工辅助测算</p><p className="mt-1 text-xs leading-5 text-slate-500">混凝土材料、机械台班和运输运价按输入参数即时测算，结果须由现场和商务人员复核。</p></div><div><p className="font-medium text-[#203c48]">四、公铁知识库</p><p className="mt-1 text-xs leading-5 text-slate-500">按通用、公路、铁路、计量造价和试验检测分类查询术语、应用及公式。</p></div></CardContent></Card><ConstructionToolbox /><SettlementTemplateCalculator /><RoadRailKnowledgeBase /></div>;
-
-  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "measurement-tools" ? renderMeasurementTools() : activeSection === "subcontract" ? renderSubcontract() : activeSection === "contracts" ? <ContractManagementPanel projects={(projects.data ?? []).map(project => ({ id: project.id, name: project.name }))} /> : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
+  const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "measurement-tools" ? <AdminMeasurementToolsPanel /> : activeSection === "subcontract" ? renderSubcontract() : activeSection === "contracts" ? <ContractManagementPanel projects={(projects.data ?? []).map(project => ({ id: project.id, name: project.name }))} /> : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
-    <DashboardLayout title="工程云管 · 管理后台" menuItems={ADMIN_MENU}>
+    <DashboardLayout title={scopedSection ? "悦信云智管 · 统一业务工作区" : "悦信云智管 · 管理后台"} menuItems={scopedMenuItems}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
-        <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
+        {!scopedSection ? <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
           <TabsList aria-label="超级管理后台业务菜单" className="flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-[#dce3de] bg-[#f8f8f4] p-1 shadow-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="overview">概览</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="organization">组织</TabsTrigger>
@@ -3141,9 +3367,12 @@ export default function AdminPage() {
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="settings">设置</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="audit">审计</TabsTrigger>
           </TabsList>
-        </Tabs>
-        {content}
-        {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); const defaultVehicle = transportVehicleLedger.data?.[0]; setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: defaultVehicle ? String(defaultVehicle.id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid, driverPhone: defaultVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} /> : null}
+        </Tabs> : null}
+        {activeSection !== "overview" ? <DuplicateEntryNotice /> : null}
+        <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f8fcfb]"><CardContent className="p-6 text-sm text-slate-600">正在加载当前管理工作区…</CardContent></Card>}>
+          {content}
+          {activeSection === "transport" && workspaceProjectId ? <RfidLocalWriterPanel projectId={workspaceProjectId} onUidRead={uid => { const activeWriter = (rfidWriterDevices.data ?? []).find(device => device.status === "active"); const defaultVehicle = transportVehicleLedger.data?.[0]; setRfidPendingUid(uid); setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: defaultVehicle ? String(defaultVehicle.id) : "", writerDeviceId: activeWriter ? String(activeWriter.id) : "", cardUid: uid, driverPhone: defaultVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} /> : null}
+        </Suspense>
         <AlertDialog open={Boolean(masterDataDeleteTarget)} onOpenChange={open => { if (!open) setMasterDataDeleteTarget(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
@@ -3156,7 +3385,7 @@ export default function AdminPage() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-        <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{desktopRecordDetail?.title}</DialogTitle><DialogDescription>{desktopRecordDetail?.description}</DialogDescription></DialogHeader><dl className="grid gap-3 py-2 sm:grid-cols-2">{desktopRecordDetail?.fields.map(field => <div key={field.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><dt className="text-xs text-slate-500">{field.label}</dt><dd className="mt-1 text-sm font-medium text-slate-800">{field.value}</dd></div>)}</dl>{desktopRecordDetail?.note ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}<DialogFooter><Button onClick={() => setDesktopRecordDetail(null)}>关闭</Button></DialogFooter></DialogContent></Dialog>
+        <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}><DialogContent className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "max-h-[92vh] max-w-[min(96vw,1320px)] overflow-y-auto" : "max-w-2xl"}><DialogHeader><DialogTitle>{desktopRecordDetail?.title}</DialogTitle><DialogDescription>{desktopRecordDetail?.description}</DialogDescription></DialogHeader><dl className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "grid gap-3 py-2 sm:grid-cols-2 xl:grid-cols-4" : "grid gap-3 py-2 sm:grid-cols-2"}>{desktopRecordDetail?.fields.map(field => <div key={field.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><dt className="text-xs text-slate-500">{field.label}</dt><dd className="mt-1 text-sm font-medium text-slate-800">{field.value}</dd></div>)}</dl>{desktopRecordDetail?.note ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}<DialogFooter><Button onClick={() => setDesktopRecordDetail(null)}>关闭</Button></DialogFooter></DialogContent></Dialog>
         <Dialog open={machineDialogOpen} onOpenChange={open => { if (!open) { setMachineDialogOpen(false); setMachineForm(EMPTY_MACHINE_FORM); } }}>
           <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
             <DialogHeader><DialogTitle>{machineForm.id ? "维护机械档案" : "新建机械档案"}</DialogTitle><DialogDescription>项目、操作员、产权/租赁、资产标识与状态均由超级管理后台受控维护；已退役机械仅改变状态，不物理删除历史成本与责任记录。</DialogDescription></DialogHeader>
@@ -3206,19 +3435,25 @@ export default function AdminPage() {
           <DialogContent className="max-w-xl">
             <DialogHeader><DialogTitle>{dieselPriceForm.id ? "维护柴油指导价" : "新增柴油指导价"}</DialogTitle><DialogDescription>项目部供油在登记时按发生日期匹配有效指导单价；加油站加油则按实际单价入账。停用价格不会影响已有领用和运输结算快照。</DialogDescription></DialogHeader>
             <form className="space-y-4" onSubmit={event => { event.preventDefault(); saveDieselGuidelinePrice.mutate({ id: dieselPriceForm.id, projectId: Number(dieselPriceForm.projectId), pricePerLiter: Number(dieselPriceForm.pricePerLiter), effectiveFrom: dieselPriceForm.effectiveFrom, effectiveTo: dieselPriceForm.effectiveTo || null, status: dieselPriceForm.status, remarks: dieselPriceForm.remarks || null }); }}>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="项目"><Select value={dieselPriceForm.projectId || "UNASSIGNED"} onValueChange={value => setDieselPriceForm(current => ({ ...current, projectId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select></Field><Field label="指导单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselPriceForm.pricePerLiter} placeholder="例如 7.25" onChange={event => setDieselPriceForm(current => ({ ...current, pricePerLiter: event.target.value }))} /></Field><Field label="生效日期"><Input type="date" value={dieselPriceForm.effectiveFrom} onChange={event => setDieselPriceForm(current => ({ ...current, effectiveFrom: event.target.value }))} /></Field><Field label="截止日期"><Input type="date" min={dieselPriceForm.effectiveFrom || undefined} value={dieselPriceForm.effectiveTo} onChange={event => setDieselPriceForm(current => ({ ...current, effectiveTo: event.target.value }))} /></Field><Field label="状态"><Select value={dieselPriceForm.status} onValueChange={value => setDieselPriceForm(current => ({ ...current, status: value as DieselPriceForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></Field></div><Field label="备注"><Textarea value={dieselPriceForm.remarks} placeholder="例如：项目部本周柴油核准指导价" onChange={event => setDieselPriceForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselPriceDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselGuidelinePrice.isPending || !dieselPriceForm.projectId || !dieselPriceForm.pricePerLiter || !dieselPriceForm.effectiveFrom}>{saveDieselGuidelinePrice.isPending ? "正在保存…" : "保存指导价"}</Button></DialogFooter>
+              <div className="space-y-3">
+                <div data-testid="diesel-guideline-project-field">
+                  <Field label="项目"><Select value={dieselPriceForm.projectId || "UNASSIGNED"} onValueChange={value => setDieselPriceForm(current => ({ ...current, projectId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger className="w-full min-w-0"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select></Field>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="指导单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselPriceForm.pricePerLiter} placeholder="例如 7.25" onChange={event => setDieselPriceForm(current => ({ ...current, pricePerLiter: event.target.value }))} /></Field><Field label="生效日期"><Input type="date" value={dieselPriceForm.effectiveFrom} onChange={event => setDieselPriceForm(current => ({ ...current, effectiveFrom: event.target.value }))} /></Field></div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="截止日期"><Input type="date" min={dieselPriceForm.effectiveFrom || undefined} value={dieselPriceForm.effectiveTo} onChange={event => setDieselPriceForm(current => ({ ...current, effectiveTo: event.target.value }))} /></Field><Field label="状态"><Select value={dieselPriceForm.status} onValueChange={value => setDieselPriceForm(current => ({ ...current, status: value as DieselPriceForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">启用</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></Field></div>
+              </div><Field label="备注"><Textarea value={dieselPriceForm.remarks} placeholder="例如：项目部本周柴油核准指导价" onChange={event => setDieselPriceForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselPriceDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselGuidelinePrice.isPending || !dieselPriceForm.projectId || !dieselPriceForm.pricePerLiter || !dieselPriceForm.effectiveFrom}>{saveDieselGuidelinePrice.isPending ? "正在保存…" : "保存指导价"}</Button></DialogFooter>
             </form>
           </DialogContent>
         </Dialog>
-        <Dialog open={dieselRefuelDialogOpen} onOpenChange={open => { setDieselRefuelDialogOpen(open); if (!open) { setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM); setDieselReceiptFile(null); } }}>
+        <Dialog open={dieselRefuelDialogOpen} onOpenChange={open => { setDieselRefuelDialogOpen(open); if (!open) { setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM); resetDieselReceiptCapture(); } }}>
           <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；关联车辆趟次并勾选扣油后，结算时从总运费扣减并锁定该记录。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；每笔领用必须后置相机现场直拍加油表并自动归档工程水印。车辆扣油由该车辆运输结算总额统一归集，不再逐趟选择。</DialogDescription></DialogHeader>
             <form className="space-y-4" onSubmit={event => { event.preventDefault(); void submitDieselRefuel(); }}>
               <div className="grid gap-3 sm:grid-cols-2"><Field label="项目"><Input disabled value={projects.data?.find(project => String(project.id) === dieselRefuelForm.projectId)?.name ?? "未选择项目"} /></Field><Field label="加油时间"><Input type="datetime-local" value={dieselRefuelForm.refueledAt} onChange={event => setDieselRefuelForm(current => ({ ...current, refueledAt: event.target.value }))} /></Field><Field label="领用对象"><Select value={dieselRefuelForm.assetType} onValueChange={value => setDieselRefuelForm(current => ({ ...current, assetType: value as DieselRefuelForm["assetType"], vehicleId: "", machineId: "", transportTripId: "", deductFromFreight: false }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vehicle">渣土车 / 车辆</SelectItem><SelectItem value="machine">工程机械</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.assetType === "vehicle" ? "车辆" : "机械"}><Select value={(dieselRefuelForm.assetType === "vehicle" ? dieselRefuelForm.vehicleId : dieselRefuelForm.machineId) || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => current.assetType === "vehicle" ? ({ ...current, vehicleId: value === "UNASSIGNED" ? "" : value, transportTripId: "" }) : ({ ...current, machineId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder={dieselRefuelForm.assetType === "vehicle" ? "选择车辆" : "选择机械"} /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择资源</SelectItem>{dieselRefuelForm.assetType === "vehicle" ? (dieselVehicleOptions.data ?? []).filter(vehicle => String(vehicle.projectId) === dieselRefuelForm.projectId).map(vehicle => <SelectItem key={vehicle.id} value={String(vehicle.id)}>{vehicle.plateNo}</SelectItem>) : (dieselMachineOptions.data ?? []).map(machine => <SelectItem key={machine.id} value={String(machine.id)}>{machine.name} · {machine.code}</SelectItem>)}</SelectContent></Select></Field></div>
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field><Field label="加油表照片（JPG/PNG）"><Input type="file" accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile(event.target.files?.[0] ?? null)} /><p className="mt-1 text-xs text-slate-500">{dieselReceiptFile ? `已选择：${dieselReceiptFile.name}。保存时将先获取现场定位并自动添加工程水印。` : "可选但建议上传；保存时会自动写入项目、加油时间、定位、操作人和防伪编号后再受控归档。"}</p></Field></div>
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="供油方式"><Select value={dieselRefuelForm.supplyMethod} onValueChange={value => setDieselRefuelForm(current => ({ ...current, supplyMethod: value as DieselRefuelForm["supplyMethod"], actualUnitPrice: "" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油（当天指导价）</SelectItem><SelectItem value="external_station">加油站现金加油（当天实际价）</SelectItem></SelectContent></Select></Field><Field label={dieselRefuelForm.supplyMethod === "project_supply" ? "供油点 / 说明" : "加油站 / 现金供应商"}><Input value={dieselRefuelForm.stationOrSupplierName} placeholder={dieselRefuelForm.supplyMethod === "project_supply" ? "例如：项目油库" : "例如：中国石化 xx 加油站"} onChange={event => setDieselRefuelForm(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></Field><Field label="加油量（升）"><Input type="number" min="0.001" step="0.001" value={dieselRefuelForm.liters} onChange={event => setDieselRefuelForm(current => ({ ...current, liters: event.target.value }))} /></Field>{dieselRefuelForm.supplyMethod === "external_station" ? <Field label="当天现金单价（元/升）"><Input type="number" min="0.01" step="0.01" value={dieselRefuelForm.actualUnitPrice} placeholder="必填" onChange={event => setDieselRefuelForm(current => ({ ...current, actualUnitPrice: event.target.value }))} /></Field> : <Field label="当天指导单价"><div className="flex gap-2"><Input disabled value={dieselGuidelinePrices.data?.find(price => price.status === "active") ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L` : "请先维护有效指导价"} /><Button type="button" variant="outline" onClick={() => { setDieselPriceForm({ ...EMPTY_DIESEL_PRICE_FORM, projectId: dieselRefuelForm.projectId, effectiveFrom: dieselRefuelForm.refueledAt.slice(0, 10), status: "active" }); setDieselPriceDialogOpen(true); }}>维护指导价</Button></div></Field>}<Field label="油表 / 里程读数"><Input type="number" min="0" step="0.01" value={dieselRefuelForm.meterReading} placeholder="可选" onChange={event => setDieselRefuelForm(current => ({ ...current, meterReading: event.target.value }))} /></Field><Field label="小票 / 现金凭证号"><Input value={dieselRefuelForm.receiptNo} placeholder={dieselRefuelForm.supplyMethod === "external_station" ? "建议填写现金小票号" : "可选"} onChange={event => setDieselRefuelForm(current => ({ ...current, receiptNo: event.target.value }))} /></Field><Field label="加油表现场照片（必拍）"><div className="space-y-2"><p className="text-xs leading-5 text-emerald-700">仅支持后置相机现场直拍，不提供相册选择；保存时自动写入项目、加油时间、详细地点、操作人与防伪编号水印。</p>{dieselCameraOpen ? <div className="overflow-hidden rounded-xl border border-[#79a57f] bg-[#18301d]"><video ref={dieselCameraVideoRef} className="aspect-[4/3] w-full bg-black object-cover" autoPlay playsInline muted /><div className="grid grid-cols-2 gap-2 p-2"><Button type="button" variant="outline" className="border-[#c9dec9] bg-white text-[#47754d]" onClick={stopDieselCamera}>取消拍照</Button><Button type="button" className="bg-[#47754d] text-white hover:bg-[#39623e]" onClick={captureDieselMeterPhoto}><Camera className="mr-1 h-4 w-4" />确认照片</Button></div></div> : <Button type="button" variant="outline" className="h-11 w-full border-dashed border-[#79a57f] bg-[#f4fbf1] text-[#47754d] hover:bg-[#e7f1e5]" onClick={() => void startDieselCamera()}><Camera className="mr-2 h-4 w-4" />打开后置相机拍摄加油表</Button>}{dieselReceiptPreview ? <div className="space-y-1"><img src={dieselReceiptPreview} alt="待归档加油表现场照片" className="max-h-56 w-full rounded-xl border border-[#c6ddc5] object-cover" /><Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#47754d]" onClick={() => void startDieselCamera()}><Camera className="mr-1 h-3.5 w-3.5" />重新拍摄</Button></div> : null}</div></Field></div>
               {dieselRefuelForm.supplyMethod === "external_station" ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950"><span className="font-medium">现金油费预览：</span>{dieselRefuelForm.liters && dieselRefuelForm.actualUnitPrice ? `${Number(dieselRefuelForm.liters).toFixed(3)} L × ¥${displayMoney(Number(dieselRefuelForm.actualUnitPrice))}/L = ¥${displayMoney(Number(dieselRefuelForm.liters) * Number(dieselRefuelForm.actualUnitPrice))}` : "请填写当天现金单价和加油升数；最终金额以服务端保存的油价快照为准。"}</div> : null}
-              {dieselRefuelForm.assetType === "vehicle" ? <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3"><div className="flex items-center gap-2"><Checkbox id="diesel-deduct-freight" checked={dieselRefuelForm.deductFromFreight} onCheckedChange={checked => setDieselRefuelForm(current => ({ ...current, deductFromFreight: Boolean(checked), transportTripId: checked ? current.transportTripId : "" }))} /><Label htmlFor="diesel-deduct-freight" className="cursor-pointer font-medium text-amber-950">本次油款在渣土车运费结算时扣除</Label></div>{dieselRefuelForm.deductFromFreight ? <Field label="关联运输趟次"><Select value={dieselRefuelForm.transportTripId || "UNASSIGNED"} onValueChange={value => setDieselRefuelForm(current => ({ ...current, transportTripId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue placeholder="选择未结算趟次" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择运输趟次</SelectItem>{(dieselTripOptions.data ?? []).filter(trip => String(trip.vehicleId) === dieselRefuelForm.vehicleId && !["settled", "void"].includes(trip.status)).map(trip => <SelectItem key={trip.id} value={String(trip.id)}>{trip.tripNo} · 总运费 ¥{displayMoney(trip.calculatedAmount)}</SelectItem>)}</SelectContent></Select></Field> : null}</section> : null}
-              <div className="grid gap-3 sm:grid-cols-2"><Field label="记账状态"><Select value={dieselRefuelForm.status} onValueChange={value => setDieselRefuelForm(current => ({ ...current, status: value as DieselRefuelForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="approved">已直接记账，立即纳入成本/结算</SelectItem>{dieselRefuelForm.id ? <SelectItem value="void">作废（仅限纠错）</SelectItem> : null}</SelectContent></Select><p className="mt-1 text-xs leading-5 text-emerald-700">柴油领用无需上级审核；保存后立即生效。价格异常、影像、项目范围和审计控制继续执行。</p></Field></div><Field label="说明"><Textarea value={dieselRefuelForm.remarks} placeholder="领用用途、油品说明或异常说明；不得填写不必要个人敏感信息" onChange={event => setDieselRefuelForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselRefuelDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselRefuelRecord.isPending || uploadDieselReceipt.isPending || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt || !dieselRefuelForm.liters || (dieselRefuelForm.assetType === "vehicle" && !dieselRefuelForm.vehicleId) || (dieselRefuelForm.assetType === "machine" && !dieselRefuelForm.machineId) || (dieselRefuelForm.supplyMethod === "external_station" && !dieselRefuelForm.actualUnitPrice) || (dieselRefuelForm.deductFromFreight && !dieselRefuelForm.transportTripId)}>{uploadDieselReceipt.isPending ? "正在归档小票…" : saveDieselRefuelRecord.isPending ? "正在直接记账…" : "保存并直接记账"}</Button></DialogFooter>
+              {dieselRefuelForm.assetType === "vehicle" ? <section className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3"><div className="flex items-center gap-2"><Checkbox id="diesel-deduct-freight" checked={dieselRefuelForm.deductFromFreight} onCheckedChange={checked => setDieselRefuelForm(current => ({ ...current, deductFromFreight: Boolean(checked), transportTripId: "" }))} /><Label htmlFor="diesel-deduct-freight" className="cursor-pointer font-medium text-amber-950">本次油款在渣土车运费结算时扣除</Label></div>{dieselRefuelForm.deductFromFreight ? <p className="text-xs leading-5 text-amber-800">无需选择某一趟。系统将在该车辆生成运输结算单时，从本期可结算运输总额中统一归集扣减，并写入结算明细与审计记录。</p> : null}</section> : null}
+              <div className="grid gap-3 sm:grid-cols-2"><Field label="记账状态"><Select value={dieselRefuelForm.status} onValueChange={value => setDieselRefuelForm(current => ({ ...current, status: value as DieselRefuelForm["status"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="approved">已直接记账，立即纳入成本/结算</SelectItem>{dieselRefuelForm.id ? <SelectItem value="void">作废（仅限纠错）</SelectItem> : null}</SelectContent></Select><p className="mt-1 text-xs leading-5 text-emerald-700">柴油领用无需上级审核；保存后立即生效。价格异常、影像、项目范围和审计控制继续执行。</p></Field></div><Field label="说明"><Textarea value={dieselRefuelForm.remarks} placeholder="领用用途、油品说明或异常说明；不得填写不必要个人敏感信息" onChange={event => setDieselRefuelForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setDieselRefuelDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveDieselRefuelRecord.isPending || uploadDieselReceipt.isPending || !dieselRefuelForm.projectId || !dieselRefuelForm.refueledAt || !dieselRefuelForm.liters || (dieselRefuelForm.assetType === "vehicle" && !dieselRefuelForm.vehicleId) || (dieselRefuelForm.assetType === "machine" && !dieselRefuelForm.machineId) || (dieselRefuelForm.supplyMethod === "external_station" && !dieselRefuelForm.actualUnitPrice) || (!dieselRefuelForm.id && dieselRefuelForm.status !== "void" && !dieselReceiptFile)}>{uploadDieselReceipt.isPending ? "正在归档加油表照片…" : saveDieselRefuelRecord.isPending ? "正在直接记账…" : "保存并直接记账"}</Button></DialogFooter>
             </form>
           </DialogContent>
         </Dialog>

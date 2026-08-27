@@ -1,0 +1,21 @@
+[Unit]
+Description=悦信云智管 MySQL 全库备份与完整性校验
+After=mysql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 专用无登录备份账户；仅能读取备份凭据和写入备份目录。
+User=yxbackup
+Group=yxbackup
+EnvironmentFile=/etc/yx-cloud-management/backup.env
+WorkingDirectory=/var/backups/yx-cloud-management/mysql
+ExecStart=/usr/bin/node /usr/local/lib/yx-cloud-management/backup/self-host-db-backup.mjs
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/yx-cloud-management/mysql

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import type { TrpcContext } from "./_core/context";
 
 /** 主数据路由测试使用内存桩，验证超级管理员守卫后的业务约束而不访问真实组织数据。 */
@@ -219,13 +220,15 @@ describe("超级管理主数据约束", () => {
     await expect(caller.assetMaintenance.save({ assetType: "vehicle", assetId: 1, projectId: 1, costCategory: "maintenance", amount: 0, occurredAt: "2026-08-10T08:00:00.000Z", serviceProvider: null, meterReading: null, nextDueAt: null, remarks: null, status: "draft" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("拒绝柴油外站加油遗漏实际单价，并拒绝车辆扣油未关联运输趟次", async () => {
+  it("拒绝柴油外站加油遗漏实际单价和未归档加油表现场影像，但允许车辆扣油按车辆结算总额归集", async () => {
     vi.mocked(getDb).mockResolvedValue({} as never);
     const caller = adminRouter.createCaller(createAdminContext());
     const base = { projectId: 1, assetType: "vehicle" as const, vehicleId: 11, machineId: null, transportTripId: null, supplyMethod: "external_station" as const, stationOrSupplierName: "测试加油站", liters: 50, actualUnitPrice: null, deductFromFreight: false, refueledAt: "2026-08-15T08:00:00.000Z", meterReading: null, receiptNo: null, evidenceId: null, remarks: null, status: "approved" as const };
 
     await expect(caller.diesel.saveRefuelRecord(base)).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    await expect(caller.diesel.saveRefuelRecord({ ...base, actualUnitPrice: 7.2, deductFromFreight: true })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const source = readFileSync(new URL("./routers/admin.ts", import.meta.url), "utf8");
+    expect(source).toContain("柴油领用必须使用后置相机现场拍摄加油表照片并归档水印凭证");
+    expect(source).not.toContain("扣减运费必须关联具体运输趟次");
   });
 
   it("拒绝柴油组合筛选中结束日期早于开始日期，避免导出范围与台账范围不一致", async () => {

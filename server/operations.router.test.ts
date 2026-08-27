@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "crypto";
+import { readFileSync } from "node:fs";
 import type { TrpcContext } from "./_core/context";
 
 /** 业务节点通知在路由中异步投递；测试仅校验公众号调用契约，不发起真实外部请求。 */
@@ -18,11 +19,12 @@ vi.mock("./access", async importOriginal => {
     assertProjectInCurrentScope: vi.fn(),
     getCurrentDataScope: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
+    getSuperAdminAccess: vi.fn(),
     hasUserSpecificOperationPermission: vi.fn(),
   };
 });
 
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission } from "./access";
+import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getSuperAdminAccess, hasUserSpecificOperationPermission } from "./access";
 import { getDb } from "./db";
 import { machineryRouter, transportRouter } from "./routers/operations";
 import { encryptSecret } from "./services/secretVault";
@@ -88,6 +90,7 @@ describe("机械与运输 tRPC 路由", () => {
     process.env.JWT_SECRET = "operations-router-rfid-test-secret";
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     vi.mocked(getCurrentDataScope).mockResolvedValue({ userId: 1, hasAllProjects: false, projectIds: [], organizationIds: [] });
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: false, reason: "not_super_admin" });
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(false);
     mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
   });
@@ -466,7 +469,46 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insert).toHaveBeenCalled();
   });
 
-  it("装土刷卡按事件幂等记录、条件更新趟次，并同时通知司机与上级主管", async () => {
+  it("运输负责人可读取项目级单次刷卡闭环设置，缺省值保持关闭", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).getNfcSingleScanCloseSetting({ projectId: 10 })).resolves.toEqual({ enabled: false, minimumIntervalPolicy: "route_minimum_transit_minutes" });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
+  it("仅超级管理员可启用单次刷卡闭环并留下审计记录", async () => {
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: true, reason: "super_admin" });
+    const settingUpdate = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const auditValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 900, version: 2 }]),
+      update: vi.fn(() => ({ set: settingUpdate })),
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).resolves.toEqual({ success: true, enabled: true });
+    expect(settingUpdate).toHaveBeenCalledWith(expect.objectContaining({ valueJson: "true", status: "published", version: 3 }));
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "set_nfc_single_scan_close", targetId: "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT:10" }));
+  });
+
+  it("非超级管理员不得通过移动端或接口启用单次刷卡闭环", async () => {
+    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("NFC 单次闭环保留最小连续开票拦截和真实状态标记，不伪造卸土刷卡事件", () => {
+    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    const supportSource = readFileSync(new URL("./services/transportNfcSupport.ts", import.meta.url), "utf8");
+    expect(source).toContain("assertVehicleMinimumNfcInvoiceInterval");
+    expect(source).toContain("minimumTransitMinutes: route.minimumTransitMinutes");
+    expect(source).toContain("completeNfcTripBySingleScan");
+    expect(supportSource).toContain("nfcSingleScanClosed: true");
+    expect(source).toContain("singleScanClosed");
+    expect(supportSource).toContain("activeVehicleTransitKey: null");
+    expect(supportSource).toContain("nfcTransitKey: null");
+  });
+
+  it("装土刷卡按事件幂等记录、条件更新趟次，并向已绑定司机账号写入站内消息", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
@@ -488,8 +530,9 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({ tripId: 50, vehicleId: 11, eventType: "load", validationStatus: "accepted" }));
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenNthCalledWith(2, expect.objectContaining({ module: "transport", action: "record_load_card_event", targetId: "100" }));
+    expect(insertValues).toHaveBeenNthCalledWith(3, expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserId: 7, idempotencyKey: "inapp:transport-load:100:7", channel: "in_app", deepLink: "/mobile/transport" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_card_confirmed", targetId: "100" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserIds: [7], targetId: "100" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice" }));
   });
 
   it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {
@@ -530,8 +573,34 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, idempotencyKey: "reader-unload-0001", occurredAt: "2026-07-25T08:10:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
     expect(updateWhere).toHaveBeenCalledTimes(2);
-    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
+    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", recipientUserId: 7, idempotencyKey: "inapp:transport-card-review:102:7", channel: "in_app", deepLink: "/mobile/transport" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "102" }));
+  });
+
+  it("司机柴油扣款明细仅投影本人车辆的有效运输扣油记录和加油机表数", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [
+        { id: 11, plateNo: "川A12345", driverUserId: 1 },
+        { id: 12, plateNo: "川A99999", driverUserId: 2 },
+      ],
+      [
+        { id: 201, recordNo: "DS1001", vehicleId: 11, transportTripId: 50, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:30:00.000Z"), liters: "42.5", amount: "310.25", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: "项目油库", meterReading: "1234.5", receiptNo: "RC-001", evidenceId: null, remarks: "当日运输扣油" },
+        { id: 202, recordNo: "DS1002", vehicleId: 12, transportTripId: 51, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:40:00.000Z"), liters: "30", amount: "219", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: "2000", receiptNo: null, evidenceId: null, remarks: null },
+        { id: 203, recordNo: "DS1003", vehicleId: 11, transportTripId: 52, assetType: "vehicle", deductFromFreight: false, status: "approved", refueledAt: new Date("2026-08-26T02:50:00.000Z"), liters: "20", amount: "146", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
+        { id: 204, recordNo: "DS1004", vehicleId: 11, transportTripId: 53, assetType: "vehicle", deductFromFreight: true, status: "void", refueledAt: new Date("2026-08-26T03:00:00.000Z"), liters: "10", amount: "73", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
+      ],
+    ) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).driverFuelDeductionDetails({ projectId: 10, date: "2026-08-26" })).resolves.toMatchObject({
+      date: "2026-08-26",
+      recordCount: 1,
+      totalLiters: 42.5,
+      totalAmount: 310.25,
+      records: [expect.objectContaining({ id: 201, vehiclePlateNo: "川A12345", meterReading: 1234.5, receiptNo: "RC-001", evidence: null })],
+    });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
   });
 
   it("现场传入未绑定的射频卡指纹时只留痕待复核，不能确认装土状态", async () => {

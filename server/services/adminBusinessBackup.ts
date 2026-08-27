@@ -6,6 +6,7 @@ import {
   dataBackups,
   departmentBusinessScopes,
   evidenceRecords,
+  financialInvoices,
   financialRecords,
   freightRateRules,
   inventoryTransactions,
@@ -27,6 +28,7 @@ import {
   systemRoles,
   transportTrips,
   transportVehicles,
+  temporaryDailyWageSettlements,
   userProfiles,
   userRoleAssignments,
   users,
@@ -294,6 +296,56 @@ export async function getBusinessModuleStatistics(filter: BusinessStatisticsFilt
     { code: "FINANCE", name: "财务成本", route: "/mobile/finance", recordCount: countOf(financeRows) },
     { code: "EVIDENCE", name: "现场取证", route: "/mobile/evidence", recordCount: countOf(evidenceRows) },
   ];
+}
+
+/**
+ * 经营数据大屏服务端汇总。金额来自真实财务、发票、计量和劳务台账，
+ * 不生成任何演示数据；项目与期间条件始终在查询层收敛。
+ */
+export async function getOperatingDashboardStatistics(filter: BusinessStatisticsFilter = {}) {
+  const db = await getDb();
+  if (!db) throw new Error("数据库连接暂不可用，无法读取经营数据大屏");
+  const window = getBusinessPeriodWindow(filter.period);
+  const [records, invoices, claims, reports, payrolls, dailyWages, trips] = await Promise.all([
+    db.select().from(financialRecords).where(and(filter.projectId === undefined ? undefined : eq(financialRecords.projectId, filter.projectId), window ? gte(financialRecords.occurredAt, window.start) : undefined, window ? lt(financialRecords.occurredAt, window.endExclusive) : undefined)),
+    db.select().from(financialInvoices).where(and(filter.projectId === undefined ? undefined : eq(financialInvoices.projectId, filter.projectId), window ? gte(financialInvoices.issuedAt, window.start) : undefined, window ? lt(financialInvoices.issuedAt, window.endExclusive) : undefined)),
+    db.select().from(measurementClaims).where(and(filter.projectId === undefined ? undefined : eq(measurementClaims.projectId, filter.projectId), window ? eq(measurementClaims.period, filter.period!) : undefined)),
+    db.select().from(constructionDailyReports).where(and(filter.projectId === undefined ? undefined : eq(constructionDailyReports.projectId, filter.projectId), window ? gte(constructionDailyReports.reportDate, window.start) : undefined, window ? lt(constructionDailyReports.reportDate, window.endExclusive) : undefined)),
+    db.select().from(payrollStatements).where(and(filter.projectId === undefined ? undefined : eq(payrollStatements.projectId, filter.projectId), window ? eq(payrollStatements.period, filter.period!) : undefined)),
+    db.select().from(temporaryDailyWageSettlements).where(and(filter.projectId === undefined ? undefined : eq(temporaryDailyWageSettlements.projectId, filter.projectId), window ? gte(temporaryDailyWageSettlements.settlementDate, window.start) : undefined, window ? lt(temporaryDailyWageSettlements.settlementDate, window.endExclusive) : undefined)),
+    db.select().from(transportTrips).where(and(filter.projectId === undefined ? undefined : eq(transportTrips.projectId, filter.projectId), window ? gte(transportTrips.startAt, window.start) : undefined, window ? lt(transportTrips.startAt, window.endExclusive) : undefined)),
+  ]);
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const validRecords = records.filter(row => row.settlementStatus !== "void");
+  const amountOf = (rows: typeof records) => round(rows.reduce((total, row) => total + Number(row.amount), 0));
+  const incomeRows = validRecords.filter(row => row.direction === "income" && row.sourceType !== "measurement_payment");
+  const expenseRows = validRecords.filter(row => row.direction === "expense");
+  const receivableRows = incomeRows.filter(row => ["unpaid", "partial"].includes(row.settlementStatus));
+  const payableRows = expenseRows.filter(row => ["unpaid", "partial"].includes(row.settlementStatus));
+  const paidRows = expenseRows.filter(row => row.settlementStatus === "paid" || row.sourceType === "purchase_order_settlement");
+  const categoryMap = new Map<string, { category: string; amount: number; unpaid: number; paid: number }>();
+  for (const row of expenseRows) {
+    const item = categoryMap.get(row.category) ?? { category: row.category, amount: 0, unpaid: 0, paid: 0 };
+    item.amount += Number(row.amount);
+    if (["unpaid", "partial"].includes(row.settlementStatus)) item.unpaid += Number(row.amount);
+    if (row.settlementStatus === "paid" || row.sourceType === "purchase_order_settlement") item.paid += Number(row.amount);
+    categoryMap.set(row.category, item);
+  }
+  const approvedClaims = claims.filter(row => ["approved", "settled"].includes(row.status));
+  const approvedAmount = round(approvedClaims.reduce((total, row) => total + Number(row.approvedAmount ?? row.declaredAmount), 0));
+  const settledAmount = round(claims.filter(row => row.status === "settled").reduce((total, row) => total + Number(row.approvedAmount ?? row.declaredAmount), 0));
+  const latestProgress = new Map<number, number>();
+  for (const row of reports.filter(row => ["approved", "locked"].includes(row.status))) latestProgress.set(row.projectId, Number(row.progressPercent));
+  const progressValues = Array.from(latestProgress.values());
+  const totalExpense = amountOf(expenseRows);
+  const paidAmount = amountOf(paidRows);
+  return {
+    scope: { projectId: filter.projectId ?? null, period: filter.period ?? null },
+    finance: { totalIncome: amountOf(incomeRows), totalExpense, receivable: amountOf(receivableRows), payable: amountOf(payableRows), paidAmount, invoiceAmount: round(invoices.filter(row => row.direction === "income" && !["void", "red_flushed"].includes(row.status)).reduce((total, row) => total + Number(row.amount), 0)), paymentRatio: totalExpense > 0 ? round(paidAmount / totalExpense * 100) : null, settlementRatio: approvedAmount > 0 ? round(settledAmount / approvedAmount * 100) : null, categories: Array.from(categoryMap.values()).map(item => ({ ...item, amount: round(item.amount), unpaid: round(item.unpaid), paid: round(item.paid) })).sort((a, b) => b.amount - a.amount) },
+    measurement: { declaredAmount: round(claims.reduce((total, row) => total + Number(row.declaredAmount), 0)), approvedAmount, settledAmount, pendingCount: claims.filter(row => ["submitted", "reviewing"].includes(row.status)).length },
+    progress: { averageProgressPercent: progressValues.length ? round(progressValues.reduce((total, value) => total + value, 0) / progressValues.length) : null, reportCount: reports.length, approvedReportCount: reports.filter(row => ["approved", "locked"].includes(row.status)).length },
+    resources: { payrollActualAmount: round(payrolls.reduce((total, row) => total + Number(row.actualAmount), 0)), dailyWageActualAmount: round(dailyWages.reduce((total, row) => total + Number(row.actualAmount), 0)), transportTripCount: trips.length },
+  };
 }
 
 /** 下载地址只在超级管理员主动请求时生成，数据库中不保存外链。 */

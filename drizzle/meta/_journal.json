@@ -470,6 +470,48 @@
       "when": 1787295288532,
       "tag": "0066_lethal_timeslip",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "5",
+      "when": 1787296255643,
+      "tag": "0067_closed_talon",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "5",
+      "when": 1787296802869,
+      "tag": "0068_sad_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "5",
+      "when": 1787298274921,
+      "tag": "0069_modern_leopardon",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "5",
+      "when": 1787469721833,
+      "tag": "0070_tan_inhumans",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "5",
+      "when": 1787535660268,
+      "tag": "0071_material_moondragon",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "5",
+      "when": 1787580710953,
+      "tag": "0072_dashing_gateway",
+      "breakpoints": true
     }
   ]
 }

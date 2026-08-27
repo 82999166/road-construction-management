@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { auditLogs, dailyProjectDigestSchedules, projects } from "../../drizzle/schema";
 import { assertSuperAdmin } from "../access";
 import { getDb } from "../db";
-import { createHeartbeatJob, updateHeartbeatJob } from "../_core/heartbeat";
+import { createHeartbeatJob, listHeartbeatJobs, updateHeartbeatJob } from "../_core/heartbeat";
 import { protectedProcedure, router } from "../_core/trpc";
 import { buildDailyDigestCron, buildProjectDailyDigest, DAILY_DIGEST_SCOPE_KEY, runDailyProjectDigest } from "../services/dailyProjectDigest";
 
@@ -13,6 +13,14 @@ const settingsInput = z.object({
   deliveryMinute: z.number().int().min(0).max(59),
   includeEmptyProjects: z.boolean().default(false),
 });
+
+const DAILY_DIGEST_HEARTBEAT_NAME = "daily-project-digest";
+const DAILY_DIGEST_HEARTBEAT_PATH = "/api/scheduled/daily-project-digest";
+const DAILY_DIGEST_HEARTBEAT_DESCRIPTION = "道路施工项目每日产值、开支与运输汇总";
+
+function isHeartbeatAlreadyExistsError(error: unknown) {
+  return error instanceof Error && error.message.includes("already_exists");
+}
 
 export const dailyDigestRouter = router({
   getSettings: protectedProcedure.query(async ({ ctx }) => {
@@ -39,10 +47,19 @@ export const dailyDigestRouter = router({
     let taskUid = saved.scheduleCronTaskUid;
     if (input.enabled) {
       if (taskUid) {
-        await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/daily-project-digest", method: "POST", payload: {}, description: "道路施工项目每日产值、开支与运输汇总", enable: true }, "");
+        await updateHeartbeatJob(taskUid, { cron, path: DAILY_DIGEST_HEARTBEAT_PATH, method: "POST", payload: {}, description: DAILY_DIGEST_HEARTBEAT_DESCRIPTION, enable: true }, "");
       } else {
-        const task = await createHeartbeatJob({ name: "daily-project-digest", cron, path: "/api/scheduled/daily-project-digest", method: "POST", payload: {}, description: "道路施工项目每日产值、开支与运输汇总" }, "");
-        taskUid = task.taskUid;
+        try {
+          const task = await createHeartbeatJob({ name: DAILY_DIGEST_HEARTBEAT_NAME, cron, path: DAILY_DIGEST_HEARTBEAT_PATH, method: "POST", payload: {}, description: DAILY_DIGEST_HEARTBEAT_DESCRIPTION }, "");
+          taskUid = task.taskUid;
+        } catch (error) {
+          if (!isHeartbeatAlreadyExistsError(error)) throw error;
+          const existingJobs = await listHeartbeatJobs("", { page: 1, pageSize: 100 });
+          const matchedJob = existingJobs.jobs.find(job => job.name === DAILY_DIGEST_HEARTBEAT_NAME && job.callbackPath === DAILY_DIGEST_HEARTBEAT_PATH);
+          if (!matchedJob) throw new Error("每日站内汇总任务已存在，但系统暂未读取到任务标识；请刷新页面后重试，不影响既有任务运行。");
+          taskUid = matchedJob.taskUid;
+          await updateHeartbeatJob(taskUid, { cron, path: DAILY_DIGEST_HEARTBEAT_PATH, method: "POST", payload: {}, description: DAILY_DIGEST_HEARTBEAT_DESCRIPTION, enable: true }, "");
+        }
       }
     } else if (taskUid) {
       await updateHeartbeatJob(taskUid, { enable: false }, "");

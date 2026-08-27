@@ -218,7 +218,7 @@ export const departmentBusinessScopes = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     organizationId: int("organizationId").notNull(),
-    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "EVIDENCE"]).notNull(),
+    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"]).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     configuredBy: int("configuredBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -282,6 +282,86 @@ export const auditLogs = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({ moduleIndex: index("audit_logs_module_index").on(table.module, table.createdAt) }),
+);
+
+/**
+ * 登录失败限流状态。subjectHash 为账号标识的不可逆摘要，避免将手机号、管理员名称或口令
+ * 写入限流表；持久化后服务重启或未来多实例部署也不会使锁定窗口自然失效。
+ */
+export const loginRateLimitStates = mysqlTable(
+  "login_rate_limit_states",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    scope: varchar("scope", { length: 64 }).notNull(),
+    subjectHash: varchar("subjectHash", { length: 128 }).notNull(),
+    failureCount: int("failureCount").default(0).notNull(),
+    windowStartedAt: datetime("windowStartedAt").notNull(),
+    lastFailureAt: datetime("lastFailureAt").notNull(),
+    lockedUntil: datetime("lockedUntil"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scopeSubjectUnique: uniqueIndex("login_rate_limit_scope_subject_unique").on(table.scope, table.subjectHash),
+    lockedUntilIndex: index("login_rate_limit_locked_until_index").on(table.lockedUntil),
+  }),
+);
+
+/**
+ * 敏感数据访问利用日志。完整账户、原始定位等高风险信息即使允许依法业务使用，
+ * 也必须单独记录访问者、项目范围、业务目的、返回记录数和结果，不依赖浏览器端日志。
+ */
+export const sensitiveDataAccessLogs = mysqlTable(
+  "sensitive_data_access_logs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    projectId: int("projectId"),
+    module: varchar("module", { length: 64 }).notNull(),
+    dataCategory: mysqlEnum("dataCategory", ["full_payment_account", "raw_location_coordinate", "identity_document", "other"]).notNull(),
+    accessPurpose: varchar("accessPurpose", { length: 300 }).notNull(),
+    targetType: varchar("targetType", { length: 64 }),
+    targetId: varchar("targetId", { length: 128 }),
+    recordCount: int("recordCount").default(0).notNull(),
+    result: mysqlEnum("result", ["granted", "denied", "exported", "reviewed"]).default("granted").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    userTimeIndex: index("sensitive_data_access_logs_user_time_index").on(table.userId, table.createdAt),
+    projectCategoryTimeIndex: index("sensitive_data_access_logs_project_category_time_index").on(table.projectId, table.dataCategory, table.createdAt),
+    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "sensitive_data_access_logs_user_fk" }).onDelete("restrict"),
+  }),
+);
+
+/** 追加式审计链的单行状态；数据库触发器在每条审计日志写入时原子推进，不允许业务端更新。 */
+export const auditLogChainState = mysqlTable(
+  "audit_log_chain_state",
+  {
+    id: int("id").primaryKey(),
+    lastSequence: bigint("lastSequence", { mode: "number" }).default(0).notNull(),
+    lastHash: varchar("lastHash", { length: 64 }).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+
+/** 每条业务审计日志的前序哈希和当前哈希；与日志主表保持一对一，支持后续校验与异常告警。 */
+export const auditLogIntegrityEvents = mysqlTable(
+  "audit_log_integrity_events",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    auditLogId: bigint("auditLogId", { mode: "number" }).notNull(),
+    sequenceNo: bigint("sequenceNo", { mode: "number" }).notNull(),
+    previousHash: varchar("previousHash", { length: 64 }).notNull(),
+    entryHash: varchar("entryHash", { length: 64 }).notNull(),
+    integrityVersion: varchar("integrityVersion", { length: 32 }).default("audit-chain-v1").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    auditLogUnique: uniqueIndex("audit_log_integrity_events_log_unique").on(table.auditLogId),
+    sequenceUnique: uniqueIndex("audit_log_integrity_events_sequence_unique").on(table.sequenceNo),
+    entryHashUnique: uniqueIndex("audit_log_integrity_events_hash_unique").on(table.entryHash),
+    auditLogFk: foreignKey({ columns: [table.auditLogId], foreignColumns: [auditLogs.id], name: "audit_log_integrity_events_log_fk" }).onDelete("restrict"),
+  }),
 );
 
 /**
@@ -691,10 +771,13 @@ export const attendanceCheckIns = mysqlTable(
     checkedOutAt: datetime("checkedOutAt"),
     deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
     deviceLabel: varchar("deviceLabel", { length: 160 }),
+    /** 打卡时反查得到的中文详细地址；反查失败不阻断打卡，但业务列表绝不改为展示坐标。 */
+    checkInAddress: varchar("checkInAddress", { length: 500 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     locationAccuracyMeters: decimal("locationAccuracyMeters", { precision: 10, scale: 2 }),
     status: mysqlEnum("status", ["normal", "location_missing"]).default("normal").notNull(),
+    checkoutAddress: varchar("checkoutAddress", { length: 500 }),
     checkoutLongitude: decimal("checkoutLongitude", { precision: 10, scale: 7 }),
     checkoutLatitude: decimal("checkoutLatitude", { precision: 10, scale: 7 }),
     checkoutLocationAccuracyMeters: decimal("checkoutLocationAccuracyMeters", { precision: 10, scale: 2 }),
@@ -752,7 +835,10 @@ export const payrollStatements = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period) }),
+  table => ({
+    workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period),
+    projectPeriodStatusIndex: index("payroll_statements_project_period_status_index").on(table.projectId, table.period, table.status),
+  }),
 );
 
 /** 临时人员按日结算：审核通过不代表付款，只有登记实际付款后才结算完毕。 */
@@ -1074,6 +1160,80 @@ export const transportVehicles = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo) }),
+);
+
+/** 外部渣土车司机关注服务号后的车辆通知绑定；不创建系统账号，OpenID 只保存密文与不可逆指纹。 */
+export const officialAccountDriverBindings = mysqlTable(
+  "official_account_driver_bindings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    plateNoSnapshot: varchar("plateNoSnapshot", { length: 32 }).notNull(),
+    driverNameSnapshot: varchar("driverNameSnapshot", { length: 128 }),
+    driverPhoneMaskedSnapshot: varchar("driverPhoneMaskedSnapshot", { length: 32 }),
+    openIdEncrypted: text("openIdEncrypted").notNull(),
+    openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
+    status: mysqlEnum("status", ["active", "revoked", "disabled", "unsubscribed"]).default("active").notNull(),
+    boundAt: datetime("boundAt"),
+    lastVerifiedAt: datetime("lastVerifiedAt"),
+    lastFailureAt: datetime("lastFailureAt"),
+    failureCount: int("failureCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    vehicleIndex: index("official_account_driver_bindings_vehicle_index").on(table.vehicleId, table.status),
+    openIdIndex: index("official_account_driver_bindings_openid_index").on(table.openIdFingerprint, table.status),
+    projectStatusIndex: index("official_account_driver_bindings_project_status_index").on(table.projectId, table.status),
+    vehicleFk: foreignKey({ columns: [table.vehicleId], foreignColumns: [transportVehicles.id], name: "official_account_driver_bindings_vehicle_fk" }).onDelete("cascade").onUpdate("cascade"),
+  }),
+);
+
+/** 外部司机回复“绑定”后生成的短时链接；仅保存令牌指纹与 OpenID 密文，不在 URL 中暴露 OpenID。 */
+export const officialAccountDriverBindingRequests = mysqlTable(
+  "official_account_driver_binding_requests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    tokenFingerprint: varchar("tokenFingerprint", { length: 64 }).notNull(),
+    openIdEncrypted: text("openIdEncrypted").notNull(),
+    openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
+    expiresAt: datetime("expiresAt").notNull(),
+    consumedAt: datetime("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    tokenUnique: uniqueIndex("official_account_driver_binding_requests_token_unique").on(table.tokenFingerprint),
+    openIdIndex: index("official_account_driver_binding_requests_openid_index").on(table.openIdFingerprint, table.expiresAt),
+  }),
+);
+
+/** 外部司机微信通知投递审计；不写入内部用户通知表，避免把外部司机伪造成系统账号。 */
+export const officialAccountDriverNotificationRecords = mysqlTable(
+  "official_account_driver_notification_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventCode: varchar("eventCode", { length: 128 }).notNull(),
+    idempotencyKey: varchar("idempotencyKey", { length: 180 }).notNull(),
+    driverBindingId: bigint("driverBindingId", { mode: "number" }),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    content: text("content").notNull(),
+    deepLink: varchar("deepLink", { length: 512 }),
+    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
+    retryCount: int("retryCount").default(0).notNull(),
+    sentAt: datetime("sentAt"),
+    providerMessageId: varchar("providerMessageId", { length: 128 }),
+    failureCode: varchar("failureCode", { length: 64 }),
+    lastAttemptedAt: datetime("lastAttemptedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    idempotencyUnique: uniqueIndex("official_account_driver_notifications_idempotency_unique").on(table.idempotencyKey),
+    vehicleStatusIndex: index("official_account_driver_notifications_vehicle_status_index").on(table.vehicleId, table.status),
+    projectCreatedIndex: index("official_account_driver_notifications_project_created_index").on(table.projectId, table.createdAt),
+  }),
 );
 
 /** 外租车辆租金规则；车辆自有时不建立启用规则，历史外租合同继续保留用于结算与审计。 */
@@ -1410,6 +1570,7 @@ export const transportTrips = mysqlTable(
    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
     projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
+    projectStatusStartIndex: index("transport_trips_project_status_start_index").on(table.projectId, table.status, table.startAt),
     projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
     projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(table.projectId, table.nfcTransitKey),
     projectActiveVehicleTransitUnique: uniqueIndex("transport_trips_project_active_vehicle_transit_unique").on(table.projectId, table.activeVehicleTransitKey),
@@ -2119,7 +2280,10 @@ export const financialRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo) }),
+  table => ({
+    recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo),
+    projectSettlementOccurredIndex: index("financial_records_project_settlement_occurred_index").on(table.projectId, table.settlementStatus, table.occurredAt),
+  }),
 );
 
 /**
@@ -2275,15 +2439,29 @@ export const evidenceRecords = mysqlTable(
     fileKey: varchar("fileKey", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 255 }),
     mimeType: varchar("mimeType", { length: 128 }),
+    /** 上传时以服务端读取的真实字节计算，供归档完整性校验；不信任客户端的文件名或 MIME 声明。 */
+    contentSha256: varchar("contentSha256", { length: 64 }),
+    contentBytes: int("contentBytes"),
     ocrResultJson: text("ocrResultJson"),
     watermarkJson: text("watermarkJson"),
     longitude: decimal("longitude", { precision: 11, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     capturedAt: datetime("capturedAt"),
+    /** 保留期限由经授权的资料政策设置；为空代表尚未确定，不得被系统解释为可删除。 */
+    retentionUntil: date("retentionUntil"),
+    status: mysqlEnum("status", ["active", "deleted"]).default("active").notNull(),
+    deletedAt: datetime("deletedAt"),
+    deletedBy: int("deletedBy"),
+    deletionReason: varchar("deletionReason", { length: 500 }),
     uploadedBy: int("uploadedBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ sourceIndex: index("evidence_records_source_index").on(table.sourceType, table.sourceId) }),
+  table => ({
+    sourceIndex: index("evidence_records_source_index").on(table.sourceType, table.sourceId),
+    projectStatusCreatedIndex: index("evidence_records_project_status_created_index").on(table.projectId, table.status, table.createdAt),
+    contentHashIndex: index("evidence_records_content_hash_index").on(table.contentSha256),
+    deletedByFk: foreignKey({ columns: [table.deletedBy], foreignColumns: [users.id], name: "evidence_records_deleted_by_fk" }).onDelete("restrict"),
+  }),
 );
 
 export type User = typeof users.$inferSelect;

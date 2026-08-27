@@ -226,4 +226,25 @@ describe("后台与项目范围访问控制", () => {
     });
   });
 
+  it("角色细分查看权限可在既有项目范围内补充非标准业务模块，不再被旧菜单角色白名单拦截", async () => {
+    const result = (rows: unknown[]) => Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
+    const db = {
+      select: vi.fn((fields?: Record<string, unknown>) => {
+        let rows: unknown[] = [];
+        if (fields && "permissionModule" in fields) rows = [{ roleCode: "LOGISTICS_MANAGER", permissionModule: "contract", action: "read" }];
+        else if (fields && "projectId" in fields && "roleId" in fields && !("module" in fields)) rows = [{ projectId: 101, roleId: 9, roleCode: "LOGISTICS_MANAGER" }];
+        const chain = { innerJoin: vi.fn(), where: vi.fn(() => result(rows)) };
+        chain.innerJoin.mockReturnValue(chain);
+        return { from: vi.fn(() => chain) };
+      }),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(getCurrentDepartmentAccess(createContext())).resolves.toEqual({
+      departments: [],
+      moduleCodes: ["PURCHASING", "EVIDENCE", "CONTRACT"],
+      hasAllDepartments: false,
+    });
+  });
+
 });

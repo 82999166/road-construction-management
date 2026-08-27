@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isInlineBroadcastDeliveryExpanded } from "./AdminPage";
+import { isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 
 describe("范围通知卡片内投递明细", () => {
   it("只展开被当前点击的通知卡片", () => {

@@ -9,6 +9,8 @@ describe("运输卸土时长与地点安全校验", () => {
     expect(source).toContain("unloadGeofenceMeters");
     expect(source).toContain("minimumTransitEnabled");
     expect(source).toContain("unloadGeofenceEnabled");
+    expect(source).toContain("运输安全阈值仅超级管理员可在后台维护");
+    expect(source).toContain("const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);");
     expect(schema).toContain("minimumTransitMinutes");
     expect(schema).toContain("unloadGeofenceMeters");
     expect(schema).toContain("minimumTransitEnabled");

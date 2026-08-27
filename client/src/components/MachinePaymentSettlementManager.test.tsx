@@ -13,5 +13,10 @@ describe("PC机械付款结算台账", () => {
     expect(source).toContain("会计审核");
     expect(source).toContain("确认已付款");
     expect(source).toContain("付款完成后不可作废");
+    expect(source).toContain('const [machineId, setMachineId] = useState("all")');
+    expect(source).toContain("printableSettlements");
+    expect(source).toContain("CurrentFilterPrintActions");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("合计：结算单");
   });
 });

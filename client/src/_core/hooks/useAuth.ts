@@ -41,6 +41,13 @@ export function useAuth(options?: UseAuthOptions) {
     return () => window.clearTimeout(timer);
   }, [meQuery.isLoading]);
 
+  // 清理历史版本遗留的认证镜像。真正的会话继续只依赖 HttpOnly Cookie，浏览器本地不持久化用户对象。
+  useEffect(() => {
+    try {
+      localStorage.removeItem("manus-runtime-user-info");
+    } catch {}
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await logoutMutation.mutateAsync();
@@ -58,6 +65,7 @@ export function useAuth(options?: UseAuthOptions) {
       // backend cookie is cleared by the logout mutation.
       try {
         sessionStorage.removeItem("manus-cookie");
+        localStorage.removeItem("manus-runtime-user-info");
       } catch {}
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
@@ -65,10 +73,6 @@ export function useAuth(options?: UseAuthOptions) {
   }, [logoutMutation, utils]);
 
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
     return {
       user: meQuery.data ?? null,
       loading: (meQuery.isLoading && !authLoadingTimedOut) || logoutMutation.isPending,

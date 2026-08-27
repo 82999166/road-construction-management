@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TransportRouteSafetySettings } from "@/components/TransportRouteSafetySettings";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, MapPin, Pencil, Plus, Route, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -215,6 +216,10 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
             </div><Button size="sm" variant="outline" className="shrink-0" onClick={() => openRouteEditor(route)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑路线</Button></div>
           </div>;
         })}</div> : <p className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-sm text-slate-500">尚未配置运输路线。请先新增装土点、卸土点和有效运价，再创建路线。</p>}
+      </section>
+      <section className="border-t border-[#dce9e6] pt-4">
+        <p className="mb-2 text-xs leading-5 text-[#5a766f]">以下配置仅限超级管理员维护；用于控制单次刷卡闭环，以及各启用路线的卸土最短时间和定位范围。</p>
+        <TransportRouteSafetySettings projectId={projectId} />
       </section>
     </CardContent>
 

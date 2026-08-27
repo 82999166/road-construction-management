@@ -135,14 +135,55 @@ function renderTemplate(value: string, variables: Record<string, string>) {
   return value.replace(/\{(title|content|eventCode|targetType|targetId|operationTime)\}/g, (_match, key: string) => variables[key] ?? "");
 }
 
+function formatWechatTemplateTime(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function normalizeWechatConstValue(value: string) {
+  const compact = value.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").slice(0, 20);
+  if (!compact) return "已处理";
+  if (compact.length <= 8) return compact;
+  if (/异常|预警|告警|失败|错误/.test(compact)) return "异常";
+  if (/拒绝|驳回|退回|作废/.test(compact)) return "未通过";
+  if (/成功|完成|通过|正常|测试/.test(compact)) return "正常";
+  return "已处理";
+}
+
 export function normalizeTemplateFieldValue(fieldKey: string, value: string) {
   const compact = value.replace(/[\r\n]+/g, " ").trim();
   if (/^time\d*$/i.test(fieldKey)) {
-    const timePattern = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?: \d{1,2}:\d{2}(?::\d{2})?)?$/;
-    return timePattern.test(compact) ? compact.slice(0, 32) : new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }).slice(0, 32);
+    const timePattern = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+    const match = compact.match(timePattern);
+    if (match) {
+      const [, year, month, day, hour = "00", minute = "00", second = "00"] = match;
+      return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")} ${hour.padStart(2, "0")}:${minute}:${second}`.slice(0, 32);
+    }
+    return formatWechatTemplateTime();
   }
-  if (/^thing\d*$/i.test(fieldKey) || /^const\d*$/i.test(fieldKey)) return compact.slice(0, 20);
-  if (/^character_string\d*$/i.test(fieldKey)) return compact.slice(0, 32);
+  if (/^thing\d*$/i.test(fieldKey)) {
+    const thing = compact.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").slice(0, 20);
+    return thing || "系统测试";
+  }
+  if (/^const\d*$/i.test(fieldKey)) return normalizeWechatConstValue(compact);
+  if (/^character_string\d*$/i.test(fieldKey)) {
+    const ascii = compact.replace(/[^A-Za-z0-9_\-./:]/g, "").slice(0, 32);
+    return ascii || "SYSTEMTEST";
+  }
+  if (/^amount\d*$/i.test(fieldKey)) {
+    const match = compact.replace(/,/g, "").match(/-?\d+(?:\.\d{1,2})?/);
+    return match ? `¥${Number(match[0]).toFixed(2)}` : "¥0.00";
+  }
   if (/^phone_number\d*$/i.test(fieldKey)) return compact.slice(0, 17);
   if (/^car_number\d*$/i.test(fieldKey)) return compact.slice(0, 8);
   return compact.slice(0, 200);
@@ -172,6 +213,31 @@ export function getPersistentBusinessTemplateEligibilityMessage(template: Pick<O
   return isPersistentBusinessTemplateEligible(template)
     ? null
     : "该“订阅模板消息”占位模板实测会被微信返回 40037，不能用于持续业务群发。请在微信服务号后台添加可下发的合规业务模板后重新读取模板库。";
+}
+
+function normalizeTemplateTitleForSemanticCheck(title: string) {
+  return title.replace(/[\s·・_\-—，,。.!！?？:：；;（）()【】\[\]{}]+/g, "").trim();
+}
+
+function isTransportSettlementEvent(eventCode: string) {
+  return /^transport_(daily_vehicle_settlement|vehicle_settlement_)/.test(eventCode);
+}
+
+/**
+ * 服务号模板必须和业务模块语义相符。宁可跳过服务号投递并保留站内通知，
+ * 也不能把运输刷卡、装土发票等消息套用“转账成功通知”等财务模板。
+ */
+export function getOfficialAccountTemplateSemanticMismatch(input: { module: OfficialAccountModule; eventCode: string; templateTitle: string }) {
+  const title = normalizeTemplateTitleForSemanticCheck(input.templateTitle);
+  if (!title) return "template_title_missing";
+  if (input.module === "transport") {
+    const settlementEvent = isTransportSettlementEvent(input.eventCode);
+    const financeOnlyTitle = /(转账|回款|到账|工资|打款|付款)/.test(title) && !/(运输|运单|车辆|渣土|趟次|结算|费用)/.test(title);
+    if (!settlementEvent && financeOnlyTitle) return "transport_template_finance_title_mismatch";
+    const required = settlementEvent ? /(运输|运单|车辆|渣土|趟次|结算|费用|付款)/ : /(运输|运单|车辆|渣土|趟次|装土|卸土|刷卡|发票|开票)/;
+    if (!required.test(title)) return "transport_template_title_mismatch";
+  }
+  return null;
 }
 
 /** 仅保留网络故障类别，禁止把 URL、令牌、OpenID 或响应正文写入业务投递审计。 */
@@ -253,9 +319,10 @@ export async function getOfficialAccountNotificationTemplateCoverage() {
       return {
         ...item,
         missingVariables: [],
-        ready: Boolean(binding),
+        ready: Boolean(binding) && !item.events.some(eventCode => binding ? getOfficialAccountTemplateSemanticMismatch({ module: item.module, eventCode, templateTitle: binding.title }) : true),
         compatibilityMode: binding ? (usesSingleFieldSummaryCompatibility(binding.templateFields) ? "single_field_summary" as const : "module_template" as const) : null,
         templateTitle: binding?.title ?? null,
+        semanticMismatch: binding ? item.events.map(eventCode => getOfficialAccountTemplateSemanticMismatch({ module: item.module, eventCode, templateTitle: binding.title })).find(Boolean) ?? null : null,
       };
     }),
   };
@@ -293,7 +360,7 @@ export async function loadPublishedOfficialAccountCredentials(): Promise<{ confi
   }
 }
 
-/** 消息与事件推送回调只读取后台已发布的敏感配置，避免 Token 和 AESKey 进入前端或环境变量。 */
+/** 消息与事件推送回调只读取后台已发布的敏感配置，避免 Token 和 AESKey 进入前端或环境变量；明文模式只要求 Token。 */
 export async function loadPublishedOfficialAccountEventConfig(): Promise<{ config?: OfficialAccountEventConfig; reason?: OfficialAccountNotificationResult["reason"] }> {
   const db = await getDb();
   if (!db) return { reason: "database_unavailable" };
@@ -305,11 +372,11 @@ export async function loadPublishedOfficialAccountEventConfig(): Promise<{ confi
   const appSecretEncrypted = settings.get("WECHAT_OFFICIAL_APP_SECRET")?.secretEncrypted;
   const tokenEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_TOKEN")?.secretEncrypted;
   const aesEncrypted = settings.get("WECHAT_OFFICIAL_EVENT_AES_KEY")?.secretEncrypted;
-  if (!appId || !appSecretEncrypted || !tokenEncrypted || !aesEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
+  if (!appId || !appSecretEncrypted || !tokenEncrypted) return { reason: rows.length ? "disabled" : "not_configured" };
   try {
     const eventToken = decryptSecret(tokenEncrypted);
-    const eventAesKey = decryptSecret(aesEncrypted);
-    if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || !/^[A-Za-z0-9]{43}$/.test(eventAesKey)) return { reason: "invalid_config" };
+    const eventAesKey = aesEncrypted ? decryptSecret(aesEncrypted) : "";
+    if (!/^[A-Za-z0-9]{3,32}$/.test(eventToken) || (eventAesKey && !/^[A-Za-z0-9]{43}$/.test(eventAesKey))) return { reason: "invalid_config" };
     return {
       config: {
         appId,
@@ -465,12 +532,24 @@ export async function sendOfficialAccountNotification(input: { module: OfficialA
     await db.update(notificationRecords).set(values).where(eq(notificationRecords.idempotencyKey, idempotencyKey));
     return result;
   };
+  const channelRows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson }).from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_NOTIFICATION_ENABLED", "WECHAT_OFFICIAL_NOTIFICATION_MODULES"])));
+  const channelSettings = new Map(channelRows.map(row => [row.settingKey, row.valueJson]));
+  const enabled = channelSettings.get("WECHAT_OFFICIAL_NOTIFICATION_ENABLED") === "true";
+  let configuredModules: string[] = [];
+  try { configuredModules = JSON.parse(channelSettings.get("WECHAT_OFFICIAL_NOTIFICATION_MODULES") ?? "[]") as string[]; } catch { configuredModules = []; }
+  /** 仅用户即时登录成功属于当前已明确合规且可由系统确认的即时操作结果；其他事件一律保留站内/短信降级。 */
+  const immediateEventAllowed = input.eventCode === "user_login_success";
+  if (!enabled || !configuredModules.includes(input.module) || !immediateEventAllowed) {
+    return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: !enabled ? "official_channel_disabled" : !configuredModules.includes(input.module) ? "official_module_disabled" : "official_event_not_immediate" });
+  }
   const [binding] = await db.select().from(officialAccountBindings).where(and(eq(officialAccountBindings.userId, input.recipientUserId), eq(officialAccountBindings.status, "active"))).limit(1);
   if (!binding) return update({ delivered: false, reason: "not_bound" }, { status: "skipped", failureCode: "not_bound" });
   const configResult = await loadPublishedOfficialAccountConfig();
   if (!configResult.config) return update({ delivered: false, reason: configResult.reason ?? "not_configured" }, { status: "failed", failureCode: configResult.reason ?? "not_configured" });
   const template = configResult.config.moduleTemplates[input.module] ?? configResult.config.fallbackTemplate;
   if (!template) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: "module_template_not_bound" });
+  const semanticMismatch = getOfficialAccountTemplateSemanticMismatch({ module: input.module, eventCode: input.eventCode, templateTitle: template.title });
+  if (semanticMismatch) return update({ delivered: false, reason: "disabled" }, { status: "skipped", failureCode: semanticMismatch });
   try {
     const openId = decryptSecret(binding.openIdEncrypted);
     const token = await getOfficialAccountAccessToken(configResult.config);

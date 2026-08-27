@@ -1,0 +1,11 @@
+[Unit]
+Description=悦信云智管每日全库备份定时器
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=15m
+Unit=yx-db-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAssignmentScopeSaveInput } from "./AdminPage";
+import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 
 describe("人员角色授权范围规范化", () => {
   it("具体项目优先于同时选择的部门，避免产生模糊双范围授权", () => {

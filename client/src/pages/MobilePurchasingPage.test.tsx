@@ -24,3 +24,41 @@ describe("移动采购清单费用录入", () => {
     expect(source).toContain('uploadPurchaseDocumentFile(event.target.files?.[0], "invoice")');
   });
 });
+
+
+describe("移动采购订单详情", () => {
+  it("将订单明细与单据、发票受控入口收敛到订单详情", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("采购订单详情 · {selectedOrder?.orderNo}");
+    expect(source).toContain("查看/下载采购单据：{selectedOrder.documentAttachment.fileName}");
+    expect(source).toContain("查看/下载发票附件：{selectedOrder.invoiceAttachment.fileName}");
+    expect(source).toContain("pending_approval: \"待审核\"");
+    expect(source).toContain("closed: \"已结算\"");
+  });
+});
+
+describe("移动采购项目范围反馈", () => {
+  it("区分项目授权请求失败与真实无授权项目，并允许重新获取服务端范围", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('retry: 2');
+    expect(source).toContain('refetchOnMount: "always"');
+    expect(source).toContain("项目授权加载失败");
+    expect(source).toContain("这不等同于没有项目权限");
+    expect(source).toContain("重新获取授权项目");
+    expect(source).toContain("projects.refetch()");
+  });
+});
+
+describe("采购仓储当前筛选导出与打印", () => {
+  it("按当前项目、标签和订单状态筛选真实记录，并生成独立 A4 汇总", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('const [orderPrintStatus, setOrderPrintStatus] = useState("all")');
+    expect(source).toContain("filteredOrders");
+    expect(source).toContain("CurrentFilterPrintActions");
+    expect(source).toContain("downloadCurrentFilteredCsv");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("采购订单明细表");
+    expect(source).toContain("库存余额明细表");
+    expect(source).toContain("采购申请明细表");
+  });
+});

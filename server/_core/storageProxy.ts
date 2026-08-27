@@ -1,5 +1,20 @@
 import type { Express } from "express";
+import fs from "fs/promises";
+import path from "path";
 import { ENV } from "./env";
+
+function normalizeStorageKey(key: string) {
+  return key.replace(/^\/+/, "").replace(/\\/g, "/");
+}
+
+function resolveSelfHostStoragePath(key: string) {
+  const root = path.resolve(ENV.selfHostStorageDir);
+  const filePath = path.resolve(root, normalizeStorageKey(key));
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+    throw new Error("Invalid storage key path");
+  }
+  return filePath;
+}
 
 export function registerStorageProxy(app: Express) {
   app.get("/manus-storage/*", async (req, res) => {
@@ -7,6 +22,29 @@ export function registerStorageProxy(app: Express) {
     if (!key) {
       res.status(400).send("Missing storage key");
       return;
+    }
+
+    if (ENV.selfHostStorageDir) {
+      try {
+        const filePath = resolveSelfHostStoragePath(key);
+        const metaPath = `${filePath}.meta.json`;
+        const [fileBuffer, metaRaw] = await Promise.all([
+          fs.readFile(filePath),
+          fs.readFile(metaPath, "utf8").catch(() => "{}"),
+        ]);
+        const meta = JSON.parse(metaRaw) as { contentType?: string };
+        res.set("Cache-Control", "private, max-age=300");
+        res.set("Content-Type", meta.contentType || "application/octet-stream");
+        res.send(fileBuffer);
+        return;
+      } catch (err) {
+        if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+          console.error("[StorageProxy] self-host storage failed:", err);
+          res.status(404).send("Storage object unavailable");
+          return;
+        }
+        console.warn("[StorageProxy] self-host object missing; falling back to managed storage for existing key.");
+      }
     }
 
     if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {

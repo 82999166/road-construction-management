@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { ADMIN_BUSINESS_ROUTE_BY_MODULE, getBusinessWorkspaceProjectState } from "./AdminPage";
+import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
+import { getBusinessWorkspaceProjectState } from "@/lib/adminWorkspaceState";
 
 describe("统一后台业务工作区范围保护", () => {
   it("仅接受正整数项目号作为真实业务台账查询范围", () => {
@@ -36,17 +37,27 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toMatch(/setLocation\(["'`]\/mobile/);
     expect(source).toContain("施工日报查看与编辑");
     expect(source).toContain("劳务人员档案");
-    expect(source).toContain("运输趟次明细");
+    expect(source).toContain("<TransportTripLedger");
   });
 
   it("将受控表单字段包装组件定义在模块作用域，避免状态更新重挂载输入框并导致失焦", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     const fieldDefinition = source.indexOf("function Field({ label, children }");
-    const pageDefinition = source.indexOf("export default function AdminPage()");
+    const pageDefinition = source.indexOf("export default function AdminPage");
 
     expect(fieldDefinition).toBeGreaterThan(-1);
     expect(pageDefinition).toBeGreaterThan(fieldDefinition);
     expect(source).not.toContain("const Field = ({ label, children }");
+  });
+
+  it("向普通管理员复用核心 PC 台账时只展示当前业务和工作台导航", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("scopedSection?: ScopedPcAdminSection");
+    expect(source).toContain("const scopedMenuItems: DashboardMenuItem[] = scopedSection");
+    expect(source).toContain('label: "业务工作台", path: "/admin", section: "我的工作台"');
+    expect(source).toContain("menuItems={scopedMenuItems}");
+    expect(source).toContain("!scopedSection ? <Tabs");
   });
 
   it("在 PC 超级管理后台承载员工、车辆与机械的关键维护闭环", () => {
@@ -75,13 +86,21 @@ describe("统一后台业务工作区范围保护", () => {
   it("车辆射频卡绑定窗口展示完整车辆信息，并可在窗口内直接读取卡 ID", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('Field label="车牌号"');
-    expect(source).toContain('Field label="驾驶员姓名"');
-    expect(source).toContain('Field label="驾驶员联系电话"');
-    expect(source).toContain('Field label="卡 ID / UID"');
+    expect(source).toContain('Field label="车牌号（车辆表单预填）"');
+    expect(source).toContain('Field label="驾驶员姓名（车辆表单预填）"');
+    expect(source).toContain('Field label="驾驶员联系电话（车辆表单预填）"');
+    expect(source).toContain('Field label="卡 ID / UID（芯片固定标识）"');
     expect(source).toContain('Field label="签名版本"');
     expect(source).toContain("读取卡 ID");
     expect(source).toContain('"http://127.0.0.1:47601/api/read-uid"');
+  });
+
+  it("车辆卡绑定窗口必须明确区分车辆表单预填、芯片 UID 与已清空的 NDEF 用户区", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("并非从实体卡读取");
+    expect(source).toContain("UID 是芯片出厂标识，不会因恢复初卡而改变");
+    expect(source).toContain("NDEF 用户区已经清空");
   });
 
   it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {
@@ -158,6 +177,7 @@ describe("统一后台业务工作区范围保护", () => {
 
   it("将高频业务台账统一提供响应式表格式总览，保留详情入口和既有状态操作", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const payrollSource = readFileSync(new URL("../components/PayrollStatementLedger.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("function LedgerTable");
     expect(source).toContain("台账列表 · 可筛选 / 可导出");
@@ -165,9 +185,11 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("员工档案、薪资与保险");
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("施工日报、现场影像与审核台账");
-    expect(source).toContain("工资条详细台账");
+    expect(source).toContain('lazy(() => import("@/components/PayrollStatementLedger"))');
+    expect(source).toContain("<PayrollStatementLedger");
+    expect(payrollSource).toContain("工资条详细台账");
     expect(source).toContain("机械资源、维修与会计计价台账");
-    expect(source).toContain("车辆趟次、异常与结算台账");
+    expect(source).toContain("<TransportTripLedger");
     expect(source).toContain("发票、成本与审计台账");
     expect(source).toContain("站内通知、投递与确认台账");
   });
@@ -196,6 +218,23 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('suv: "越野车"');
   });
 
+  it("柴油登记默认当前时间、提供防重复录入提醒，并在权限管理中拆出柴油细分权限", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const foundationSource = readFileSync(new URL("../../../server/services/foundationData.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("function DuplicateEntryNotice");
+    expect(source).toContain("防重复录入提醒");
+    expect(source).toContain("dieselDuplicateCandidates");
+    expect(source).toContain("请确认不是重复录入后再继续保存");
+    expect(source).toContain("refueledAt: toLocalDateTimeInput(new Date())");
+    expect(source).toContain('diesel: "柴油管理"');
+    expect(source).toContain("柴油管理已独立拆分为台账查看、领用登记、指导价、预警、扣油结算、作废、导出和打印");
+    expect(foundationSource).toContain('["diesel:read", "柴油台账查看", "diesel", "read"]');
+    expect(foundationSource).toContain('["diesel:refuel:create", "柴油领用登记", "diesel", "create"]');
+    expect(foundationSource).toContain('["diesel:guideline:manage", "柴油指导价维护", "diesel", "manage"]');
+    expect(foundationSource).toContain('["diesel:deduction:settle", "运输扣油结算", "diesel", "settle"]');
+  });
+
   it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
@@ -206,6 +245,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("录入车辆档案");
     expect(source).toContain("单车柴油分析");
     expect(source).toContain("车辆分析期间");
+    expect(source).toContain("本期 / 累计总趟数");
+    expect(source).toContain("柴油占比 / 每趟油费");
+    expect(source).toContain("max-w-[min(96vw,1320px)]");
   });
 
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {
@@ -254,8 +296,13 @@ describe("统一后台业务工作区范围保护", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("sourceType: \"diesel_receipt\"");
-    expect(source).toContain("加油表照片（JPG/PNG）");
-    expect(source).toContain("自动写入项目、加油时间、定位、操作人和防伪编号");
+    expect(source).toContain("加油表现场照片（必拍）");
+    expect(source).toContain("打开后置相机拍摄加油表");
+    expect(source).toContain("facingMode: { ideal: \"environment\" }");
+    expect(source).not.toContain('accept="image/jpeg,image/png" onChange={event => setDieselReceiptFile');
+    expect(source).toContain("维护指导价");
+    expect(source).toContain("无需选择某一趟");
+    expect(source).toContain("自动写入项目、加油时间、详细地点、操作人与防伪编号");
     expect(source).toContain("captureWatermarkLocation");
     expect(source).toContain("createWatermarkedImage");
     expect(source).toContain("柴油组合筛选");
@@ -272,6 +319,14 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("供应商柴油采购对账");
     expect(source).toContain("trpc.admin.diesel.supplierReconciliation.useQuery");
     expect(source).toContain("柴油供应商对账-");
+  });
+
+  it("将柴油指导价项目选择独占整行，避免与指导单价在窄屏弹窗重叠", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('data-testid="diesel-guideline-project-field"');
+    expect(source).toContain('className="w-full min-w-0"');
+    expect(source).toContain('grid grid-cols-1 gap-3 sm:grid-cols-2');
   });
 
   it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
@@ -330,6 +385,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("保存并校验服务号配置");
     expect(source).toContain("微信 API 固定出口网关地址");
     expect(source).toContain("固定出口网关签名密钥");
+    expect(source).toContain("域名与消息推送配置");
+    expect(source).toContain("getOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("saveOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("testOfficialAccountMessagePushConfiguration");
+    expect(source).toContain("微信后台 URL");
+    expect(source).toContain("EncodingAESKey");
+    expect(source).toContain("保存三项参数");
+    expect(source).toContain("明文模式");
+    expect(source).toContain("XML");
+    expect(source).toContain("校验回调 200");
     expect(source).toContain("其它系统参数");
     expect(source).not.toContain("OFFICIAL_ACCOUNT_SETTING_PRESETS");
   });
@@ -396,7 +461,7 @@ describe("统一后台业务工作区范围保护", () => {
   it("提供可解释的 AI 项目风险扫描、处置与财务分类分析，并要求维护设备核定油箱容量", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('label: "AI 项目风控", path: "/admin/risk"');
+    expect(source).toContain('label: "智能风控", path: "/admin/risk"');
     expect(source).toContain('const isRisk = activeSection === "risk"');
     expect(source).toContain("AI 项目风险预警中心");
     expect(source).toContain("立即扫描并提醒");
@@ -473,15 +538,86 @@ describe("后台服务号绑定状态映射", () => {
 });
 
 describe("后台全员上下班考勤定位展示", () => {
-  it("分别展示上班和下班的精确定位，并将两段坐标纳入 CSV 导出", () => {
-    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+  it("分别展示上班和下班中文地址并纳入 CSV 导出，默认不再呈现原始坐标", () => {
+    const source = readFileSync(new URL("../components/LaborCheckInLedger.tsx", import.meta.url), "utf8");
+    const adminSource = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("function formatAttendanceLocation");
+    expect(adminSource).toContain('lazy(() => import("@/components/LaborCheckInLedger"))');
+    expect(adminSource).toContain("<LaborCheckInLedger");
     expect(source).toContain("上班打卡位置");
     expect(source).toContain("下班打卡位置");
     expect(source).toContain("上班位置");
     expect(source).toContain("下班位置");
-    expect(source).toContain("item.checkoutLongitude");
-    expect(source).toContain("item.checkoutLocationAccuracyMeters");
+    expect(source).toContain("item.checkInAddress");
+    expect(source).toContain("item.checkoutAddress");
+    expect(source).toContain("中文地址");
+    expect(source).not.toContain("formatAttendanceLocation(item.checkoutLongitude");
+  });
+
+  it("后台上下班打卡台账默认使用中国业务日期，与服务端打卡日期裁切保持一致", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('timeZone: "Asia/Shanghai"');
+    expect(source).toContain("function toChinaBusinessDateInput");
+    expect(source).toContain("initialAttendanceDate={toChinaBusinessDateInput()}");
+    expect(source).toContain("fallbackBusinessDate={toChinaBusinessDateInput()}");
   });
 });
+
+describe("后台导出性能", () => {
+  it("仅在生成Excel时按需加载维护中的 XLSX 包，不将其作为首屏静态依赖", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('const XLSX = await import("@e965/xlsx")');
+    expect(source).not.toContain('import * as XLSX from "@e965/xlsx"');
+  });
+});
+
+describe("后台劳务台账独立懒加载", () => {
+  it("将上下班打卡、人员档案和考勤记录交给独立组件，父页面继续保留受控详情和导出回调", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('lazy(() => import("@/components/LaborCheckInLedger"))');
+    expect(source).toContain('lazy(() => import("@/components/LaborWorkerRoster"))');
+    expect(source).toContain('lazy(() => import("@/components/LaborAttendanceLedger"))');
+    expect(source).toContain("<LaborCheckInLedger");
+    expect(source).toContain("<LaborWorkerRoster");
+    expect(source).toContain("<LaborAttendanceLedger");
+    expect(source).toContain('module: "劳务考勤高级筛选导出"');
+    expect(source).toContain("setDesktopRecordDetail");
+  });
+});
+
+
+describe("采购订单详情与附件收敛", () => {
+  it("移除独立缩略图影像板块，并仅在订单详情中提供受控文件入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    expect(source).not.toContain("订单单据与发票影像");
+    expect(source).toContain("查看/下载文件：{item.documentAttachment.fileName}");
+    expect(source).toContain("查看/下载文件：{item.invoiceAttachment.fileName}");
+    expect(source).not.toContain("alt={`采购单据 ${item.orderNo}`}");
+    expect(source).toContain("pending_approval: \"待审核\"");
+    expect(source).toContain("closed: \"已结算\"");
+  });
+});
+
+describe("运输台账展示收敛", () => {
+  it("运输页面仅保留完整全台账作为运单筛选、导出与操作入口", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toContain("车辆趟次、异常与结算台账");
+    expect(source).toContain("<TransportTripLedger");
+    expect(source).toContain("transport-trip-ledger-upgrade");
+    expect(source).toContain("简版车辆趟次卡已移除");
+  });
+});
+
+
+  it("劳务工资将筛选与查询下沉到仅在劳务菜单挂载的懒加载容器", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const loader = readFileSync(new URL("../components/LaborWorkspaceLoader.tsx", import.meta.url), "utf8");
+    expect(source).toContain("const LaborWorkspaceLoader = lazy");
+    expect(source).toContain("const renderLabor = () => <LaborWorkspaceLoader");
+    expect(source).not.toContain("useLaborWorkspaceQueries({ enabled: canQuery && isLabor");
+    expect(loader).toContain("useLaborWorkspaceFilters(initialAttendanceDate)");
+    expect(loader).toContain("useLaborWorkspaceQueries({ enabled");
+  });

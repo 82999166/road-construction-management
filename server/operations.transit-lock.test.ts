@@ -4,9 +4,10 @@ import { describe, expect, it } from "vitest";
 describe("运输一车一在途锁", () => {
   it("用数据库唯一锁和历史在途检查覆盖 NFC、手机路线确认与车牌直拍开票", () => {
     const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    const supportSource = readFileSync(new URL("./services/transportNfcSupport.ts", import.meta.url), "utf8");
     expect(source).toContain("createActiveVehicleTransitKey");
     expect(source).toContain("assertNoOpenTransportTrip");
-    expect(source).toContain("还未卸土，请先完成当前运单");
+    expect(supportSource).toContain("还未卸土，请先完成当前运单");
     expect(source).toContain("activeVehicleTransitKey: input.endAt ? null");
     expect(source).toContain("activeVehicleTransitKey: null, endAt: occurredAt");
   });

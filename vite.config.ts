@@ -152,6 +152,18 @@ function vitePluginManusDebugCollector(): Plugin {
 
 const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
 
+/**
+ * 将跨路由通用依赖拆成长期可缓存的稳定包。业务页面仍由 App 路由 lazy() 按需加载，
+ * 这里不把任何业务源码强行合并，避免移动端首次进入下载后台工作区代码。
+ */
+function manualChunks(id: string) {
+  if (!id.includes("/node_modules/")) return;
+  if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/")) return "framework-react";
+  if (id.includes("/@tanstack/") || id.includes("/@trpc/") || id.includes("/superjson/")) return "framework-data";
+  if (id.includes("/@radix-ui/") || id.includes("/lucide-react/") || id.includes("/class-variance-authority/") || id.includes("/tailwind-merge/")) return "framework-ui";
+  if (id.includes("/recharts/")) return "framework-charts";
+}
+
 export default defineConfig({
   plugins,
   resolve: {
@@ -167,6 +179,9 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: { manualChunks },
+    },
   },
   server: {
     host: true,

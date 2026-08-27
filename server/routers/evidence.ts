@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
@@ -9,6 +10,7 @@ import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
 import { storageGetSignedUrl, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
+import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
 const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "diesel_receipt", "other"]);
@@ -138,7 +140,7 @@ export const evidenceRouter = router({
       const rows = await db
         .select()
         .from(evidenceRecords)
-        .where(eq(evidenceRecords.projectId, input.projectId))
+        .where(and(eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.status, "active")))
         .orderBy(desc(evidenceRecords.capturedAt), desc(evidenceRecords.createdAt))
         .limit(input.limit);
       const filteredRows = input.sourceType ? rows.filter(row => row.sourceType === input.sourceType) : rows;
@@ -159,8 +161,9 @@ export const evidenceRouter = router({
           fileName: row.fileName,
           mimeType: row.mimeType,
           description: watermark?.description ?? "现场影像",
-          longitude: row.longitude,
-          latitude: row.latitude,
+          locationProtection: row.longitude !== null && row.latitude !== null ? "原始坐标已受保护；仅可在争议核验流程中受控查看" : "未采集定位",
+          contentSha256: row.contentSha256,
+          contentBytes: row.contentBytes,
           capturedAt: row.capturedAt,
           createdAt: row.createdAt,
           url: signedImageUrl,
@@ -191,23 +194,15 @@ export const evidenceRouter = router({
     }
     const capturedAt = new Date(input.capturedAt);
     if (Number.isNaN(capturedAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "拍摄时间无效" });
+    const contentSha256 = createHash("sha256").update(imageBytes).digest("hex");
     const storedFile = await storagePut(`evidence/${input.projectId}/${capturedAt.toISOString().slice(0, 10)}/${user.id}-${getSafeEvidenceFileName(input.fileName)}`, imageBytes, input.mimeType);
     const watermarkJson = JSON.stringify({ description: input.description, capturedAt: capturedAt.toISOString(), longitude: input.longitude ?? null, latitude: input.latitude ?? null, version: 1 });
-    const result = await db.insert(evidenceRecords).values({
-      projectId: input.projectId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId ?? null,
-      fileKey: storedFile.key,
-      fileName: input.fileName,
-      mimeType: input.mimeType,
-      watermarkJson,
-      longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude),
-      latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude),
-      capturedAt,
-      uploadedBy: user.id,
+    let evidenceId = 0;
+    await db.transaction(async tx => {
+      const result = await tx.insert(evidenceRecords).values({ projectId: input.projectId, sourceType: input.sourceType, sourceId: input.sourceId ?? null, fileKey: storedFile.key, fileName: input.fileName, mimeType: input.mimeType, contentSha256, contentBytes: imageBytes.length, watermarkJson, longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude), latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude), capturedAt, retentionUntil: null, status: "active", uploadedBy: user.id });
+      evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "upload", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档现场影像：${input.sourceType} · ${input.description.slice(0, 80)}`, afterJson: JSON.stringify({ contentSha256, contentBytes: imageBytes.length, projectId: input.projectId, sourceType: input.sourceType }) });
     });
-    const evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
-    await db.insert(auditLogs).values({ userId: user.id, module: "evidence", action: "upload", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档现场影像：${input.sourceType} · ${input.description.slice(0, 80)}` });
     return { success: true, id: evidenceId || null, url: storedFile.url };
   }),
 
@@ -215,13 +210,13 @@ export const evidenceRouter = router({
    * 删除未被业务单据引用的取证影像。对象存储模板不提供物理删除接口；删除数据库
    * 文件键和所有 UI 引用后，对象会成为不可访问的无引用对象，由平台生命周期管理。
    */
-  delete: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  delete: protectedProcedure.input(z.object({ id: z.number().int().positive(), deletionReason: z.string().trim().min(5, "请说明删除原因，至少 5 个字符").max(500) })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     await assertEvidenceAccess(ctx);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [evidence] = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.id)).limit(1);
-    if (!evidence) throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在或已被删除" });
+    if (!evidence || evidence.status !== "active") throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在或已被删除" });
     if (!evidence.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "未归属项目的影像不能执行删除" });
     await assertProjectInCurrentScope(ctx, evidence.projectId);
 
@@ -243,14 +238,9 @@ export const evidenceRouter = router({
       throw new TRPCError({ code: "BAD_REQUEST", message: "该影像已关联考勤、成本、运输、采购、计量或财务单据，不能删除；请保留作为业务审计凭证" });
     }
 
-    await db.delete(evidenceRecords).where(eq(evidenceRecords.id, evidence.id));
-    await db.insert(auditLogs).values({
-      userId: user.id,
-      module: "evidence",
-      action: "delete",
-      targetType: "evidence",
-      targetId: String(evidence.id),
-      summary: `删除未关联现场影像：${evidence.sourceType} · ${evidence.fileName}；对象存储文件已失去系统引用`,
+    await db.transaction(async tx => {
+      await tx.update(evidenceRecords).set({ status: "deleted", deletedAt: new Date(), deletedBy: user.id, deletionReason: input.deletionReason }).where(and(eq(evidenceRecords.id, evidence.id), eq(evidenceRecords.status, "active")));
+      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "soft_delete", targetType: "evidence", targetId: String(evidence.id), summary: `受控删除未关联现场影像：${evidence.sourceType} · ${evidence.fileName}；对象键保留以便审计追溯`, beforeJson: JSON.stringify({ contentSha256: evidence.contentSha256, contentBytes: evidence.contentBytes, fileKey: evidence.fileKey }), afterJson: JSON.stringify({ status: "deleted", deletionReason: input.deletionReason }) });
     });
     return { success: true };
   }),

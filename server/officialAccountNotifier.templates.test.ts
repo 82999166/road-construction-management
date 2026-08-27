@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
-import { buildSingleFieldSummary, normalizeTemplateFieldValue, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./services/officialAccountNotifier";
+import { buildSingleFieldSummary, getOfficialAccountTemplateSemanticMismatch, normalizeTemplateFieldValue, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./services/officialAccountNotifier";
 
 describe("服务号业务通知模板矩阵", () => {
   it("覆盖采购、柴油、合同、施工、运输、财务、计量、劳务、机械与安全消息", () => {
@@ -44,11 +44,17 @@ describe("服务号业务通知模板矩阵", () => {
   });
 
   it("按微信关键词类型规范化模板字段，避免 47003 参数格式错误", () => {
-    expect(normalizeTemplateFieldValue("thing4", "设备维护审核结果通知\n项目部")).toBe("设备维护审核结果通知 项目部");
+    expect(normalizeTemplateFieldValue("thing4", "设备维护审核结果通知\n项目部")).toBe("设备维护审核结果通知项目部");
     expect(normalizeTemplateFieldValue("thing4", "一二三四五六七八九十一二三四五六七八九十一")).toHaveLength(20);
     expect(normalizeTemplateFieldValue("character_string1", "123456789012345678901234567890123456")).toHaveLength(32);
     expect(normalizeTemplateFieldValue("time3", "2026-08-16 04:00:00")).toBe("2026-08-16 04:00:00");
-    expect(normalizeTemplateFieldValue("time3", "not-a-time")).toMatch(/^\d{4}\/\d{1,2}\/\d{1,2}/);
+    expect(normalizeTemplateFieldValue("time3", "not-a-time")).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("拒绝运输刷卡发票通知套用财务转账类模板", () => {
+    expect(getOfficialAccountTemplateSemanticMismatch({ module: "transport", eventCode: "transport_mobile_nfc_invoice_departed", templateTitle: "转账成功通知" })).toBe("transport_template_finance_title_mismatch");
+    expect(getOfficialAccountTemplateSemanticMismatch({ module: "transport", eventCode: "transport_load_driver_notice", templateTitle: "车辆装土发票通知" })).toBeNull();
+    expect(getOfficialAccountTemplateSemanticMismatch({ module: "transport", eventCode: "transport_vehicle_settlement_pay", templateTitle: "渣土车费用结算通知" })).toBeNull();
   });
 
   it("固定出口仅将微信 API 相对请求经签名网关转发，未配置时保留直接请求降级", async () => {

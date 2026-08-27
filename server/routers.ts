@@ -7,6 +7,7 @@ import { changeLocalManagerPassword, loginLocalManager, loginTemporaryAdmin } fr
 import { adminRouter } from "./routers/admin";
 import { constructionRouter } from "./routers/construction";
 import { evidenceRouter } from "./routers/evidence";
+import { dieselRouter } from "./routers/diesel";
 import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
 import { subcontractRouter } from "./routers/subcontract";
 import { contractRouter } from "./routers/contracts";
@@ -87,6 +88,7 @@ export const appRouter = router({
   subcontract: subcontractRouter,
   contract: contractRouter,
   finance: financeRouter,
+  diesel: dieselRouter,
   projectRisk: projectRiskRouter,
   location: locationRouter,
 });

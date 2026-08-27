@@ -1,7 +1,7 @@
 import { MOBILE_MENU_CATALOG } from "../../shared/domain";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { constructionDailyReports, measurementClaims, notificationRecords, payrollStatements, projects, purchaseRequests, transportTrips } from "../../drizzle/schema";
-import { getCurrentDataScope, getCurrentDepartmentAccess, getCurrentUserSpecificMenuModules, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
+import { getCurrentDataScope, getCurrentDepartmentAccess, getCurrentUserSpecificMenuModules, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { DEPARTMENT_AGNOSTIC_MOBILE_MENUS } from "../../shared/department";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
@@ -59,7 +59,13 @@ export const mobileRouter = router({
   }),
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
-    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules] = await Promise.all([getEffectiveRoleCodes(ctx), getCurrentDataScope(ctx), getCurrentDepartmentAccess(ctx), getCurrentUserSpecificMenuModules(ctx)]);
+    const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules, dieselReadAccess] = await Promise.all([
+      getEffectiveRoleCodes(ctx),
+      getCurrentDataScope(ctx),
+      getCurrentDepartmentAccess(ctx),
+      getCurrentUserSpecificMenuModules(ctx),
+      getRoleOperationPermissionDecision(ctx, "DIESEL", "read"),
+    ]);
     const db = await getDb();
     const unreadMessages = db
       ? (await db.select({ id: notificationRecords.id }).from(notificationRecords).where(and(eq(notificationRecords.recipientUserId, user.id), ne(notificationRecords.status, "read")))).length
@@ -67,12 +73,12 @@ export const mobileRouter = router({
     const menus = MOBILE_MENU_CATALOG.filter(menu => {
       // 工作台和消息中心属于所有已登录人员的基础入口；其余业务入口必须同时通过岗位和部门业务范围校验。
       if ((DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code)) return true;
-      // 将只读字面量角色数组提升为字符串数组，便于对不同菜单的角色集合统一比较。
-      const menuRoles = menu.roles as readonly string[];
-      const hasRoleAccess = roleCodes.includes("ALL") || menuRoles.includes("ALL") || menuRoles.some(role => roleCodes.includes(role));
+      // 柴油是新增细分权限模块，不能沿用旧岗位默认放行规则；必须显式授予柴油台账查看权限。
       const hasDepartmentAccess = departmentAccess.hasAllDepartments || departmentAccess.moduleCodes.includes(menu.code as never);
       const hasUserSpecificMenuAccess = userSpecificMenuModules.includes(menu.code as never);
-      return (hasRoleAccess && hasDepartmentAccess) || hasUserSpecificMenuAccess;
+      if (menu.code === "DIESEL") return (dieselReadAccess.hasDetailedPermissions && dieselReadAccess.allowed && hasDepartmentAccess) || hasUserSpecificMenuAccess;
+      // 部门模块集合已在服务端同时核验角色、角色细分权限、用户专属权限和项目范围；这里不得再次用旧菜单角色白名单覆盖显式授权。
+      return hasDepartmentAccess || hasUserSpecificMenuAccess;
     });
 
     // 无数据库连接时仅返回已知的未读数降级值；不构造或缓存虚假的业务待办统计。

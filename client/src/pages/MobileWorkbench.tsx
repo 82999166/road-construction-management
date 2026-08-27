@@ -6,10 +6,12 @@ import { trpc } from "@/lib/trpc";
 import {
   Bell,
   Camera,
+  ChevronDown,
   ClipboardCheck,
   Clock3,
   CloudOff,
   ContactRound,
+  Fuel,
   HardHat,
   LayoutDashboard,
   MapPin,
@@ -40,6 +42,7 @@ const MENU_ICONS: Record<string, LucideIcon> = {
   PURCHASING: PackageSearch,
   MEASUREMENT: Ruler,
   FINANCE: WalletCards,
+  DIESEL: Fuel,
   EVIDENCE: Camera,
   MESSAGES: Bell,
 };
@@ -51,6 +54,15 @@ type WorkbenchSnapshot = {
   departmentModules: string[];
   statistics: { pendingApprovals: number; unreadMessages: number; todayTrips: number; pendingPayroll: number };
   savedAt: number;
+};
+
+/** 打卡成功回包优先于下一次状态查询，避免弱网或缓存短暂返回旧状态时重复出现可点击的上班按钮。 */
+type AttendanceStatusOverride = {
+  projectId: number;
+  checkedIn: boolean;
+  checkedOut: boolean;
+  checkedInAt: Date | string | null;
+  checkedOutAt: Date | string | null;
 };
 
 const WORKBENCH_SNAPSHOT_KEY = "road-construction-workbench-snapshot";
@@ -106,6 +118,8 @@ export default function MobileWorkbench() {
   const [isOnline, setIsOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(() => readWorkbenchSnapshot());
   const [attendanceProjectId, setAttendanceProjectId] = useState<number | undefined>();
+  const [attendanceStatusOverride, setAttendanceStatusOverride] = useState<AttendanceStatusOverride | null>(null);
+  const [workGuideExpanded, setWorkGuideExpanded] = useState(false);
   const workbench = trpc.mobile.workbench.useQuery(undefined, {
     enabled: isAuthenticated,
     retry: shouldRetryMobileWorkbenchRequest,
@@ -116,7 +130,28 @@ export default function MobileWorkbench() {
   const authorizedAttendanceProjects = attendanceProjects.data?.projects ?? [];
   const selectedAttendanceProjectId = attendanceProjectId ?? authorizedAttendanceProjects[0]?.id ?? 0;
   const attendanceStatus = trpc.labor.attendance.myCheckInStatus.useQuery({ projectId: selectedAttendanceProjectId }, { enabled: isAuthenticated && isOnline && Boolean(selectedAttendanceProjectId), retry: false });
-  const attendancePunch = trpc.labor.attendance.checkIn.useMutation({ onSuccess: async result => { toast.success(result.duplicate ? `今日${result.punchType === "out" ? "下班" : "上班"}打卡已完成` : `${result.punchType === "out" ? "下班" : "上班"}打卡成功，定位已上传`); await attendanceStatus.refetch(); }, onError: error => toast.error(error.message) });
+  const currentAttendanceOverride = attendanceStatusOverride?.projectId === selectedAttendanceProjectId ? attendanceStatusOverride : null;
+  const attendanceCheckedIn = Boolean(attendanceStatus.data?.checkedIn || currentAttendanceOverride?.checkedIn);
+  const attendanceCheckedOut = Boolean(attendanceStatus.data?.checkedOut || currentAttendanceOverride?.checkedOut);
+  const attendanceCheckInAt = attendanceStatus.data?.checkIn?.checkedInAt ?? currentAttendanceOverride?.checkedInAt ?? null;
+  const attendanceCheckOutAt = attendanceStatus.data?.checkOut?.checkedOutAt ?? currentAttendanceOverride?.checkedOutAt ?? null;
+  const attendancePunch = trpc.labor.attendance.checkIn.useMutation({ onSuccess: async (result, variables) => {
+    const refreshed = await attendanceStatus.refetch();
+    const serverStatus = refreshed.data;
+    if (result.punchType === "out" && serverStatus && !serverStatus.checkedOut) {
+      setAttendanceStatusOverride(null);
+      toast.error("下班打卡尚未被服务器确认，请刷新状态后重试");
+      return;
+    }
+    setAttendanceStatusOverride({
+      projectId: variables.projectId,
+      checkedIn: true,
+      checkedOut: result.punchType === "out",
+      checkedInAt: result.punchType === "in" ? result.checkedInAt : attendanceStatus.data?.checkIn?.checkedInAt ?? null,
+      checkedOutAt: result.punchType === "out" ? result.checkedOutAt : null,
+    });
+    toast.success(result.duplicate ? `今日${result.punchType === "out" ? "下班" : "上班"}打卡已完成` : `${result.punchType === "out" ? "下班" : "上班"}打卡成功，定位已上传`);
+  }, onError: error => toast.error(error.message) });
 
   /** 离线缓存仅可阅读，不允许通过重试按钮主动发起业务接口调用。 */
   const retryWorkbench = () => {
@@ -159,6 +194,11 @@ export default function MobileWorkbench() {
     if (!attendanceProjectId && authorizedAttendanceProjects.length) setAttendanceProjectId(authorizedAttendanceProjects[0].id);
   }, [attendanceProjectId, authorizedAttendanceProjects]);
 
+  useEffect(() => {
+    if (!currentAttendanceOverride) return;
+    if (attendanceStatus.data?.checkedIn && (currentAttendanceOverride.checkedOut ? attendanceStatus.data.checkedOut : true)) setAttendanceStatusOverride(null);
+  }, [attendanceStatus.data?.checkedIn, attendanceStatus.data?.checkedOut, currentAttendanceOverride]);
+
   async function submitAttendancePunch(punchType: "in" | "out") {
     if (!selectedAttendanceProjectId) return toast.error("请先选择已授权项目后打卡");
     if (!navigator.geolocation) return toast.error("当前浏览器不支持定位，无法完成考勤打卡");
@@ -182,7 +222,7 @@ export default function MobileWorkbench() {
       isLoading={loading || isOnlineWorkbenchLoading}
       authLoadingTimedOut={authLoadingTimedOut}
       loadingText="正在同步您的岗位工作台…"
-      title="工程云管移动工作台"
+      title="悦信云智管移动工作台"
       description="请先通过企业统一身份登录，系统将按您的岗位展示可办理业务。"
       Icon={HardHat}
       onRetry={() => {
@@ -216,13 +256,13 @@ export default function MobileWorkbench() {
         <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-9 pt-6 text-[#fff7ea]">
           <div className="pointer-events-none absolute -right-14 -top-14 h-44 w-44 rounded-full bg-[#c9854a]/20 blur-2xl" />
           <div className="relative flex items-center justify-between">
-            <div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.24)]"><HardHat className="h-5 w-5" /></div><div><p className="text-sm font-semibold">工程云管</p><p className="mt-0.5 text-xs text-[#e8cfb2]">施工承包移动工作台</p></div></div>
+            <div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.24)]"><HardHat className="h-5 w-5" /></div><div><p className="text-sm font-semibold">悦信云智管</p><p className="mt-0.5 text-xs text-[#e8cfb2]">工程承包移动工作台</p></div></div>
             <div className="flex items-center gap-2">
               {hasGlobalBusinessAccess ? <button aria-label="返回统一管理后台" title="返回统一管理后台" disabled={!isOnline} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/admin")}><ShieldCheck className="h-5 w-5" /></button> : null}
               <button aria-label="进入消息中心" disabled={!isOnline} className="relative grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" />{(statistics?.unreadMessages ?? 0) > 0 ? <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[#f3bf6b]" /> : null}</button>
             </div>
           </div>
-          <div className="relative mt-8"><p className="text-sm text-[#e8cfb2]">您好，{greetingName}</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">今天先完成最重要的事</h1><p className="mt-2 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{hasGlobalBusinessAccess ? "当前权限：超级管理员（全局业务授权）" : departmentNames.length ? `当前部门：${departmentNames.join("、")}` : "当前账号尚未配置业务部门"}</p>{userSpecificModules.length ? <p className="mt-2 text-xs leading-5 text-[#f4d7b6]">已按专属权限开放：{userSpecificModules.map(module => ({ CONSTRUCTION: "施工", LABOR: "劳务", MACHINERY: "机械", TRANSPORT: "运输", PURCHASING: "采购", MEASUREMENT: "计量", CONTRACT: "合同", FINANCE: "财务", EVIDENCE: "影像" })[module]).filter(Boolean).join("、")}</p> : null}</div>
+          <div className="relative mt-8"><p className="text-sm text-[#e8cfb2]">您好，{greetingName}</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">今天先完成最重要的事</h1><p className="mt-2 flex items-center gap-1 text-xs text-[#e8cfb2]"><MapPin className="h-3.5 w-3.5" />{hasGlobalBusinessAccess ? "当前权限：超级管理员（全局业务授权）" : departmentNames.length ? `当前部门：${departmentNames.join("、")}` : "当前账号尚未配置业务部门"}</p>{userSpecificModules.length ? <p className="mt-2 text-xs leading-5 text-[#f4d7b6]">已按专属权限开放：{userSpecificModules.map(module => ({ CONSTRUCTION: "施工", LABOR: "劳务", MACHINERY: "机械", TRANSPORT: "运输", PURCHASING: "采购", MEASUREMENT: "计量", CONTRACT: "合同", FINANCE: "财务", DIESEL: "柴油", EVIDENCE: "影像" })[module]).filter(Boolean).join("、")}</p> : null}</div>
         </header>
 
         <main className="space-y-6 px-5 pb-24 pt-5">
@@ -236,13 +276,13 @@ export default function MobileWorkbench() {
             })}
           </section>
 
-          <section className="rounded-2xl border border-[#e7c79f] bg-[#fff4e5] p-4 shadow-[0_6px_18px_rgba(71,42,30,.05)]"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d99855] text-white"><Clock3 className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#683a24]">每日上下班考勤</p><p className="mt-1 text-xs text-[#8f7566]">打卡时必须上传实时定位</p></div></div><MapPin className="mt-1 h-5 w-5 text-[#b46836]" /></div>{authorizedAttendanceProjects.length ? <><div className="mt-3 rounded-xl border border-[#ead4b4] bg-white px-3 py-2"><select aria-label="选择考勤项目" className="w-full bg-transparent text-sm text-[#623d2d] outline-none" value={selectedAttendanceProjectId ? String(selectedAttendanceProjectId) : ""} onChange={event => setAttendanceProjectId(Number(event.target.value))}>{authorizedAttendanceProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div><div className="mt-3 grid grid-cols-2 gap-3"><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">上班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceStatus.data?.checkedIn ? displayAttendanceTime(attendanceStatus.data.checkIn?.checkedInAt) : "未完成"}</p><Button className="mt-3 w-full bg-[#b96932] text-white hover:bg-[#995022]" size="sm" disabled={!isOnline || attendancePunch.isPending || attendanceStatus.data?.checkedIn} onClick={() => void submitAttendancePunch("in")}>{attendanceStatus.data?.checkedIn ? "已上班" : attendancePunch.isPending ? "定位打卡中…" : "上班打卡"}</Button></div><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">下班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceStatus.data?.checkedOut ? displayAttendanceTime(attendanceStatus.data.checkOut?.checkedOutAt) : "未完成"}</p><Button className="mt-3 w-full border-[#b96932] text-[#995022] hover:bg-[#f8e3c8]" variant="outline" size="sm" disabled={!isOnline || attendancePunch.isPending || !attendanceStatus.data?.checkedIn || attendanceStatus.data?.checkedOut} onClick={() => void submitAttendancePunch("out")}>{attendanceStatus.data?.checkedOut ? "已下班" : attendancePunch.isPending ? "定位打卡中…" : "下班打卡"}</Button></div></div></> : <p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-5 text-[#8f7566]">当前账号尚未配置项目范围，无法完成项目考勤。请联系主管分配项目范围。</p>}</section>
+          <section className="rounded-2xl border border-[#e7c79f] bg-[#fff4e5] p-4 shadow-[0_6px_18px_rgba(71,42,30,.05)]"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d99855] text-white"><Clock3 className="h-5 w-5" /></span><div><p className="text-sm font-semibold text-[#683a24]">每日上下班考勤</p><p className="mt-1 text-xs text-[#8f7566]">打卡时必须上传实时定位</p></div></div><MapPin className="mt-1 h-5 w-5 text-[#b46836]" /></div>{authorizedAttendanceProjects.length ? <><div className="mt-3 rounded-xl border border-[#ead4b4] bg-white px-3 py-2"><select aria-label="选择考勤项目" className="w-full bg-transparent text-sm text-[#623d2d] outline-none" value={selectedAttendanceProjectId ? String(selectedAttendanceProjectId) : ""} onChange={event => setAttendanceProjectId(Number(event.target.value))}>{authorizedAttendanceProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div><div className="mt-3 grid grid-cols-2 gap-3"><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">上班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceCheckedIn ? displayAttendanceTime(attendanceCheckInAt) : "未完成"}</p><Button className={`mt-3 w-full ${attendanceCheckedIn ? "bg-slate-200 text-slate-500 hover:bg-slate-200" : "bg-[#b96932] text-white hover:bg-[#995022]"}`} size="sm" disabled={!isOnline || attendancePunch.isPending || attendanceCheckedIn} onClick={() => void submitAttendancePunch("in")}>{attendanceCheckedIn ? "已上班" : attendancePunch.isPending ? "定位打卡中…" : "上班打卡"}</Button></div><div className="rounded-xl bg-white/80 p-3"><p className="text-xs text-[#8f7566]">下班打卡</p><p className="mt-1 text-sm font-semibold text-[#613a28]">{attendanceCheckedOut ? displayAttendanceTime(attendanceCheckOutAt) : "未完成"}</p><Button className={`mt-3 w-full border-[#b96932] ${attendanceCheckedOut ? "bg-slate-200 text-slate-500 hover:bg-slate-200" : "text-[#995022] hover:bg-[#f8e3c8]"}`} variant="outline" size="sm" disabled={!isOnline || attendancePunch.isPending || !attendanceCheckedIn || attendanceCheckedOut} onClick={() => void submitAttendancePunch("out")}>{attendanceCheckedOut ? "已下班" : attendancePunch.isPending ? "定位打卡中…" : "下班打卡"}</Button></div></div></> : <p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-5 text-[#8f7566]">当前账号尚未配置项目范围，无法完成项目考勤。请联系主管分配项目范围。</p>}</section>
 
-          <section className="rounded-2xl border border-[#ead9c8] bg-white p-4 shadow-[0_6px_18px_rgba(71,42,30,.05)]">
-            <div className="flex items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-[#5b3b2e]">现场作业指引</h2><p className="mt-1 text-xs leading-5 text-[#8f7566]">按岗位完成以下日常动作；系统会继续按项目范围、岗位权限和审核状态校验，页面提示不能替代审批。</p></div><ClipboardCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#b87333]" /></div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <section className="rounded-2xl border border-[#ead9c8] bg-white shadow-[0_6px_18px_rgba(71,42,30,.05)]">
+            <button type="button" aria-expanded={workGuideExpanded} className="flex w-full items-start justify-between gap-3 p-4 text-left" onClick={() => setWorkGuideExpanded(value => !value)}><div><h2 className="text-base font-semibold text-[#5b3b2e]">现场作业指引</h2><p className="mt-1 text-xs leading-5 text-[#8f7566]">按岗位完成日常动作；点击查看完整四步说明。</p></div><span className="flex shrink-0 items-center gap-1 text-xs font-medium text-[#a65e2d]">{workGuideExpanded ? "收起" : "展开"}<ChevronDown className={`h-5 w-5 ${workGuideExpanded ? "rotate-180" : ""}`} /></span></button>
+            {workGuideExpanded ? <div className="grid gap-2 border-t border-[#f1e5d7] px-4 pb-4 pt-3 sm:grid-cols-2">
               {[{ no: "01", title: "先完成定位考勤", text: "上下班均需实时定位；无授权项目时先联系主管配置范围。" }, { no: "02", title: "按岗位录入业务", text: "施工、运输、采购、柴油、劳务等仅在已授权菜单内办理。" }, { no: "03", title: "同步影像与单据", text: "现场照片、采购单据和发票按业务单据归档，严禁以相册素材替代现场取证。" }, { no: "04", title: "处理待办并确认消息", text: "优先查看审批、工资和运输待办；服务号通知以真实模板投递回执为准。" }].map(item => <div key={item.no} className="flex gap-3 rounded-xl bg-[#fdf7ee] p-3"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#f3e1c6] text-[10px] font-semibold text-[#955126]">{item.no}</span><div><p className="text-xs font-semibold text-[#5b3b2e]">{item.title}</p><p className="mt-1 text-[11px] leading-4 text-[#8f7566]">{item.text}</p></div></div>)}
-            </div>
+            </div> : null}
           </section>
 
           <section>

@@ -19,10 +19,11 @@ vi.mock("./access", async importOriginal => {
     assertProjectInCurrentScope: vi.fn(),
     assertSuperAdmin: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
+    hasUserSpecificOperationPermission: vi.fn(),
   };
 });
 
-import { assertProjectInCurrentScope, assertSuperAdmin, getEffectiveRoleCodes } from "./access";
+import { assertProjectInCurrentScope, assertSuperAdmin, getEffectiveRoleCodes, hasUserSpecificOperationPermission } from "./access";
 import { getDb } from "./db";
 import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
 
@@ -81,7 +82,16 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.clearAllMocks();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAuthContext().user);
+    vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(false);
     mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([]);
+  });
+
+  it("用户专属采购读取权限可进入受控项目列表能力，不要求额外岗位角色", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue([]);
+    vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(true);
+
+    await expect(purchasingRouter.createCaller(createAuthContext()).capabilities()).resolves.toEqual({ canApprove: false, canManageInventory: false });
+    expect(vi.mocked(hasUserSpecificOperationPermission)).toHaveBeenCalledWith(expect.anything(), "PURCHASING", "read");
   });
 
   it("已关闭采购申请不可回退，且状态操作始终保留项目范围校验", async () => {

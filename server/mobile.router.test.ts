@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
-const { mockGetCurrentDataScope, mockGetCurrentDepartmentAccess, mockGetCurrentUserSpecificMenuModules, mockGetEffectiveRoleCodes } = vi.hoisted(() => ({
+const { mockGetCurrentDataScope, mockGetCurrentDepartmentAccess, mockGetCurrentUserSpecificMenuModules, mockGetEffectiveRoleCodes, mockGetRoleOperationPermissionDecision } = vi.hoisted(() => ({
   mockGetCurrentDataScope: vi.fn(),
   mockGetCurrentDepartmentAccess: vi.fn().mockResolvedValue({ departments: [], moduleCodes: [], hasAllDepartments: true }),
   mockGetCurrentUserSpecificMenuModules: vi.fn().mockResolvedValue([]),
   mockGetEffectiveRoleCodes: vi.fn(),
+  mockGetRoleOperationPermissionDecision: vi.fn().mockResolvedValue({ hasDetailedPermissions: false, allowed: false }),
 }));
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
@@ -17,6 +18,7 @@ vi.mock("./access", async importOriginal => {
     getCurrentDepartmentAccess: mockGetCurrentDepartmentAccess,
     getCurrentUserSpecificMenuModules: mockGetCurrentUserSpecificMenuModules,
     getEffectiveRoleCodes: mockGetEffectiveRoleCodes,
+    getRoleOperationPermissionDecision: mockGetRoleOperationPermissionDecision,
   };
 });
 
@@ -115,5 +117,29 @@ describe("移动工作台 tRPC 路由", () => {
     expect(result.user.userSpecificModules).toEqual(["CONSTRUCTION"]);
     expect(result.menus.some(menu => menu.code === "CONSTRUCTION")).toBe(true);
     expect(result.menus.some(menu => menu.code === "TRANSPORT")).toBe(false);
+  });
+
+  it("已授予柴油查看细分权限时，移动工作台必须返回柴油管理入口", async () => {
+    mockGetEffectiveRoleCodes.mockResolvedValue(["MACHINERY_MANAGER"]);
+    mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [88], organizationIds: [] });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY", "DIESEL"], hasAllDepartments: false });
+    mockGetRoleOperationPermissionDecision.mockResolvedValueOnce({ hasDetailedPermissions: true, allowed: true }).mockResolvedValueOnce({ hasDetailedPermissions: true, allowed: false });
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
+
+    const result = await mobileRouter.createCaller(createAuthContext()).workbench();
+
+    expect(result.menus.some(menu => menu.code === "DIESEL" && menu.title === "柴油管理")).toBe(true);
+  });
+
+  it("未配置柴油细分权限时，旧岗位兼容规则不得自动显示柴油管理入口", async () => {
+    mockGetEffectiveRoleCodes.mockResolvedValue(["MACHINERY_MANAGER"]);
+    mockGetCurrentDataScope.mockResolvedValue({ userId: 7, hasAllProjects: false, projectIds: [88], organizationIds: [] });
+    mockGetCurrentDepartmentAccess.mockResolvedValueOnce({ departments: [], moduleCodes: ["MACHINERY"], hasAllDepartments: false });
+    mockGetRoleOperationPermissionDecision.mockResolvedValueOnce({ hasDetailedPermissions: false, allowed: true });
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([{ id: 1 }]) as never);
+
+    const result = await mobileRouter.createCaller(createAuthContext()).workbench();
+
+    expect(result.menus.some(menu => menu.code === "DIESEL")).toBe(false);
   });
 });

@@ -125,6 +125,7 @@ export default function MobileEvidencePage() {
   const [locationAddress, setLocationAddress] = useState("");
   const [captureWeather, setCaptureWeather] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<{ id: number; fileName: string } | null>(null);
+  const [deletionReason, setDeletionReason] = useState("");
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const cameraEnabled = captureConfig.data?.camera.enabled ?? true;
@@ -164,6 +165,7 @@ export default function MobileEvidencePage() {
   const removeEvidence = trpc.evidence.delete.useMutation({
     onSuccess: async () => {
       setDeleteCandidate(null);
+      setDeletionReason("");
       await evidence.refetch();
       toast.success("现场影像已删除，操作已记录审计");
     },
@@ -250,7 +252,7 @@ export default function MobileEvidencePage() {
       <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
         <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-7 pt-6 text-[#fff7ea]">
           <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-[#c9854a]/20 blur-2xl" />
-          <div className="relative flex items-center gap-3"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div><p className="text-sm font-semibold">工程云管</p><h1 className="mt-0.5 text-xl font-semibold">水印影像取证</h1></div></div>
+          <div className="relative flex items-center gap-3"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 transition-colors hover:bg-white/20" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div><p className="text-sm font-semibold">悦信云智管</p><h1 className="mt-0.5 text-xl font-semibold">水印影像取证</h1></div></div>
           <p className="relative mt-4 flex items-center gap-1 text-xs leading-5 text-[#e8cfb2]"><ShieldCheck className="h-3.5 w-3.5" />文件、拍摄时间、项目与定位信息将受控归档并记录操作审计。</p>
         </header>
 
@@ -275,17 +277,18 @@ export default function MobileEvidencePage() {
                     <p className="text-xs leading-5 text-[#634838]">{item.description}</p>
                     <div className="rounded-lg bg-[#f9f4ed] px-2.5 py-2 text-[10px] leading-4 text-[#735645]"><p>关联业务：{item.sourceId ? `${sourceLabel} · ${item.sourceId}` : "暂未关联，后续可在业务单据中关联后提交"}</p><p className="mt-1">影像查看：主管审核、业务详情与归档记录</p></div>
                     {item.ocrResult ? <div className="rounded-lg bg-[#f9eddf] p-2 text-[10px] leading-4 text-[#704b38]"><p className="flex items-center gap-1 font-semibold text-[#905027]"><ReceiptText className="h-3 w-3" />OCR 结果 · 需人工复核</p><p className="mt-1 line-clamp-2">{item.ocrResult.summary || "未能识别摘要"}</p><p className="mt-1">金额：{item.ocrResult.amount || "未识别"}</p></div> : item.sourceType === "purchase" ? <Button size="sm" variant="outline" className="h-7 w-full border-[#d6ae8e] px-2 text-[10px] text-[#8a4b25] hover:bg-[#fff3e5]" disabled={runOcr.isPending} onClick={() => runOcr.mutate({ id: item.id })}><ScanLine className="mr-1 h-3 w-3" />{runOcr.isPending ? "正在识别…" : "票据 OCR"}</Button> : null}
-                    {item.canDelete ? <Button size="sm" variant="outline" className="h-7 w-full border-[#e8c2bc] px-2 text-[10px] text-[#a44336] hover:bg-[#fff2f0]" onClick={() => setDeleteCandidate({ id: item.id, fileName: item.fileName || "现场影像" })}><Trash2 className="mr-1 h-3 w-3" />删除取证记录</Button> : null}
+                    {item.canDelete ? <Button size="sm" variant="outline" className="h-7 w-full border-[#e8c2bc] px-2 text-[10px] text-[#a44336] hover:bg-[#fff2f0]" onClick={() => { setDeletionReason(""); setDeleteCandidate({ id: item.id, fileName: item.fileName || "现场影像" }); }}><Trash2 className="mr-1 h-3 w-3" />删除取证记录</Button> : null}
                   </CardContent></Card>;
                 })}
               </div>}
             </section>
           </>}
         </main>
-        <AlertDialog open={Boolean(deleteCandidate)} onOpenChange={open => { if (!open && !removeEvidence.isPending) setDeleteCandidate(null); }}>
+        <AlertDialog open={Boolean(deleteCandidate)} onOpenChange={open => { if (!open && !removeEvidence.isPending) { setDeleteCandidate(null); setDeletionReason(""); } }}>
           <AlertDialogContent className="border-[#ead9c8] bg-[#fffaf5] text-[#3b2118]">
-            <AlertDialogHeader><AlertDialogTitle>确认删除现场影像？</AlertDialogTitle><AlertDialogDescription>“{deleteCandidate?.fileName || "该照片"}”将从系统影像台账中移除。已关联业务单据的照片不可删除，所有删除操作会留存审计记录。</AlertDialogDescription></AlertDialogHeader>
-            <AlertDialogFooter><AlertDialogCancel disabled={removeEvidence.isPending}>取消</AlertDialogCancel><AlertDialogAction className="bg-[#a44336] text-white hover:bg-[#843328]" disabled={!deleteCandidate || removeEvidence.isPending} onClick={() => { if (deleteCandidate) removeEvidence.mutate({ id: deleteCandidate.id }); }}>{removeEvidence.isPending ? "正在删除…" : "确认删除"}</AlertDialogAction></AlertDialogFooter>
+            <AlertDialogHeader><AlertDialogTitle>确认受控删除现场影像？</AlertDialogTitle><AlertDialogDescription>“{deleteCandidate?.fileName || "该照片"}”会从日常影像台账中隐藏，原对象键、内容指纹和删除原因将保留用于审计追溯。已关联业务单据的影像不可删除。</AlertDialogDescription></AlertDialogHeader>
+            <div><Label>删除原因</Label><Textarea className="mt-2 border-[#ead9c8] bg-white" value={deletionReason} maxLength={500} placeholder="例如：重复上传，已保留正确影像记录 #123" onChange={event => setDeletionReason(event.target.value)} /></div>
+            <AlertDialogFooter><AlertDialogCancel disabled={removeEvidence.isPending}>取消</AlertDialogCancel><AlertDialogAction className="bg-[#a44336] text-white hover:bg-[#843328]" disabled={!deleteCandidate || removeEvidence.isPending || deletionReason.trim().length < 5} onClick={() => { if (deleteCandidate) removeEvidence.mutate({ id: deleteCandidate.id, deletionReason: deletionReason.trim() }); }}>{removeEvidence.isPending ? "正在受控删除…" : "确认受控删除"}</AlertDialogAction></AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><Camera className="h-5 w-5" /><span className="text-[10px] font-medium">取证</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>

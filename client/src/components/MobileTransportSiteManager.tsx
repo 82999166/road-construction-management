@@ -23,10 +23,11 @@ type SiteDraft = {
 };
 
 /** 手机端与PC端共用 transport.saveSite / transport.listSites，避免跨端地点与路线数据漂移。 */
-export function MobileTransportSiteManager({ projectId, canManage, onConfigureRoutes }: { projectId: number; canManage: boolean; onConfigureRoutes?: () => void }) {
+export function MobileTransportSiteManager({ projectId, canManage, onConfigureRoutes, compact = false }: { projectId: number; canManage: boolean; onConfigureRoutes?: () => void; compact?: boolean }) {
   const utils = trpc.useUtils();
   const sites = trpc.transport.listSites.useQuery({ projectId }, { enabled: Boolean(projectId) && canManage, retry: false });
   const [draft, setDraft] = useState<SiteDraft | null>(null);
+  const [siteSettingsOpen, setSiteSettingsOpen] = useState(false);
   const [locationStatus, setLocationStatus] = useState("");
   const reverseGeocode = trpc.location.reverseGeocode.useMutation({ onError: error => setLocationStatus(error.message) });
   const saveSite = trpc.transport.saveSite.useMutation({
@@ -40,9 +41,9 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
 
   if (!canManage || !projectId) return null;
 
-  const openNew = (siteType: SiteDraft["siteType"]) => {
+  const openNew = () => {
     setLocationStatus("");
-    setDraft({ id: null, siteType, name: "", address: "", administratorUserId: "", minimumTransitMinutes: "10", minimumTransitEnabled: true, unloadGeofenceMeters: "300", unloadGeofenceEnabled: true, status: "active" });
+    setDraft({ id: null, siteType: "load", name: "", address: "", administratorUserId: "", minimumTransitMinutes: "10", minimumTransitEnabled: true, unloadGeofenceMeters: "300", unloadGeofenceEnabled: true, status: "active" });
   };
   const openEdit = (site: NonNullable<typeof sites.data>[number]) => {
     setLocationStatus("");
@@ -83,20 +84,11 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
   const siteNameLabel = draft?.siteType === "unload" ? "卸土点名称" : "装土点名称";
   const siteNamePlaceholder = draft?.siteType === "unload" ? "例如：塔头02卸土场" : "例如：陶沙02取土场";
 
-  return <Card className="border border-[#c8ddd9] bg-[#f7fcfb] shadow-[0_6px_18px_rgba(43,91,83,.08)] print:hidden">
-    <CardContent className="p-4">
-      <div>
-        <p className="flex items-center gap-1.5 text-sm font-semibold text-[#245e56]"><MapPin className="h-4 w-4" />装卸土点与运输路线配置</p>
-        <p className="mt-1 text-xs leading-5 text-[#5a766f]">在此维护地点、中文详细地址和路线；手机端与PC后台使用同一套数据。</p>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <Button size="sm" variant="outline" className="border-[#3d776f] text-[#235d55]" onClick={() => openNew("load")}><Plus className="mr-1 h-3.5 w-3.5" />新增装土点</Button>
-        <Button size="sm" className="bg-[#2d6f67] text-white hover:bg-[#245a54]" onClick={() => openNew("unload")}><Plus className="mr-1 h-3.5 w-3.5" />新增卸土点</Button>
-      </div>
-      {onConfigureRoutes ? <Button size="sm" variant="outline" className="mt-2 w-full border-[#3d776f] text-[#235d55]" onClick={onConfigureRoutes}><Route className="mr-1 h-3.5 w-3.5" />配置运输路线、公里数与运价</Button> : null}
-      <div className="mt-3 space-y-2">
+  return <>
+    <Card className="border border-[#c8ddd9] bg-[#f7fcfb] shadow-[0_6px_18px_rgba(43,91,83,.08)] print:hidden"><CardContent className={`flex items-center justify-between gap-2 ${compact ? "min-h-14 p-2" : "p-4"}`}><div className="min-w-0"><p className={`flex items-center gap-1.5 font-semibold text-[#245e56] ${compact ? "text-xs" : "text-sm"}`}><MapPin className="h-4 w-4 shrink-0" />装卸土点与路线设置</p><p className={`mt-0.5 text-[#5a766f] ${compact ? "text-[10px] leading-3" : "text-xs leading-5"}`}>已配置 {sites.data?.length ?? 0} 个地点</p></div><Button size="sm" className={`shrink-0 bg-[#2d6f67] text-white hover:bg-[#245a54] ${compact ? "h-7 px-2 text-[11px]" : ""}`} onClick={() => setSiteSettingsOpen(true)}>配置</Button></CardContent></Card>
+    <Dialog open={siteSettingsOpen} onOpenChange={setSiteSettingsOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>装卸土点与运输路线配置</DialogTitle><DialogDescription>维护地点、中文详细地址和路线；手机端与 PC 后台使用同一套数据。</DialogDescription></DialogHeader><Button size="sm" className="mt-1 w-full bg-[#2d6f67] text-white hover:bg-[#245a54]" onClick={openNew}><Plus className="mr-1 h-3.5 w-3.5" />新增装卸土点</Button>{onConfigureRoutes ? <Button size="sm" variant="outline" className="mt-2 w-full border-[#3d776f] text-[#235d55]" onClick={() => { setSiteSettingsOpen(false); onConfigureRoutes(); }}><Route className="mr-1 h-3.5 w-3.5" />配置运输路线、公里数与运价</Button> : null}<div className="mt-3 space-y-2">
         {sites.isLoading ? <p className="rounded-lg bg-white p-3 text-center text-xs text-slate-500">正在读取现场地点…</p> : null}
-        {!sites.isLoading && !sites.data?.length ? <p className="rounded-lg border border-dashed border-[#b9d0cb] bg-white p-3 text-center text-xs text-slate-500">暂无装卸土点。请使用上方按钮分别新增装土点和卸土点。</p> : null}
+        {!sites.isLoading && !sites.data?.length ? <p className="rounded-lg border border-dashed border-[#b9d0cb] bg-white p-3 text-center text-xs text-slate-500">暂无装卸土点。请使用上方入口新增地点并选择装土点或卸土点。</p> : null}
         {sites.data?.map(site => <div key={site.id} className="flex items-start justify-between gap-3 rounded-xl border border-[#dce9e6] bg-white p-3">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-slate-800">{site.siteType === "load" ? "装土点" : "卸土点"} · {site.name}</p>
@@ -106,12 +98,11 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
           </div>
           <Button size="sm" variant="outline" className="shrink-0" onClick={() => openEdit(site)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑</Button>
         </div>)}
-      </div>
-    </CardContent>
+      </div></DialogContent></Dialog>
     <Dialog open={Boolean(draft)} onOpenChange={open => !open && setDraft(null)}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{draft?.id ? (draft.siteType === "load" ? "编辑装土点" : "编辑卸土点") : (draft?.siteType === "load" ? "新增装土点" : "新增卸土点")}</DialogTitle>
+          <DialogTitle>{draft?.id ? (draft.siteType === "load" ? "编辑装土点" : "编辑卸土点") : "新增装卸土点"}</DialogTitle>
           <DialogDescription>{draft?.siteType === "unload" ? "请维护中文详细地址和本卸土点统一安全阈值；所有驶向本点的路线自动使用。" : "请依次填写地点名称和中文详细地址。系统会在后台校验地址并保存围栏计算数据，页面不显示经纬度。"}</DialogDescription>
         </DialogHeader>
         {draft ? <div className="grid gap-4 py-2">
@@ -135,5 +126,5 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
         <DialogFooter><Button variant="outline" onClick={() => setDraft(null)}>取消</Button><Button className="bg-[#2d6f67] hover:bg-[#245a54]" disabled={saveSite.isPending} onClick={persist}>{saveSite.isPending ? "正在校验地址…" : draft?.id ? "保存地点" : "新增地点"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
-  </Card>;
+  </>;
 }

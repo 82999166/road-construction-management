@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { departmentBusinessScopes, officialAccountBindings, organizations, projects, rolePermissions, systemPermissions, systemRoles, userPermissions, userProfiles, userRoleAssignments, users } from "../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES, type DepartmentBusinessModule, getDepartmentBusinessModuleName } from "../shared/department";
@@ -10,7 +10,7 @@ type DepartmentScopedContext = TrpcContext & { departmentModule?: DepartmentBusi
 type DataScope = { userId: number; hasAllProjects: boolean; projectIds: number[]; organizationIds: number[] };
 
 /** 角色详细授权按业务域与动作拆分；未配置详细权限的历史角色继续沿用既有岗位授权，避免升级时误锁业务。 */
-export type BusinessOperationAction = "read" | "create" | "edit" | "submit" | "review" | "settle" | "void" | "export" | "print";
+export type BusinessOperationAction = "read" | "create" | "edit" | "manage" | "submit" | "review" | "settle" | "void" | "export" | "print";
 
 const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule, string> = {
   CONSTRUCTION: "construction",
@@ -21,6 +21,7 @@ const OPERATION_PERMISSION_MODULE_BY_DEPARTMENT: Record<DepartmentBusinessModule
   MEASUREMENT: "measurement",
   CONTRACT: "contract",
   FINANCE: "finance",
+  DIESEL: "diesel",
   EVIDENCE: "evidence",
 };
 
@@ -118,6 +119,31 @@ async function getUserSpecificMenuModulesForUser(db: NonNullable<Awaited<ReturnT
     .filter((module): module is DepartmentBusinessModule => Boolean(module));
 }
 
+/** 角色细分权限可补充旧岗位菜单目录，但只能在该角色既有部门或项目范围内生效。 */
+async function getRoleDetailedMenuModulesByRole(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  roleCodes: readonly string[],
+) {
+  const result = new Map<string, Set<DepartmentBusinessModule>>();
+  const distinctRoleCodes = Array.from(new Set(roleCodes.filter(Boolean)));
+  if (!distinctRoleCodes.length) return result;
+  const rows = await db
+    .select({ roleCode: systemRoles.code, permissionModule: systemPermissions.module, action: systemPermissions.action })
+    .from(rolePermissions)
+    .innerJoin(systemRoles, eq(rolePermissions.roleId, systemRoles.id))
+    .innerJoin(systemPermissions, eq(rolePermissions.permissionId, systemPermissions.id))
+    .where(inArray(systemRoles.code, distinctRoleCodes));
+  for (const row of rows) {
+    if (row.action !== "read" && row.action !== "manage") continue;
+    const departmentModule = DEPARTMENT_MODULE_BY_OPERATION_PERMISSION[row.permissionModule];
+    if (!departmentModule) continue;
+    const modules = result.get(row.roleCode) ?? new Set<DepartmentBusinessModule>();
+    modules.add(departmentModule);
+    result.set(row.roleCode, modules);
+  }
+  return result;
+}
+
 /** 供工作台展示“已按用户专属权限开放”的业务模块；不得单独用于放宽项目数据范围。 */
 export async function getCurrentUserSpecificMenuModules(ctx: TrpcContext) {
   const user = requireAuthenticatedUser(ctx);
@@ -134,6 +160,14 @@ function canRoleHandleDepartmentModule(roleCode: string, module: DepartmentBusin
   if (!menu) return false;
   const permittedRoles = menu.roles as readonly string[];
   return permittedRoles.includes("ALL") || permittedRoles.includes(roleCode);
+}
+
+function canRoleHandleModuleWithDetailedPermission(
+  roleCode: string,
+  module: DepartmentBusinessModule,
+  detailedModulesByRole: ReadonlyMap<string, ReadonlySet<DepartmentBusinessModule>>,
+) {
+  return canRoleHandleDepartmentModule(roleCode, module) || detailedModulesByRole.get(roleCode)?.has(module) === true;
 }
 
 /** 项目级角色授权沿用同一移动菜单目录推导可办理模块，避免前后端维护两套岗位规则。 */
@@ -153,7 +187,7 @@ async function getProjectScopedRoleAssignments(
   now: Date,
 ) {
   return db
-    .select({ projectId: userRoleAssignments.projectId, roleCode: systemRoles.code })
+    .select({ projectId: userRoleAssignments.projectId, roleId: systemRoles.id, roleCode: systemRoles.code })
     .from(userRoleAssignments)
     .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
     .innerJoin(projects, eq(userRoleAssignments.projectId, projects.id))
@@ -193,8 +227,8 @@ export function requireAuthenticatedUser(ctx: TrpcContext) {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "请先登录后再继续操作" });
   }
-  if (ctx.user.loginMethod === "local_manager" && ctx.user.localAccountStatus !== "active") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已停用，请联系超级管理员" });
+  if (["local_manager", "local_driver"].includes(ctx.user.loginMethod ?? "") && ctx.user.localAccountStatus !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: ctx.user.loginMethod === "local_driver" ? "该司机手机号账号已停用，请联系管理员" : "该普通管理人员账号已停用，请联系超级管理员" });
   }
   if (ctx.user.loginMethod === "deleted_local_manager") {
     throw new TRPCError({ code: "FORBIDDEN", message: "该普通管理人员账号已删除，请联系超级管理员" });
@@ -303,7 +337,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   if (isSuperAdmin) {
     return {
       departments: [] as Array<{ id: number; name: string; type: "department" | "project_department" }>,
-      moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "FINANCE", "EVIDENCE"] as DepartmentBusinessModule[],
+      moduleCodes: ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"] as DepartmentBusinessModule[],
       hasAllDepartments: true,
     };
   }
@@ -313,7 +347,7 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
 
   const now = new Date();
   const rows = await db
-    .select({ organizationId: organizations.id, organizationName: organizations.name, organizationType: organizations.type, roleCode: systemRoles.code, module: departmentBusinessScopes.module })
+    .select({ organizationId: organizations.id, organizationName: organizations.name, organizationType: organizations.type, roleId: systemRoles.id, roleCode: systemRoles.code, module: departmentBusinessScopes.module })
     .from(userRoleAssignments)
     .innerJoin(systemRoles, eq(userRoleAssignments.roleId, systemRoles.id))
     .innerJoin(organizations, eq(userRoleAssignments.organizationId, organizations.id))
@@ -331,9 +365,13 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
       ),
     );
 
-  const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
-  const projectModuleCodes = projectScopedRows.flatMap(row => getRoleDepartmentModules(row.roleCode));
+  const detailedModulesByRole = await getRoleDetailedMenuModulesByRole(db, [...rows.map(row => row.roleCode), ...projectScopedRows.map(row => row.roleCode)]);
+  const authorizedRows = rows.filter(row => canRoleHandleModuleWithDetailedPermission(row.roleCode, row.module as DepartmentBusinessModule, detailedModulesByRole));
+  const projectModuleCodes = projectScopedRows.flatMap(row => Array.from(new Set([
+    ...getRoleDepartmentModules(row.roleCode),
+    ...Array.from(detailedModulesByRole.get(row.roleCode) ?? []),
+  ])));
   // 用户专属权限只能复用其既有的直接项目范围，不能在无项目角色授权时凭空扩大数据边界。
   const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
   const departmentMap = new Map<number, { id: number; name: string; type: "department" | "project_department" }>();
@@ -391,11 +429,12 @@ async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: Dep
         or(isNull(userRoleAssignments.validTo), gt(userRoleAssignments.validTo, now)),
       ),
     );
-  const departmentScopedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const detailedModulesByRole = await getRoleDetailedMenuModulesByRole(db, [...rows.map(row => row.roleCode), ...projectScopedRows.map(row => row.roleCode)]);
+  const departmentScopedRows = rows.filter(row => canRoleHandleModuleWithDetailedPermission(row.roleCode, row.module as DepartmentBusinessModule, detailedModulesByRole));
   const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
   const directProjectRows = projectScopedRows
-    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module) || userSpecificModuleCodes.includes(module))
+    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module) || detailedModulesByRole.get(row.roleCode)?.has(module) || userSpecificModuleCodes.includes(module))
     .map(row => ({ projectId: row.projectId, organizationId: null }));
   return toDataScope(user.id, [...departmentScopedRows, ...directProjectRows]);
 }
@@ -445,8 +484,9 @@ export async function getCurrentDataScope(ctx: TrpcContext) {
       ),
     );
 
-  const authorizedRows = rows.filter(row => canRoleHandleDepartmentModule(row.roleCode, row.module as DepartmentBusinessModule));
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
+  const detailedModulesByRole = await getRoleDetailedMenuModulesByRole(db, [...rows.map(row => row.roleCode), ...projectScopedRows.map(row => row.roleCode)]);
+  const authorizedRows = rows.filter(row => canRoleHandleModuleWithDetailedPermission(row.roleCode, row.module as DepartmentBusinessModule, detailedModulesByRole));
   const directProjectRows = projectScopedRows.map(row => ({ projectId: row.projectId, organizationId: null }));
   return toDataScope(user.id, [...authorizedRows, ...directProjectRows]);
 }

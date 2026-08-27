@@ -84,11 +84,10 @@ describe("移动工作台部门业务投影", () => {
     });
 
     expect(markup).toContain("现场作业指引");
-    expect(markup).toContain("先完成定位考勤");
-    expect(markup).toContain("按岗位录入业务");
-    expect(markup).toContain("同步影像与单据");
-    expect(markup).toContain("处理待办并确认消息");
-    expect(markup).toContain("页面提示不能替代审批");
+    expect(markup).toContain("点击查看完整四步说明");
+    expect(markup).toContain("展开");
+    expect(markup).not.toContain("先完成定位考勤");
+    expect(markup).not.toContain("同步影像与单据");
   });
 
   it("没有部门业务授权时展示受控的空状态而不是猜测菜单", () => {
@@ -112,6 +111,32 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("当前权限：超级管理员（全局业务授权）");
     expect(markup).toContain("已启用超级管理员全局业务授权，接口仍执行服务端校验");
     expect(markup).toContain("返回统一管理后台");
+  });
+
+  it("服务端返回柴油管理菜单时展示柴油入口，不由前端自行推断其他未授权业务", () => {
+    const markup = renderWorkbench({
+      user: { id: 7, name: "柴油管理员", roleCodes: ["MACHINERY_MANAGER"], departments: [], departmentModules: ["DIESEL"] },
+      menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "DIESEL", title: "柴油管理" }, { code: "MESSAGES", title: "消息中心" }],
+      statistics: { pendingApprovals: 0, unreadMessages: 0, todayTrips: 0, pendingPayroll: 0 },
+    });
+
+    expect(markup).toContain("柴油管理");
+    expect(markup).not.toContain("财务成本");
+    expect(markup).toContain("已开通 1 项部门业务");
+  });
+
+  it("服务端已确认上班后将上班按钮改为已上班禁用状态，而不是保留可操作的实色按钮", () => {
+    vi.stubGlobal("navigator", { onLine: true });
+    mockWorkbenchUseQuery.mockReturnValue({ data: { user: { id: 7, name: "现场管理员", roleCodes: ["CONSTRUCTION_MANAGER"], departments: [], departmentModules: ["CONSTRUCTION"] }, menus: [{ code: "WORKBENCH", title: "工作台" }, { code: "CONSTRUCTION", title: "施工管理" }], statistics: { pendingApprovals: 0, unreadMessages: 0, todayTrips: 0, pendingPayroll: 0 } }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendanceProjectsUseQuery.mockReturnValue({ data: { projects: [{ id: 1, name: "测试项目" }] }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendanceStatusUseQuery.mockReturnValue({ data: { checkedIn: true, checkedOut: false, checkIn: { checkedInAt: new Date("2026-08-24T01:00:00Z") }, checkOut: null }, isLoading: false, error: null, refetch: vi.fn() });
+    mockAttendancePunchUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
+
+    const markup = renderToStaticMarkup(<MobileWorkbench />);
+
+    expect(markup).toContain("已上班");
+    expect(markup).toContain("bg-slate-200");
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>已上班<\/button>/);
   });
 
   it("仅对短暂网络传输失败作有限重试，并在浏览器恢复联网后重新同步", () => {

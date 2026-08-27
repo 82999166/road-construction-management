@@ -45,6 +45,11 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
       setEraseCardId("UNSELECTED");
     },
   });
+  const prepareInitialErase = trpc.transport.prepareRfidInitialErase.useMutation({
+    onSuccess: () => {
+      vehicleCards.refetch();
+    },
+  });
   const saveReaderDevice = trpc.transport.saveReaderDevice.useMutation({
     onSuccess: async () => {
       toast.success("现场读卡设备已登记，可用于装土/卸土双刷卡闭环。");
@@ -138,10 +143,11 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
   };
 
   const eraseToInitial = async () => {
-    if (eraseCardId === "UNSELECTED") return toast.error("请先选择已停用或待重发的车辆卡；正在使用的车辆卡不能擦除");
-    if (!window.confirm("确认擦除当前 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销，但不会修改制造商区、锁定位、配置页或写保护口令。")) return;
+    if (eraseCardId === "UNSELECTED") return toast.error("请先选择需要停用并恢复初卡的车辆卡");
+    if (!window.confirm("确认停用所选车辆卡，并擦除当前 NTAG216 的 NDEF 用户区恢复为空白初卡？此操作不可撤销；擦除前会先解除该卡的运输使用状态，不会修改制造商区、锁定位、配置页或写保护口令。")) return;
     setErasingInitial(true);
     try {
+      await prepareInitialErase.mutateAsync({ projectId, cardId: Number(eraseCardId), writerDeviceId: writerDeviceId === "UNASSIGNED" ? null : Number(writerDeviceId) });
       const result = await requestBridge("/api/erase-initial-card", { confirmErase: "ERASE_NTAG216_USER_AREA" }) as BridgeResult & { initialNdef?: boolean };
       if (!result.success || !result.initialNdef) throw new Error(result.message || "初卡恢复回读校验失败");
       if (!result.cardUidFingerprint) throw new Error("桥接未返回卡 UID 指纹，不能登记初卡恢复结果");
@@ -156,11 +162,29 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
     }
   };
 
+  const eraseUnboundToInitial = async () => {
+    if (!window.confirm("当前项目没有车辆卡绑定记录。确认直接擦除读卡器中这张未绑定 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销；不会恢复或写入任何旧车辆、司机或运输业务数据，也不会修改制造商区、锁定位、配置页或写保护口令。")) return;
+    setErasingInitial(true);
+    try {
+      const result = await requestBridge("/api/erase-initial-card", { confirmErase: "ERASE_NTAG216_USER_AREA" }) as BridgeResult & { initialNdef?: boolean };
+      if (!result.success || !result.initialNdef) throw new Error(result.message || "未绑定实体卡初卡恢复回读校验失败");
+      setBridgeMessage("已直接清空当前未绑定实体卡的 NDEF 用户区并回读确认空白初卡；未恢复或写入任何历史车辆绑定。");
+      toast.success("未绑定实体卡已恢复为空白初卡，未修改锁定位或写保护。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未绑定实体卡恢复初卡失败";
+      toast.error(message === "erase_confirmation_required" ? "本机桥接未收到擦除确认，请刷新页面后重新确认操作" : message);
+    } finally {
+      setErasingInitial(false);
+    }
+  };
+
   const registerReaderDevice = () => {
     if (readerSiteId === "UNSELECTED") return toast.error("请先选择读卡设备所在的装土点或卸土点");
     if (!readerDeviceCode.trim() || !readerDisplayName.trim()) return toast.error("请填写现场设备编号和显示名称");
     saveReaderDevice.mutate({ projectId, siteId: Number(readerSiteId), deviceCode: readerDeviceCode, displayName: readerDisplayName, status: "active" });
   };
+
+  const hasNoBoundCards = projectId <= 0 || (vehicleCards.isSuccess && (vehicleCards.data ?? []).length === 0);
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/40">
@@ -183,11 +207,21 @@ export default function RfidLocalWriterPanel({ projectId, onUidRead }: { project
           <Button type="button" variant="outline" onClick={checkBridge} disabled={checkingBridge}><Radio className="mr-1.5 h-4 w-4" />{checkingBridge ? "正在检测…" : "检测本地桥接"}</Button>
           <Button type="button" variant="outline" onClick={readUidForBinding} disabled={readingUid || bridgeStatus !== "ready"}><Usb className="mr-1.5 h-4 w-4" />{readingUid ? "正在读取 UID…" : "读取卡 UID 并绑定"}</Button>
           <Button type="button" onClick={runTestWrite} disabled={recordTest.isPending || bridgeStatus !== "ready"}><ShieldCheck className="mr-1.5 h-4 w-4" />{recordTest.isPending ? "正在回读校验…" : "写入测试卡"}</Button>
-          <Button type="button" variant="destructive" onClick={eraseToInitial} disabled={erasingInitial || finalizeInitialErase.isPending || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "擦除并恢复初卡"}</Button>
+          <Button type="button" variant="destructive" onClick={eraseToInitial} disabled={erasingInitial || prepareInitialErase.isPending || finalizeInitialErase.isPending || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "停用并擦除恢复初卡"}</Button>
         </div>
-        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3"><Label className="text-xs font-semibold text-amber-950">恢复初卡对象（仅已停用/待重发车辆卡）</Label><Select value={eraseCardId} onValueChange={setEraseCardId}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="请选择已停用或待重发的车辆卡" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择车辆卡</SelectItem>{(vehicleCards.data ?? []).filter(card => card.status === "revoked" || card.status === "suspended").map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · {card.cardUidMasked} · {card.status === "revoked" ? "已停用" : "待重发"}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-amber-900">桥接会回读 UID 指纹并与所选卡逐项比对；不匹配、正在使用或未停用的车辆卡均拒绝登记擦除结果。仅清空 NDEF 用户区，绝不操作制造商区、锁定位、配置页或写保护口令。</p></div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3"><Label className="text-xs font-semibold text-amber-950">恢复初卡对象（已绑定卡可选；无绑定记录可直接恢复实体卡）</Label><Select value={eraseCardId} onValueChange={setEraseCardId}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="请选择需要恢复初卡的车辆卡" /></SelectTrigger><SelectContent><SelectItem value="UNSELECTED">请选择车辆卡</SelectItem>{(vehicleCards.data ?? []).filter(card => ["active", "revoked", "suspended"].includes(card.status)).map(card => <SelectItem key={card.id} value={String(card.id)}>{card.plateNo} · {card.cardUidMasked} · {card.status === "active" ? "已启用（将停用）" : card.status === "revoked" ? "已停用" : "待重发"}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-amber-900">已绑定车辆卡会先被停用，随后桥接回读 UID 指纹并仅清空 NDEF 用户区；UID 不匹配会拒绝登记最终擦除结果。绝不操作制造商区、锁定位、配置页或写保护口令。</p>{hasNoBoundCards ? <div className="mt-3 rounded-lg border border-amber-300 bg-white/80 p-3"><p className="text-xs leading-5 text-amber-950">当前没有车辆卡绑定记录。可直接将待恢复的 NTAG216 放到 uTrust 感应区，不选择车辆卡也能恢复初卡；不会写回旧车辆或司机信息。</p><Button type="button" className="mt-2" variant="destructive" onClick={eraseUnboundToInitial} disabled={erasingInitial || bridgeStatus !== "ready"}>{erasingInitial ? "正在恢复初卡…" : "直接恢复当前未绑定实体卡"}</Button></div> : null}</div>
         <p aria-live="polite" className={`rounded-lg border px-3 py-2 text-xs leading-5 ${bridgeStatus === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-950" : bridgeStatus === "offline" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-slate-200 bg-slate-50 text-slate-700"}`}>{bridgeMessage}</p>
         <p className="rounded-lg border border-cyan-200 bg-white/70 px-3 py-2 text-xs leading-5 text-cyan-950">操作顺序：先将可覆盖的测试 NTAG216 放至 <strong>uTrust 4701 F CL Reader</strong> 感应区，点击“检测本地桥接”，再点击“写入测试卡”。桥接会先读取 UID 指纹、写入 `RC3T` 测试 NDEF、回读验证；不触碰锁定页、配置页或写保护口令。</p>
+        <div className="rounded-xl border border-sky-200 bg-sky-50/80 p-3 text-xs leading-5 text-sky-950">
+          <p className="font-semibold">正式车辆卡写入流程</p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5">
+            <li><strong>写入测试卡</strong>只用于验证 uTrust 读写器、NDEF 读写与回读；它写入的是 `RC3T` 测试内容，<strong>不会写入运输页面链接</strong>，也不能作为正式车辆卡。</li>
+            <li>在下方“车辆射频卡”台账先选择已录入司机姓名和手机号的车辆，点击“绑定车辆卡”。</li>
+            <li>在绑定窗口点击“读取卡 ID”，核对芯片 UID 后保存绑定；车牌、司机和电话来自车辆表单预填，不是卡内旧数据。</li>
+            <li>回到该车辆卡台账，点击<strong>“PC 写入车辆卡”</strong>或“PC 补写车辆卡”，保持卡片放在 uTrust 感应区，等待服务端签名、NDEF 深链写入和回读成功。</li>
+            <li>用开启 NFC 的手机触碰已正式写入的卡；系统应打开受控运输刷卡入口。手机不自动跳转时，请从浏览器历史/通知点击链接，不要重复测试写卡。</li>
+          </ol>
+        </div>
         <div className="rounded-xl border border-[#b6d6df] bg-white/70 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#174c60]">装卸点读卡设备</p><p className="mt-0.5 text-xs text-[#577b88]">装土点和卸土点各登记一台设备。手机 NFC 触碰车辆卡后，系统将按所选设备绑定地点自动判断首次发车或二次闭环。</p></div><span className="rounded-full bg-[#e7f4f7] px-2 py-1 text-xs font-medium text-[#23657b]">已登记 {readerDevices.data?.length ?? 0} 台</span></div>
           <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1.1fr)_minmax(0,.8fr)_minmax(0,1fr)_auto]">

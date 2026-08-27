@@ -1,4 +1,5 @@
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -23,6 +24,7 @@ import {
   measurementClaims,
   measurementTakeoffRecords,
   notificationRecords,
+  officialAccountDriverBindings,
   officialAccountBindings,
   organizations,
   outsourceContracts,
@@ -32,6 +34,7 @@ import {
   purchaseRequests,
   projects,
   rolePermissions,
+  sensitiveDataAccessLogs,
   systemPermissions,
   systemRoles,
   systemSettings,
@@ -49,12 +52,15 @@ import { calculateTheoreticalVolume } from "../../shared/domain";
 import { normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY } from "../../shared/watermarkTemplate";
 import { INDUSTRY_ROLE_TEMPLATES } from "../../shared/industryRoleTemplates";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
-import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
+import { assertSuperAdmin, getCurrentDataScope, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
+import { createSelfHostDatabaseBackup, getSelfHostDatabaseBackupStatus } from "../services/selfHostDatabaseBackup";
+import { sealUnchainedAuditLogs, verifyAuditIntegrityChain } from "../services/auditIntegrity";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
-import { getOfficialAccountNotificationTemplateCoverage, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
+import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
@@ -141,7 +147,6 @@ const dieselRefuelInput = z.object({
   if (value.assetType === "vehicle" && !value.vehicleId) ctx.addIssue({ code: "custom", path: ["vehicleId"], message: "车辆供油必须选择车辆" });
   if (value.assetType === "machine" && !value.machineId) ctx.addIssue({ code: "custom", path: ["machineId"], message: "机械供油必须选择机械" });
   if (value.assetType === "machine" && value.deductFromFreight) ctx.addIssue({ code: "custom", path: ["deductFromFreight"], message: "机械油料不得扣减运输运费" });
-  if (value.deductFromFreight && !value.transportTripId) ctx.addIssue({ code: "custom", path: ["transportTripId"], message: "扣减运费必须关联具体运输趟次" });
   if (value.supplyMethod === "external_station" && !value.actualUnitPrice) ctx.addIssue({ code: "custom", path: ["actualUnitPrice"], message: "加油站加油必须填写实际单价" });
 });
 
@@ -233,7 +238,7 @@ const roleInput = z.object({
 /** 部门业务范围配置仅允许使用系统定义的业务模块编码。 */
 const departmentBusinessScopeInput = z.object({
   organizationId: z.number().int().positive(),
-  module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "EVIDENCE"]),
+  module: z.enum(["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"]),
   status: z.enum(["active", "disabled"]).default("active"),
 });
 
@@ -273,6 +278,32 @@ const officialAccountConfigurationInput = z.object({
   appUrl: z.string().trim().min(1, "请填写公众号业务跳转地址").max(1024),
   egressUrl: z.string().trim().min(1, "请填写微信 API 固定出口网关地址").max(1024),
   egressSigningSecret: z.string().max(2048),
+});
+
+/** 消息与事件推送参数由后台加密维护；留空表示保留现有密文。 */
+const officialAccountMessagePushConfigurationInput = z.object({
+  eventToken: z.string().trim().max(32),
+  encodingAesKey: z.string().trim().max(43),
+});
+
+const notificationModuleCode = z.enum(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction", "diesel", "contract"]);
+
+/** 短信凭据和模块路由由超级管理员统一维护；密钥留空表示保留已有加密值。 */
+const notificationChannelConfigurationInput = z.object({
+  smsEnabled: z.boolean(),
+  smsProvider: z.enum(["none", "aliyun", "tencent"]),
+  smsModules: z.array(notificationModuleCode).max(10),
+  aliyunAccessKeyId: z.string().max(256),
+  aliyunAccessKeySecret: z.string().max(2048),
+  aliyunSignName: z.string().trim().max(128),
+  aliyunTemplateCode: z.string().trim().max(128),
+  tencentSecretId: z.string().max(256),
+  tencentSecretKey: z.string().max(2048),
+  tencentSdkAppId: z.string().trim().max(64),
+  tencentSignName: z.string().trim().max(128),
+  tencentTemplateId: z.string().trim().max(128),
+  officialEnabled: z.boolean(),
+  officialModules: z.array(notificationModuleCode).max(10),
 });
 
 /** 兼容 OpenAI Chat Completions 的外部 AI 配置；密钥后续修订留空表示保留既有密文。 */
@@ -329,6 +360,12 @@ const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
   "WECHAT_OFFICIAL_EGRESS_URL",
 ]);
 const RETIRED_NOTIFICATION_SETTING_KEYS = new Set(["WECHAT_WORK_WEBHOOK"]);
+const NOTIFICATION_CHANNEL_SETTING_KEYS = [
+  "SMS_NOTIFICATION_ENABLED", "SMS_NOTIFICATION_PROVIDER", "SMS_NOTIFICATION_MODULES",
+  "SMS_ALIYUN_ACCESS_KEY_ID", "SMS_ALIYUN_ACCESS_KEY_SECRET", "SMS_ALIYUN_SIGN_NAME", "SMS_ALIYUN_TEMPLATE_CODE",
+  "SMS_TENCENT_SECRET_ID", "SMS_TENCENT_SECRET_KEY", "SMS_TENCENT_SDK_APP_ID", "SMS_TENCENT_SIGN_NAME", "SMS_TENCENT_TEMPLATE_ID",
+  "WECHAT_OFFICIAL_NOTIFICATION_ENABLED", "WECHAT_OFFICIAL_NOTIFICATION_MODULES",
+] as const;
 
 /** 用户已确认系统统一使用认证服务号，禁止旧企业微信机器人配置重新进入任何可生效流程。 */
 function assertSupportedSettingKey(settingKey: string) {
@@ -363,6 +400,54 @@ function assertOfficialAccountSettingContract(input: { settingKey: string; value
       throw new TRPCError({ code: "BAD_REQUEST", message: "公众号模板字段映射必须为 JSON 对象" });
     }
   }
+}
+
+function normalizeOfficialAccountEventToken(value: string) {
+  const token = value.trim();
+  if (!/^[A-Za-z0-9]{3,32}$/.test(token)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "消息推送 Token 只能使用 3–32 位英文或数字，且必须与微信公众平台填写值完全一致" });
+  }
+  return token;
+}
+
+function normalizeOfficialAccountEncodingAesKey(value: string) {
+  const key = value.trim();
+  if (!key) return "";
+  if (!/^[A-Za-z0-9]{43}$/.test(key)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "EncodingAESKey 必须为空或 43 位英文数字；明文模式可留空，微信页面强制要求时可填写随机生成值" });
+  }
+  return key;
+}
+
+type SettingsTransaction = Parameters<Parameters<NonNullable<Awaited<ReturnType<typeof getDb>>>["transaction"]>[0]>[0];
+
+async function upsertSensitiveOfficialAccountSetting(tx: SettingsTransaction, input: { adminId: number; settingKey: string; displayName: string; secretValue: string; remarks: string }) {
+  const [existing] = await tx.select().from(systemSettings).where(eq(systemSettings.settingKey, input.settingKey)).limit(1);
+  if (existing) {
+    const nextVersion = existing.version + 1;
+    const writeResult = await tx.update(systemSettings).set({ category: "微信公众号服务号", displayName: input.displayName, valueJson: null, secretEncrypted: encryptSecret(input.secretValue), valuePreview: maskSecret(input.secretValue), isSensitive: true, status: "published", version: nextVersion, publishedAt: new Date(), remarks: input.remarks, updatedBy: input.adminId }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+    assertVersionedSettingWrite(writeResult);
+    const snapshot = { category: existing.category, settingKey: existing.settingKey, displayName: existing.displayName, valueJson: existing.valueJson, secretEncrypted: existing.secretEncrypted, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive, remarks: existing.remarks };
+    await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: input.adminId, snapshotJson: JSON.stringify(snapshot) });
+    return;
+  }
+  const result = await tx.insert(systemSettings).values({ category: "微信公众号服务号", settingKey: input.settingKey, displayName: input.displayName, valueJson: null, secretEncrypted: encryptSecret(input.secretValue), valuePreview: maskSecret(input.secretValue), isSensitive: true, status: "published", version: 1, publishedAt: new Date(), remarks: input.remarks, updatedBy: input.adminId });
+  const settingId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+  if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: input.adminId, snapshotJson: null });
+}
+
+function buildOfficialAccountMessageCallbackUrl(rawAppUrl: string | null | undefined) {
+  if (!rawAppUrl?.trim()) return null;
+  try {
+    const appUrl = assertSafeIntegrationUrl(rawAppUrl.trim());
+    return new URL("/api/official-account/messages", appUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function createOfficialAccountEventSignature(input: { token: string; timestamp: string; nonce: string }) {
+  return createHash("sha1").update([input.token, input.timestamp, input.nonce].sort().join("")).digest("hex");
 }
 
 /** 只允许测试公开 HTTPS 地址，防止系统设置被误用为内网探测器。 */
@@ -578,6 +663,17 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       return db.select().from(projects).orderBy(projects.sortOrder, projects.id);
+    }),
+    /** 统一 PC 业务工作区的项目选择器：非超级管理员只能取得当前角色和组织范围内的项目。 */
+    listAccessible: protectedProcedure.query(async ({ ctx }) => {
+      const [db, access] = await Promise.all([getDb(), getSuperAdminAccess(ctx)]);
+      if (!db) return [];
+      const rows = await db.select().from(projects).orderBy(projects.sortOrder, projects.id);
+      if (access.canAccess) return rows;
+
+      const dataScope = await getCurrentDataScope(ctx);
+      if (dataScope.hasAllProjects) return rows;
+      return rows.filter(project => dataScope.projectIds.includes(project.id) || (project.organizationId !== null && dataScope.organizationIds.includes(project.organizationId)));
     }),
     save: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), parentId: z.number().int().positive().nullable().optional(), organizationId: z.number().int().positive().nullable().optional(), code: z.string().min(2).max(64), name: z.string().min(2).max(200), nodeType: z.string().min(2).max(64), projectType: z.enum(["highway", "railway", "municipal", "other"]).nullable().optional(), status: z.enum(["planning", "active", "suspended", "completed", "archived"]).default("planning"), startDate: z.string().date().nullable().optional(), endDate: z.string().date().nullable().optional(), costCenterCode: z.string().max(64).nullable().optional(), sortOrder: z.number().int().min(0).default(0) }))
@@ -821,6 +917,7 @@ export const adminRouter = router({
       month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "月份格式应为 YYYY-MM").optional(),
       supplyMethod: z.enum(["project_supply", "external_station"]).optional(),
       plateNo: z.string().trim().max(32).optional(),
+      machineName: z.string().trim().max(160).optional(),
       supplierName: z.string().trim().max(160).optional(),
     }).refine(input => !input.dateFrom || !input.dateTo || input.dateFrom <= input.dateTo, { message: "加油结束日期不得早于开始日期", path: ["dateTo"] }).optional()).query(async ({ ctx, input }) => {
       await assertSuperAdmin(ctx);
@@ -831,6 +928,8 @@ export const adminRouter = router({
       const dateTo = input?.dateTo ?? input?.date;
       const plateKeyword = input?.plateNo?.trim().toUpperCase();
       const matchingVehicleIds = new Set(plateKeyword ? (await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles)).filter(vehicle => vehicle.plateNo.toUpperCase().includes(plateKeyword)).map(vehicle => vehicle.id) : []);
+      const machineKeyword = input?.machineName?.trim().toLowerCase();
+      const matchingMachineIds = new Set(machineKeyword ? (await db.select({ id: machines.id, name: machines.name, code: machines.code }).from(machines)).filter(machine => `${machine.name} ${machine.code ?? ""}`.toLowerCase().includes(machineKeyword)).map(machine => machine.id) : []);
       const supplierKeyword = input?.supplierName?.trim().toLowerCase();
       const filtered = rows.filter(row => {
         const refueledDate = new Date(row.refueledAt).toISOString().slice(0, 10);
@@ -843,6 +942,7 @@ export const adminRouter = router({
           && (!input?.month || refueledDate.slice(0, 7) === input.month)
           && (!input?.supplyMethod || row.supplyMethod === input.supplyMethod)
           && (!plateKeyword || (row.assetType === "vehicle" && Boolean(row.vehicleId) && matchingVehicleIds.has(Number(row.vehicleId))))
+          && (!machineKeyword || (row.assetType === "machine" && Boolean(row.machineId) && matchingMachineIds.has(Number(row.machineId))))
           && (!supplierKeyword || (row.stationOrSupplierName ?? "").toLowerCase().includes(supplierKeyword));
       });
       const [alertRule] = input?.projectId ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
@@ -880,14 +980,17 @@ export const adminRouter = router({
       if (input.supplyMethod === "external_station" && (!input.stationOrSupplierName?.trim() || !input.actualUnitPrice || input.actualUnitPrice <= 0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "加油站加油必须填写加油站/供应商和实际单价" });
       }
-      if (input.deductFromFreight && (input.assetType !== "vehicle" || !input.transportTripId)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "运费扣油必须关联车辆和未结算运输趟次" });
+      if (input.deductFromFreight && input.assetType !== "vehicle") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "运费扣油仅适用于车辆，机械油料不得扣减运输运费" });
       }
       const [project] = await db.select({ id: projects.id, status: projects.status }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
       if (!project || project.status === "archived") throw new TRPCError({ code: "BAD_REQUEST", message: "柴油记录必须归属有效项目" });
+      if (!input.id && input.status !== "void" && !input.evidenceId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "柴油领用必须使用后置相机现场拍摄加油表照片并归档水印凭证" });
+      }
       if (input.evidenceId) {
-        const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
-        if (!evidence || evidence.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "现金小票影像必须归属所选项目" });
+        const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+        if (!evidence || evidence.projectId !== input.projectId || evidence.sourceType !== "diesel_receipt") throw new TRPCError({ code: "BAD_REQUEST", message: "加油表现场影像必须是归属所选项目的柴油水印凭证" });
       }
       if (input.assetType === "vehicle") {
         const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId!)).limit(1);
@@ -913,7 +1016,7 @@ export const adminRouter = router({
       const allRefuelRows = input.supplyMethod === "external_station" ? await db.select().from(dieselRefuelRecords).orderBy(desc(dieselRefuelRecords.refueledAt)) : [];
       const [alertRule] = input.supplyMethod === "external_station" ? await db.select().from(dieselPriceAlertRules).where(eq(dieselPriceAlertRules.projectId, input.projectId)).limit(1) : [];
       const effectiveStatus = normalizeDieselRefuelStatus(input.status);
-      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: effectiveStatus, createdBy: admin.id, approvedBy: effectiveStatus === "approved" ? admin.id : null, approvedAt: effectiveStatus === "approved" ? new Date() : null };
+      const values = { projectId: input.projectId, assetType: input.assetType, vehicleId: input.assetType === "vehicle" ? input.vehicleId ?? null : null, machineId: input.assetType === "machine" ? input.machineId ?? null : null, transportTripId: input.deductFromFreight ? null : input.transportTripId ?? null, supplyMethod: input.supplyMethod, stationOrSupplierName: input.stationOrSupplierName ?? null, liters: String(input.liters), actualUnitPrice: input.actualUnitPrice === null || input.actualUnitPrice === undefined ? null : String(input.actualUnitPrice), appliedUnitPrice: String(appliedUnitPrice), amount: String(amount), deductFromFreight: input.assetType === "vehicle" ? input.deductFromFreight : false, refueledAt: new Date(input.refueledAt), meterReading: input.meterReading === null || input.meterReading === undefined ? null : String(input.meterReading), receiptNo: input.receiptNo ?? null, evidenceId: input.evidenceId ?? null, remarks: input.remarks ?? null, status: effectiveStatus, createdBy: admin.id, approvedBy: effectiveStatus === "approved" ? admin.id : null, approvedAt: effectiveStatus === "approved" ? new Date() : null };
       let recordId = input.id;
       if (input.id) {
         const [existing] = await db.select({ id: dieselRefuelRecords.id, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.id, input.id)).limit(1);
@@ -937,6 +1040,9 @@ export const adminRouter = router({
       }
       await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: input.id ? "update_refuel" : "create_refuel", targetType: "diesel_refuel", targetId: String(recordId), summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}` });
       void notifyOfficialAccountBusinessEventSafely({ userId: admin.id, projectId: input.projectId, module: "diesel", eventCode: effectiveStatus === "void" ? "diesel_refuel_voided" : input.id ? "diesel_refuel_updated" : "diesel_refuel_recorded", targetType: "diesel_refuel", targetId: String(recordId), title: effectiveStatus === "void" ? "柴油领用已作废" : input.id ? "柴油领用已更新" : "柴油领用已直接记账", content: "一笔柴油领用记录已处理，请进入系统查看受控台账与原始凭证。", deepLink: "/admin/diesel" }).catch(() => undefined);
+      if (input.assetType === "vehicle" && input.vehicleId && input.deductFromFreight) {
+        void sendOfficialAccountDriverNotification({ vehicleId: input.vehicleId, projectId: input.projectId, module: "diesel", eventCode: effectiveStatus === "void" ? "diesel_refuel_voided" : input.id ? "diesel_refuel_updated" : "diesel_refuel_recorded", idempotencyKey: `driver:diesel:${effectiveStatus}:${recordId}:${input.vehicleId}`, title: effectiveStatus === "void" ? "车辆柴油扣款已作废" : "车辆柴油扣款已登记", content: `本车柴油 ${Number(input.liters).toFixed(3)}L，金额 ¥${amount.toFixed(2)}${effectiveStatus === "void" ? "已作废" : "将按规则进入运费扣款或结算核对"}。`, deepLink: "/api/official-account/driver-portal/start" }).catch(() => undefined);
+      }
       if (priceAlert.isAlert) {
         await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "price_alert", targetType: "diesel_refuel", targetId: String(recordId), summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）` });
         void notifyOfficialAccountBusinessEventSafely({ userId: admin.id, projectId: input.projectId, module: "diesel", eventCode: "diesel_price_alert", targetType: "diesel_refuel", targetId: String(recordId), title: "柴油现金价格异常待核验", content: "一笔柴油领用触发价格异常规则，请进入系统核对供油记录、票据与供应商对账。", deepLink: "/admin/diesel" }).catch(() => undefined);
@@ -952,6 +1058,8 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       const rows = await db.select().from(transportVehicles).orderBy(desc(transportVehicles.updatedAt));
+      const driverBindings = rows.length ? await db.select({ id: officialAccountDriverBindings.id, vehicleId: officialAccountDriverBindings.vehicleId, status: officialAccountDriverBindings.status, boundAt: officialAccountDriverBindings.boundAt, lastVerifiedAt: officialAccountDriverBindings.lastVerifiedAt, lastFailureAt: officialAccountDriverBindings.lastFailureAt, failureCount: officialAccountDriverBindings.failureCount }).from(officialAccountDriverBindings).where(eq(officialAccountDriverBindings.status, "active")) : [];
+      const driverBindingByVehicle = new Map(driverBindings.map(binding => [binding.vehicleId, binding]));
       return Promise.all(rows.map(async vehicle => {
         const rules = vehicle.ownership === "leased" ? await db.select().from(transportVehicleLeaseRules).where(eq(transportVehicleLeaseRules.vehicleId, vehicle.id)).orderBy(desc(transportVehicleLeaseRules.updatedAt)) : [];
         const activeRule = rules.find(rule => rule.projectId === vehicle.projectId && rule.status === "active");
@@ -959,6 +1067,7 @@ export const adminRouter = router({
           ...vehicle,
           theoreticalVolumeCubicMeters: calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)),
           leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
+          driverWechatBinding: driverBindingByVehicle.get(vehicle.id) ?? null,
         };
       }));
     }),
@@ -1047,6 +1156,14 @@ export const adminRouter = router({
         success: true,
         theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor),
       };
+    }),
+    revokeDriverWechatBinding: protectedProcedure.input(z.object({ vehicleId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [vehicle] = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+      if (!vehicle) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或已删除" });
+      return revokeOfficialAccountDriverVehicleBinding({ vehicleId: input.vehicleId, operatorUserId: admin.id });
     }),
   }),
 
@@ -1713,6 +1830,178 @@ export const adminRouter = router({
       const validation = await testPublishedOfficialAccountConfiguration();
       return { success: validation.success, message: validation.message };
     }),
+    getOfficialAccountMessagePushConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) {
+        return {
+          configured: false,
+          callbackUrl: null as string | null,
+          appUrl: null as string | null,
+          appUrlConfigured: false,
+          tokenConfigured: false,
+          tokenPreview: null as string | null,
+          mode: "明文模式" as const,
+          dataFormat: "XML" as const,
+          updatedAt: null as Date | null,
+          publishedAt: null as Date | null,
+          statusText: "数据库连接暂不可用",
+        };
+      }
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status, updatedAt: systemSettings.updatedAt, publishedAt: systemSettings.publishedAt }).from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_APP_URL", "WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"]));
+      const published = new Map(rows.filter(row => row.status === "published").map(row => [row.settingKey, row]));
+      const appUrl = published.get("WECHAT_OFFICIAL_APP_URL")?.valueJson?.trim() || null;
+      const callbackUrl = buildOfficialAccountMessageCallbackUrl(appUrl);
+      const tokenSetting = published.get("WECHAT_OFFICIAL_EVENT_TOKEN");
+      const tokenConfigured = Boolean(tokenSetting?.secretEncrypted);
+      const aesSetting = published.get("WECHAT_OFFICIAL_EVENT_AES_KEY");
+      const encodingAesKeyConfigured = Boolean(aesSetting?.secretEncrypted);
+      return {
+        configured: Boolean(callbackUrl && tokenConfigured),
+        callbackUrl,
+        appUrl,
+        appUrlConfigured: Boolean(callbackUrl),
+        tokenConfigured,
+        tokenPreview: tokenSetting?.valuePreview ?? null,
+        encodingAesKeyConfigured,
+        encodingAesKeyPreview: aesSetting?.valuePreview ?? null,
+        mode: "明文模式" as const,
+        dataFormat: "XML" as const,
+        updatedAt: tokenSetting?.updatedAt ?? aesSetting?.updatedAt ?? null,
+        publishedAt: tokenSetting?.publishedAt ?? aesSetting?.publishedAt ?? null,
+        statusText: callbackUrl && tokenConfigured ? "已具备微信消息推送保存条件；明文模式下 EncodingAESKey 可为空或按微信页面填写" : callbackUrl ? "请配置消息推送 Token" : "请先发布公众号业务跳转地址",
+      };
+    }),
+    saveOfficialAccountMessagePushConfiguration: protectedProcedure.input(officialAccountMessagePushConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, ["WECHAT_OFFICIAL_EVENT_TOKEN", "WECHAT_OFFICIAL_EVENT_AES_KEY"]));
+      const existingByKey = new Map(existingRows.map(setting => [setting.settingKey, setting]));
+      const existingToken = existingByKey.get("WECHAT_OFFICIAL_EVENT_TOKEN");
+      const submittedToken = input.eventToken.trim();
+      const submittedAesKey = input.encodingAesKey.trim();
+      if (!submittedToken && !existingToken?.secretEncrypted) throw new TRPCError({ code: "BAD_REQUEST", message: "首次配置消息推送 Token 必须填写；该 Token 必须同时填入微信公众平台" });
+      if (!submittedToken && !submittedAesKey) {
+        const status = await loadPublishedOfficialAccountEventConfig();
+        return { success: Boolean(status.config), message: status.config ? "消息推送 Token 与 EncodingAESKey 已保持不变，可继续在微信公众平台保存同一组参数" : "现有消息推送配置不可用，请重新输入 Token" };
+      }
+      const token = submittedToken ? normalizeOfficialAccountEventToken(submittedToken) : "";
+      const encodingAesKey = normalizeOfficialAccountEncodingAesKey(submittedAesKey);
+      await db.transaction(async tx => {
+        if (token) await upsertSensitiveOfficialAccountSetting(tx, { adminId: admin.id, settingKey: "WECHAT_OFFICIAL_EVENT_TOKEN", displayName: "微信服务号消息推送 Token", secretValue: token, remarks: "微信公众平台“域名与消息推送配置 → 消息推送”的 Token；用于验证 /api/official-account/messages 回调签名。" });
+        if (encodingAesKey) await upsertSensitiveOfficialAccountSetting(tx, { adminId: admin.id, settingKey: "WECHAT_OFFICIAL_EVENT_AES_KEY", displayName: "微信服务号 EncodingAESKey", secretValue: encodingAesKey, remarks: "微信公众平台“域名与消息推送配置 → 消息推送”的 EncodingAESKey；明文模式可为空，兼容微信后台强制填写或后续加密模式切换。" });
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: "保存并发布服务号消息推送 URL、Token 与 EncodingAESKey 配置；后台展示明文/XML 填写说明" });
+      });
+      return { success: true, message: "消息推送 Token / EncodingAESKey 已按填写项加密发布；请在微信公众平台填写同一组参数并保存" };
+    }),
+    getNotificationChannelConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted, status: systemSettings.status }).from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, [...NOTIFICATION_CHANNEL_SETTING_KEYS])));
+      const byKey = new Map(rows.map(row => [row.settingKey, row]));
+      const parseModules = (key: string) => {
+        try {
+          const value = JSON.parse(byKey.get(key)?.valueJson ?? "[]") as unknown;
+          return Array.isArray(value) ? value.filter(item => typeof item === "string" && notificationModuleCode.options.includes(item as never)) : [];
+        } catch { return []; }
+      };
+      const provider = byKey.get("SMS_NOTIFICATION_PROVIDER")?.valueJson;
+      return {
+        smsEnabled: byKey.get("SMS_NOTIFICATION_ENABLED")?.valueJson === "true",
+        smsProvider: provider === "aliyun" || provider === "tencent" ? provider : "none",
+        smsModules: parseModules("SMS_NOTIFICATION_MODULES"),
+        aliyunAccessKeyConfigured: Boolean(byKey.get("SMS_ALIYUN_ACCESS_KEY_ID")?.secretEncrypted && byKey.get("SMS_ALIYUN_ACCESS_KEY_SECRET")?.secretEncrypted),
+        aliyunSignName: byKey.get("SMS_ALIYUN_SIGN_NAME")?.valueJson ?? "",
+        aliyunTemplateCode: byKey.get("SMS_ALIYUN_TEMPLATE_CODE")?.valueJson ?? "",
+        tencentSecretConfigured: Boolean(byKey.get("SMS_TENCENT_SECRET_ID")?.secretEncrypted && byKey.get("SMS_TENCENT_SECRET_KEY")?.secretEncrypted),
+        tencentSdkAppId: byKey.get("SMS_TENCENT_SDK_APP_ID")?.valueJson ?? "",
+        tencentSignName: byKey.get("SMS_TENCENT_SIGN_NAME")?.valueJson ?? "",
+        tencentTemplateId: byKey.get("SMS_TENCENT_TEMPLATE_ID")?.valueJson ?? "",
+        officialEnabled: byKey.get("WECHAT_OFFICIAL_NOTIFICATION_ENABLED")?.valueJson === "true",
+        officialModules: parseModules("WECHAT_OFFICIAL_NOTIFICATION_MODULES"),
+      };
+    }),
+    saveNotificationChannelConfiguration: protectedProcedure.input(notificationChannelConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      if (input.smsEnabled && input.smsProvider === "none") throw new TRPCError({ code: "BAD_REQUEST", message: "启用短信通知前请选择阿里云短信或腾讯云短信" });
+      const unique = (items: string[]) => Array.from(new Set(items));
+      const definitions = [
+        { key: "SMS_NOTIFICATION_ENABLED", name: "短信通知总开关", value: String(input.smsEnabled), sensitive: false },
+        { key: "SMS_NOTIFICATION_PROVIDER", name: "短信服务商", value: input.smsProvider, sensitive: false },
+        { key: "SMS_NOTIFICATION_MODULES", name: "短信通知业务模块", value: JSON.stringify(unique(input.smsModules)), sensitive: false },
+        { key: "SMS_ALIYUN_ACCESS_KEY_ID", name: "阿里云短信 AccessKey ID", value: input.aliyunAccessKeyId.trim(), sensitive: true },
+        { key: "SMS_ALIYUN_ACCESS_KEY_SECRET", name: "阿里云短信 AccessKey Secret", value: input.aliyunAccessKeySecret.trim(), sensitive: true },
+        { key: "SMS_ALIYUN_SIGN_NAME", name: "阿里云短信签名", value: input.aliyunSignName, sensitive: false },
+        { key: "SMS_ALIYUN_TEMPLATE_CODE", name: "阿里云短信模板 Code", value: input.aliyunTemplateCode, sensitive: false },
+        { key: "SMS_TENCENT_SECRET_ID", name: "腾讯云短信 SecretId", value: input.tencentSecretId.trim(), sensitive: true },
+        { key: "SMS_TENCENT_SECRET_KEY", name: "腾讯云短信 SecretKey", value: input.tencentSecretKey.trim(), sensitive: true },
+        { key: "SMS_TENCENT_SDK_APP_ID", name: "腾讯云短信 SdkAppId", value: input.tencentSdkAppId, sensitive: false },
+        { key: "SMS_TENCENT_SIGN_NAME", name: "腾讯云短信签名", value: input.tencentSignName, sensitive: false },
+        { key: "SMS_TENCENT_TEMPLATE_ID", name: "腾讯云短信模板 ID", value: input.tencentTemplateId, sensitive: false },
+        { key: "WECHAT_OFFICIAL_NOTIFICATION_ENABLED", name: "服务号即时通知总开关", value: String(input.officialEnabled), sensitive: false },
+        { key: "WECHAT_OFFICIAL_NOTIFICATION_MODULES", name: "服务号即时通知业务模块", value: JSON.stringify(unique(input.officialModules)), sensitive: false },
+      ] as const;
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, definitions.map(item => item.key)));
+      const existingByKey = new Map(existingRows.map(row => [row.settingKey, row]));
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.key);
+          const preserveSecret = definition.sensitive && !definition.value;
+          if (definition.sensitive && preserveSecret && !existing?.secretEncrypted) continue;
+          const next = {
+            category: "通知通道",
+            displayName: definition.name,
+            valueJson: definition.sensitive ? null : definition.value,
+            secretEncrypted: definition.sensitive ? (preserveSecret ? existing?.secretEncrypted ?? null : encryptSecret(definition.value)) : null,
+            valuePreview: definition.sensitive ? (preserveSecret ? existing?.valuePreview ?? null : maskSecret(definition.value)) : definition.value.slice(0, 256),
+            isSensitive: definition.sensitive,
+            status: "published" as const,
+            publishedAt: new Date(),
+            remarks: definition.sensitive ? "仅服务端 AES-GCM 加密托管；页面和审计不回显明文。" : "通知通道路由与模块选择；发送失败不回滚业务。",
+            updatedBy: admin.id,
+          };
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const write = await tx.update(systemSettings).set({ ...next, version: nextVersion }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(write);
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify({ settingKey: existing.settingKey, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive }) });
+          } else {
+            const created = await tx.insert(systemSettings).values({ settingKey: definition.key, version: 1, ...next });
+            const settingId = Number((created[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+            if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_notification_channel_configuration", targetType: "notification_channel", targetId: "sms_and_official", summary: `发布通知通道配置：短信 ${input.smsEnabled ? input.smsProvider : "关闭"}，服务号即时通知 ${input.officialEnabled ? "开启" : "关闭"}` });
+      });
+      return { success: true, message: "通知通道配置已发布。短信需在服务商签名、模板和密钥审核齐备后才可发送；服务号仅可用于用户即时操作后的合规结果通知。" };
+    }),
+    testOfficialAccountMessagePushConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const eventConfig = await loadPublishedOfficialAccountEventConfig();
+      if (!eventConfig.config) throw new TRPCError({ code: "BAD_REQUEST", message: "请先发布服务号 AppID、AppSecret、业务跳转地址和消息推送 Token" });
+      const callbackUrl = buildOfficialAccountMessageCallbackUrl(eventConfig.config.appUrl);
+      if (!callbackUrl) throw new TRPCError({ code: "BAD_REQUEST", message: "公众号业务跳转地址不可用于消息推送，请先发布公开 HTTPS 地址" });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const nonce = randomBytes(8).toString("hex");
+      const echostr = randomBytes(10).toString("hex");
+      const signature = createOfficialAccountEventSignature({ token: eventConfig.config.eventToken, timestamp, nonce });
+      const verifyUrl = new URL(callbackUrl);
+      verifyUrl.searchParams.set("signature", signature);
+      verifyUrl.searchParams.set("timestamp", timestamp);
+      verifyUrl.searchParams.set("nonce", nonce);
+      verifyUrl.searchParams.set("echostr", echostr);
+      const response = await fetch(verifyUrl, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5_000) });
+      const body = await response.text().catch(() => "");
+      const success = response.status === 200 && body === echostr;
+      const message = success ? "消息推送回调验签通过：合法签名返回 200 和 echostr" : `消息推送回调未通过：HTTP ${response.status}`;
+      const dbForAudit = await getDb();
+      if (dbForAudit) await dbForAudit.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "test_official_account_message_push_configuration", targetType: "official_account", targetId: "message_push", summary: message });
+      return { success, message, statusCode: response.status, callbackUrl };
+    }),
     getExternalAiConfiguration: protectedProcedure.query(async ({ ctx }) => {
       await assertSuperAdmin(ctx);
       const db = await getDb();
@@ -2051,6 +2340,8 @@ export const adminRouter = router({
       const selected = discovered.templates.find(template => template.templateId === input.templateId);
       if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: "所选模板不在当前服务号私有模板库中，请重新读取模板列表后再选择。" });
       if (!isPersistentBusinessTemplateEligible(selected)) throw new TRPCError({ code: "BAD_REQUEST", message: getPersistentBusinessTemplateEligibilityMessage(selected) ?? "所选模板不可用于持续业务通知。" });
+      const semanticMismatch = getOfficialAccountTemplateSemanticMismatch({ module: input.module, eventCode: OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX.find(item => item.module === input.module)?.events[0] ?? input.module, templateTitle: selected.title });
+      if (semanticMismatch) throw new TRPCError({ code: "BAD_REQUEST", message: "该模板标题与所选业务模块语义不匹配，不能硬绑定；请在微信模板库选择运输、运单、车辆、装卸土、趟次或结算语义相符的模板。" });
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       const settingKey = "WECHAT_OFFICIAL_MODULE_TEMPLATE_MAPPINGS";
@@ -2215,6 +2506,11 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       return getBusinessModuleStatistics(input ?? {});
     }),
+    operatingDashboard: protectedProcedure.input(businessStatisticsInput).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const { getOperatingDashboardStatistics } = await import("../services/adminBusinessBackup");
+      return getOperatingDashboardStatistics(input ?? {});
+    }),
   }),
 
   /** 业务数据逻辑备份只允许超级管理员发起；不提供在线恢复，避免误覆盖生产数据。 */
@@ -2247,6 +2543,24 @@ export const adminRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message });
       }
     }),
+    fullStatus: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      return getSelfHostDatabaseBackupStatus();
+    }),
+    createFull: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      try {
+        const backup = await createSelfHostDatabaseBackup();
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "create", targetType: "full_database_backup", targetId: backup.sha256.slice(0, 16), summary: `创建完整数据库备份：${backup.tableCount} 张表，gzip 校验与逐表定义校验通过` });
+        return backup;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "完整数据库备份失败";
+        const db = await getDb();
+        if (db) await db.insert(auditLogs).values({ userId: admin.id, module: "backup", action: "create_failed", targetType: "full_database_backup", targetId: null, summary: "完整数据库备份未成功；服务器端已保留诊断状态" });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
+      }
+    }),
   }),
 
   audit: router({
@@ -2255,6 +2569,20 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(200);
+    }),
+    integrity: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用，无法校验审计链" });
+      const sealResult = await sealUnchainedAuditLogs(db);
+      return { ...(await verifyAuditIntegrityChain(db)), ...sealResult, completeSeal: !sealResult.mayHaveMore };
+    }),
+    sensitiveAccesses: protectedProcedure.input(z.object({ projectId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(300).default(100) })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select().from(sensitiveDataAccessLogs).orderBy(desc(sensitiveDataAccessLogs.createdAt)).limit(input.limit);
+      return input.projectId ? rows.filter(row => row.projectId === input.projectId) : rows;
     }),
   }),
 });
