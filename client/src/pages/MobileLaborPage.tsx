@@ -9,6 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
+import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowLeft,
@@ -38,9 +40,7 @@ import { useLocation } from "wouter";
 
 /** 将本地日期统一格式化为 YYYY-MM-DD，供移动端日期控件与接口稳定交互。 */
 function getTodayText() {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60_000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+  return toDeviceDateInput();
 }
 
 /** 获取当前月份，工资结算和统计始终以自然月为单位。 */
@@ -72,10 +72,7 @@ function formatMoney(value: string | number | null | undefined) {
 
 /** 将业务日期在移动端按中文本地习惯展示，不向用户暴露 UTC 存储细节。 */
 function formatDate(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return formatChinaDate(value);
 }
 
 /** 将日期型返回值稳定转换为业务自然键，避免普通管理人员误将已有考勤提交为更新。 */
@@ -240,6 +237,24 @@ export default function MobileLaborPage() {
   const certificates = trpc.labor.certificates.list.useQuery(certificateInput, { enabled: isAuthenticated && certificateDialogOpen && Boolean(selectedProjectId) && Boolean(certificateWorker?.id), retry: false });
   const workbench = trpc.mobile.workbench.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const checkInStatus = trpc.labor.attendance.myCheckInStatus.useQuery(checkInInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
+
+  /** 仅打印当前已授权项目、已选期间及服务端返回的工资条与汇总，不打印移动页面或重算业务金额。 */
+  const printPayrollSummary = () => {
+    if (!selectedProjectId || !summary.data) {
+      toast.error("工资统计正在加载，请稍候重试");
+      return;
+    }
+    const projectName = projectOptions.data?.find(item => item.id === selectedProjectId)?.name ?? "当前项目";
+    const statements = payroll.data ?? [];
+    const rows = statements.map((statement, index) => {
+      const status = getPayrollStatus(statement.status);
+      return `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(statement.workerName)}</td><td>${escapePrintHtml(statement.teamName || "未分班组")}</td><td>${escapePrintHtml(statement.bankAccountMasked || "未录入")}</td><td class="right">${escapePrintHtml(formatMoney(statement.payableAmount))}</td><td class="right">${escapePrintHtml(formatMoney(statement.deductionAmount))}</td><td class="right">${escapePrintHtml(formatMoney(statement.actualAmount))}</td><td class="center">${escapePrintHtml(status.label)}</td><td>${escapePrintHtml(statement.paymentReference || "—")}</td></tr>`;
+    }).join("");
+    openA4LandscapePrintDocument({
+      title: "劳务工资统计及明细表",
+      bodyHtml: `<h1>劳务工资统计及明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　期间：${escapePrintHtml(period)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><p class="sub">数据范围：当前账号已授权项目与人员；金额以服务端工资条及统计汇总为准。</p><hr class="rule"><table><thead><tr><th style="width:5%">序号</th><th style="width:11%">人员</th><th style="width:12%">班组</th><th style="width:13%">银行卡号</th><th style="width:11%">应发</th><th style="width:11%">扣款</th><th style="width:11%">实发</th><th style="width:9%">状态</th><th style="width:17%">付款凭证</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="center">当前期间暂无工资条</td></tr>'}<tr class="summary"><td colspan="4">合计：工资条 ${statements.length} 份　|　在场人员 ${summary.data.activeWorkers} 人　|　考勤 ${summary.data.attendanceDays} 天</td><td class="right">${escapePrintHtml(formatMoney(summary.data.payableAmount))}</td><td class="right">${escapePrintHtml(formatMoney(summary.data.deductionAmount))}</td><td class="right">${escapePrintHtml(formatMoney(summary.data.actualAmount))}</td><td colspan="2">待审核：${summary.data.awaitingReviewCount} 份 / ${escapePrintHtml(formatMoney(summary.data.awaitingReviewAmount))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+    });
+  };
 
   /** 保存实名制档案后刷新相关台账和统计，避免本地手工拼接敏感字段缓存。 */
   const saveWorker = trpc.labor.saveWorker.useMutation({
@@ -538,9 +553,7 @@ export default function MobileLaborPage() {
               })}
             </section>
 
-            <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="text-sm font-semibold">{period} 劳务工资统计</p><p className="mt-1 text-xs text-[#7d563d]">应发 {formatMoney(summary.data?.payableAmount)} · 扣款 {formatMoney(summary.data?.deductionAmount)} · 待审 {formatMoney(summary.data?.awaitingReviewAmount)}</p></div><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9] hover:text-[#6e2e15]" onClick={() => window.print()}><Printer className="h-4 w-4" />打印</Button></section>
-
-            <section className="hidden print:block"><h1 className="text-center text-xl font-semibold">劳务工资统计表</h1><p className="mt-2 text-center text-sm">项目：{projectOptions.data?.find(item => item.id === selectedProjectId)?.name ?? "—"}　期间：{period}　生成时间：{new Date().toLocaleString("zh-CN")}</p><div className="mt-4 grid grid-cols-4 gap-2 text-center text-sm"><div><p className="text-xs text-slate-500">在场人员</p><p className="mt-1 font-semibold">{summary.data?.activeWorkers ?? 0}</p></div><div><p className="text-xs text-slate-500">考勤记录</p><p className="mt-1 font-semibold">{summary.data?.attendanceDays ?? 0}</p></div><div><p className="text-xs text-slate-500">待审核金额</p><p className="mt-1 font-semibold">{formatMoney(summary.data?.awaitingReviewAmount)}</p></div><div><p className="text-xs text-slate-500">实发合计</p><p className="mt-1 font-semibold">{formatMoney(summary.data?.actualAmount)}</p></div></div></section>
+            <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="text-sm font-semibold">{period} 劳务工资统计</p><p className="mt-1 text-xs text-[#7d563d]">应发 {formatMoney(summary.data?.payableAmount)} · 扣款 {formatMoney(summary.data?.deductionAmount)} · 待审 {formatMoney(summary.data?.awaitingReviewAmount)}</p></div><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9] hover:text-[#6e2e15]" disabled={!summary.data || payroll.isLoading} onClick={printPayrollSummary}><Printer className="h-4 w-4" />打印汇总</Button></section>
 
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid h-auto w-full grid-cols-3 rounded-2xl bg-[#f0e5d7] p-1 print:hidden"><TabsTrigger value="workers" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">实名人员</TabsTrigger><TabsTrigger value="attendance" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">考勤</TabsTrigger><TabsTrigger value="payroll" className="rounded-xl data-[state=active]:bg-white data-[state=active]:text-[#81411f]">工资条</TabsTrigger></TabsList>

@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 const runtime = vi.hoisted(() => ({
   projectOptions: vi.fn(),
@@ -142,8 +143,8 @@ describe("移动劳务页真实数据与普通人员操作投影", () => {
     expect(markup).toContain("测试验收项目-劳务工资");
     expect(markup).toContain("测试验收人员-王工");
     expect(markup).toContain("¥8,500.00");
-    expect(markup).toContain("打印");
-    expect(markup).toContain("劳务工资统计表");
+    expect(markup).toContain("打印汇总");
+    expect(markup).not.toContain("劳务工资统计表");
     expect(runtime.workers).toHaveBeenCalledWith(expect.objectContaining({ projectId: 30001 }), expect.anything());
     expect(runtime.attendance).toHaveBeenCalledWith(expect.objectContaining({ projectId: 30001 }), expect.anything());
     expect(runtime.payroll).toHaveBeenCalledWith(expect.objectContaining({ projectId: 30001 }), expect.anything());
@@ -156,5 +157,16 @@ describe("移动劳务页真实数据与普通人员操作投影", () => {
     expect(markup).not.toContain("审核通过");
     expect(markup).not.toContain("确认发放");
     expect(markup).not.toContain("作废");
+  });
+
+  it("工资统计打印使用当前授权项目、期间、服务端工资条与汇总生成独立 A4 文档", () => {
+    const source = readFileSync(new URL("./MobileLaborPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const printPayrollSummary");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("当前账号已授权项目与人员");
+    expect(source).toContain("工资条 ${statements.length} 份");
+    expect(source).toContain("onClick={printPayrollSummary}");
+    expect(source).not.toContain("window.print()");
   });
 });
