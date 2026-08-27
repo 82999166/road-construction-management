@@ -526,6 +526,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("trpc.projectRisk.assignRectification.useMutation");
     expect(source).toContain("trpc.projectRisk.runOverdueEscalation.useMutation");
   });
+
+  it("将历史整改期限回填为设备本地 datetime-local 值，并在保存时继续提交 UTC 时间戳", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('toDeviceDateTimeInput(`${next.dueAt}:00Z`)');
+    expect(source).toContain('dueAt: new Date(riskRectificationTarget.dueAt).toISOString()');
+    expect(source).toContain('dueAt: item.dueAt ? new Date(item.dueAt).toISOString().slice(0, 16) : ""');
+    expect(source).toContain('return next?.dueAt ? { ...next, dueAt: toDeviceDateTimeInput(`${next.dueAt}:00Z`) } : next;');
+  });
 });
 
 
