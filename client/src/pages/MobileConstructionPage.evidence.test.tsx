@@ -23,4 +23,16 @@ describe("移动端施工日报关联影像", () => {
     expect(source).toContain("onClick={printCurrentReports}");
     expect(source).not.toContain("onClick={() => window.print()}");
   });
+
+  it("照片归档、保存、上报、审核和状态更新失败均不回显原始服务端错误", () => {
+    const source = readFileSync(new URL("./MobileConstructionPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("日报已保存，但照片归档未完成，请检查照片、定位和网络后重试");
+    expect(source).toContain("施工日报保存失败，请检查填写内容后重试");
+    expect(source).toContain("施工日报状态更新失败，请刷新后重试");
+    expect(source).toContain("施工日报上报失败，请刷新后重试");
+    expect(source).toContain("施工日报审核失败，请刷新后重试");
+    expect(source).not.toContain("toast.error(error.message)");
+    expect(source).not.toContain("照片处理失败：${error.message}");
+  });
 });
