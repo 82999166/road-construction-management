@@ -9,6 +9,8 @@ describe("后台审计工作区组件", () => {
     expect(component).toContain("敏感数据访问利用");
     expect(component).toContain("onRefresh");
     expect(component).toContain("不展示敏感原文");
+    expect(component).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
+    expect(component).toContain("return formatChinaDateTime(value)");
     expect(adminPage).toContain('lazy(() => import("@/components/AdminAuditWorkspace"))');
     expect(adminPage).toContain("<AdminAuditWorkspace");
   });

@@ -22,8 +22,8 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   const { isAuthenticated, loading, user } = useAuth();
   const utils = trpc.useUtils();
   const [location, navigate] = useLocation();
-  const [temporaryUsername, setTemporaryUsername] = useState("");
-  const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [permanentAdminUsername, setPermanentAdminUsername] = useState("");
+  const [permanentAdminPassword, setPermanentAdminPassword] = useState("");
   const [managerUsername, setManagerUsername] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -31,10 +31,9 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
   const [shouldChangeLocalPassword, setShouldChangeLocalPassword] = useState(false);
   const returnTo = getLoginReturnPath(location.includes("?") ? `?${location.split("?")[1]}` : "");
   const wechatLoginReason = new URLSearchParams(location.includes("?") ? location.split("?")[1] : "").get("wechatLogin");
-  // 用户已确认本地账号无需在首次登录时强制改密；保留改密接口仅供后续受控密码维护使用。
-  const requiresLocalPasswordChange = false;
+  const requiresLocalPasswordChange = shouldChangeLocalPassword;
   const redirectTarget = requiresLocalPasswordChange ? null : getAuthenticatedLoginRedirectTarget(isAuthenticated, loading, returnTo);
-  const temporaryLogin = trpc.auth.localAdminLogin.useMutation();
+  const permanentAdminLogin = trpc.auth.permanentAdminLogin.useMutation();
   const managerLogin = trpc.auth.localManagerLogin.useMutation();
   const changeLocalPassword = trpc.auth.changeLocalPassword.useMutation();
 
@@ -48,15 +47,19 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
     window.location.assign(`/api/official-account/login/start?returnTo=${encodeURIComponent(returnTo)}`);
   }
 
-  async function handleTemporaryAdminLogin(event: React.FormEvent<HTMLFormElement>) {
+  async function handlePermanentAdminLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      await temporaryLogin.mutateAsync({ username: temporaryUsername.trim(), password: temporaryPassword });
-      setTemporaryPassword("");
+      const result = await permanentAdminLogin.mutateAsync({ username: permanentAdminUsername.trim(), password: permanentAdminPassword });
+      setPermanentAdminPassword("");
       await utils.auth.me.invalidate();
+      if (result.mustChangePassword) {
+        setShouldChangeLocalPassword(true);
+        return;
+      }
       navigate(returnTo);
     } catch {
-      setTemporaryPassword("");
+      setPermanentAdminPassword("");
     }
   }
 
@@ -138,22 +141,22 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的工作台"}</Button>
             </form> : null}
-            {localAdminOnly ? <form className="mt-6 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handleTemporaryAdminLogin}>
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />超级管理员账号登录</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">{localAdminOnly ? "仅供测试环境全局治理与应急管理使用；登录成功后进入全局管理后台，口令仅在服务器端校验。" : "用于全局治理与应急管理；登录成功后进入全局管理后台，口令仅在服务器端校验。"}</p>
+            {localAdminOnly ? <form className="mt-6 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handlePermanentAdminLogin}>
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#623a27]"><ShieldCheck className="h-4 w-4" />正式超级管理员账号登录</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">仅供正式超级管理员进行全局治理。账号必须由服务器端明确授权，口令使用不可逆摘要校验并受失败限流保护；已关闭的临时入口不会被此表单启用。</p>
               <div className="mt-3 grid gap-3">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="temporary-admin-username">账号</Label>
-                  <Input id="temporary-admin-username" autoComplete="username" value={temporaryUsername} onChange={event => setTemporaryUsername(event.target.value)} disabled={temporaryLogin.isPending} required />
+                  <Label htmlFor="permanent-admin-username">手机号</Label>
+                  <Input id="permanent-admin-username" type="tel" inputMode="numeric" autoComplete="tel" placeholder="请输入 11 位手机号" value={permanentAdminUsername} onChange={event => setPermanentAdminUsername(event.target.value)} disabled={permanentAdminLogin.isPending} required />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="temporary-admin-password">密码</Label>
-                  <Input id="temporary-admin-password" type="password" autoComplete="current-password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} disabled={temporaryLogin.isPending} required />
+                  <Label htmlFor="permanent-admin-password">密码</Label>
+                  <Input id="permanent-admin-password" type="password" autoComplete="current-password" value={permanentAdminPassword} onChange={event => setPermanentAdminPassword(event.target.value)} disabled={permanentAdminLogin.isPending} required />
                 </div>
               </div>
-              {temporaryLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{temporaryLogin.error.message}</p> : null}
-              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={temporaryLogin.isPending}>
-                {temporaryLogin.isPending ? "正在安全登录…" : "登录全局管理后台"}
+              {permanentAdminLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{permanentAdminLogin.error.message}</p> : null}
+              <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={permanentAdminLogin.isPending}>
+                {permanentAdminLogin.isPending ? "正在安全登录…" : "登录全局管理后台"}
               </Button>
             </form> : <a href="/admin/login" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#bd8a66] bg-[#fff8f2] px-4 py-3 text-sm font-semibold text-[#653b26] transition-colors hover:bg-[#f2e0cf]"><ShieldCheck className="h-4 w-4" />进入超级管理员登录</a>}
             </>}

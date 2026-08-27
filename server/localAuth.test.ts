@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./db", () => ({
   getDb: vi.fn(),
+  getLocalManagerByUsername: vi.fn(),
   getUserByOpenId: vi.fn(),
   upsertUser: vi.fn(),
   hasPermanentAdministrator: vi.fn(),
@@ -15,8 +16,8 @@ vi.mock("./_core/sdk", () => ({
 }));
 
 import { assertSuperAdmin } from "./access";
-import { getDb, getLoginRateLimitState, getUserByOpenId, hasPermanentAdministrator, upsertUser } from "./db";
-import { resetTemporaryAdminLoginRateLimitForTests, shouldBlockTemporaryAdminLogin } from "./localAuth";
+import { getDb, getLocalManagerByUsername, getLoginRateLimitState, getUserByOpenId, hasPermanentAdministrator, upsertUser } from "./db";
+import { createLocalManagerPasswordHash, resetTemporaryAdminLoginRateLimitForTests, shouldBlockTemporaryAdminLogin } from "./localAuth";
 import { appRouter } from "./routers";
 
 function createUnauthenticatedCaller(response = { cookie: vi.fn(), clearCookie: vi.fn() }) {
@@ -156,5 +157,70 @@ describe("临时本地超级管理员登录", () => {
 
     await expect(caller.auth.logout()).resolves.toEqual({ success: true });
     expect(response.clearCookie).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ maxAge: -1 }));
+  });
+});
+
+describe("正式本地超级管理员登录", () => {
+  const username = "15111443399";
+  const password = "valid-password-123";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetTemporaryAdminLoginRateLimitForTests();
+    vi.mocked(getLoginRateLimitState).mockResolvedValue(undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      insert: vi.fn(() => ({ values: vi.fn().mockResolvedValue({}) })),
+    } as never);
+    vi.mocked(getLocalManagerByUsername).mockResolvedValue({
+      id: 9002,
+      openId: "local-manager:15111443399",
+      name: "正式超级管理员",
+      email: null,
+      loginMethod: "local_manager",
+      localUsername: username,
+      localPasswordHash: createLocalManagerPasswordHash(password),
+      localAccountStatus: "active",
+      localLoginMode: "both",
+      localPasswordChangeRequired: true,
+      role: "admin",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    } as never);
+  });
+
+  it("仅允许已启用的正式本地超级管理员获取会话并要求首次改密", async () => {
+    const { caller, response } = createUnauthenticatedCaller();
+
+    await expect(caller.auth.permanentAdminLogin({ username, password })).resolves.toEqual({
+      success: true,
+      expiresInMs: 8 * 60 * 60 * 1000,
+      mustChangePassword: true,
+    });
+    expect(upsertUser).toHaveBeenCalledWith(expect.objectContaining({ openId: "local-manager:15111443399" }));
+    expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-temporary-admin-session", expect.objectContaining({ maxAge: 8 * 60 * 60 * 1000 }));
+  });
+
+  it("普通本地账号不能通过正式超级管理员入口，也不能用普通入口绕过独立认证", async () => {
+    vi.mocked(getLocalManagerByUsername).mockResolvedValueOnce({
+      id: 9003,
+      openId: "local-manager:15111443399",
+      name: "普通管理人员",
+      loginMethod: "local_manager",
+      localUsername: username,
+      localPasswordHash: createLocalManagerPasswordHash(password),
+      localAccountStatus: "active",
+      localLoginMode: "both",
+      localPasswordChangeRequired: false,
+      role: "user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    } as never);
+    const { caller, response } = createUnauthenticatedCaller();
+
+    await expect(caller.auth.permanentAdminLogin({ username, password })).rejects.toMatchObject({ code: "UNAUTHORIZED", message: "账号或密码错误" });
+    await expect(caller.auth.localManagerLogin({ username, password })).rejects.toMatchObject({ code: "UNAUTHORIZED", message: "账号或密码错误" });
+    expect(response.cookie).not.toHaveBeenCalled();
   });
 });

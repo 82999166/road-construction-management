@@ -13,6 +13,7 @@ vi.mock("@/lib/trpc", () => ({
     useUtils: () => ({ auth: { me: { invalidate: vi.fn() } } }),
     auth: {
       localAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
+      permanentAdminLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
       localManagerLogin: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
       changeLocalPassword: { useMutation: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }) },
     },
