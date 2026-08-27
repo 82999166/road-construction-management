@@ -2554,7 +2554,7 @@ export const transportRouter = router({
       const { end } = getChinaBusinessDateRange(dateTo);
       rows = rows.filter(trip => new Date(trip.startAt) < end);
     }
-    if (month) rows = rows.filter(trip => new Date(trip.startAt).toISOString().slice(0, 7) === month);
+    if (month) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)).slice(0, 7) === month);
     if (dateFrom) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) >= dateFrom);
     if (dateTo) rows = rows.filter(trip => formatChinaBusinessDate(new Date(trip.startAt)) <= dateTo);
     if (vehicleId) rows = rows.filter(trip => trip.vehicleId === vehicleId);
@@ -2597,10 +2597,16 @@ export const transportRouter = router({
       const liveSite = siteId ? sitesById.get(siteId) : undefined;
       return { name: typeof snapshot?.name === "string" ? snapshot.name : liveSite?.name ?? "未设置", address: typeof snapshot?.address === "string" && snapshot.address.trim() ? snapshot.address : liveSite?.address?.trim() || liveSite?.name || "未登记中文地址" };
     };
+    /** 台账仅展示中文业务结果，内部校验枚举与上游错误细节不透传至移动端或后台表格。 */
+    const cardValidationLabel = (status: unknown) => ({ accepted: "校验通过", duplicate: "重复刷卡已识别", needs_review: "待人工核验", rejected: "校验未通过" }[String(status)] ?? "待人工核验");
+    const safeCardValidationReason = (reason: unknown) => {
+      if (typeof reason !== "string" || !reason.trim()) return null;
+      return /[A-Za-z]{3,}/.test(reason) ? "请由管理员核对车辆卡、地点与时间。" : reason.trim();
+    };
     return rows.map(trip => {
       const routeSnapshot = trip.routeSnapshot && typeof trip.routeSnapshot === "object" ? trip.routeSnapshot as Record<string, unknown> : {};
       const vehicle = vehiclesById.get(trip.vehicleId);
-      const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, siteName: event.siteId ? sitesById.get(event.siteId)?.name ?? "未登记地点" : "未登记地点", operatorName: event.operatorUserId ? operatorsById.get(event.operatorUserId) ?? "未登记确认人" : "未登记确认人", validationStatus: event.validationStatus, validationReason: event.validationReason }));
+      const events = (eventsByTrip.get(trip.id) ?? []).map(event => ({ eventType: event.eventType, occurredAt: event.occurredAt, deviceId: event.deviceId, siteName: event.siteId ? sitesById.get(event.siteId)?.name ?? "未登记地点" : "未登记地点", operatorName: event.operatorUserId ? operatorsById.get(event.operatorUserId) ?? "未登记确认人" : "未登记确认人", validationStatus: cardValidationLabel(event.validationStatus), validationReason: safeCardValidationReason(event.validationReason) }));
       const unloadEvidenceId = Number(routeSnapshot.unloadPhotoEvidenceId ?? 0) || null;
       return {
         ...trip,

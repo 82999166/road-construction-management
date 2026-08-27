@@ -9,6 +9,8 @@ describe("运输趟次完整台账服务端投影", () => {
     expect(source).toContain("routePresetId: z.number().int().positive().optional()");
     expect(source).toContain("if (vehicleId) rows = rows.filter");
     expect(source).toContain("if (status) rows = rows.filter");
+    expect(source).toContain("formatChinaBusinessDate(new Date(trip.startAt)).slice(0, 7) === month");
+    expect(source).not.toContain("new Date(trip.startAt).toISOString().slice(0, 7) === month");
   });
 
   it("返回车辆、中文地点、刷卡轨迹和结算字段而不返回坐标", () => {
@@ -20,6 +22,15 @@ describe("运输趟次完整台账服务端投影", () => {
     expect(source).toContain("fuelDeductionAmount");
     expect(source).not.toContain("latitude: transportCardEvents.latitude");
     expect(source).not.toContain("longitude: transportCardEvents.longitude");
+  });
+
+  it("将用户可见的刷卡校验信息投影为中文且不回显英文内部原因", () => {
+    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    expect(source).toContain('accepted: "校验通过"');
+    expect(source).toContain('needs_review: "待人工核验"');
+    expect(source).toContain('"请由管理员核对车辆卡、地点与时间。"');
+    expect(source).toContain("validationStatus: cardValidationLabel(event.validationStatus)");
+    expect(source).toContain("validationReason: safeCardValidationReason(event.validationReason)");
   });
 });
 

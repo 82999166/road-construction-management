@@ -1,15 +1,14 @@
 import { KeyRound, ScrollText, ShieldCheck, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatChinaDateTime } from "@/lib/businessTime";
 
 type AuditLogRow = { id: number; summary: string; module: string; action: string; userId: number | null; createdAt: Date | string | null };
 type SensitiveAccessRow = { id: number; dataCategory: string; result: string; module: string; accessPurpose: string; recordCount: number; createdAt: Date | string | null };
 type IntegritySnapshot = { valid: boolean; eventCount: number; errors: string[]; sealedCount: number; completeSeal: boolean } | undefined;
 
 function displayDate(value: Date | string | null) {
-  if (!value) return "—";
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { hour12: false });
+  return formatChinaDateTime(value);
 }
 
 function MetricCard({ title, value, description, icon: Icon }: { title: string; value: string | number; description: string; icon: LucideIcon }) {

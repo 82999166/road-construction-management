@@ -132,7 +132,8 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('["导出模块", scope.module]');
     expect(source).toContain('`筛选条件 · ${label}`');
     expect(source).toContain('["导出记录数", rows.length]');
-    expect(source).toContain('["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })]');
+    expect(source).toContain('["生成时间", formatChinaDateTime(new Date())]');
+    expect(source).not.toContain('["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })]');
     expect(source).toContain("车辆资源台账");
     expect(source).toContain("机械综合台账");
     expect(source).toContain("劳务考勤与工资台账");

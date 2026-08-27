@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
-import BusinessStatusBadge from "@/components/BusinessStatusBadge";
+import BusinessStatusBadge, { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
 import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
@@ -363,7 +363,7 @@ function downloadCsvFile(filename: string, headers: string[], rows: Array<Array<
     ["导出模块", scope.module],
     ...scope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]),
     ["导出记录数", rows.length],
-    ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })],
+    ["生成时间", formatChinaDateTime(new Date())],
     [],
   ];
   const content = `\uFEFF${[...scopeRows, headers, ...rows].map(row => row.map(escapeCell).join(",")).join("\n")}`;
@@ -397,7 +397,7 @@ async function downloadXlsxWorkbook(filename: string, sheets: Array<{ name: stri
   const exportScope = { ...scope, filters: scopedFilters };
   const XLSX = await import("@e965/xlsx");
   const workbook = XLSX.utils.book_new();
-  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", new Date().toLocaleString("zh-CN", { hour12: false })], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
+  const overviewRows: Array<Array<string | number | null | undefined>> = [["导出模块", exportScope.module], ...exportScope.filters.map(([label, value]) => [`筛选条件 · ${label}`, value ?? "未设置"]), ["生成时间", formatChinaDateTime(new Date())], [], ["工作表", "记录数"], ...scopedSheets.map(sheet => [sheet.name, sheet.rows.length])];
   const overview = XLSX.utils.aoa_to_sheet(overviewRows);
   overview["!cols"] = [{ wch: 22 }, { wch: 48 }];
   XLSX.utils.book_append_sheet(workbook, overview, "汇总说明");
@@ -959,7 +959,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onError: error => toast.error(error.message),
   });
   const reviewBroadcast = trpc.broadcast.review.useMutation({
-    onSuccess: async result => { toast.success(`群发单状态已更新为 ${result.status}`); await refreshBroadcasts(); },
+    onSuccess: async result => { toast.success(`范围通知状态已更新为：${getBusinessStatusLabel(result.status)}`); await refreshBroadcasts(); },
     onError: error => toast.error(error.message),
   });
   const publishBroadcast = trpc.broadcast.publish.useMutation({
@@ -2231,7 +2231,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       }, { trips: 0, fuelLiters: 0, fuelAmount: 0, maintenance: 0, gross: 0, net: 0 });
       openA4LandscapePrintDocument({
         title: "车辆资源台账明细表",
-        bodyHtml: `<h1>车辆资源台账明细表</h1><p class="sub">项目：${escapePrintHtml(selectedProject)}　|　查询：${escapePrintHtml(vehicleLedgerFilter.search || "全部车辆")}　|　资源性质：${escapePrintHtml(vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : vehicleLedgerFilter.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</p><p class="sub">调度状态：${escapePrintHtml(vehicleLedgerFilter.status === "all" ? "全部" : vehicleStatusLabel[vehicleLedgerFilter.status as VehicleStatus])}　|　分析期间：${escapePrintHtml(vehicleAnalysisPeriod)}　|　生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>车牌</th><th>项目</th><th>类型</th><th>资源性质</th><th>状态</th><th>所属人/出租方</th><th>司机</th><th>运输趟次</th><th>柴油升数</th><th>柴油金额</th><th>维修保养</th><th>毛收入</th><th>净收益</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="8">合计：车辆数 ${filteredRows.length} 辆</td><td class="right">${escapePrintHtml(String(totals.trips))}</td><td class="right">${escapePrintHtml(displayMoney(totals.fuelLiters))} L</td><td class="right">¥${escapePrintHtml(displayMoney(totals.fuelAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.maintenance))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.gross))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.net))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>车辆资源台账明细表</h1><p class="sub">项目：${escapePrintHtml(selectedProject)}　|　查询：${escapePrintHtml(vehicleLedgerFilter.search || "全部车辆")}　|　资源性质：${escapePrintHtml(vehicleLedgerFilter.ownership === "all" ? "全部" : vehicleLedgerFilter.ownership === "owned" ? "公司自有" : vehicleLedgerFilter.ownership === "leased" ? "外租车辆" : "渣土车（按趟结算）")}</p><p class="sub">调度状态：${escapePrintHtml(vehicleLedgerFilter.status === "all" ? "全部" : vehicleStatusLabel[vehicleLedgerFilter.status as VehicleStatus])}　|　分析期间：${escapePrintHtml(vehicleAnalysisPeriod)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>车牌</th><th>项目</th><th>类型</th><th>资源性质</th><th>状态</th><th>所属人/出租方</th><th>司机</th><th>运输趟次</th><th>柴油升数</th><th>柴油金额</th><th>维修保养</th><th>毛收入</th><th>净收益</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="8">合计：车辆数 ${filteredRows.length} 辆</td><td class="right">${escapePrintHtml(String(totals.trips))}</td><td class="right">${escapePrintHtml(displayMoney(totals.fuelLiters))} L</td><td class="right">¥${escapePrintHtml(displayMoney(totals.fuelAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.maintenance))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.gross))}</td><td class="right">¥${escapePrintHtml(displayMoney(totals.net))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
     };
     const submitVehicle = () => {
@@ -2736,7 +2736,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const rows = wechatLogins.data ?? [];
     const activeCount = rows.filter(item => item.bindingStatus === "active").length;
     const needsActionCount = rows.filter(item => ["unsubscribed", "revoked", "disabled"].includes(item.bindingStatus)).length;
-    const statusLabel: Record<string, string> = { active: "已绑定", pending: "待完成", unsubscribed: "未关注服务号", revoked: "已解除", disabled: "已停用" };
+    const statusLabel = new Proxy<Record<string, string>>({ active: "已绑定", pending: "待完成", unsubscribed: "未关注服务号", revoked: "已解除", disabled: "已停用" }, {
+      get: (labels, status) => typeof status === "string" ? labels[status] ?? "待核验" : undefined,
+    });
     const loginModeLabel: Record<string, string> = { pc: "仅 PC", mobile: "仅手机", both: "PC + 手机" };
     return (
       <div className="space-y-6">
@@ -2861,7 +2863,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const activeOrders = orders.filter(item => !["closed", "void"].includes(item.status));
     const totalInventoryValue = inventoryBalances.reduce((sum, item) => sum + Number(item.totalAmount), 0);
     const pendingSettlementAmount = Object.values(settlementTotals).reduce((sum, item) => sum + Number(item.remainingAmount), 0);
-    const statusLabel = (status: string) => ({ draft: "草稿", pending_approval: "待审核", submitted: "待审核", approved: "已通过", ordered: "已通过", confirmed: "已通过", received: "已收货", stocked: "已收货", closed: "已结算", cancelled: "已作废", void: "已作废", rejected: "已退回" }[status] ?? status);
+    const statusLabel = (status: string) => ({ draft: "草稿", pending_approval: "待审核", submitted: "待审核", approved: "已通过", ordered: "已通过", confirmed: "已通过", received: "已收货", stocked: "已收货", closed: "已结算", cancelled: "已作废", void: "已作废", rejected: "已退回" }[status] ?? getBusinessStatusLabel(status));
     const transactionLabel = (type: string) => type === "inbound" ? "入库" : type === "outbound" ? "领用出库" : "退库";
     const openInventoryDialog = (transactionType: InventoryTransactionForm["transactionType"]) => {
       setInventoryTransactionForm({ ...EMPTY_INVENTORY_TRANSACTION_FORM, projectId: String(workspaceProjectId), transactionType, occurredAt: toLocalDateTimeInput(new Date()) });

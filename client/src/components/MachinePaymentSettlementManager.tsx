@@ -7,7 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { Landmark, ReceiptText, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -15,10 +17,14 @@ import { toast } from "sonner";
 
 type PaymentMethod = "bank_transfer" | "corporate_account" | "cash" | "wechat" | "alipay" | "other";
 
-const paymentMethodLabel: Record<PaymentMethod, string> = { bank_transfer: "银行卡转账", corporate_account: "对公账户", cash: "现金", wechat: "微信收款", alipay: "支付宝收款", other: "其他方式" };
-const statusLabel: Record<string, string> = { draft: "草稿", submitted: "待会计审核", approved: "待付款", paid: "已付款", void: "已作废" };
+const paymentMethodLabel = new Proxy<Record<string, string>>({ bank_transfer: "银行卡转账", corporate_account: "对公账户", cash: "现金", wechat: "微信收款", alipay: "支付宝收款", other: "其他方式" }, {
+  get: (labels, method) => typeof method === "string" ? labels[method] ?? "其他方式" : undefined,
+});
+const statusLabel = new Proxy<Record<string, string>>({ draft: "草稿", submitted: "待会计审核", approved: "待付款", paid: "已付款", void: "已作废" }, {
+  get: (labels, status) => typeof status === "string" ? labels[status] ?? getBusinessStatusLabel(status) : undefined,
+});
 const money = (value: unknown) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => toDeviceDateInput();
 const currentPeriod = () => today().slice(0, 7);
 const number = (value: unknown) => Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const downloadCsv = (fileName: string, headers: string[], rows: Array<Array<string | number>>) => {
@@ -64,7 +70,7 @@ export default function MachinePaymentSettlementManager({ projectId }: { project
     const rowsHtml = printableSettlements.map((item: any, index: number) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(item.settlementNo)}</td><td>${escapePrintHtml(item.machine?.name || `机械 #${item.machineId}`)}</td><td>${escapePrintHtml(item.machine?.code || "编号待补")}</td><td>${escapePrintHtml(item.period)}</td><td class="right">¥${escapePrintHtml(number(item.grossPayableAmount))}</td><td class="right">¥${escapePrintHtml(number(item.fuelCostAmount))}</td><td class="right">¥${escapePrintHtml(number(item.repairCostAmount))}</td><td class="right">¥${escapePrintHtml(number(item.manualDeductionAmount))}</td><td class="right">¥${escapePrintHtml(number(item.netPayableAmount))}</td><td>${escapePrintHtml(statusLabel[item.status] ?? item.status)}</td><td>${escapePrintHtml(item.paymentDate ? String(item.paymentDate).slice(0, 10) : "待付款")}</td></tr>`).join("");
     const totals = printableSettlements.reduce((current: { gross: number; fuel: number; repair: number; deduction: number; net: number }, item: any) => ({ gross: current.gross + Number(item.grossPayableAmount ?? 0), fuel: current.fuel + Number(item.fuelCostAmount ?? 0), repair: current.repair + Number(item.repairCostAmount ?? 0), deduction: current.deduction + Number(item.manualDeductionAmount ?? 0), net: current.net + Number(item.netPayableAmount ?? 0) }), { gross: 0, fuel: 0, repair: 0, deduction: 0, net: 0 });
     const machineLabel = machineId === "all" ? "全部机械" : machineById.get(Number(machineId))?.name ?? "已选机械";
-    openA4LandscapePrintDocument({ title: "机械付款结算明细表", bodyHtml: `<h1>机械付款结算明细表</h1><p class="sub">期间：${escapePrintHtml(period)}　|　机械：${escapePrintHtml(machineLabel)}　|　生成时间：${escapePrintHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>结算单号</th><th>机械名称</th><th>机械编号</th><th>期间</th><th>应付</th><th>油料</th><th>维修</th><th>人工扣款</th><th>净应付</th><th>状态</th><th>付款日期</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="5">合计：结算单 ${printableSettlements.length} 单，机械 ${new Set(printableSettlements.map((item: any) => item.machineId)).size} 台</td><td class="right">¥${escapePrintHtml(number(totals.gross))}</td><td class="right">¥${escapePrintHtml(number(totals.fuel))}</td><td class="right">¥${escapePrintHtml(number(totals.repair))}</td><td class="right">¥${escapePrintHtml(number(totals.deduction))}</td><td class="right">¥${escapePrintHtml(number(totals.net))}</td><td colspan="2">—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
+    openA4LandscapePrintDocument({ title: "机械付款结算明细表", bodyHtml: `<h1>机械付款结算明细表</h1><p class="sub">期间：${escapePrintHtml(period)}　|　机械：${escapePrintHtml(machineLabel)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th>序号</th><th>结算单号</th><th>机械名称</th><th>机械编号</th><th>期间</th><th>应付</th><th>油料</th><th>维修</th><th>人工扣款</th><th>净应付</th><th>状态</th><th>付款日期</th></tr></thead><tbody>${rowsHtml}<tr class="summary"><td colspan="5">合计：结算单 ${printableSettlements.length} 单，机械 ${new Set(printableSettlements.map((item: any) => item.machineId)).size} 台</td><td class="right">¥${escapePrintHtml(number(totals.gross))}</td><td class="right">¥${escapePrintHtml(number(totals.fuel))}</td><td class="right">¥${escapePrintHtml(number(totals.repair))}</td><td class="right">¥${escapePrintHtml(number(totals.deduction))}</td><td class="right">¥${escapePrintHtml(number(totals.net))}</td><td colspan="2">—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
   };
 
   return <>
