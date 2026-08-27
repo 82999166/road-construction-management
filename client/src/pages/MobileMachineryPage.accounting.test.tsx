@@ -66,4 +66,17 @@ describe("移动端机械会计月度明细", () => {
     expect(source).not.toContain('fixed bottom-[4.65rem]');
     expect(source).not.toContain('fixed bottom-[9.6rem]');
   });
+
+  it("操作失败不回显原始服务端错误，租赁日期回填使用设备日期工具", () => {
+    const source = readFileSync(new URL("./MobileMachineryPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("机械台账保存失败，请检查填写内容后重试");
+    expect(source).toContain("机械计价规则保存失败，请检查填写内容后重试");
+    expect(source).toContain("机械成本录入失败，请核对费用信息后重试");
+    expect(source).toContain("会计月度明细保存失败，请检查填写内容后重试");
+    expect(source).toContain("机械费用录入未完成，请检查照片、定位和网络后重试");
+    expect(source).toContain("toDeviceDateInput(machine.leaseTerms.effectiveFrom)");
+    expect(source).not.toContain("toast.error(error.message)");
+    expect(source).not.toContain("new Date(machine.leaseTerms.effectiveFrom).toISOString().slice(0, 10)");
+  });
 });
