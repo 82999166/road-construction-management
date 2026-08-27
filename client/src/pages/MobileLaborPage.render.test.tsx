@@ -169,4 +169,17 @@ describe("移动劳务页真实数据与普通人员操作投影", () => {
     expect(source).toContain("onClick={printPayrollSummary}");
     expect(source).not.toContain("window.print()");
   });
+
+  it("将人员进退场日期回填为设备日期，并按中国时区展示打卡时间", () => {
+    const source = readFileSync(new URL("./MobileLaborPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("function formatChinaTime");
+    expect(source).toContain("return full ? full.slice(-8, -3) : \"—\"");
+    expect(source).toContain("toDeviceDateInput(worker.entryDate)");
+    expect(source).toContain("toDeviceDateInput(worker.exitDate)");
+    expect(source).toContain("formatChinaTime(checkInStatus.data.checkIn!.checkedInAt)");
+    expect(source).toContain("formatChinaTime(checkInStatus.data.checkOut!.checkedOutAt)");
+    expect(source).not.toContain("checkedInAt).toLocaleTimeString");
+    expect(source).not.toContain("checkedOutAt).toLocaleTimeString");
+  });
 });
