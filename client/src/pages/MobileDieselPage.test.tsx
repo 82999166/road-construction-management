@@ -32,4 +32,8 @@ describe("移动柴油管理操作窗口", () => {
     expect(source).toContain("formatChinaDateTime(record.refueledAt)");
     expect(source).not.toContain("refueledAt: new Date().toISOString().slice(0, 16)");
   });
+
+  it("未知柴油领用状态使用中文安全回退，不将内部枚举展示给用户", () => {
+    expect(source).toContain('} as Record<string, string>)[status] ?? "待处理"');
+  });
 });

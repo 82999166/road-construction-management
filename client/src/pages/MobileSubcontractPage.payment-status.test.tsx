@@ -11,4 +11,11 @@ describe("MobileSubcontractPage payment visibility", () => {
     expect(page).toContain("canSettle: false");
     expect(page).toContain("canPay: false");
   });
+
+  it("projects unknown package, team and payment statuses to Chinese-safe labels", () => {
+    expect(page).toContain(')[status] ?? "待处理"');
+    expect(page).toContain("paymentSettlementStatus(item.status)");
+    expect(page).toContain("teamStatus(team.status)");
+    expect(page).not.toContain(")[item.status] || item.status");
+  });
 });

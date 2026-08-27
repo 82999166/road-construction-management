@@ -19,4 +19,15 @@ describe("PC机械付款结算台账", () => {
     expect(source).toContain("openA4LandscapePrintDocument");
     expect(source).toContain("合计：结算单");
   });
+
+  it("在列表、导出和打印中以中文展示计费、支付与状态信息，并统一付款日期格式", () => {
+    const source = readFileSync(new URL("./MachinePaymentSettlementManager.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('monthly: "按月计费"');
+    expect(source).toContain("leaseBillingTypeDisplay(item.statement?.leaseBillingType)");
+    expect(source).toContain("paymentMethodLabel[item.paymentMethod]");
+    expect(source).toContain("formatChinaDate(item.paymentDate)");
+    expect(source).not.toContain("statusLabel[item.status] ?? item.status");
+    expect(source).not.toContain("String(item.paymentDate).slice(0, 10)");
+  });
 });

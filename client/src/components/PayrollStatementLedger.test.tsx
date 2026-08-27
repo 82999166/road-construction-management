@@ -17,4 +17,13 @@ describe("PayrollStatementLedger", () => {
     expect(source).toContain("onOpenDetail(item)");
     expect(source).toContain("BusinessStatusBadge");
   });
+
+  it("打印副标题和明细状态均使用共享中文投影，不回显筛选枚举或将未知状态误判为作废", () => {
+    const source = readFileSync(new URL("./PayrollStatementLedger.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("getBusinessStatusLabel(item.status)");
+    expect(source).toContain('getBusinessStatusLabel(status))}</p>');
+    expect(source).not.toContain(': status)}</p>');
+    expect(source).not.toContain('item.status === "paid" ? "已付款" : "已作废"');
+  });
 });

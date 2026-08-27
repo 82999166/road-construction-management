@@ -7,6 +7,29 @@ import { ArrowLeft, BadgeCheck, BellRing, CheckCircle2, HardHat, KeyRound, Link2
 import React from "react";
 import { useLocation, useSearch } from "wouter";
 
+const ROLE_CODE_LABELS: Record<string, string> = {
+  SUPER_ADMIN: "超级管理员",
+  SYSTEM_ADMIN: "系统管理员",
+  PROJECT_MANAGER: "项目经理",
+  CONSTRUCTION_MANAGER: "施工管理员",
+  SITE_MANAGER: "现场管理员",
+  TRANSPORT_MANAGER: "运输管理员",
+  DRIVER: "运输司机",
+  MACHINERY_MANAGER: "机械管理员",
+  PURCHASING_MANAGER: "采购管理员",
+  WAREHOUSE_MANAGER: "仓储管理员",
+  LABOR_MANAGER: "劳务管理员",
+  FINANCE_MANAGER: "财务管理员",
+  ACCOUNTANT: "会计",
+  SAFETY_MANAGER: "安全管理员",
+  ADMIN: "管理员",
+  EMPLOYEE: "项目成员",
+};
+
+function roleCodeLabel(roleCode: string) {
+  return ROLE_CODE_LABELS[roleCode] ?? "已授权岗位";
+}
+
 /**
  * 移动端个人中心只展示本人的脱敏身份与服务端已授权范围，
  * 不暴露组织成员、银行卡、身份证或未授权项目清单。
@@ -59,7 +82,7 @@ export default function MobileProfilePage() {
             {bindingResult === "bound" && <p className="rounded-xl bg-[#e7f4e7] px-3 py-2 text-xs leading-5 text-[#35643a]">公众号通知身份已绑定成功，后续审核、运输和项目提醒将发送到您的微信。</p>}
             {bindingResult === "conflict" && <p className="rounded-xl bg-[#fff1dc] px-3 py-2 text-xs leading-5 text-[#8c571f]">该微信已关联其他系统账号，请联系超级管理员处理。</p>}
             {bindingResult === "failed" && <p className="rounded-xl bg-[#fff1dc] px-3 py-2 text-xs leading-5 text-[#8c571f]">公众号绑定未完成，请在微信内重新发起绑定。</p>}
-            <section className="rounded-2xl bg-white p-4 shadow-[0_8px_22px_rgba(71,42,30,.07)]"><div className="flex items-start gap-3"><BadgeCheck className="mt-0.5 h-5 w-5 text-[#a85d2f]" /><div><h2 className="text-sm font-semibold">当前岗位</h2><p className="mt-1 text-xs leading-5 text-[#765542]">{roleCodes.length ? roleCodes.join(" · ") : "尚未分配业务岗位"}</p></div></div></section>
+            <section className="rounded-2xl bg-white p-4 shadow-[0_8px_22px_rgba(71,42,30,.07)]"><div className="flex items-start gap-3"><BadgeCheck className="mt-0.5 h-5 w-5 text-[#a85d2f]" /><div><h2 className="text-sm font-semibold">当前岗位</h2><p className="mt-1 text-xs leading-5 text-[#765542]">{roleCodes.length ? roleCodes.map(roleCodeLabel).join(" · ") : "尚未分配业务岗位"}</p></div></div></section>
             <section className="rounded-2xl bg-white p-4 shadow-[0_8px_22px_rgba(71,42,30,.07)]"><div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 h-5 w-5 text-[#a85d2f]" /><div><h2 className="text-sm font-semibold">数据范围</h2><p className="mt-1 text-xs leading-5 text-[#765542]">{scopeText}。实际查询和操作仍由服务端逐项校验。</p></div></div></section>
               <section className="rounded-2xl border border-[#e6cfac] bg-[#fffbf4] p-4 shadow-[0_8px_22px_rgba(71,42,30,.05)]"><div className="flex items-start gap-3"><BellRing className="mt-0.5 h-5 w-5 text-[#a85d2f]" /><div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">微信公众号通知</h2><p className="mt-1 text-xs leading-5 text-[#765542]">{bindingStatusText}</p><p className="mt-1 text-xs leading-5 text-[#8b6852]">{bindingGuideText}</p><p className="mt-2 rounded-lg bg-[#f7ead9] px-2.5 py-2 text-xs leading-5 text-[#80543d]">{notificationRoleHint}</p>{bindingFeedback && <p className="mt-2 text-xs leading-5 text-[#a4462d]">{bindingFeedback}</p>}<div className="mt-3 flex flex-wrap gap-2">{bound ? <span className="inline-flex h-8 items-center rounded-md bg-[#e5f2e5] px-3 text-xs font-medium text-[#35643a]"><CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />已完成绑定</span> : <Button size="sm" className="bg-[#a85d2f] text-white hover:bg-[#8f4e26]" disabled={bindingMutation.isPending || officialBinding.isLoading} onClick={() => { setBindingFeedback(null); bindingMutation.mutate(); }}><Link2 className="mr-1.5 h-3.5 w-3.5" />{bindingMutation.isPending ? "正在跳转…" : needsFollowOfficialAccount ? "关注后重新绑定" : "在微信内绑定"}</Button>}<Button size="sm" variant="outline" className="border-[#c9b19b] text-[#6f4b36]" disabled={verifyFollowMutation.isPending || officialBinding.isLoading} onClick={() => { setBindingFeedback(null); verifyFollowMutation.mutate(); }}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />{verifyFollowMutation.isPending ? "正在核验…" : "重新核验关注状态"}</Button></div></div></div></section>
             <section className="rounded-2xl border border-[#ead9c8] bg-[#fffaf3] p-4 shadow-[0_8px_22px_rgba(71,42,30,.05)]"><div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 h-5 w-5 text-[#a85d2f]" /><div className="min-w-0"><h2 className="text-sm font-semibold">账户安全</h2><p className="mt-1 text-xs leading-5 text-[#765542]">本系统通过企业统一身份认证验证登录，不保存您的企业密码，也不提供本地密码重置。修改密码或处理账号异常请使用企业身份平台；如授权发生变化，可重新验证身份同步最新会话。</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" className="border-[#c9854a] text-[#7d421f]" onClick={() => navigate(createLoginPath("/mobile/profile"))}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新验证身份</Button><a href="/api/identity-recovery" className="inline-flex h-8 items-center justify-center rounded-md border border-[#c9b19b] px-3 text-xs font-medium text-[#6f4b36] transition-colors hover:bg-[#f4eadf]"><KeyRound className="mr-1.5 h-3.5 w-3.5" />账号恢复与密码重置</a><Button size="sm" variant="outline" className="border-[#c9b19b] text-[#6f4b36]" onClick={handleSecureLogout}><LogOut className="mr-1.5 h-3.5 w-3.5" />安全退出</Button></div></div></div></section>

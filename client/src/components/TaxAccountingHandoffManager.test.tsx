@@ -21,4 +21,14 @@ describe("PC财税辅助台账与资料交接", () => {
     expect(schema).toContain("export const taxAuxiliaryEntries");
     expect(schema).toContain("export const taxHandoffBatches");
   });
+
+  it("将来源枚举投影为中文，并固定批次生成时间的中国时区口径", () => {
+    const component = readFileSync(new URL("./TaxAccountingHandoffManager.tsx", import.meta.url), "utf8");
+
+    expect(component).toContain("function sourceDocumentLabel");
+    expect(component).toContain('financial_record: "资金流水"');
+    expect(component).toContain("sourceDocumentLabel(entry.sourceType, entry.sourceId)");
+    expect(component).toContain("formatChinaDateTime(batch.generatedAt)");
+    expect(component).not.toContain("`${entry.sourceType}:${entry.sourceId ?? \"\"}`");
+  });
 });

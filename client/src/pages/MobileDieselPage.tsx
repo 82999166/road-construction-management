@@ -25,7 +25,7 @@ function money(value: number | null | undefined) {
 }
 
 function statusLabel(status: string) {
-  return ({ draft: "草稿", approved: "已记账", settled: "已结算", void: "已作废" } as Record<string, string>)[status] ?? status;
+  return ({ draft: "草稿", approved: "已记账", settled: "已结算", void: "已作废" } as Record<string, string>)[status] ?? "待处理";
 }
 
 function readImageAsBase64(file: File) {

@@ -30,4 +30,14 @@ describe("SubcontractPaymentSettlementManager", () => {
     expect(component).toContain("openA4LandscapePrintDocument");
     expect(component).toContain("合计：结算单");
   });
+
+  it("默认以设备日期登记付款，并在表格、导出和打印中使用中文状态与中国日期", () => {
+    expect(component).toContain('const today = () => toDeviceDateInput();');
+    expect(component).toContain("invoiceStatusDisplay(item.invoiceStatus)");
+    expect(component).toContain("paymentMethodDisplay(item.paymentMethod)");
+    expect(component).toContain("settlementStatusDisplay(item.status)");
+    expect(component).toContain("formatChinaDate(item.paymentDate)");
+    expect(component).toContain("formatChinaDateTime(new Date())");
+    expect(component).not.toContain("new Date().toISOString().slice(0, 10)");
+  });
 });

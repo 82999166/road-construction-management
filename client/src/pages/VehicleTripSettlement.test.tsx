@@ -10,7 +10,7 @@ describe("渣土车按趟结算车辆档案", () => {
     expect(adminPage).toContain('车主/车队');
     expect(mobilePage).toContain('ownership: "trip_settlement"');
     expect(mobilePage).toContain('按趟结算渣土车不建立租赁日期、租金或租赁成本');
-    expect(settlementManager).toContain('import { toDeviceDateInput } from "@/lib/businessTime"');
+    expect(settlementManager).toContain('import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime"');
     expect(settlementManager).toContain("const today = () => toDeviceDateInput()");
     expect(settlementManager).not.toContain("new Date().toISOString().slice(0, 10)");
   });
