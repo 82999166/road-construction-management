@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, { type DashboardMenuItem } from "@/components/DashboardLayout";
 import BusinessStatusBadge from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
+import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInlineBroadcastDeliveryExpanded } from "@/lib/adminWorkspaceState";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
@@ -511,11 +512,17 @@ function LedgerTable({ title, description, columns, rows, loading, titleActions,
   );
 }
 
-export default function AdminPage() {
+export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcAdminSection } = {}) {
   const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
-  const activeSection = location.split("/")[2] || "overview";
+  const activeSection = scopedSection ?? (location.split("/")[2] || "overview");
+  const scopedMenuItems: DashboardMenuItem[] = scopedSection
+    ? [
+        { icon: LayoutDashboard, label: "业务工作台", path: "/admin", section: "我的工作台" },
+        ...(ADMIN_MENU.filter(item => item.path === `/admin/${activeSection}`).map(item => ({ ...item, section: "当前业务" }))),
+      ]
+    : ADMIN_MENU;
   const [dieselReceiptPreview, setDieselReceiptPreview] = useState<string | null>(null);
   const [dieselCameraOpen, setDieselCameraOpen] = useState(false);
   const [dieselCameraStream, setDieselCameraStream] = useState<MediaStream | null>(null);
@@ -554,7 +561,7 @@ export default function AdminPage() {
   const overview = trpc.admin.overview.useQuery(undefined, { enabled: canQuery && isOverview });
   const organizations = trpc.admin.organization.list.useQuery(undefined, { enabled: canQuery && needsOrganizations });
   const positions = trpc.admin.position.list.useQuery(undefined, { enabled: canQuery && isOrganization });
-  const projects = trpc.admin.project.list.useQuery(undefined, { enabled: canQuery && needsProjects });
+  const projects = trpc.admin.project.listAccessible.useQuery(undefined, { enabled: canQuery && needsProjects });
   const roles = trpc.admin.role.list.useQuery(undefined, { enabled: canQuery && isPermission });
   const roleTemplates = trpc.admin.role.templates.useQuery(undefined, { enabled: canQuery && isPermission });
   const permissions = trpc.admin.role.permissions.useQuery(undefined, { enabled: canQuery && isPermission });
@@ -3339,9 +3346,9 @@ export default function AdminPage() {
   const content = activeSection === "organization" ? renderOrganization() : activeSection === "vehicles" ? renderVehicles() : activeSection === "construction" ? renderConstruction() : activeSection === "labor" ? renderLabor() : activeSection === "machinery" ? renderMachinery() : activeSection === "transport" ? <>{renderTransport()}{renderRfidManagement()}</> : activeSection === "purchasing" ? renderPurchasing() : activeSection === "measurement-tools" ? <AdminMeasurementToolsPanel /> : activeSection === "subcontract" ? renderSubcontract() : activeSection === "contracts" ? <ContractManagementPanel projects={(projects.data ?? []).map(project => ({ id: project.id, name: project.name }))} /> : activeSection === "permission" ? renderPermissions() : activeSection === "risk" ? renderRisk() : (activeSection === "finance" || activeSection === "diesel") ? renderFinance() : activeSection === "broadcast" ? renderBroadcast() : activeSection === "wechat-login" ? renderWechatLogin() : activeSection === "business" ? renderBusiness() : activeSection === "settings" ? renderSettings() : activeSection === "audit" ? renderAudit() : renderOverview();
 
   return (
-    <DashboardLayout title="悦信云智管 · 管理后台" menuItems={ADMIN_MENU}>
+    <DashboardLayout title={scopedSection ? "悦信云智管 · 统一业务工作区" : "悦信云智管 · 管理后台"} menuItems={scopedMenuItems}>
       <div className="mx-auto max-w-7xl space-y-6 py-3">
-        <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
+        {!scopedSection ? <Tabs value={activeSection} onValueChange={value => setLocation(value === "overview" ? "/admin" : `/admin/${value}`)} className="lg:hidden">
           <TabsList aria-label="超级管理后台业务菜单" className="flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-[#dce3de] bg-[#f8f8f4] p-1 shadow-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="overview">概览</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="organization">组织</TabsTrigger>
@@ -3360,7 +3367,7 @@ export default function AdminPage() {
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="settings">设置</TabsTrigger>
             <TabsTrigger className="h-10 shrink-0 whitespace-nowrap px-3 text-xs" value="audit">审计</TabsTrigger>
           </TabsList>
-        </Tabs>
+        </Tabs> : null}
         {activeSection !== "overview" ? <DuplicateEntryNotice /> : null}
         <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f8fcfb]"><CardContent className="p-6 text-sm text-slate-600">正在加载当前管理工作区…</CardContent></Card>}>
           {content}

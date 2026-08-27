@@ -52,7 +52,7 @@ import { calculateTheoreticalVolume } from "../../shared/domain";
 import { normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY } from "../../shared/watermarkTemplate";
 import { INDUSTRY_ROLE_TEMPLATES } from "../../shared/industryRoleTemplates";
 import { evaluateRealDataReadiness } from "../../shared/realDataReadiness";
-import { assertSuperAdmin, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
+import { assertSuperAdmin, getCurrentDataScope, getSuperAdminAccess, listLoginUsers, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { createBusinessDataBackup, getBusinessDataBackupDownload, getBusinessModuleStatistics, listBusinessDataBackups } from "../services/adminBusinessBackup";
 import { createSelfHostDatabaseBackup, getSelfHostDatabaseBackupStatus } from "../services/selfHostDatabaseBackup";
@@ -663,6 +663,17 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) return [];
       return db.select().from(projects).orderBy(projects.sortOrder, projects.id);
+    }),
+    /** 统一 PC 业务工作区的项目选择器：非超级管理员只能取得当前角色和组织范围内的项目。 */
+    listAccessible: protectedProcedure.query(async ({ ctx }) => {
+      const [db, access] = await Promise.all([getDb(), getSuperAdminAccess(ctx)]);
+      if (!db) return [];
+      const rows = await db.select().from(projects).orderBy(projects.sortOrder, projects.id);
+      if (access.canAccess) return rows;
+
+      const dataScope = await getCurrentDataScope(ctx);
+      if (dataScope.hasAllProjects) return rows;
+      return rows.filter(project => dataScope.projectIds.includes(project.id) || (project.organizationId !== null && dataScope.organizationIds.includes(project.organizationId)));
     }),
     save: protectedProcedure
       .input(z.object({ id: z.number().int().positive().optional(), parentId: z.number().int().positive().nullable().optional(), organizationId: z.number().int().positive().nullable().optional(), code: z.string().min(2).max(64), name: z.string().min(2).max(200), nodeType: z.string().min(2).max(64), projectType: z.enum(["highway", "railway", "municipal", "other"]).nullable().optional(), status: z.enum(["planning", "active", "suspended", "completed", "archived"]).default("planning"), startDate: z.string().date().nullable().optional(), endDate: z.string().date().nullable().optional(), costCenterCode: z.string().max(64).nullable().optional(), sortOrder: z.number().int().min(0).default(0) }))

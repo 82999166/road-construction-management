@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { getScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getAuthorizedManagementModules } from "@/lib/managementPortal";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -18,6 +19,7 @@ const MobileContractPage = lazy(() => import("./MobileContractPage"));
 const MobileFinancePage = lazy(() => import("./MobileFinancePage"));
 const MobileDieselPage = lazy(() => import("./MobileDieselPage"));
 const MobileEvidencePage = lazy(() => import("./MobileEvidencePage"));
+const AdminPage = lazy(() => import("./AdminPage"));
 
 const PC_SCOPED_MODULES = {
   construction: { code: "CONSTRUCTION", title: "施工管理", Page: MobileConstructionPage },
@@ -26,7 +28,9 @@ const PC_SCOPED_MODULES = {
   transport: { code: "TRANSPORT", title: "运输管理", Page: MobileTransportPage },
   purchasing: { code: "PURCHASING", title: "采购仓储", Page: MobilePurchasingPage },
   measurement: { code: "MEASUREMENT", title: "工程计量", Page: MobileMeasurementPage },
+  subcontract: { code: "MEASUREMENT", title: "计量结算与分包", Page: MobileMeasurementPage },
   contract: { code: "CONTRACT", title: "合同管理", Page: MobileContractPage },
+  contracts: { code: "CONTRACT", title: "合同管理", Page: MobileContractPage },
   finance: { code: "FINANCE", title: "财务管理", Page: MobileFinancePage },
   diesel: { code: "DIESEL", title: "柴油管理", Page: MobileDieselPage },
   evidence: { code: "EVIDENCE", title: "现场取证", Page: MobileEvidencePage },
@@ -54,6 +58,11 @@ export default function ScopedManagementModulePage({ section }: { section: strin
   const isAuthorized = Boolean(workbench.data && getAuthorizedManagementModules(workbench.data.menus).some(item => item.code === module.code));
   if (!isAuthorized) {
     return <main className="grid min-h-screen place-items-center bg-[#f7f1e8] p-6"><Card className="max-w-md"><CardContent className="p-7 text-center"><ShieldCheck className="mx-auto h-7 w-7 text-amber-700" /><h1 className="mt-4 text-lg font-semibold">暂无 {module.title} 权限</h1><p className="mt-2 text-sm text-slate-600">请由超级管理员分配对应业务模块和项目范围。即使访问该地址，服务端仍会拒绝未授权数据与操作。</p><Button className="mt-5" onClick={() => navigate("/admin")}>返回统一管理入口</Button></CardContent></Card></main>;
+  }
+
+  const scopedAdminSection = getScopedPcAdminSection(module.code);
+  if (scopedAdminSection) {
+    return <Suspense fallback={<main className="grid min-h-screen place-items-center bg-slate-50 text-sm text-slate-500">正在加载 {module.title} PC 工作区…</main>}><AdminPage scopedSection={scopedAdminSection} /></Suspense>;
   }
 
   const Page = module.Page;
