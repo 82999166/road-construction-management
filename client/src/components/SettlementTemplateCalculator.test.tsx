@@ -1,5 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import SettlementTemplateCalculator from "./SettlementTemplateCalculator";
 
@@ -28,5 +29,15 @@ describe("原生计量结算模板", () => {
     expect(markup).toContain("业主金额");
     expect(markup).toContain("分包金额");
     expect(markup).toContain("测算差额");
+  });
+
+  it("打印当前测算使用独立 A4 文档，且只输出当前输入与派生测算结果", () => {
+    const source = readFileSync(new URL("./SettlementTemplateCalculator.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const printCurrentTemplate");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("本报告仅反映当前页面的测算参数与结果");
+    expect(source).toContain("onClick={printCurrentTemplate}");
+    expect(source).not.toContain("window.print()");
   });
 });

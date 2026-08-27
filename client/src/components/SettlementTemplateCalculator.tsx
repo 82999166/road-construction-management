@@ -3,6 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { Calculator, Plus, Printer, RotateCcw, Trash2 } from "lucide-react";
 import React, { useMemo, useState } from "react";
 
@@ -116,6 +118,18 @@ export default function SettlementTemplateCalculator({ initialTab = "earthwork" 
   const resetAuxiliary = () => { setProjectName(""); setPeriod(""); setWarrantyRate("3"); setAuxiliaryRows([makeAuxiliaryRow(1)]); setAuxiliaryDeductions(EMPTY_DEDUCTIONS); };
   const activeCalculation = tab === "earthwork" ? earthCalculation : auxiliaryCalculation;
   const activeDeductions = tab === "earthwork" ? earthDeductionAmount : auxiliaryDeductionAmount;
+  const printCurrentTemplate = () => {
+    const warranty = activeCalculation.subcontractAmount * toNumber(warrantyRate) / 100;
+    const finalPayment = activeCalculation.subcontractAmount - activeDeductions - warranty;
+    const title = tab === "earthwork" ? "土石方结算测算表" : "附属工程结算测算表";
+    const rows = tab === "earthwork"
+      ? earthCalculation.lines.map((line, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(line.label)}</td><td class="center">${escapePrintHtml(line.unit)}</td><td class="right">${escapePrintHtml(quantity(line.quantity))}</td><td class="right">${escapePrintHtml(money(line.subcontractAmount))}</td><td class="right">${escapePrintHtml(money(line.ownerAmount))}</td><td class="right">${escapePrintHtml(money(line.margin))}</td><td>${escapePrintHtml(line.note)}</td></tr>`).join("")
+      : auxiliaryCalculation.lines.map((line, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(line.itemName || "未填写项目")}</td><td class="center">${escapePrintHtml(line.unit || "—")}</td><td class="right">${escapePrintHtml(quantity(line.currentQuantity))}</td><td class="right">${escapePrintHtml(money(line.subcontractAmount))}</td><td class="right">${escapePrintHtml(money(line.ownerAmount))}</td><td class="right">${escapePrintHtml(money(line.margin))}</td><td>${escapePrintHtml([line.mileage, line.structureType, line.remarks].filter(Boolean).join(" · ") || "—")}</td></tr>`).join("");
+    openA4LandscapePrintDocument({
+      title,
+      bodyHtml: `<h1>${escapePrintHtml(title)}</h1><p class="sub">项目：${escapePrintHtml(projectName || "未填写项目")}　|　期次：${escapePrintHtml(period || "未填写期次")}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><p class="sub">测算参数：质保金 ${escapePrintHtml(warrantyRate || "0")} %${tab === "earthwork" ? `　|　土 K 系数 ${escapePrintHtml(soilCoefficient || "—")}　|　石 K 系数 ${escapePrintHtml(rockCoefficient || "—")}` : ""}</p><hr class="rule"><table><thead><tr><th style="width:6%">序号</th><th style="width:20%">测算项目</th><th style="width:8%">单位</th><th style="width:13%">结算量</th><th style="width:13%">分包金额</th><th style="width:13%">业主金额</th><th style="width:13%">差额</th><th style="width:14%">依据/备注</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="4">合计：当前模板测算结果</td><td class="right">${escapePrintHtml(money(activeCalculation.subcontractAmount))}</td><td class="right">${escapePrintHtml(money(activeCalculation.ownerAmount))}</td><td class="right">${escapePrintHtml(money(activeCalculation.ownerAmount - activeCalculation.subcontractAmount))}</td><td>扣款 ${escapePrintHtml(money(activeDeductions))}</td></tr></tbody></table><p class="sub">质保金：${escapePrintHtml(money(warranty))}　|　本期应付分包商：${escapePrintHtml(money(finalPayment))}</p><div class="footer"><span>编制人：________________</span><span>复核人：________________</span></div><p class="sub">说明：本报告仅反映当前页面的测算参数与结果，不会写入施工队、收方、分包批次或财务结算台账。</p>`,
+    });
+  };
 
   return <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
     <CardHeader className="space-y-3"><div><CardTitle className="text-base">计量结算模板参考</CardTitle><CardDescription>已转换为本系统原生计算组件。模板仅供测算和打印参考，不会自动写入施工队、收方、分包批次或财务结算数据。</CardDescription></div>
@@ -129,7 +143,7 @@ export default function SettlementTemplateCalculator({ initialTab = "earthwork" 
         <PriceTable lines={earthCalculation.lines} prices={earthPrices} onPriceChange={(key, field, value) => setEarthPrices(values => ({ ...values, [key]: { ...values[key], [field]: value } }))} />
       </div> : <AuxiliaryTable rows={auxiliaryCalculation.lines} onChange={updateAuxiliaryRow} onAdd={() => setAuxiliaryRows(rows => [...rows, makeAuxiliaryRow(Math.max(0, ...rows.map(row => row.id)) + 1)])} onDelete={id => setAuxiliaryRows(rows => rows.length === 1 ? rows : rows.filter(row => row.id !== id))} />}
       <DeductionPanel value={tab === "earthwork" ? earthDeductions : auxiliaryDeductions} onChange={tab === "earthwork" ? setEarthDeductions : setAuxiliaryDeductions} />
-      <div className="flex flex-wrap justify-end gap-2 border-t pt-4 print:hidden"><Button variant="outline" onClick={() => tab === "earthwork" ? resetEarthwork() : resetAuxiliary()}><RotateCcw className="mr-1 h-4 w-4" />重置模板</Button><Button variant="outline" onClick={() => window.print()}><Printer className="mr-1 h-4 w-4" />打印当前模板</Button><Button className="bg-[#285b53] hover:bg-[#1f4841]" onClick={() => document.getElementById("settlement-template-summary")?.scrollIntoView({ behavior: "smooth" })}><Calculator className="mr-1 h-4 w-4" />更新测算</Button></div>
+      <div className="flex flex-wrap justify-end gap-2 border-t pt-4 print:hidden"><Button variant="outline" onClick={() => tab === "earthwork" ? resetEarthwork() : resetAuxiliary()}><RotateCcw className="mr-1 h-4 w-4" />重置模板</Button><Button variant="outline" onClick={printCurrentTemplate}><Printer className="mr-1 h-4 w-4" />打印当前测算</Button><Button className="bg-[#285b53] hover:bg-[#1f4841]" onClick={() => document.getElementById("settlement-template-summary")?.scrollIntoView({ behavior: "smooth" })}><Calculator className="mr-1 h-4 w-4" />更新测算</Button></div>
       <div id="settlement-template-summary" className="rounded-xl bg-[#203c48] p-4 text-white"><p className="text-sm text-slate-200">{tab === "earthwork" ? "土石方结算" : "附属工程结算"} · {projectName || "未填写项目"} · {period || "未填写期次"}</p><p className="mt-2 text-xl font-bold">本期应付分包商：{money(activeCalculation.subcontractAmount - activeDeductions - activeCalculation.subcontractAmount * toNumber(warrantyRate) / 100)}</p><p className="mt-1 text-xs text-slate-300">请以系统中已审核的项目收方、分包批次和财务结算为正式业务依据。本模板不会自动写入业务台账。</p></div>
     </CardContent>
   </Card>;
