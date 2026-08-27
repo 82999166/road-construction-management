@@ -18,6 +18,7 @@ import { useIsMobile } from "./hooks/useMobile";
 /** 页面按路由加载，避免首次进入任一端时下载另一端所有业务模块。 */
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const Home = lazy(() => import("./pages/Home"));
+const HelpCenterPage = lazy(() => import("./pages/HelpCenterPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
 const DriverPortalPage = lazy(() => import("./pages/DriverPortalPage"));
@@ -101,6 +102,7 @@ function Router() {
 	      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
 	      <Route path={"/driver-wechat-bind"} component={DriverWechatBindPage} />
 	      <Route path={"/driver-portal"} component={DriverPortalPage} />
+	      <Route path={"/help"} component={HelpCenterPage} />
 	      <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/attendance"} component={MobileAttendancePage} />
