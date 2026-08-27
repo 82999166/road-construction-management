@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
@@ -36,9 +37,8 @@ function getDeviceLabel() {
 }
 
 function displayTime(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  const dateTime = formatChinaDateTime(value, "—");
+  return dateTime.split(" ")[1] ?? "—";
 }
 
 /** 保留独立地址供旧链接访问；主入口固定在移动首页，任何打卡都必须上传实时定位。 */
@@ -69,7 +69,7 @@ export default function MobileAttendancePage() {
       const label = result.punchType === "out" ? "下班" : "上班";
       toast.success(result.duplicate ? `今日${label}打卡已完成` : `${label}打卡成功，定位已上传`);
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("考勤打卡提交失败，请稍后重试"),
   });
 
   useEffect(() => {
