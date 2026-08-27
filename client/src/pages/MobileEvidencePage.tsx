@@ -150,7 +150,7 @@ export default function MobileEvidencePage() {
   const selectedProjectId = projectId ?? 0;
   const evidenceListInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const evidence = trpc.evidence.list.useQuery(evidenceListInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const upload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const upload = trpc.evidence.upload.useMutation();
   const reverseGeocode = trpc.location.reverseGeocode.useMutation({
     onSuccess: result => setLocationAddress(result.address),
     onError: () => toast.warning("当前定位未能解析为中文详细地址，请稍后重新读取定位"),
@@ -161,7 +161,7 @@ export default function MobileEvidencePage() {
       toast.success("票据识别已完成，请人工复核结果");
       await evidence.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("票据识别失败，请稍后重试"),
   });
   const removeEvidence = trpc.evidence.delete.useMutation({
     onSuccess: async () => {
@@ -170,7 +170,7 @@ export default function MobileEvidencePage() {
       await evidence.refetch();
       toast.success("现场影像已删除，操作已记录审计");
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("现场影像删除失败，请刷新后重试"),
   });
 
   if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载现场取证权限…" title="水印影像取证" description="登录后可按项目范围采集并归档现场影像。" Icon={Camera} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
@@ -220,7 +220,7 @@ export default function MobileEvidencePage() {
       const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? `项目 #${selectedProjectId}`;
       const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
       const watermarkValues: Record<string, string> = {
-        capturedAt: `拍摄时间：${capturedAt.toLocaleString("zh-CN")}`,
+        capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`,
         principal: `施工负责人：${user?.name || "当前管理员"}`,
         weather: `天气：${captureWeather || "未获取"}`,
         location: `详细地点：${locationAddress || "未取得"}`,
@@ -243,8 +243,8 @@ export default function MobileEvidencePage() {
       await evidence.refetch();
       toast.success(sourceId.trim() ? `${results.length} 张现场影像已归档，将随关联业务单据一并提交主管审核` : `${results.length} 张现场影像已归档，请在业务单据中关联后提交审核`);
       if (sourceType === "purchase") results.filter(result => result.id).forEach(result => runOcr.mutate({ id: result.id! }));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "影像水印或读取失败");
+    } catch {
+      toast.error("影像归档未完成，请检查照片、定位和网络后重试");
     }
   }
 
