@@ -13,9 +13,11 @@ describe("后台柴油顶部筛选直接打印", () => {
 
   it("保持打印记录、导出明细和页面台账共同使用服务端 dieselRefuelRecords 筛选结果", () => {
     expect(source).toContain('trpc.admin.diesel.listRefuelRecords.useQuery(dieselRefuelRecordsInput');
-    expect(source).toContain('dieselPrintMode === "vehicle" ? (dieselRefuelRecords.data ?? []).filter(item => item.assetType === "vehicle")');
-    expect(source).toContain('dieselPrintMode === "machine" ? (dieselRefuelRecords.data ?? []).filter(item => item.assetType === "machine")');
+    expect(source).toContain("const dieselCurrentSummary = useMemo(() => summarizeDieselLedgerRecords");
+    expect(source).toContain("dateLabel={dieselCurrentFilterLabel}");
     expect(source).toContain('dieselRefuelRecords.data ?? []) as DieselPrintRecord[]');
     expect(source).toContain('导出当前筛选明细');
+    expect(source).not.toContain('aria-label="柴油每日汇总日期"');
+    expect(source).not.toContain("dieselDailySummary.data");
   });
 });
