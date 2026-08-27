@@ -62,6 +62,7 @@ import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
+import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion } from "../services/aliyunOssPhotoStorage";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
@@ -312,6 +313,17 @@ const externalAiApiConfigurationInput = z.object({
   apiKey: z.string().max(4096),
   model: z.string().trim().min(1, "请填写模型名称").max(128),
   enabled: z.boolean().default(false),
+});
+
+/** OSS 密钥仅接受后台加密托管；后续编辑留空表示保留既有密文。 */
+const aliyunOssPhotoStorageConfigurationInput = z.object({
+  enabled: z.boolean().default(false),
+  region: z.string().trim().max(64),
+  endpoint: z.string().trim().max(1024),
+  bucket: z.string().trim().max(128),
+  objectPrefix: z.string().trim().max(128),
+  accessKeyId: z.string().trim().max(256),
+  accessKeySecret: z.string().max(2048),
 });
 
 const localManagerDeleteInput = z.object({ userId: z.number().int().positive() });
@@ -2012,6 +2024,97 @@ export const adminRouter = router({
       const model = byKey.get(EXTERNAL_AI_SETTING_KEYS.model)?.valueJson ?? "";
       const apiKey = byKey.get(EXTERNAL_AI_SETTING_KEYS.apiKey);
       return { configured: Boolean(baseUrl && model && apiKey?.secretEncrypted), enabled: byKey.get(EXTERNAL_AI_SETTING_KEYS.enabled)?.valueJson === "true", baseUrl, model, apiKeyConfigured: Boolean(apiKey?.secretEncrypted), apiKeyPreview: apiKey?.valuePreview ?? null };
+    }),
+    /** 仅返回 OSS 状态与非敏感参数；AccessKey 明文和密文均不离开服务端。 */
+    getAliyunOssPhotoStorageConfiguration: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return { configured: false, enabled: false, region: "", endpoint: "", bucket: "", objectPrefix: "photos", accessKeyIdConfigured: false, accessKeySecretConfigured: false, accessKeyIdPreview: null as string | null, accessKeySecretPreview: null as string | null };
+      const keys = Object.values(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS);
+      const rows = await db.select({ settingKey: systemSettings.settingKey, valueJson: systemSettings.valueJson, valuePreview: systemSettings.valuePreview, secretEncrypted: systemSettings.secretEncrypted }).from(systemSettings).where(and(eq(systemSettings.status, "published"), inArray(systemSettings.settingKey, keys)));
+      const byKey = new Map(rows.map(row => [row.settingKey, row]));
+      const accessKeyId = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeyId);
+      const accessKeySecret = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeySecret);
+      const region = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.region)?.valueJson ?? "";
+      const endpoint = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.endpoint)?.valueJson ?? "";
+      const bucket = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.bucket)?.valueJson ?? "";
+      const objectPrefix = byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.objectPrefix)?.valueJson ?? "photos";
+      return {
+        configured: Boolean(region && endpoint && bucket && objectPrefix && accessKeyId?.secretEncrypted && accessKeySecret?.secretEncrypted),
+        enabled: byKey.get(ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.enabled)?.valueJson === "true",
+        region,
+        endpoint,
+        bucket,
+        objectPrefix,
+        accessKeyIdConfigured: Boolean(accessKeyId?.secretEncrypted),
+        accessKeySecretConfigured: Boolean(accessKeySecret?.secretEncrypted),
+        accessKeyIdPreview: accessKeyId?.valuePreview ?? null,
+        accessKeySecretPreview: accessKeySecret?.valuePreview ?? null,
+      };
+    }),
+    /** 保存 OSS 照片存储配置。密钥留空时保留密文，密钥本身不进入响应、列表或审计摘要。 */
+    saveAliyunOssPhotoStorageConfiguration: protectedProcedure.input(aliyunOssPhotoStorageConfigurationInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new Error("数据库连接暂不可用");
+      let region: string;
+      let endpoint: string;
+      let bucket: string;
+      let objectPrefix: string;
+      try {
+        region = normalizeAliyunOssRegion(input.region);
+        endpoint = normalizeAliyunOssEndpoint(input.endpoint);
+        bucket = normalizeAliyunOssBucket(input.bucket);
+        objectPrefix = normalizeAliyunOssObjectPrefix(input.objectPrefix);
+      } catch (error) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "阿里云 OSS 配置无效" });
+      }
+      const definitions = [
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.enabled, displayName: "启用阿里云 OSS 照片存储", value: String(input.enabled), isSensitive: false, remarks: "开启后仅 JPEG、PNG 照片写入私有 OSS；其他附件和备份保留原存储路径。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.region, displayName: "阿里云 OSS 地域", value: region, isSensitive: false, remarks: "OSS Bucket 所在地域，使用 V4 签名。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.endpoint, displayName: "阿里云 OSS Endpoint", value: endpoint, isSensitive: false, remarks: "仅允许公开 HTTPS OSS Endpoint，不可填写内网或本机地址。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.bucket, displayName: "阿里云 OSS Bucket", value: bucket, isSensitive: false, remarks: "建议保持 Bucket 私有读，由服务端签发短期预览链接。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.objectPrefix, displayName: "阿里云 OSS 照片对象前缀", value: objectPrefix, isSensitive: false, remarks: "仅作为照片对象目录前缀，不影响既有文件键。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeyId, displayName: "阿里云 OSS AccessKey ID", value: input.accessKeyId, isSensitive: true, remarks: "仅服务端 AES-GCM 加密托管；页面、审计与版本历史不展示明文。" },
+        { settingKey: ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS.accessKeySecret, displayName: "阿里云 OSS AccessKey Secret", value: input.accessKeySecret.trim(), isSensitive: true, remarks: "仅服务端 AES-GCM 加密托管；页面、审计与版本历史不展示明文。" },
+      ] as const;
+      const existingRows = await db.select().from(systemSettings).where(inArray(systemSettings.settingKey, definitions.map(item => item.settingKey)));
+      const existingByKey = new Map(existingRows.map(item => [item.settingKey, item]));
+      for (const definition of definitions) {
+        if (definition.isSensitive && !definition.value && !existingByKey.get(definition.settingKey)?.secretEncrypted) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `首次配置必须填写${definition.displayName}` });
+        }
+      }
+      await db.transaction(async tx => {
+        for (const definition of definitions) {
+          const existing = existingByKey.get(definition.settingKey);
+          const preserveExistingSecret = definition.isSensitive && !definition.value;
+          const next = {
+            category: "文档影像",
+            displayName: definition.displayName,
+            valueJson: definition.isSensitive ? null : definition.value,
+            secretEncrypted: definition.isSensitive ? (preserveExistingSecret ? existing?.secretEncrypted ?? null : encryptSecret(definition.value)) : null,
+            valuePreview: definition.isSensitive ? (preserveExistingSecret ? existing?.valuePreview ?? null : maskSecret(definition.value)) : definition.value.slice(0, 256),
+            isSensitive: definition.isSensitive,
+            status: "published" as const,
+            publishedAt: new Date(),
+            remarks: definition.remarks,
+            updatedBy: admin.id,
+          };
+          if (existing) {
+            const nextVersion = existing.version + 1;
+            const writeResult = await tx.update(systemSettings).set({ ...next, version: nextVersion }).where(and(eq(systemSettings.id, existing.id), eq(systemSettings.version, existing.version)));
+            assertVersionedSettingWrite(writeResult);
+            await tx.insert(configPublishLogs).values({ settingId: existing.id, operation: "publish", version: nextVersion, operatorId: admin.id, snapshotJson: JSON.stringify({ settingKey: existing.settingKey, valuePreview: existing.valuePreview, isSensitive: existing.isSensitive }) });
+          } else {
+            const created = await tx.insert(systemSettings).values({ settingKey: definition.settingKey, version: 1, ...next });
+            const settingId = Number((created[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+            if (settingId) await tx.insert(configPublishLogs).values({ settingId, operation: "publish", version: 1, operatorId: admin.id, snapshotJson: null });
+          }
+        }
+        await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_aliyun_oss_photo_storage_configuration", targetType: "photo_storage", targetId: "aliyun_oss", summary: `阿里云 OSS 照片存储配置已发布：${input.enabled ? "启用" : "停用"}；密钥不写入审计摘要` });
+      });
+      return { success: true, message: input.enabled ? "阿里云 OSS 照片存储已启用；后续新上传的 JPEG/PNG 照片将写入配置 Bucket。" : "阿里云 OSS 配置已保存但处于停用状态；新照片继续使用既有存储路径。" };
     }),
     saveExternalAiConfiguration: protectedProcedure.input(externalAiApiConfigurationInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);

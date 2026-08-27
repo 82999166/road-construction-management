@@ -52,11 +52,12 @@ describe("临时本地超级管理员登录", () => {
     vi.mocked(hasPermanentAdministrator).mockResolvedValue(false);
   });
 
-  it("已有角色管理员时仍允许现有 admin 登录，只有显式服务器开关才关闭该入口", () => {
-    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "", hasPermanentAdministrator: true })).toBe(false);
+  it("生产环境已有正式管理员时默认关闭临时入口，仅显式应急开关可保留", () => {
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "", hasPermanentAdministrator: true })).toBe(true);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "true", hasPermanentAdministrator: true })).toBe(false);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: false, configuredOverride: "", hasPermanentAdministrator: true })).toBe(false);
     expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "false", hasPermanentAdministrator: false })).toBe(true);
+    expect(shouldBlockTemporaryAdminLogin({ isProduction: true, configuredOverride: "unexpected", hasPermanentAdministrator: true })).toBe(true);
   });
 
   it("持久化锁定窗口存在时不得因服务重启后的内存清空而重新签发临时会话", async () => {

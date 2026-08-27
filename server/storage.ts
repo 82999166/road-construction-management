@@ -5,6 +5,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { ENV } from "./_core/env";
+import { getAliyunOssPhotoSignedUrl, isAliyunOssPhotoStorageKey, putAliyunOssPhoto } from "./services/aliyunOssPhotoStorage";
 
 function getForgeConfig() {
   const forgeUrl = ENV.forgeApiUrl;
@@ -49,6 +50,16 @@ export async function storagePut(
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
   const key = appendHashSuffix(normalizeKey(relKey));
+
+  // 仅 JPEG/PNG 等现场照片可按超级管理员已发布设置写入 OSS；业务文档、数据库备份
+  // 和未完成配置的上传仍复用现有存储，避免改变其归档与恢复链路。
+  if (contentType.startsWith("image/")) {
+    try {
+      return await putAliyunOssPhoto(key, data, contentType);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "阿里云 OSS 照片存储未完整启用") throw error;
+    }
+  }
 
   if (hasSelfHostStorage()) {
     const filePath = resolveSelfHostStoragePath(key);
@@ -97,10 +108,12 @@ export async function storagePut(
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
+  if (isAliyunOssPhotoStorageKey(key)) return { key, url: await getAliyunOssPhotoSignedUrl(key) };
   return { key, url: `/manus-storage/${key}` };
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
+  if (isAliyunOssPhotoStorageKey(relKey)) return getAliyunOssPhotoSignedUrl(relKey);
   if (hasSelfHostStorage()) {
     return `/manus-storage/${normalizeKey(relKey)}`;
   }

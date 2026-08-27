@@ -32,6 +32,7 @@ import {
   Building2,
   BarChart3,
   Calculator,
+  ChevronDown,
   DatabaseBackup,
   ExternalLink,
   FileText,
@@ -88,21 +89,21 @@ const PayrollPaymentDialog = lazy(() => import("@/components/PayrollPaymentDialo
 const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: Monitor, label: "数据大屏", path: "/", section: "决策总览" },
   { icon: LayoutDashboard, label: "运营概览", path: "/admin", section: "决策总览" },
-  { icon: Building2, label: "组织与项目", path: "/admin/organization", section: "项目执行" },
-  { icon: FolderKanban, label: "施工管理", path: "/admin/construction", section: "项目执行" },
-  { icon: Truck, label: "车辆管理", path: "/admin/vehicles", section: "资源协同" },
-  { icon: Settings2, label: "机械管理", path: "/admin/machinery", section: "资源协同" },
-  { icon: Truck, label: "运输管理", path: "/admin/transport", section: "资源协同" },
-  { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源协同" },
-  { icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "资源协同" },
-  { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财与控制" },
-  { icon: ShoppingCart, label: "采购仓储", path: "/admin/purchasing", section: "业财与控制" },
-  { icon: Calculator, label: "工具知识", path: "/admin/measurement-tools", section: "业财与控制" },
-  { icon: FolderKanban, label: "结算分包", path: "/admin/subcontract", section: "业财与控制" },
-  { icon: FileText, label: "合同管理", path: "/admin/contracts", section: "业财与控制" },
-  { icon: ShieldCheck, label: "智能风控", path: "/admin/risk", section: "业财与控制" },
-  { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "业财与控制" },
-  { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "业财与控制" },
+  { icon: Building2, label: "组织与项目", path: "/admin/organization", section: "经营业务" },
+  { icon: FolderKanban, label: "施工管理", path: "/admin/construction", section: "经营业务" },
+  { icon: Truck, label: "车辆管理", path: "/admin/vehicles", section: "资源与现场" },
+  { icon: Settings2, label: "机械管理", path: "/admin/machinery", section: "资源与现场" },
+  { icon: Truck, label: "运输管理", path: "/admin/transport", section: "资源与现场" },
+  { icon: UsersRound, label: "劳务工资", path: "/admin/labor", section: "资源与现场" },
+  { icon: Fuel, label: "柴油管理", path: "/admin/diesel", section: "资源与现场" },
+  { icon: BarChart3, label: "财务管理", path: "/admin/finance", section: "业财结算" },
+  { icon: ShoppingCart, label: "采购仓储", path: "/admin/purchasing", section: "业财结算" },
+  { icon: Calculator, label: "工具知识", path: "/admin/measurement-tools", section: "业财结算" },
+  { icon: FolderKanban, label: "结算分包", path: "/admin/subcontract", section: "业财结算" },
+  { icon: FileText, label: "合同管理", path: "/admin/contracts", section: "业财结算" },
+  { icon: ShieldCheck, label: "智能风控", path: "/admin/risk", section: "风险与通知" },
+  { icon: Megaphone, label: "范围通知", path: "/admin/broadcast", section: "风险与通知" },
+  { icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "平台治理" },
   { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login", section: "平台治理" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business", section: "平台治理" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings", section: "平台治理" },
@@ -147,6 +148,7 @@ type SettingForm = { id?: number; expectedVersion?: number; category: string; se
 type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appUrl: string; egressUrl: string; egressSigningSecret: string };
 type OfficialAccountMessagePushForm = { eventToken: string; encodingAesKey: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
+type AliyunOssPhotoStorageConfigurationForm = { enabled: boolean; region: string; endpoint: string; bucket: string; objectPrefix: string; accessKeyId: string; accessKeySecret: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type BroadcastAudienceType = "project" | "organization" | "role";
@@ -173,6 +175,14 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <div><Label>{label}</Label><div className="mt-1">{children}</div></div>;
 }
 
+/** 设置组默认收起，将低频配置从长页面中收纳，仍保留原有表单与服务端权限校验。 */
+function SettingsDisclosure({ title, description, defaultOpen = false, children }: { title: string; description: string; defaultOpen?: boolean; children: ReactNode }) {
+  return <details className="group rounded-xl border border-[#d8e3e0] bg-white shadow-sm" open={defaultOpen}>
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 marker:content-none sm:px-5"><div><p className="text-sm font-semibold text-[#203c48]">{title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{description}</p></div><ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition-transform group-open:rotate-180" /></summary>
+    <div className="border-t border-[#e6eeeb] p-3 sm:p-4">{children}</div>
+  </details>;
+}
+
 function DuplicateEntryNotice({ detail }: { detail?: string }) {
   return <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><p className="font-semibold">防重复录入提醒</p><p className="mt-1">{detail ?? "保存前请核对项目、对象、日期、数量、单价、凭证号和现场照片；如同一对象同日已有相近记录，请先打开台账确认后再保存，避免重复入账或重复通知。"}</p></div>;
 }
@@ -192,6 +202,7 @@ const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", 
 const EMPTY_OFFICIAL_ACCOUNT_CONFIGURATION_FORM: OfficialAccountConfigurationForm = { appId: "", appSecret: "", appUrl: "https://roadmanage-xjifzbue.manus.space", egressUrl: "https://wechat-egress.maomaoyx.com", egressSigningSecret: "" };
 const EMPTY_OFFICIAL_ACCOUNT_MESSAGE_PUSH_FORM: OfficialAccountMessagePushForm = { eventToken: "", encodingAesKey: "" };
 const EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM: ExternalAiApiConfigurationForm = { baseUrl: "", apiKey: "", model: "", enabled: false };
+const EMPTY_ALIYUN_OSS_PHOTO_STORAGE_CONFIGURATION_FORM: AliyunOssPhotoStorageConfigurationForm = { enabled: false, region: "", endpoint: "", bucket: "", objectPrefix: "photos", accessKeyId: "", accessKeySecret: "" };
 const EMPTY_DAILY_DIGEST_FORM: DailyDigestForm = { enabled: false, deliveryHour: "17", deliveryMinute: "30", includeEmptyProjects: false };
 const EMPTY_BROADCAST_FORM: BroadcastForm = { title: "", content: "", deepLink: "/mobile/messages", audienceType: "project", scopeValue: "" };
 const EMPTY_SUBCONTRACT_TEAM_FORM: SubcontractTeamForm = { projectId: "", teamName: "", contactName: "", contactPhone: "", status: "active", remarks: "" };
@@ -572,6 +583,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const departmentModules = trpc.admin.department.modules.useQuery(undefined, { enabled: canQuery && isPermission });
   const settings = trpc.admin.settings.list.useQuery(undefined, { enabled: canQuery && isSettings });
   const externalAiConfiguration = trpc.admin.settings.getExternalAiConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
+  const aliyunOssPhotoStorageConfiguration = trpc.admin.settings.getAliyunOssPhotoStorageConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
   const officialMessagePushConfiguration = trpc.admin.settings.getOfficialAccountMessagePushConfiguration.useQuery(undefined, { enabled: canQuery && isSettings });
   const evidenceWatermarkTemplate = trpc.admin.settings.evidenceWatermarkTemplate.useQuery(undefined, { enabled: canQuery && (isSettings || isDiesel) });
   const officialTemplateCoverage = trpc.admin.settings.officialAccountTemplateCoverage.useQuery(undefined, { enabled: canQuery && isSettings });
@@ -1032,6 +1044,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [officialAccountMessagePushValidation, setOfficialAccountMessagePushValidation] = useState<{ success: boolean; message: string; statusCode?: number; callbackUrl?: string | null } | null>(null);
   const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
   const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
+  const [aliyunOssPhotoStorageForm, setAliyunOssPhotoStorageForm] = useState<AliyunOssPhotoStorageConfigurationForm>(EMPTY_ALIYUN_OSS_PHOTO_STORAGE_CONFIGURATION_FORM);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
   const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
@@ -1054,7 +1067,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const supervisorReviewAutoApproveSetting = allSettings.find(item => item.settingKey === "SUPERVISOR_REVIEW_AUTO_APPROVE" && item.status === "published");
   const supervisorReviewAutoApproveEnabled = supervisorReviewAutoApproveSetting?.valueJson === "true";
   const templateSettingKeys = new Set(["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"]);
-  const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey) && !OFFICIAL_ACCOUNT_BASE_SETTING_KEYS.has(item.settingKey));
+  const managedOssSettingKeys = new Set(["ALIYUN_OSS_PHOTO_STORAGE_ENABLED", "ALIYUN_OSS_PHOTO_STORAGE_REGION", "ALIYUN_OSS_PHOTO_STORAGE_ENDPOINT", "ALIYUN_OSS_PHOTO_STORAGE_BUCKET", "ALIYUN_OSS_PHOTO_STORAGE_PREFIX", "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_ID", "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_SECRET"]);
+  const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey) && !OFFICIAL_ACCOUNT_BASE_SETTING_KEYS.has(item.settingKey) && !managedOssSettingKeys.has(item.settingKey));
   const publishedOfficialSettingKeys = new Set(allSettings.filter(item => item.status === "published").map(item => item.settingKey));
   const officialCredentialsReady = publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_ID") && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_SECRET");
   const officialBindingReady = officialCredentialsReady && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_URL");
@@ -1095,6 +1109,17 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       enabled: externalAiConfiguration.data.enabled,
     }));
   }, [externalAiConfiguration.data, isSettings]);
+  useEffect(() => {
+    if (!isSettings || !aliyunOssPhotoStorageConfiguration.data) return;
+    setAliyunOssPhotoStorageForm(current => ({
+      ...current,
+      enabled: aliyunOssPhotoStorageConfiguration.data.enabled,
+      region: current.region || aliyunOssPhotoStorageConfiguration.data.region,
+      endpoint: current.endpoint || aliyunOssPhotoStorageConfiguration.data.endpoint,
+      bucket: current.bucket || aliyunOssPhotoStorageConfiguration.data.bucket,
+      objectPrefix: current.objectPrefix === EMPTY_ALIYUN_OSS_PHOTO_STORAGE_CONFIGURATION_FORM.objectPrefix ? aliyunOssPhotoStorageConfiguration.data.objectPrefix : current.objectPrefix,
+    }));
+  }, [aliyunOssPhotoStorageConfiguration.data, isSettings]);
   useEffect(() => {
     if (!isBusinessWorkspace || businessWorkspaceProjectId || !projects.data?.length) return;
     const firstAvailableProject = projects.data.find(project => project.status !== "archived");
@@ -1609,6 +1634,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setExternalAiApiValidation(error.message);
       toast.error(error.message);
     },
+  });
+  const saveAliyunOssPhotoStorageConfiguration = trpc.admin.settings.saveAliyunOssPhotoStorageConfiguration.useMutation({
+    onSuccess: async result => {
+      toast.success(result.message);
+      setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: "", accessKeySecret: "" }));
+      await Promise.all([aliyunOssPhotoStorageConfiguration.refetch(), settings.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const testExternalAiConfiguration = trpc.admin.settings.testExternalAiConfiguration.useMutation({
     onSuccess: async result => {
@@ -2464,6 +2497,15 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
           <NotificationChannelSettings />
         </Suspense>
+        <SettingsDisclosure title="阿里云 OSS 照片存储" description="仅用于后续上传的现场照片、柴油小票、采购与财务影像。密钥加密托管，历史照片和非影像附件不迁移、不删除。" defaultOpen>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8e9e5] bg-[#f4faf8] px-3 py-2.5"><label className="flex items-center gap-2 text-sm font-medium text-slate-800"><Checkbox checked={aliyunOssPhotoStorageForm.enabled} onCheckedChange={checked => setAliyunOssPhotoStorageForm(current => ({ ...current, enabled: checked === true }))} />启用阿里云 OSS 作为新照片存储</label><Badge variant="outline" className={aliyunOssPhotoStorageConfiguration.data?.configured && aliyunOssPhotoStorageConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-600"}>{aliyunOssPhotoStorageConfiguration.data?.configured ? aliyunOssPhotoStorageConfiguration.data.enabled ? "已启用" : "已保存，未启用" : "待完整配置"}</Badge></div>
+            <div className="grid gap-3 md:grid-cols-2"><Field label="OSS 地域"><Input value={aliyunOssPhotoStorageForm.region} placeholder="例如 oss-cn-hangzhou" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, region: event.target.value }))} /></Field><Field label="OSS Endpoint"><Input type="url" value={aliyunOssPhotoStorageForm.endpoint} placeholder="https://oss-cn-hangzhou.aliyuncs.com" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, endpoint: event.target.value }))} /></Field><Field label="Bucket 名称"><Input value={aliyunOssPhotoStorageForm.bucket} placeholder="仅填写 Bucket 名称" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, bucket: event.target.value }))} /></Field><Field label="照片对象前缀"><Input value={aliyunOssPhotoStorageForm.objectPrefix} placeholder="photos" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, objectPrefix: event.target.value }))} /></Field></div>
+            <div className="grid gap-3 md:grid-cols-2"><Field label="AccessKey ID"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeyId} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeyIdConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: event.target.value }))} /></Field><Field label="AccessKey Secret"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeySecret} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeySecretConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeySecret: event.target.value }))} /></Field></div>
+            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">建议 Bucket 保持私有读；系统会为受权用户生成短时预览地址。RAM 账号仅需限定到该 Bucket/对象前缀的读取与写入权限。保存后密钥不回显、不会出现在配置列表、历史、审计或 GitHub 中；编辑时两个密钥留空即可保持原值。</div>
+            <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><span className="text-xs text-slate-500">配置完成后请上传一张真实照片验证；未启用或未配置时，新照片继续使用现有存储。</span></div>
+          </div>
+        </SettingsDisclosure>
         <Card className="border-[#d8e3e0]">
           <CardHeader><CardTitle className="text-base">每日项目站内汇总</CardTitle><CardDescription>每天按中国标准时间汇总施工日报、收入开支、计量申报与运输装卸数据，并写入项目负责人的站内消息中心。定时任务、运行结果和配置修改均保留审计记录。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
@@ -2506,6 +2548,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
         </Card>
+        <SettingsDisclosure title="配置清单、版本与回滚" description="查看非成组配置、选择条目并回溯已发布版本。敏感值仅展示掩码，不提供明文导出。">
         <Card>
           <CardHeader><CardTitle className="text-base">配置项清单</CardTitle><CardDescription>敏感值仅以掩码展示。发布后生成版本与审计日志；不提供明文导出。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
@@ -2538,6 +2581,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             {["基础品牌与多语言", "账号安全与密码策略", "微信公众号服务号与消息模板", "地图 / OCR / 定位连接器", "油卡 / 地磅 / 外部 API", "业务参数与编号规则", "文档影像与归档规则", "运行监控与审计", "发布、回滚与版本"].map(item => <div key={item} className="rounded-lg bg-slate-50 px-3 py-3 text-sm text-slate-600">{item}</div>)}
           </CardContent>
         </Card>
+        </SettingsDisclosure>
       </section>
       <aside className="space-y-4">
         <Card className="border-[#cbded9] bg-[#f4faf8]">

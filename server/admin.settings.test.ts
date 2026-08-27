@@ -39,6 +39,15 @@ function createListDb(rows: unknown[]) {
   };
 }
 
+/** 已发布成组配置查询的最小桩；用于验证敏感配置不会通过状态接口回显。 */
+function createPublishedSettingsDb(rows: unknown[]) {
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({ where: vi.fn(async () => rows) })),
+    })),
+  };
+}
+
 /** 配置版本历史查询专用的轻量 Drizzle 链式桩。 */
 function createHistoryDb(rows: unknown[]) {
   return {
@@ -127,5 +136,28 @@ describe("后台敏感配置读取边界", () => {
     expect(result[0]?.snapshot).not.toHaveProperty("secretEncrypted");
     expect(result[0]?.snapshot).not.toHaveProperty("valueJson");
     expect(JSON.stringify(result)).not.toContain(appSecret);
+  });
+
+  it("OSS 照片存储状态仅返回掩码状态和非敏感参数，不回显 AccessKey 明文或密文", async () => {
+    const accessKeyId = "oss-access-key-id-secret";
+    const accessKeySecret = "oss-access-key-secret-value";
+    const db = createPublishedSettingsDb([
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_ENABLED", valueJson: "true", valuePreview: "true", secretEncrypted: null },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_REGION", valueJson: "oss-cn-hangzhou", valuePreview: "oss-cn-hangzhou", secretEncrypted: null },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_ENDPOINT", valueJson: "https://oss-cn-hangzhou.aliyuncs.com", valuePreview: "https://oss-cn-hangzhou.aliyuncs.com", secretEncrypted: null },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_BUCKET", valueJson: "project-photo-archive", valuePreview: "project-photo-archive", secretEncrypted: null },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_PREFIX", valueJson: "photos", valuePreview: "photos", secretEncrypted: null },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_ID", valueJson: null, valuePreview: "********-id", secretEncrypted: `cipher:${accessKeyId}` },
+      { settingKey: "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_SECRET", valueJson: null, valuePreview: "********alue", secretEncrypted: `cipher:${accessKeySecret}` },
+    ]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await adminRouter.createCaller(createAdminContext()).settings.getAliyunOssPhotoStorageConfiguration();
+
+    expect(result).toMatchObject({ configured: true, enabled: true, region: "oss-cn-hangzhou", bucket: "project-photo-archive", accessKeyIdConfigured: true, accessKeySecretConfigured: true });
+    expect(result).not.toHaveProperty("accessKeyId");
+    expect(result).not.toHaveProperty("accessKeySecret");
+    expect(JSON.stringify(result)).not.toContain(accessKeyId);
+    expect(JSON.stringify(result)).not.toContain(accessKeySecret);
   });
 });
