@@ -48,3 +48,17 @@ describe("移动采购项目范围反馈", () => {
     expect(source).toContain("projects.refetch()");
   });
 });
+
+describe("采购仓储当前筛选导出与打印", () => {
+  it("按当前项目、标签和订单状态筛选真实记录，并生成独立 A4 汇总", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain('const [orderPrintStatus, setOrderPrintStatus] = useState("all")');
+    expect(source).toContain("filteredOrders");
+    expect(source).toContain("CurrentFilterPrintActions");
+    expect(source).toContain("downloadCurrentFilteredCsv");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("采购订单明细表");
+    expect(source).toContain("库存余额明细表");
+    expect(source).toContain("采购申请明细表");
+  });
+});

@@ -25,3 +25,17 @@ export function openA4LandscapePrintDocument({ title, bodyHtml }: { title: strin
   </style></head><body>${bodyHtml}<script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`);
   printWindow.document.close();
 }
+
+/** 当前筛选导出使用 UTF-8 BOM，避免中文表头在办公软件中出现乱码。 */
+export function downloadCurrentFilteredCsv(fileName: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+  const toCell = (value: string | number | null | undefined) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const content = "\uFEFF" + [headers, ...rows].map(row => row.map(toCell).join(",")).join("\n");
+  const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}

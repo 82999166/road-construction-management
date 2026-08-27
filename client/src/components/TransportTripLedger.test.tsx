@@ -40,7 +40,8 @@ describe("运输车辆趟次完整台账", () => {
 
   it("按后台当前筛选提供 A4 横向运费明细 PDF，并在最末行汇总金额、趟数和车辆数", () => {
     const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
-    expect(source).toContain("运费明细 PDF");
+    expect(source).toContain("打印当前筛选明细与汇总");
+    expect(source).toContain("CurrentFilterPrintActions");
     expect(source).toContain("freightPrintOpen");
     expect(source).toContain("@page { size: A4 landscape");
     expect(source).toContain("printableTrips");

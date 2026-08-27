@@ -6,7 +6,11 @@ describe("PayrollStatementLedger", () => {
     const source = readFileSync(new URL("./PayrollStatementLedger.tsx", import.meta.url), "utf8");
     expect(source).toContain("工资期间");
     expect(source).toContain("检索工资人员");
-    expect(source).toContain("按当前筛选导出 CSV");
+    expect(source).toContain("CurrentFilterPrintActions");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("劳务工资明细表");
+    expect(source).toContain("合计：工资条");
+    expect(source).toContain("全部（不含作废）");
     expect(source).toContain("onOpenDetail(item)");
     expect(source).toContain("BusinessStatusBadge");
   });

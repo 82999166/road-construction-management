@@ -20,4 +20,14 @@ describe("SubcontractPaymentSettlementManager", () => {
     expect(component).toContain("paymentReference");
     expect(component).toContain("同步项目财务支出");
   });
+
+  it("按当前施工队和结算状态筛选导出，并生成独立 A4 汇总打印", () => {
+    expect(component).toContain('const [keyword, setKeyword] = useState("")');
+    expect(component).toContain('const [settlementStatus, setSettlementStatus] = useState("all")');
+    expect(component).toContain("filteredSettlements");
+    expect(component).toContain("CurrentFilterPrintActions");
+    expect(component).toContain("downloadCurrentFilteredCsv");
+    expect(component).toContain("openA4LandscapePrintDocument");
+    expect(component).toContain("合计：结算单");
+  });
 });
