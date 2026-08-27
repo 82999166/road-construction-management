@@ -18,4 +18,14 @@ describe("消息中心移动端导航", () => {
     expect(source).toContain("return formatChinaDateTime(value);");
     expect(source).not.toContain('date.toLocaleString("zh-CN"');
   });
+
+  it("查询与操作失败不向移动端回显原始服务端错误", () => {
+    const source = readFileSync(new URL("./MobileMessagesPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("消息暂时无法加载，请重新获取。");
+    expect(source).toContain("消息状态更新失败，请稍后重试");
+    expect(source).toContain("确认回执提交失败，请稍后重试");
+    expect(source).not.toContain("消息加载失败：{messages.error.message}");
+    expect(source).not.toContain("toast.error(error.message)");
+  });
 });
