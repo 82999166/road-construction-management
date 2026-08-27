@@ -31,6 +31,12 @@ describe("移动端机械会计月度明细", () => {
     expect(source).not.toContain('window.open("", "_blank")');
     expect(source).toContain("重新获取授权项目");
     expect(source).toContain("projectOptions.isError");
+    expect(source).toContain("成本台账暂时无法读取，请检查网络后重新获取。");
+    expect(source).toContain("月度结算预览暂时无法读取，请检查计价规则或稍后重新计算。");
+    expect(source).toContain("会计月度明细暂时无法核算，请检查填写内容后重新计算。");
+    expect(source).toContain("const costsQuery = trpc.machinery.listCosts.useQuery");
+    expect(source).toContain("const settlementQuery = trpc.machinery.settlementPreview.useQuery");
+    expect(source).toContain("const monthlyStatementPreviewQuery = trpc.machinery.previewMonthlyStatement.useQuery");
     expect(source).toContain("openCostDialog(machine.id)");
     expect(source).toContain(">费用录入</Button>");
     expect(source).toContain("fuelCostDefault.fetch");
