@@ -29,4 +29,14 @@ describe("超级管理员系统设置和菜单结构", () => {
     expect(source).toContain("配置清单、版本与回滚");
     expect(source).toContain("配置版本与安全回滚");
   });
+
+  it("将车辆维护与司机绑定的未知状态安全回退为中文", () => {
+    expect(source).toContain("getBusinessStatusLabel(item.status)");
+    expect(source).toContain("statusLabel[item.bindingStatus] ?? getBusinessStatusLabel(item.bindingStatus)");
+    expect(source).not.toContain("statusLabel[item.bindingStatus] ?? item.bindingStatus");
+  });
+
+  it("将项目层级状态经共享中文工具展示", () => {
+    expect(source).toContain('上级：{item.parentId ? projects.data?.find(project => project.id === item.parentId)?.name ?? `#${item.parentId}` : "顶级"} · {getBusinessStatusLabel(item.status)}');
+  });
 });
