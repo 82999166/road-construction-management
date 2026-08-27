@@ -228,11 +228,14 @@ export default function MobileMachineryPage() {
     return Number.isNaN(occurredAt.getTime()) ? null : occurredAt.toISOString();
   }, [costDraft.occurredAt]);
   const leaseRules = trpc.machinery.listLeaseRules.useQuery(detailInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const costs = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const settlement = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const costsQuery = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const costs = { ...costsQuery, error: costsQuery.error ? { message: "成本台账暂时无法读取，请检查网络后重新获取。" } : null };
+  const settlementQuery = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const settlement = { ...settlementQuery, error: settlementQuery.error ? { message: "月度结算预览暂时无法读取，请检查计价规则或稍后重新计算。" } : null };
   const monthlyStatements = trpc.machinery.listMonthlyStatements.useQuery(monthlyStatementsInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const paymentSettlements = trpc.machinery.listPaymentSettlements.useQuery({ projectId: selectedProjectId }, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const monthlyStatementPreview = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const monthlyStatementPreviewQuery = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const monthlyStatementPreview = { ...monthlyStatementPreviewQuery, error: monthlyStatementPreviewQuery.error ? { message: "会计月度明细暂时无法核算，请检查填写内容后重新计算。" } : null };
   const fuelCostDefault = trpc.machinery.fuelCostDefault.useQuery({ projectId: selectedProjectId, occurredAt: costOccurredAtIso ?? new Date().toISOString() }, { enabled: isAuthenticated && costDialogOpen && costDraft.costType === "fuel" && Boolean(selectedProjectId) && Boolean(costOccurredAtIso), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
