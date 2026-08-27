@@ -518,7 +518,7 @@ export default function MobileLaborPage() {
 
   if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载劳务工资台账…" title="劳务工资" description="请使用企业统一身份进入已授权的项目数据范围。" Icon={ContactRound} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
   if (projectOptions.error) {
-    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-sm text-[#f8ead7]">劳务工资模块加载失败：{projectOptions.error.message}</div>;
+    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-sm text-[#f8ead7]"><div><p>暂时无法读取已授权项目，请检查网络或登录状态后重新获取。</p><Button className="mt-4" variant="outline" onClick={() => { void refresh(); void projectOptions.refetch(); }}>重新获取授权项目</Button></div></div>;
   }
 
   return (
