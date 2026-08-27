@@ -26,6 +26,11 @@ describe("移动端机械会计月度明细", () => {
 
     expect(source).toContain("printMonthlySettlement");
     expect(source).toContain("机械月度结算预览表");
+    expect(source).toContain("openA4LandscapePrintDocument");
+    expect(source).toContain("formatChinaDateTime(new Date())");
+    expect(source).not.toContain('window.open("", "_blank")');
+    expect(source).toContain("重新获取授权项目");
+    expect(source).toContain("projectOptions.isError");
     expect(source).toContain("openCostDialog(machine.id)");
     expect(source).toContain(">费用录入</Button>");
     expect(source).toContain("fuelCostDefault.fetch");
