@@ -19,6 +19,16 @@ describe("MobileEvidencePage 用户可见错误与时间投影", () => {
     expect(source).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
     expect(source).toContain("formatChinaDateTime(date)");
     expect(source).toContain("formatChinaDateTime(new Date())");
+    expect(source).toContain("capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`");
+    expect(source).not.toContain('capturedAt.toLocaleString("zh-CN")');
     expect(source).toContain("capturedAt: capturedAt.toISOString()");
+  });
+
+  it("上传、票据识别和删除失败均不回显原始服务端错误", () => {
+    expect(source).toContain("影像归档未完成，请检查照片、定位和网络后重试");
+    expect(source).toContain("票据识别失败，请稍后重试");
+    expect(source).toContain("现场影像删除失败，请刷新后重试");
+    expect(source).not.toContain("toast.error(error.message)");
+    expect(source).not.toContain("error instanceof Error ? error.message");
   });
 });
