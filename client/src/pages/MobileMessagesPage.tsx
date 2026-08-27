@@ -36,14 +36,14 @@ export default function MobileMessagesPage() {
     onSuccess: async () => {
       await Promise.all([utils.messages.list.invalidate(), utils.messages.unreadCount.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("消息状态更新失败，请稍后重试"),
   });
   const acknowledgeBroadcast = trpc.broadcast.acknowledgeReceipt.useMutation({
     onSuccess: async result => {
       toast.success(result.alreadyAcknowledged ? "该通知已确认收到" : "已确认收到，回执已提交");
       await Promise.all([utils.broadcast.myPendingAcknowledgements.invalidate(), utils.messages.list.invalidate(), utils.messages.unreadCount.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("确认回执提交失败，请稍后重试"),
   });
 
   if (loading || !isAuthenticated || messages.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && messages.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在同步业务消息…" title="消息中心" description="登录后可查看与您岗位、审批和业务单据相关的通知。" Icon={Bell} onRetry={() => { void refresh(); void messages.refetch(); }} />;
@@ -64,7 +64,7 @@ export default function MobileMessagesPage() {
 
         <main className="space-y-3 px-5 py-5">
           {pendingBroadcasts.data?.map(item => <Card key={item.deliveryId} className="border-[#d7b06c] bg-[#fff8e8] shadow-[0_8px_22px_rgba(128,84,32,.09)]"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-[11px] font-semibold tracking-wide text-[#9b5d20]">群发通知 · 待确认</p><h2 className="mt-1 text-sm font-semibold text-[#5b321e]">{item.title}</h2><p className="mt-1.5 text-xs leading-5 text-[#805b42]">{item.content}</p><p className="mt-2 text-[11px] text-[#987154]">送达时间：{formatMessageTime(item.deliveredAt)}</p></div><Button size="sm" className="shrink-0 bg-[#8b4d23] text-white hover:bg-[#6f3d1e]" disabled={acknowledgeBroadcast.isPending} onClick={() => acknowledgeBroadcast.mutate({ deliveryId: Number(item.deliveryId) })}>{acknowledgeBroadcast.isPending ? "提交中…" : "确认收到"}</Button></div></CardContent></Card>)}
-          {messages.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">消息加载失败：{messages.error.message}<Button size="sm" variant="outline" className="ml-3 border-[#c9854a] text-[#7d421f]" onClick={() => messages.refetch()}>重试</Button></CardContent></Card> : null}
+          {messages.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">消息暂时无法加载，请重新获取。<Button size="sm" variant="outline" className="ml-3 border-[#c9854a] text-[#7d421f]" onClick={() => messages.refetch()}>重新获取</Button></CardContent></Card> : null}
           {!messages.error && !messages.data?.length ? <Card className="overflow-hidden border-0 bg-[#fffaf3] shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="px-5 py-12 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#f6e6d2] text-[#a85e31]"><Inbox className="h-7 w-7" /></div><h2 className="mt-4 text-base font-semibold">暂时没有业务消息</h2><p className="mx-auto mt-2 max-w-xs text-xs leading-5 text-[#765544]">当您提交工资条、收到审核结论或系统发现需处理事项时，消息会在此保留。</p></CardContent></Card> : null}
           {messages.data?.map(message => {
             const unread = message.status !== "read";
