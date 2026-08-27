@@ -629,7 +629,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
-  const [riskRectificationTarget, setRiskRectificationTarget] = useState<{ id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string } | null>(null);
+  type RiskRectificationTarget = { id: number; title: string; assigneeUserId: string; dueAt: string; rectificationNote: string };
+  const [riskRectificationTarget, setRiskRectificationTargetState] = useState<RiskRectificationTarget | null>(null);
+  const setRiskRectificationTarget = (next: RiskRectificationTarget | null | ((current: RiskRectificationTarget | null) => RiskRectificationTarget | null)) => {
+    setRiskRectificationTargetState(current => {
+      if (typeof next === "function") return next(current);
+      return next?.dueAt ? { ...next, dueAt: toDeviceDateTimeInput(`${next.dueAt}:00Z`) } : next;
+    });
+  };
   const [riskBriefing, setRiskBriefing] = useState<{ executiveSummary: string; priorityActions: string[]; watchItems: string[]; disclaimer: string; source: "external" | "builtin" | "fallback"; model: string; externalFallback?: string | null } | null>(null);
   const [machineStatementPeriod, setMachineStatementPeriod] = useState(() => toChinaMonthInput());
   const [vehicleAnalysisPeriod, setVehicleAnalysisPeriod] = useState(() => toChinaMonthInput());
