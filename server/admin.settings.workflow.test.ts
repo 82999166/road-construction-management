@@ -15,12 +15,17 @@ vi.mock("./services/officialAccountNotifier", async importOriginal => {
   const actual = await importOriginal<typeof import("./services/officialAccountNotifier")>();
   return { ...actual, listPublishedOfficialAccountPrivateTemplates: vi.fn(), testPublishedOfficialAccountConfiguration: vi.fn() };
 });
+vi.mock("./services/aliyunOssPhotoStorage", async importOriginal => {
+  const actual = await importOriginal<typeof import("./services/aliyunOssPhotoStorage")>();
+  return { ...actual, testAliyunOssPhotoStorageConnection: vi.fn() };
+});
 
 import { assertSuperAdmin } from "./access";
 import { getDb } from "./db";
 import { adminRouter } from "./routers/admin";
 import { encryptSecret, maskSecret } from "./services/secretVault";
 import { listPublishedOfficialAccountPrivateTemplates, testPublishedOfficialAccountConfiguration } from "./services/officialAccountNotifier";
+import { testAliyunOssPhotoStorageConnection } from "./services/aliyunOssPhotoStorage";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -83,6 +88,27 @@ describe("系统设置安全工作流", () => {
     vi.clearAllMocks();
     vi.mocked(assertSuperAdmin).mockResolvedValue(createAdminContext().user!);
     vi.mocked(testPublishedOfficialAccountConfiguration).mockResolvedValue({ success: true, message: "服务号凭据校验通过" });
+    vi.mocked(testAliyunOssPhotoStorageConnection).mockResolvedValue({ success: true, code: "connected", message: "OSS 连接、Bucket 定位和只读对象权限校验通过；未上传、覆盖或删除任何照片。" });
+  });
+
+  it("OSS 连接测试仅调用受控服务并写入不含密钥的最小审计", async () => {
+    const db = createSettingsDb();
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).settings.testAliyunOssPhotoStorageConnection()).resolves.toMatchObject({ success: true, code: "connected" });
+
+    expect(testAliyunOssPhotoStorageConnection).toHaveBeenCalledTimes(1);
+    expect(db.insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        module: "settings",
+        action: "test_aliyun_oss_photo_storage_connection",
+        targetType: "photo_storage",
+        targetId: "aliyun_oss",
+        summary: expect.stringContaining("未读写业务照片"),
+      }),
+    ]));
+    expect(JSON.stringify(db.insertedValues)).not.toContain("accessKey");
+    expect(JSON.stringify(db.insertedValues)).not.toContain("credential");
   });
 
   it("微信登录管理解除绑定仅撤销绑定状态并写入最小化审计", async () => {

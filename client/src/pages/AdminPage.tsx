@@ -149,6 +149,7 @@ type OfficialAccountConfigurationForm = { appId: string; appSecret: string; appU
 type OfficialAccountMessagePushForm = { eventToken: string; encodingAesKey: string };
 type ExternalAiApiConfigurationForm = { baseUrl: string; apiKey: string; model: string; enabled: boolean };
 type AliyunOssPhotoStorageConfigurationForm = { enabled: boolean; region: string; endpoint: string; bucket: string; objectPrefix: string; accessKeyId: string; accessKeySecret: string };
+type AliyunOssPhotoStorageValidation = { success: boolean; code: string; message: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
 type BroadcastAudienceType = "project" | "organization" | "role";
@@ -1045,6 +1046,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [externalAiApiConfigurationForm, setExternalAiApiConfigurationForm] = useState<ExternalAiApiConfigurationForm>(EMPTY_EXTERNAL_AI_API_CONFIGURATION_FORM);
   const [externalAiApiValidation, setExternalAiApiValidation] = useState<string | null>(null);
   const [aliyunOssPhotoStorageForm, setAliyunOssPhotoStorageForm] = useState<AliyunOssPhotoStorageConfigurationForm>(EMPTY_ALIYUN_OSS_PHOTO_STORAGE_CONFIGURATION_FORM);
+  const [aliyunOssPhotoStorageValidation, setAliyunOssPhotoStorageValidation] = useState<AliyunOssPhotoStorageValidation | null>(null);
   const [dailyDigestForm, setDailyDigestForm] = useState<DailyDigestForm>(EMPTY_DAILY_DIGEST_FORM);
   const [dailyDigestPreviewProjectId, setDailyDigestPreviewProjectId] = useState("");
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
@@ -1639,9 +1641,22 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onSuccess: async result => {
       toast.success(result.message);
       setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: "", accessKeySecret: "" }));
+      setAliyunOssPhotoStorageValidation(null);
       await Promise.all([aliyunOssPhotoStorageConfiguration.refetch(), settings.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(error.message),
+  });
+  const testAliyunOssPhotoStorageConnection = trpc.admin.settings.testAliyunOssPhotoStorageConnection.useMutation({
+    onSuccess: async result => {
+      setAliyunOssPhotoStorageValidation(result);
+      if (result.success) toast.success("OSS 只读连接校验通过");
+      else toast.error(result.message);
+      await audits.refetch();
+    },
+    onError: error => {
+      setAliyunOssPhotoStorageValidation({ success: false, code: "request_failed", message: error.message });
+      toast.error(error.message);
+    },
   });
   const testExternalAiConfiguration = trpc.admin.settings.testExternalAiConfiguration.useMutation({
     onSuccess: async result => {
@@ -2502,8 +2517,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8e9e5] bg-[#f4faf8] px-3 py-2.5"><label className="flex items-center gap-2 text-sm font-medium text-slate-800"><Checkbox checked={aliyunOssPhotoStorageForm.enabled} onCheckedChange={checked => setAliyunOssPhotoStorageForm(current => ({ ...current, enabled: checked === true }))} />启用阿里云 OSS 作为新照片存储</label><Badge variant="outline" className={aliyunOssPhotoStorageConfiguration.data?.configured && aliyunOssPhotoStorageConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-600"}>{aliyunOssPhotoStorageConfiguration.data?.configured ? aliyunOssPhotoStorageConfiguration.data.enabled ? "已启用" : "已保存，未启用" : "待完整配置"}</Badge></div>
             <div className="grid gap-3 md:grid-cols-2"><Field label="OSS 地域"><Input value={aliyunOssPhotoStorageForm.region} placeholder="例如 oss-cn-hangzhou" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, region: event.target.value }))} /></Field><Field label="OSS Endpoint"><Input type="url" value={aliyunOssPhotoStorageForm.endpoint} placeholder="https://oss-cn-hangzhou.aliyuncs.com" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, endpoint: event.target.value }))} /></Field><Field label="Bucket 名称"><Input value={aliyunOssPhotoStorageForm.bucket} placeholder="仅填写 Bucket 名称" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, bucket: event.target.value }))} /></Field><Field label="照片对象前缀"><Input value={aliyunOssPhotoStorageForm.objectPrefix} placeholder="photos" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, objectPrefix: event.target.value }))} /></Field></div>
             <div className="grid gap-3 md:grid-cols-2"><Field label="AccessKey ID"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeyId} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeyIdConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeyId: event.target.value }))} /></Field><Field label="AccessKey Secret"><Input type="password" value={aliyunOssPhotoStorageForm.accessKeySecret} placeholder={aliyunOssPhotoStorageConfiguration.data?.accessKeySecretConfigured ? "已加密托管；留空保持不变" : "首次配置必填"} autoComplete="new-password" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, accessKeySecret: event.target.value }))} /></Field></div>
-            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">建议 Bucket 保持私有读；系统会为受权用户生成短时预览地址。RAM 账号仅需限定到该 Bucket/对象前缀的读取与写入权限。保存后密钥不回显、不会出现在配置列表、历史、审计或 GitHub 中；编辑时两个密钥留空即可保持原值。</div>
-            <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><span className="text-xs text-slate-500">配置完成后请上传一张真实照片验证；未启用或未配置时，新照片继续使用现有存储。</span></div>
+            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">请填写标准 Bucket 公网 Endpoint（例如 `https://oss-cn-地域.aliyuncs.com`），不要填写 OSS 接入点 Endpoint。建议 Bucket 保持私有读；系统会为受权用户生成短时预览地址。RAM 账号仅需限定到该 Bucket/对象前缀的读取与写入权限。保存后密钥不回显、不会出现在配置列表、历史、审计或 GitHub 中；编辑时两个密钥留空即可保持原值。</div>
+            <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><Button type="button" variant="outline" disabled={testAliyunOssPhotoStorageConnection.isPending || !aliyunOssPhotoStorageConfiguration.data?.configured} onClick={() => { setAliyunOssPhotoStorageValidation(null); testAliyunOssPhotoStorageConnection.mutate(); }}>{testAliyunOssPhotoStorageConnection.isPending ? "正在测试…" : "测试 OSS 连接"}</Button><span className="text-xs text-slate-500">测试只读取保留探测对象元数据，不上传、覆盖或删除业务照片。</span></div>
+            {aliyunOssPhotoStorageValidation && <div role="status" className={aliyunOssPhotoStorageValidation.success ? "rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800" : "rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"}>{aliyunOssPhotoStorageValidation.message}</div>}
           </div>
         </SettingsDisclosure>
         <Card className="border-[#d8e3e0]">

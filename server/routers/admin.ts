@@ -62,7 +62,7 @@ import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
-import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion } from "../services/aliyunOssPhotoStorage";
+import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion, testAliyunOssPhotoStorageConnection } from "../services/aliyunOssPhotoStorage";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
@@ -2115,6 +2115,23 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_aliyun_oss_photo_storage_configuration", targetType: "photo_storage", targetId: "aliyun_oss", summary: `阿里云 OSS 照片存储配置已发布：${input.enabled ? "启用" : "停用"}；密钥不写入审计摘要` });
       });
       return { success: true, message: input.enabled ? "阿里云 OSS 照片存储已启用；后续新上传的 JPEG/PNG 照片将写入配置 Bucket。" : "阿里云 OSS 配置已保存但处于停用状态；新照片继续使用既有存储路径。" };
+    }),
+    /** 仅通过读取保留探测对象元数据核验 OSS；不会创建、覆盖或删除业务照片。 */
+    testAliyunOssPhotoStorageConnection: protectedProcedure.mutation(async ({ ctx }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const result = await testAliyunOssPhotoStorageConnection();
+      const db = await getDb();
+      if (db) {
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "settings",
+          action: "test_aliyun_oss_photo_storage_connection",
+          targetType: "photo_storage",
+          targetId: "aliyun_oss",
+          summary: `阿里云 OSS 照片存储连接校验：${result.success ? "通过" : "未通过"}（${result.code}）；未读写业务照片，密钥不写入审计摘要`,
+        });
+      }
+      return result;
     }),
     saveExternalAiConfiguration: protectedProcedure.input(externalAiApiConfigurationInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
