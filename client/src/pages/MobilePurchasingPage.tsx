@@ -149,28 +149,28 @@ export default function MobilePurchasingPage() {
   };
   const saveRequest = trpc.purchasing.saveRequest.useMutation({
     onSuccess: async () => { toast.success("采购申请草稿已保存"); setRequestOpen(false); setRequestDraft({ categoryId: "", amount: "", description: "" }); await refreshData(); },
-    onError: () => toast.error("采购申请保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
-  const transitionRequest = trpc.purchasing.transitionRequest.useMutation({ onSuccess: async () => { toast.success("采购申请状态已更新"); await refreshData(); }, onError: () => toast.error("采购申请状态更新失败，请刷新后重试") });
+  const transitionRequest = trpc.purchasing.transitionRequest.useMutation({ onSuccess: async () => { toast.success("采购申请状态已更新"); await refreshData(); }, onError: error => toast.error(error.message) });
   const createOrder = trpc.purchasing.createOrder.useMutation({
     onSuccess: async () => { toast.success("采购订单已创建"); setOrderOpen(false); setOrderDraft(createOrderDraft()); await refreshData(); },
-    onError: () => toast.error("采购订单创建失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
-  const transitionOrder = trpc.purchasing.transitionOrder.useMutation({ onSuccess: async () => { toast.success("采购订单状态已更新"); await refreshData(); }, onError: () => toast.error("采购订单状态更新失败，请刷新后重试") });
-  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" }); await refreshData(); }, onError: () => toast.error("采购结算登记失败，请核对金额后重试") });
+  const transitionOrder = trpc.purchasing.transitionOrder.useMutation({ onSuccess: async () => { toast.success("采购订单状态已更新"); await refreshData(); }, onError: error => toast.error(error.message) });
+  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" }); await refreshData(); }, onError: error => toast.error(error.message) });
   const saveInventory = trpc.purchasing.saveInventoryTransaction.useMutation({
     onSuccess: async () => { toast.success("库存收发流水已登记"); setInventoryOpen(false); setInventoryDraft(createInventoryDraft()); await refreshData(); },
-    onError: () => toast.error("库存收发登记失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const saveSupplier = trpc.purchasing.saveSupplier.useMutation({
     onSuccess: async () => { toast.success("供应商资料已保存"); setSupplierOpen(false); setSupplierDraft({ name: "", contactName: "", contactPhoneMasked: "" }); await refreshData(); },
-    onError: () => toast.error("供应商资料保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const createSmallDirectOrder = trpc.purchasing.createSmallDirectOrder.useMutation({
     onSuccess: async result => { toast.success(result.requiresSupervisorApproval ? `清单采购已上报主管确认（金额 ¥${result.amount.toFixed(2)}）` : `清单采购已直接入账（金额 ¥${result.amount.toFixed(2)}）`); setSmallDirectOpen(false); setSmallDirectDraft(createSmallDirectDraft()); await refreshData(); },
-    onError: () => toast.error("清单采购提交失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
-  const uploadPurchaseDocument = trpc.purchasing.uploadPurchaseDocument.useMutation();
+  const uploadPurchaseDocument = trpc.purchasing.uploadPurchaseDocument.useMutation({ onError: error => toast.error(error.message) });
 
   function submitRequest() {
     if (!selectedProjectId || !requestDraft.categoryId || !requestDraft.amount || !requestDraft.description.trim()) return toast.error("请填写采购类别、申请金额和说明");
@@ -245,8 +245,8 @@ export default function MobilePurchasingPage() {
       setSmallDirectDraft(current => attachmentKind === "invoice" ? ({ ...current, invoiceEvidenceId: String(result.id) }) : ({ ...current, evidenceId: String(result.id) }));
       await refreshData();
       toast.success(attachmentKind === "invoice" ? "采购发票附件已归档" : "采购单据照片已归档");
-    } catch {
-      toast.error("采购单据归档失败，请检查文件和网络后重试");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "单据照片上传失败");
     }
   }
 

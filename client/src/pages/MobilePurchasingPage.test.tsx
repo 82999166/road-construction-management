@@ -72,18 +72,3 @@ describe("采购仓储当前筛选导出与打印", () => {
     expect(source).toContain("settledAt: toDeviceDateTimeInput()");
   });
 });
-
-describe("移动采购错误安全提示", () => {
-  it("所有业务写入和附件归档失败均不回显原始服务端错误", () => {
-    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain("采购申请保存失败，请检查填写内容后重试");
-    expect(source).toContain("采购订单创建失败，请检查填写内容后重试");
-    expect(source).toContain("采购结算登记失败，请核对金额后重试");
-    expect(source).toContain("库存收发登记失败，请检查填写内容后重试");
-    expect(source).toContain("供应商资料保存失败，请检查填写内容后重试");
-    expect(source).toContain("采购单据归档失败，请检查文件和网络后重试");
-    expect(source).not.toContain("toast.error(error.message)");
-    expect(source).not.toContain("error instanceof Error ? error.message");
-  });
-});

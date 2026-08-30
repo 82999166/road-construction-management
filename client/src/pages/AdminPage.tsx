@@ -3174,35 +3174,6 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     );
   };
 
-  const printBusinessGovernanceReport = () => {
-    const dashboard = operatingDashboard.data;
-    if (!dashboard) {
-      toast.error("请先读取当前筛选范围的经营数据后再打印");
-      return;
-    }
-    const metrics: Array<[string, string]> = [
-      ["总收入", `¥ ${displayMoney(dashboard.finance.totalIncome)}`],
-      ["已开发票", `¥ ${displayMoney(dashboard.finance.invoiceAmount)}`],
-      ["总欠款（应收+应付）", `¥ ${displayMoney(dashboard.finance.receivable + dashboard.finance.payable)}`],
-      ["各类已付", `¥ ${displayMoney(dashboard.finance.paidAmount)}`],
-      ["结算比", dashboard.finance.settlementRatio === null ? "—" : `${dashboard.finance.settlementRatio}%`],
-      ["付款比", dashboard.finance.paymentRatio === null ? "—" : `${dashboard.finance.paymentRatio}%`],
-      ["项目进度", dashboard.progress.averageProgressPercent === null ? "未提交" : `${dashboard.progress.averageProgressPercent}%`],
-      ["运输趟次", `${dashboard.resources.transportTripCount} 趟`],
-    ];
-    const metricRows = metrics.map(([label, value]) => `<tr><td>${escapePrintHtml(label)}</td><td class="right">${escapePrintHtml(value)}</td></tr>`).join("");
-    const categoryRows = dashboard.finance.categories.length
-      ? dashboard.finance.categories.map(item => `<tr><td>${escapePrintHtml(item.category)}</td><td class="right">¥ ${escapePrintHtml(displayMoney(item.amount))}</td><td class="right">¥ ${escapePrintHtml(displayMoney(item.unpaid))}</td><td class="right">¥ ${escapePrintHtml(displayMoney(item.paid))}</td></tr>`).join("")
-      : '<tr><td colspan="4" class="center">当前范围暂无有效支出分类记录</td></tr>';
-    const moduleRows = (businessStatistics.data ?? []).length
-      ? (businessStatistics.data ?? []).map((module, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(module.name)}</td><td class="right">${escapePrintHtml(String(module.recordCount))}</td></tr>`).join("")
-      : '<tr><td colspan="3" class="center">当前范围暂无业务模块统计结果</td></tr>';
-    openA4LandscapePrintDocument({
-      title: `全业务治理统计汇总-${businessFilter.period || "全部期间"}`,
-      bodyHtml: `<h1>全业务治理统计汇总</h1><p class="sub">统计范围：${escapePrintHtml(businessFilterLabel)}　|　数据来源：当前服务端已授权统计　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><h2>经营数据汇总</h2><table><thead><tr><th>指标</th><th class="right">当前数值</th></tr></thead><tbody>${metricRows}</tbody></table><h2>计量、施工与资源投入</h2><table><thead><tr><th>指标</th><th class="right">当前数值</th><th>指标</th><th class="right">当前数值</th></tr></thead><tbody><tr><td>申报计量</td><td class="right">¥ ${escapePrintHtml(displayMoney(dashboard.measurement.declaredAmount))}</td><td>核定计量</td><td class="right">¥ ${escapePrintHtml(displayMoney(dashboard.measurement.approvedAmount))}</td></tr><tr><td>已结算计量</td><td class="right">¥ ${escapePrintHtml(displayMoney(dashboard.measurement.settledAmount))}</td><td>待处理计量</td><td class="right">${escapePrintHtml(String(dashboard.measurement.pendingCount))} 笔</td></tr><tr><td>施工日报</td><td class="right">${escapePrintHtml(String(dashboard.progress.reportCount))} 条</td><td>已审核日报</td><td class="right">${escapePrintHtml(String(dashboard.progress.approvedReportCount))} 条</td></tr><tr><td>月度工资实发</td><td class="right">¥ ${escapePrintHtml(displayMoney(dashboard.resources.payrollActualAmount))}</td><td>临时日结实发</td><td class="right">¥ ${escapePrintHtml(displayMoney(dashboard.resources.dailyWageActualAmount))}</td></tr></tbody></table><h2>支出分类</h2><table><thead><tr><th>支出类别</th><th class="right">有效支出</th><th class="right">待付</th><th class="right">已付</th></tr></thead><tbody>${categoryRows}</tbody></table><h2>业务模块统计</h2><table><thead><tr><th>序号</th><th>业务模块</th><th class="right">当前真实记录</th></tr></thead><tbody>${moduleRows}</tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
-    });
-  };
-
   const renderBusiness = () => (
     <div className="space-y-6" id="business-governance-report">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -3213,7 +3184,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         </div>
         <div className="flex gap-2 print:hidden">
           <Button size="sm" variant="outline" onClick={() => { void businessStatistics.refetch(); void operatingDashboard.refetch(); }} disabled={businessStatistics.isFetching || operatingDashboard.isFetching}>刷新统计</Button>
-          <Button size="sm" variant="outline" onClick={printBusinessGovernanceReport} disabled={!operatingDashboard.data}><Printer className="mr-1.5 h-4 w-4" />打印当前筛选汇总</Button>
+          <Button size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>
         </div>
       </div>
 

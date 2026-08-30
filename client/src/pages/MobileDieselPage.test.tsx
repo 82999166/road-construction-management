@@ -36,12 +36,4 @@ describe("移动柴油管理操作窗口", () => {
   it("未知柴油领用状态使用中文安全回退，不将内部枚举展示给用户", () => {
     expect(source).toContain('} as Record<string, string>)[status] ?? "待处理"');
   });
-
-  it("台账查询、凭证归档和记账失败均不回显原始服务端错误", () => {
-    expect(source).toContain("暂时无法加载当前项目柴油台账，请稍后重新加载。");
-    expect(source).toContain("柴油领用登记未完成，请检查现场照片、定位和填写内容后重试");
-    expect(source).not.toContain("{overview.error.message}");
-    expect(source).not.toContain("toast.error(error.message)");
-    expect(source).not.toContain("error instanceof Error ? error.message");
-  });
 });

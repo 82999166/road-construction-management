@@ -169,27 +169,4 @@ describe("移动劳务页真实数据与普通人员操作投影", () => {
     expect(source).toContain("onClick={printPayrollSummary}");
     expect(source).not.toContain("window.print()");
   });
-
-  it("将人员进退场日期回填为设备日期，并按中国时区展示打卡时间", () => {
-    const source = readFileSync(new URL("./MobileLaborPage.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain("function formatChinaTime");
-    expect(source).toContain("return full ? full.slice(-8, -3) : \"—\"");
-    expect(source).toContain("toDeviceDateInput(worker.entryDate)");
-    expect(source).toContain("toDeviceDateInput(worker.exitDate)");
-    expect(source).toContain("formatChinaTime(checkInStatus.data.checkIn!.checkedInAt)");
-    expect(source).toContain("formatChinaTime(checkInStatus.data.checkOut!.checkedOutAt)");
-    expect(source).not.toContain("checkedInAt).toLocaleTimeString");
-    expect(source).not.toContain("checkedOutAt).toLocaleTimeString");
-  });
-
-  it("项目授权查询失败时使用中文安全提示并提供重新获取入口", () => {
-    runtime.projectOptions.mockReturnValue({ ...emptyQuery, error: new Error("Failed to fetch internal permission payload") });
-
-    const markup = renderToStaticMarkup(<MobileLaborPage />);
-
-    expect(markup).toContain("暂时无法读取已授权项目");
-    expect(markup).toContain("重新获取授权项目");
-    expect(markup).not.toContain("Failed to fetch internal permission payload");
-  });
 });

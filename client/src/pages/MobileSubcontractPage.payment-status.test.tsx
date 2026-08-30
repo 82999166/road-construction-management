@@ -18,11 +18,4 @@ describe("MobileSubcontractPage payment visibility", () => {
     expect(page).toContain("teamStatus(team.status)");
     expect(page).not.toContain(")[item.status] || item.status");
   });
-
-  it("does not expose raw server errors when saving or changing subcontract records", () => {
-    expect(page).toContain("施工队台账保存失败，请检查填写内容后重试");
-    expect(page).toContain("分包批次草稿保存失败，请检查填写内容后重试");
-    expect(page).toContain("分包批次状态更新失败，请刷新后重试");
-    expect(page).not.toContain("toast.error(error.message)");
-  });
 });

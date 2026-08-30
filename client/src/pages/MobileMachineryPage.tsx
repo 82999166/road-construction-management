@@ -228,17 +228,14 @@ export default function MobileMachineryPage() {
     return Number.isNaN(occurredAt.getTime()) ? null : occurredAt.toISOString();
   }, [costDraft.occurredAt]);
   const leaseRules = trpc.machinery.listLeaseRules.useQuery(detailInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const costsQuery = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const costs = { ...costsQuery, error: costsQuery.error ? { message: "成本台账暂时无法读取，请检查网络后重新获取。" } : null };
-  const settlementQuery = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const settlement = { ...settlementQuery, error: settlementQuery.error ? { message: "月度结算预览暂时无法读取，请检查计价规则或稍后重新计算。" } : null };
+  const costs = trpc.machinery.listCosts.useQuery(costsInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
+  const settlement = trpc.machinery.settlementPreview.useQuery(previewInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const monthlyStatements = trpc.machinery.listMonthlyStatements.useQuery(monthlyStatementsInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const paymentSettlements = trpc.machinery.listPaymentSettlements.useQuery({ projectId: selectedProjectId }, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const monthlyStatementPreviewQuery = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
-  const monthlyStatementPreview = { ...monthlyStatementPreviewQuery, error: monthlyStatementPreviewQuery.error ? { message: "会计月度明细暂时无法核算，请检查填写内容后重新计算。" } : null };
+  const monthlyStatementPreview = trpc.machinery.previewMonthlyStatement.useQuery(monthlyStatementPreviewInput, { enabled: isAuthenticated && statementDialogOpen && Boolean(selectedProjectId) && Boolean(selectedMachineId), retry: false });
   const fuelCostDefault = trpc.machinery.fuelCostDefault.useQuery({ projectId: selectedProjectId, occurredAt: costOccurredAtIso ?? new Date().toISOString() }, { enabled: isAuthenticated && costDialogOpen && costDraft.costType === "fuel" && Boolean(selectedProjectId) && Boolean(costOccurredAtIso), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
-  const evidenceUpload = trpc.evidence.upload.useMutation();
+  const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation();
 
   /** 油料单价始终从当前项目、当前加油发生时间有效的系统指导价回填；保存时服务端会再次复核。 */
@@ -301,33 +298,33 @@ export default function MobileMachineryPage() {
   /** 写入成功后只失效相关服务端数据，避免在客户端手工计算或篡改成本金额。 */
   const saveMachine = trpc.machinery.saveMachine.useMutation({
     onSuccess: async () => { toast.success(editingMachineId ? "机械台账已更新" : "机械台账已建立"); setMachineDialogOpen(false); setContactDialogOpen(false); await utils.machinery.listMachines.invalidate(); },
-    onError: () => toast.error("机械台账保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const saveRule = trpc.machinery.saveLeaseRule.useMutation({
     onSuccess: async () => { toast.success("机械计价规则已保存"); setRuleDialogOpen(false); await Promise.all([utils.machinery.listLeaseRules.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
-    onError: () => toast.error("机械计价规则保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const saveCost = trpc.machinery.saveCost.useMutation({
     onSuccess: async data => { stopCostCamera(); toast.success(`机械成本已录入，系统核算 ${formatMoney(data.amount)}${data.guidelinePriceId ? "，已采用系统柴油指导价" : ""}`); setCostDialogOpen(false); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
-    onError: () => toast.error("机械成本录入失败，请核对费用信息后重试"),
+    onError: error => toast.error(error.message),
   });
   const transitionCost = trpc.machinery.transitionCost.useMutation({
     onSuccess: async () => { toast.success("机械成本状态已更新"); await Promise.all([utils.machinery.listCosts.invalidate(), utils.machinery.settlementPreview.invalidate()]); },
-    onError: () => toast.error("机械成本状态更新失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
   const saveMonthlyStatement = trpc.machinery.saveMonthlyStatement.useMutation({
     onSuccess: async result => { toast.success(`会计明细已保存：总产值 ${formatMoney(result.preview.statement.totalOutput)}`); setStatementDialogOpen(false); await Promise.all([utils.machinery.listMonthlyStatements.invalidate(), utils.machinery.previewMonthlyStatement.invalidate()]); },
-    onError: () => toast.error("会计月度明细保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const transitionMonthlyStatement = trpc.machinery.transitionMonthlyStatement.useMutation({
     onSuccess: async () => { toast.success("会计明细状态已更新"); await utils.machinery.listMonthlyStatements.invalidate(); },
-    onError: () => toast.error("会计月度明细状态更新失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
 
   /** 打开编辑对话框时仅加载当前台账的非敏感业务字段。 */
   function openMachineDialog(machine?: NonNullable<typeof machines.data>[number]) {
     setEditingMachineId(machine?.id ?? null);
-    setMachineDraft(machine ? { code: machine.code, name: machine.name, model: machine.model ?? "", ownership: machine.ownership, supplierName: machine.supplierName ?? "", plateOrAssetNo: machine.plateOrAssetNo ?? "", operatorUserId: machine.operatorUserId ? String(machine.operatorUserId) : "", driverName: machine.driverName ?? "", driverPhone: machine.driverPhone ?? "", status: machine.status, leaseBillingType: machine.leaseTerms?.billingType ?? "monthly", leaseRate: machine.leaseTerms?.rate ? String(machine.leaseTerms.rate) : "", leaseStartDate: machine.leaseTerms?.effectiveFrom ? toDeviceDateInput(machine.leaseTerms.effectiveFrom) : "", leaseEndDate: machine.leaseTerms?.effectiveTo ? toDeviceDateInput(machine.leaseTerms.effectiveTo) : "" } : EMPTY_MACHINE_DRAFT);
+    setMachineDraft(machine ? { code: machine.code, name: machine.name, model: machine.model ?? "", ownership: machine.ownership, supplierName: machine.supplierName ?? "", plateOrAssetNo: machine.plateOrAssetNo ?? "", operatorUserId: machine.operatorUserId ? String(machine.operatorUserId) : "", driverName: machine.driverName ?? "", driverPhone: machine.driverPhone ?? "", status: machine.status, leaseBillingType: machine.leaseTerms?.billingType ?? "monthly", leaseRate: machine.leaseTerms?.rate ? String(machine.leaseTerms.rate) : "", leaseStartDate: machine.leaseTerms?.effectiveFrom ? new Date(machine.leaseTerms.effectiveFrom).toISOString().slice(0, 10) : "", leaseEndDate: machine.leaseTerms?.effectiveTo ? new Date(machine.leaseTerms.effectiveTo).toISOString().slice(0, 10) : "" } : EMPTY_MACHINE_DRAFT);
     setMachineDialogOpen(true);
   }
 
@@ -375,15 +372,15 @@ export default function MobileMachineryPage() {
       } else {
         toast.warning("当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价");
       }
-    } catch {
-      toast.error("柴油指导价暂时无法读取，请稍后重试");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "柴油指导价读取失败");
     }
   }
 
   async function submitCost() {
     if (!selectedProjectId || !selectedMachineId) return toast.error("请先选择机械台账");
     if (!costDraft.quantity || (!costDraft.unitPrice && costDraft.costType !== "fuel")) return toast.error("请填写数量与单价");
-    if (costDraft.costType === "fuel" && !fuelCostDefault.data?.guidelinePrice) return toast.error(fuelCostDefault.error ? "柴油指导价暂时无法读取，请稍后重试" : "当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价");
+    if (costDraft.costType === "fuel" && !fuelCostDefault.data?.guidelinePrice) return toast.error(fuelCostDefault.error?.message || "当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价");
     try {
       let evidenceId: number | null = null;
       if (costPhotoFile) {
@@ -413,8 +410,8 @@ export default function MobileMachineryPage() {
         if (!evidenceId) throw new Error("费用水印照片归档失败");
       }
       saveCost.mutate({ machineId: selectedMachineId, projectId: selectedProjectId, costType: costDraft.costType, quantity: Number(costDraft.quantity), unitPrice: Number(costDraft.unitPrice), occurredAt: new Date(costDraft.occurredAt).toISOString(), evidenceId, remarks: costDraft.remarks.trim() || null });
-    } catch {
-      toast.error("机械费用录入未完成，请检查照片、定位和网络后重试");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "费用照片处理失败，请重试");
     }
   }
 

@@ -93,7 +93,7 @@ export default function MobileSubcontractPage() {
       setTeamDraft({ teamName: "", contactName: "", contactPhone: "", remarks: "" });
       await refreshData();
     },
-    onError: () => toast.error("施工队台账保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
 
   const savePackage = trpc.subcontract.savePackage.useMutation({
@@ -103,7 +103,7 @@ export default function MobileSubcontractPage() {
       setPackageDraft({ subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", priceExceptionReason: "", remarks: "" });
       await refreshData();
     },
-    onError: () => toast.error("分包批次草稿保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
 
   const transition = trpc.subcontract.transitionPackage.useMutation({
@@ -111,7 +111,7 @@ export default function MobileSubcontractPage() {
       toast.success("分包批次状态已更新");
       await refreshData();
     },
-    onError: () => toast.error("分包批次状态更新失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
 
   const chooseTakeoff = (value: string) => {

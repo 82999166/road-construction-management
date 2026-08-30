@@ -154,7 +154,7 @@ export default function MobileConstructionPage() {
   const reviewEvidence = useMemo(() => (reportEvidence.data ?? []).filter(item => item.reportId === reviewTarget?.id), [reportEvidence.data, reviewTarget?.id]);
   const resolvedWeather = trpc.construction.resolveCurrentWeather.useQuery(weatherCoordinates ?? { latitude: 0, longitude: 0 }, { enabled: isAuthenticated && dialogOpen && !editingId && Boolean(weatherCoordinates), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
-  const evidenceUpload = trpc.evidence.upload.useMutation();
+  const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation({
     onSuccess: result => setWeatherAddress(result.address),
     onError: () => setWeatherStatus("已读取现场定位，但暂未解析中文详细地址；请稍后重新打开日报。"),
@@ -201,8 +201,8 @@ export default function MobileConstructionPage() {
           }
         }
         toast.success(files.length ? `施工日报已保存，${files.length} 张水印照片已关联本日报` : (editingId ? "施工日报已更新" : "施工日报已保存为草稿"));
-      } catch {
-        toast.error("日报已保存，但照片归档未完成，请检查照片、定位和网络后重试");
+      } catch (error) {
+        toast.error(error instanceof Error ? `日报已保存，但照片处理失败：${error.message}` : "日报已保存，但照片处理失败");
       }
       setDialogOpen(false);
       setEditingId(null);
@@ -212,21 +212,21 @@ export default function MobileConstructionPage() {
       setPendingEvidencePreviews([]);
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: () => toast.error("施工日报保存失败，请检查填写内容后重试"),
+    onError: error => toast.error(error.message),
   });
   const transitionReport = trpc.construction.transitionReport.useMutation({
     onSuccess: async () => {
       toast.success("施工日报状态已更新");
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: () => toast.error("施工日报状态更新失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
   const submitForReview = trpc.construction.submitReportForReview.useMutation({
     onSuccess: async result => {
       toast.success(`日报已上报 ${result.supervisorCount} 位项目主管审核`);
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: () => toast.error("施工日报上报失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
   const reviewReport = trpc.construction.reviewReport.useMutation({
     onSuccess: async result => {
@@ -235,7 +235,7 @@ export default function MobileConstructionPage() {
       setReviewReply("");
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: () => toast.error("施工日报审核失败，请刷新后重试"),
+    onError: error => toast.error(error.message),
   });
 
   function openCreate() {

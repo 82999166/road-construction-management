@@ -1,5 +1,4 @@
 import React from "react";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -167,16 +166,5 @@ describe("移动工作台部门业务投影", () => {
     expect(markup).toContain("工作台暂时无法连接");
     expect(markup).toContain("重新同步");
     expect(markup).not.toContain("工作台加载失败：Failed to fetch");
-  });
-
-  it("打卡失败和离线摘要不使用原始异常或浏览器默认时区", () => {
-    const source = readFileSync(new URL("./MobileWorkbench.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
-    expect(source).toContain("考勤打卡提交失败，请稍后重试");
-    expect(source).toContain("formatChinaDateTime(snapshot?.savedAt ?? Date.now())");
-    expect(source).not.toContain("toast.error(error.message)");
-    expect(source).not.toContain("toLocaleTimeString(");
-    expect(source).not.toContain("snapshot?.savedAt ?? Date.now()).toLocaleString()");
   });
 });

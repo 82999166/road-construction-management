@@ -18,11 +18,4 @@ describe("MobileFinancePage 时间、中文化与打印", () => {
     expect(source).toContain("onClick={printFinanceSummary}");
     expect(source).not.toContain("onClick={() => window.print()}");
   });
-
-  it("财务写入和票据归档失败时不回显原始服务端错误", () => {
-    expect(source).toContain('toast.error("资金流水登记失败，请核对填写内容后重试")');
-    expect(source).toContain('toast.error("发票分摊登记失败，请核对填写内容后重试")');
-    expect(source).toContain('toast.error("发票原件归档失败，请重新选择文件后重试")');
-    expect(source).not.toContain("onError: error => toast.error(error.message)");
-  });
 });

@@ -155,20 +155,6 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}");
   });
 
-  it("将全业务治理打印限定为当前服务端统计的独立 A4 汇总", () => {
-    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain("const printBusinessGovernanceReport = () => {");
-    expect(source).toContain('title: `全业务治理统计汇总-${businessFilter.period || "全部期间"}`');
-    expect(source).toContain("数据来源：当前服务端已授权统计");
-    expect(source).toContain("businessFilterLabel");
-    expect(source).toContain("dashboard.finance.categories");
-    expect(source).toContain("businessStatistics.data");
-    expect(source).toContain('onClick={printBusinessGovernanceReport}');
-    expect(source).toContain("打印当前筛选汇总");
-    expect(source).not.toContain('onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>');
-  });
-
   it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     const personnelStart = source.indexOf("人员与授权");
