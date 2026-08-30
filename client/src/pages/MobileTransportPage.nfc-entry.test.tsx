@@ -30,4 +30,15 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(source).toContain("处理待刷 NFC 票据");
     expect(source).not.toContain('onClick={() => window.print()}');
   });
+
+  it("提供换电脑恢复、手机 NFC 与键盘式读卡器备用操作说明", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("yx.transport.fieldReaderDeviceId");
+    expect(source).toContain("Android Chrome 支持 Web NFC");
+    expect(source).toContain("USB 键盘式读卡器接手机 OTG");
+    expect(source).toContain("读卡器输出 UID 后粘贴/回车");
+    expect(source).toContain("原始 UID 仅在本机生成 SHA-256 指纹后提交");
+    expect(source).toContain("现场读卡器编号");
+  });
 });
