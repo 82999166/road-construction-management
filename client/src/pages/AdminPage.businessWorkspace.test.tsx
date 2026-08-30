@@ -166,6 +166,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('button?.textContent?.trim() !== "打印日结装订页"');
     expect(source).toContain("printDailyAccountingSnapshot();");
     expect(source).toContain("生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}");
+    expect(source).toContain("onClick={printDailyAccountingSnapshot}");
+    const dailySection = source.slice(source.indexOf("后勤每日开支会计日结与打印"), source.indexOf("后勤每日开支会计日结与打印") + 1800);
+    expect(dailySection).not.toContain("window.print()");
   });
 
   it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
