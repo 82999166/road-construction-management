@@ -95,6 +95,19 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('"http://127.0.0.1:47601/api/read-uid"');
   });
 
+  it("本机读卡桥接失败时提示 Windows 桥接启动和浏览器设备授权，不回显原始异常", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("无法访问本机读卡桥接程序：请确认 Windows 桥接程序已启动，并允许浏览器访问本机设备。");
+    expect(source).toContain("无法访问本机写卡桥接程序：请启动 Windows 桥接程序并允许浏览器访问本机设备后重试。");
+    expect(source).toContain("更换电脑后需重新安装/启动桥接程序");
+    expect(source).toContain("手机不能连接此 Windows 本机桥接");
+    const readBridge = source.slice(source.indexOf("const readRfidBindingUid"), source.indexOf("const prepareRfidCardWrite"));
+    const writeBridge = source.slice(source.indexOf("const writeRfidCardWithBridge"), source.indexOf("const confirmRfidCardWrite"));
+    expect(readBridge).not.toContain("error instanceof Error ? error.message");
+    expect(writeBridge).not.toContain("error instanceof Error ? error.message");
+  });
+
   it("车辆卡绑定窗口必须明确区分车辆表单预填、芯片 UID 与已清空的 NDEF 用户区", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

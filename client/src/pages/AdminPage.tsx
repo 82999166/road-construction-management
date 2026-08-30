@@ -1478,7 +1478,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     } catch (error) {
       const message = error instanceof DOMException && error.name === "AbortError"
         ? "读取卡 ID 超时：请确认 NTAG216 已放在 uTrust 4701 F CL Reader 感应区。"
-        : error instanceof Error ? error.message : "读取卡 ID 失败";
+        : "无法访问本机读卡桥接程序：请确认 Windows 桥接程序已启动，并允许浏览器访问本机设备。";
       toast.error(message);
     } finally {
       window.clearTimeout(timeoutId);
@@ -1491,7 +1491,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setRfidWritePreview({ jobId: data.jobId, jobNo: data.jobNo, payload: "payload" in data ? data.payload as Record<string, unknown> : null, hardwareMode: data.hardwareMode, bridgeToken: isPcBridge ? data.bridgeToken : null });
       toast.success(isPcBridge ? "PC 受控写卡任务已生成，请保持新卡放在 uTrust 感应区后执行写入。" : "写卡载荷已生成；请在现场写卡器完成物理写入后确认结果");
     },
-    onError: error => toast.error(error.message),
+    onError: () => toast.error("车辆卡写卡任务生成失败，请刷新后重试"),
   });
   const [writingRfidCard, setWritingRfidCard] = useState(false);
   const writeRfidCardWithBridge = async () => {
@@ -1502,12 +1502,12 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     try {
       const response = await fetch("http://127.0.0.1:47601/api/write-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: rfidWritePreview.bridgeToken }), cache: "no-store", signal: controller.signal });
       const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; message?: string; status?: string };
-      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error(result.message || `本地写卡未通过回读校验（HTTP ${response.status}）`);
+      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error("本地写卡未通过回读校验");
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
       toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
       window.requestAnimationFrame(() => setRfidWritePreview(null));
     } catch (error) {
-      const message = error instanceof DOMException && error.name === "AbortError" ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。" : error instanceof Error ? error.message : "本地车辆卡写入失败";
+      const message = error instanceof DOMException && error.name === "AbortError" ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。" : "无法访问本机写卡桥接程序：请启动 Windows 桥接程序并允许浏览器访问本机设备后重试。";
       toast.error(message);
     } finally {
       window.clearTimeout(timeoutId);
@@ -3156,7 +3156,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                 <Field label="车牌号（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.plateNo || "请先选择车辆"} /></Field>
                 <Field label="驾驶员姓名（车辆表单预填）"><Input disabled value={selectedRfidVehicle?.driverName || "车辆台账尚未填写驾驶员姓名"} /></Field>
                 <Field label="驾驶员联系电话（车辆表单预填）"><Input value={rfidCardForm.driverPhone} placeholder="选择车辆后自动带入，可按现场确认修改" onChange={event => setRfidCardForm(current => ({ ...current, driverPhone: event.target.value }))} /></Field>
-                <Field label="卡 ID / UID（芯片固定标识）"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div></Field>
+                <Field label="卡 ID / UID（芯片固定标识）"><div className="flex gap-2"><Input readOnly value={rfidCardForm.cardUid} placeholder="请点击右侧读取卡 ID" /><Button type="button" variant="outline" className="shrink-0" onClick={readRfidBindingUid} disabled={readingRfidBindingUid}>{readingRfidBindingUid ? "读取中…" : "读取卡 ID"}</Button></div><p className="mt-1 text-xs leading-5 text-slate-500">“读取卡 ID”只适用于已安装并运行的 Windows 本机桥接程序。更换电脑后需重新安装/启动桥接程序，并在浏览器弹窗中允许本站访问本机设备；如果只是现场刷卡，请改用移动端 Android Chrome 的“刷 NFC 发票”或键盘式读卡器输出 UID。</p></Field>
                 <Field label="卡片状态"><Input disabled value={rfidCardForm.status === "active" ? "启用" : rfidCardForm.status === "suspended" ? "暂停" : "已停用"} /></Field>
                 <Field label="签名版本"><Input disabled value="RC3 · 服务端签名校验" /></Field>
               </div>
@@ -3169,7 +3169,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           </DialogContent>
         </Dialog>
 
-        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "PC 受控车辆卡写入" : "受控写卡载荷"} · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "请将已绑定的 NTAG216 保持在 uTrust 4701 F CL Reader 感应区。系统仅把一次性任务授权交给本机桥接；桥接将读取 UID、向服务器领取匹配载荷、写入 NDEF 并逐字节回读，全部成功后自动确认。" : "请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。"}</DialogDescription></DialogHeader>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950"><p className="font-semibold">将卡片放在读卡器感应区后开始。</p><p className="mt-1 text-xs">不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。</p></div> : <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre>}<DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending || writingRfidCard}>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "关闭任务" : "记录写卡失败"}</Button>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <Button onClick={() => void writeRfidCardWithBridge()} disabled={writingRfidCard}>{writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}</Button> : <Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button>}</DialogFooter></DialogContent></Dialog>
+        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "PC 受控车辆卡写入" : "受控写卡载荷"} · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "请将已绑定的 NTAG216 保持在 uTrust 4701 F CL Reader 感应区。系统仅把一次性任务授权交给本机桥接；桥接将读取 UID、向服务器领取匹配载荷、写入 NDEF 并逐字节回读，全部成功后自动确认。" : "请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。"}</DialogDescription></DialogHeader>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950"><p className="font-semibold">将卡片放在读卡器感应区后开始。</p><p className="mt-1 text-xs">不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。</p><p className="mt-2 text-xs">更换电脑后必须在新电脑启动 Windows 桥接程序并允许本站访问本机设备。手机不能连接此 Windows 本机桥接；手机端请使用 Android Chrome 的 Web NFC 入口，或使用 OTG 键盘式读卡器输出 UID。</p></div> : <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre>}<DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending || writingRfidCard}>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "关闭任务" : "记录写卡失败"}</Button>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <Button onClick={() => void writeRfidCardWithBridge()} disabled={writingRfidCard}>{writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}</Button> : <Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button>}</DialogFooter></DialogContent></Dialog>
       </div>
     );
   };
