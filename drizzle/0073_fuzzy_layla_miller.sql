@@ -1,0 +1,1 @@
+ALTER TABLE `transport_vehicle_rfid_cards` MODIFY COLUMN `vehicleId` int;

@@ -1460,6 +1460,20 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => toast.error(error.message),
   });
+  const revokeVehicleRfidCard = trpc.transport.revokeVehicleRfidCard.useMutation({
+    onSuccess: async () => { toast.success("车辆射频卡已挂失停用"); await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]); },
+    onError: () => toast.error("车辆射频卡挂失失败，请刷新后重试"),
+  });
+  const unbindVehicleRfidCard = trpc.transport.unbindVehicleRfidCard.useMutation({
+    onSuccess: async () => { toast.success("车辆射频卡已解除绑定，卡片记录和审计已保留"); await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]); },
+    onError: () => toast.error("车辆射频卡解除绑定失败，请刷新后重试"),
+  });
+  const handleRevokeVehicleRfidCard = (cardId: number) => {
+    if (window.confirm("确认挂失停用这张车辆射频卡？停用只影响后续运输识别，不会擦除实体卡内容。")) revokeVehicleRfidCard.mutate({ cardId, projectId: workspaceProjectId, reason: "后台车辆卡台账操作" });
+  };
+  const handleUnbindVehicleRfidCard = (cardId: number) => {
+    if (window.confirm("确认解除该射频卡与当前车辆的绑定？卡片记录和审计会保留，未闭环运输趟次会阻止操作。")) unbindVehicleRfidCard.mutate({ cardId, projectId: workspaceProjectId, reason: "后台车辆卡台账操作" });
+  };
   const readRfidBindingUid = async () => {
     setReadingRfidBindingUid(true);
     const controller = new AbortController();
@@ -3116,13 +3130,28 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     if (!hasBusinessWorkspaceProject) return null;
     const writerDevices = rfidWriterDevices.data ?? [];
     const cards = vehicleRfidCards.data ?? [];
+    const renderVehicleRfidCard = (card: (typeof cards)[number]) => (
+      <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{card.plateNo || "未绑定车辆"}</p><BusinessStatusBadge status={card.status} /><Badge variant="outline">卡 {card.cardUidMasked}</Badge></div>
+            <p className="mt-1 text-xs text-slate-500">司机电话 {card.driverPhoneMasked || "未登记"} · 写卡器 {card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""} · 最近写入 {displayDate(card.lastWrittenAt)}</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => handleRevokeVehicleRfidCard(Number(card.id))} disabled={revokeVehicleRfidCard.isPending || card.status === "revoked"}>{revokeVehicleRfidCard.isPending ? "处理中…" : "挂失停用"}</Button>
+            <Button size="sm" variant="outline" onClick={() => handleUnbindVehicleRfidCard(Number(card.id))} disabled={unbindVehicleRfidCard.isPending || !card.vehicleId}>{unbindVehicleRfidCard.isPending ? "处理中…" : "解除绑定"}</Button>
+            <Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: card.lastWrittenAt ? "rewrite" : "issue", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || card.status !== "active" || !card.vehicleId}>{prepareRfidCardWrite.isPending ? "生成中…" : card.lastWrittenAt ? "PC 补写车辆卡" : "PC 写入车辆卡"}</Button>
+          </div>
+        </div>
+      </div>
+    );
     return (
       <div className="space-y-5">
         <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
           <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-sm font-medium text-[#203c48]">射频写卡 · 受控预留</p><CardTitle className="mt-1 text-base">车辆卡绑定与写卡任务</CardTitle><CardDescription className="mt-1 max-w-3xl">系统生成并审计车辆、车型、货厢、司机与联系电话载荷；当前不伪造 USB/串口直连，现场需使用已登记写卡器完成物理写入后再确认结果。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM); setRfidWriterDialogOpen(true); }}>登记写卡器</Button><Button size="sm" onClick={() => { const firstVehicle = transportVehicleLedger.data?.[0]; setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: firstVehicle ? String(firstVehicle.id) : "", writerDeviceId: writerDevices[0] ? String(writerDevices[0].id) : "", driverPhone: firstVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} disabled={!transportVehicleLedger.data?.length}>绑定车辆卡</Button></div></CardHeader>
           <CardContent className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
             <div className="space-y-2"><p className="text-sm font-medium text-slate-800">写卡器设备</p>{writerDevices.length ? writerDevices.map(device => <div key={device.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{device.displayName}</p><BusinessStatusBadge status={device.status} /></div><p className="mt-1 text-xs text-slate-500">编号 {device.deviceCode} · 型号 {device.model || "待采购/未登记"} · {device.connectionMode === "manual_placeholder" ? "人工确认模式" : device.connectionMode}</p></div>) : <EmptyState text="尚未登记写卡器。可先登记编号和型号，硬件协议后续再受控接入。" />}</div>
-            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(card => <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium text-slate-800">{card.plateNo}</p><BusinessStatusBadge status={card.status} /><Badge variant="outline">卡 {card.cardUidMasked}</Badge></div><p className="mt-1 text-xs text-slate-500">司机电话 {card.driverPhoneMasked || "未登记"} · 写卡器 {card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""} · 最近写入 {displayDate(card.lastWrittenAt)}</p></div><Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: card.lastWrittenAt ? "rewrite" : "issue", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || card.status !== "active"}>{prepareRfidCardWrite.isPending ? "生成中…" : card.lastWrittenAt ? "PC 补写车辆卡" : "PC 写入车辆卡"}</Button></div></div>) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>
+            <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(renderVehicleRfidCard) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>
           </CardContent>
         </Card>
 

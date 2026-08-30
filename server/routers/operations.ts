@@ -451,6 +451,12 @@ const rfidWritePrepareInput = z.object({
   executionMode: z.enum(["manual_confirmation", "pc_bridge"]).default("manual_confirmation"),
 });
 
+const rfidCardManagementInput = z.object({
+  cardId: z.number().int().positive(),
+  projectId: z.number().int().positive(),
+  reason: z.string().trim().max(200).nullable().optional(),
+});
+
 /**
  * Android Web NFC 不会向网页暴露 NTAG216 的物理 UID。因此首次发卡由服务端生成不可预测的
  * 逻辑卡绑定引用，实际装卸扫描继续只信任卡内受签名深链并由服务端转换为该绑定引用。
@@ -938,7 +944,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   }
 
   const [card] = await db.select().from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.cardUidFingerprint, input.cardFingerprint), eq(transportVehicleRfidCards.status, "active"))).limit(1);
-  if (!card) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卡未绑定有效车辆、已停用或不属于本项目" });
+  if (!card || !card.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卡未绑定有效车辆、已停用或不属于本项目" });
   const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
   if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态，不能进入运输闭环" });
   const transitKey = `nfc:${input.projectId}:${card.id}`;
@@ -1041,8 +1047,8 @@ async function resolveMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
   const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, parsed.cardId)).limit(1);
-  if (!card || card.projectId !== parsed.projectId || card.status !== "active" || card.payloadVersion !== parsed.payloadVersion) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "车辆卡已停用、已补写或不属于当前项目，请使用最新有效卡" });
+  if (!card || card.projectId !== parsed.projectId || card.status !== "active" || card.payloadVersion !== parsed.payloadVersion || !card.vehicleId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "车辆卡已停用、已解除绑定、已补写或不属于当前项目，请使用最新有效卡" });
   }
   const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, parsed.projectId, roleCodes);
   if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态，不能开具运输发票" });
@@ -2015,12 +2021,44 @@ export const transportRouter = router({
       writerName: rfidWriterDevices.displayName,
       writerModel: rfidWriterDevices.model,
     }).from(transportVehicleRfidCards)
-      .innerJoin(transportVehicles, eq(transportVehicleRfidCards.vehicleId, transportVehicles.id))
+      .leftJoin(transportVehicles, eq(transportVehicleRfidCards.vehicleId, transportVehicles.id))
       .leftJoin(rfidWriterDevices, eq(transportVehicleRfidCards.writerDeviceId, rfidWriterDevices.id))
       .where(eq(transportVehicleRfidCards.projectId, input.projectId))
       .orderBy(desc(transportVehicleRfidCards.updatedAt));
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     return isDriverOnly ? rows.filter(row => row.driverUserId === user.id) : rows;
+  }),
+
+  revokeVehicleRfidCard: protectedProcedure.input(rfidCardManagementInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.id, input.cardId), eq(transportVehicleRfidCards.projectId, input.projectId))).limit(1);
+    if (!card) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡不存在或不属于当前项目" });
+    if (card.status === "revoked") throw new TRPCError({ code: "CONFLICT", message: "该车辆射频卡已经挂失停用" });
+    await db.update(transportVehicleRfidCards).set({ status: "revoked", revokedAt: new Date() }).where(and(eq(transportVehicleRfidCards.id, input.cardId), eq(transportVehicleRfidCards.projectId, input.projectId), ne(transportVehicleRfidCards.status, "revoked")));
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "revoke_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(card.id), summary: `挂失停用车辆射频卡：${card.cardUidMasked}${input.reason ? `；原因：${input.reason}` : ""}` });
+    return { success: true };
+  }),
+
+  unbindVehicleRfidCard: protectedProcedure.input(rfidCardManagementInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.id, input.cardId), eq(transportVehicleRfidCards.projectId, input.projectId))).limit(1);
+    if (!card) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡不存在或不属于当前项目" });
+    if (!card.vehicleId) throw new TRPCError({ code: "CONFLICT", message: "该车辆射频卡已经解除绑定" });
+    const [openTrip] = await db.select({ id: transportTrips.id, tripNo: transportTrips.tripNo }).from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), eq(transportTrips.vehicleId, card.vehicleId), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled"))).limit(1);
+    if (openTrip) throw new TRPCError({ code: "CONFLICT", message: `车辆存在未闭环运输趟次 ${openTrip.tripNo}，完成闭环后再解除绑定` });
+    await db.update(transportVehicleRfidCards).set({ vehicleId: null, status: "revoked", revokedAt: new Date() }).where(and(eq(transportVehicleRfidCards.id, input.cardId), eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.vehicleId, card.vehicleId)));
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "unbind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(card.id), summary: `解除车辆射频卡绑定：${card.cardUidMasked}${input.reason ? `；原因：${input.reason}` : ""}` });
+    return { success: true };
   }),
 
   /** 为车辆绑定射频卡时，原始 UID 与电话仅在当前请求中使用，随后以指纹/密文和掩码保存。 */
@@ -2174,6 +2212,7 @@ export const transportRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
     if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
+    if (!card.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆卡已解除绑定，不能进入写卡流程" });
     if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
     if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未录入外部司机姓名，不能生成写卡载荷" });

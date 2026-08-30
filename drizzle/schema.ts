@@ -1370,7 +1370,8 @@ export const transportVehicleRfidCards = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
-    vehicleId: int("vehicleId").notNull(),
+    /** 解除绑定后保留卡片 UID、项目归属和审计历史，车辆关联为空；卡片不得直接用于运输闭环。 */
+    vehicleId: int("vehicleId"),
     writerDeviceId: int("writerDeviceId"),
     cardUidFingerprint: varchar("cardUidFingerprint", { length: 64 }).notNull(),
     cardUidMasked: varchar("cardUidMasked", { length: 32 }).notNull(),
