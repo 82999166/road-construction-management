@@ -251,6 +251,18 @@ function getPayrollWorkerCategoryLabel(category: string | null | undefined) {
   return category && /[\u4e00-\u9fff]/.test(category) ? category : "未分类人员";
 }
 
+/** 射频卡高风险操作仅反馈可操作的业务原因，不向管理员回显框架或数据库原始异常。 */
+function getVehicleRfidCardManagementErrorMessage(action: "revoke" | "unbind", message: string | null | undefined) {
+  const value = message ?? "";
+  if (value.includes("未闭环运输趟次")) return "当前车辆存在未闭环运输趟次，请完成或作废该趟次后再解除绑定";
+  if (value.includes("已经解除绑定")) return "该车辆卡当前未绑定车辆，无需重复解除";
+  if (value.includes("已经挂失停用")) return "该车辆卡已经挂失停用，无需重复操作";
+  if (value.includes("不存在或不属于当前项目")) return "未找到当前项目下的车辆射频卡，请刷新台账后重试";
+  if (value.includes("权限")) return "当前账号没有车辆卡管理权限，请联系超级管理员授权";
+  if (value.includes("数据库连接暂不可用")) return "车辆卡台账暂时不可用，请稍后重试";
+  return action === "unbind" ? "车辆射频卡解除绑定失败，请刷新后重试" : "车辆射频卡挂失失败，请刷新后重试";
+}
+
 /** 考勤业务台账只显示中文详细地址；坐标仅可在有用途说明的争议核验接口中受控读取。 */
 function formatAttendanceLocation(address: string | null | undefined, status: "normal" | "location_missing" | null | undefined) {
   if (status !== "normal") return "未上传定位";
@@ -1462,11 +1474,11 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   });
   const revokeVehicleRfidCard = trpc.transport.revokeVehicleRfidCard.useMutation({
     onSuccess: async () => { toast.success("车辆射频卡已挂失停用"); await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]); },
-    onError: () => toast.error("车辆射频卡挂失失败，请刷新后重试"),
+    onError: error => toast.error(getVehicleRfidCardManagementErrorMessage("revoke", error.message)),
   });
   const unbindVehicleRfidCard = trpc.transport.unbindVehicleRfidCard.useMutation({
     onSuccess: async () => { toast.success("车辆射频卡已解除绑定，卡片记录和审计已保留"); await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]); },
-    onError: () => toast.error("车辆射频卡解除绑定失败，请刷新后重试"),
+    onError: error => toast.error(getVehicleRfidCardManagementErrorMessage("unbind", error.message)),
   });
   const handleRevokeVehicleRfidCard = (cardId: number) => {
     if (window.confirm("确认挂失停用这张车辆射频卡？停用只影响后续运输识别，不会擦除实体卡内容。")) revokeVehicleRfidCard.mutate({ cardId, projectId: workspaceProjectId, reason: "后台车辆卡台账操作" });

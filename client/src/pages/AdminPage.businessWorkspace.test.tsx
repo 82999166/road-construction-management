@@ -95,6 +95,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('"http://127.0.0.1:47601/api/read-uid"');
   });
 
+  it("车辆射频卡解除绑定保留受控业务拒绝原因，不将未闭环运输误报为通用失败", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("function getVehicleRfidCardManagementErrorMessage");
+    expect(source).toContain("当前车辆存在未闭环运输趟次，请完成或作废该趟次后再解除绑定");
+    expect(source).toContain("该车辆卡当前未绑定车辆，无需重复解除");
+    expect(source).toContain("未找到当前项目下的车辆射频卡，请刷新台账后重试");
+    expect(source).toContain('getVehicleRfidCardManagementErrorMessage("unbind", error.message)');
+    expect(source).toContain('getVehicleRfidCardManagementErrorMessage("revoke", error.message)');
+  });
+
   it("本机读卡桥接失败时提示 Windows 桥接启动和浏览器设备授权，不回显原始异常", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
