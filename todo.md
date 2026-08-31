@@ -968,6 +968,8 @@
 
 - [ ] 修复 Windows v8 升级器自身在第 63 行发生 `UnexpectedToken` 解析错误的问题：该错误发生在任何安装、停止旧桥接或读写卡操作之前。须以最保守的 Windows PowerShell 5.1 语法重写预检查函数，避免把 `try/catch` 写在同一行或使用易产生歧义的括号表达式；v9 必须同时预检升级器与新桥接脚本，才允许接触旧桥接进程。
 
+- [ ] 停止反复向用户交付未经真实 Windows PowerShell 5.1 解析验证的升级包：v9 升级器仍在第 62 行 `UnexpectedToken`，且错误发生于安装、停止桥接或写卡前。用户已明确要求使用最高强度独立审计；须先由独立调试审计给出括号/语法根因，再在真实 PowerShell 5.1 环境对升级器与桥接脚本执行零解析错误、启动健康和失败自动回滚验证，验证完成前不得再要求用户运行命令或操作实体卡。
+
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
 

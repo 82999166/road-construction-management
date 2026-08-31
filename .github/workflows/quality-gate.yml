@@ -44,3 +44,35 @@ jobs:
         run: pnpm build:self-host
       - name: 生产依赖安全审计
         run: pnpm audit:prod
+
+  windows-powershell51:
+    name: Windows PowerShell 5.1 RFID 脚本解析
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+      - name: 逐个解析 RFID PowerShell 脚本
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw "windows_powershell_51_required"
+          }
+          $failed = $false
+          $scripts = Get-ChildItem -LiteralPath "desktop-bridge" -Filter "*.ps1" -File | Sort-Object Name
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors -and $parseErrors.Count -gt 0) {
+              $failed = $true
+              foreach ($parseError in $parseErrors) {
+                Write-Error ("{0}:{1}:{2} {3} token={4}" -f $script.Name, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.ErrorId, $parseError.Extent.Text)
+              }
+            } else {
+              Write-Output ("parsed_ok=" + $script.Name)
+            }
+          }
+          if ($failed) {
+            throw "rfid_powershell_parse_failed"
+          }
