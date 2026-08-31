@@ -32,11 +32,19 @@ function Read-BridgeBody { param($Context)
 }
 
 function Invoke-ReaderScript {
-  param([string]$ScriptName)
+  param([string]$ScriptName, [switch]$AllowStructuredFailure)
   $scriptPath = Join-Path $bridgeRoot $ScriptName
   $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath 2>&1
-  if ($LASTEXITCODE -ne 0) { throw ("reader_script_failed: " + ($output | Out-String)) }
   $text = ($output | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0) {
+    if ($AllowStructuredFailure -and -not [string]::IsNullOrWhiteSpace($text)) {
+      try {
+        $structuredFailure = $text | ConvertFrom-Json
+        if ($null -ne $structuredFailure -and $structuredFailure.PSObject.Properties.Name -contains "success" -and -not [bool]$structuredFailure.success) { return $structuredFailure }
+      } catch {}
+    }
+    throw ("reader_script_failed: " + $text)
+  }
   if ([string]::IsNullOrWhiteSpace($text)) { throw "reader_script_empty_result" }
   return ($text | ConvertFrom-Json)
 }
@@ -155,7 +163,7 @@ function Invoke-FormalVehicleWrite {
     $env:RC_RFID_PAYLOAD_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($payloadJson))
     $env:RC_RFID_URL_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$claim.nfcEntryUrl))
     $env:RC_RFID_ALLOW_OVERWRITE = "true"
-    $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1"
+    $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure
   }
   finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
   if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified) {
