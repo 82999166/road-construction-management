@@ -57,7 +57,7 @@ function Invoke-RfidServer {
 
 function Get-FormalWriteFailureCode {
   param([string]$Reason)
-  $text = $Reason ?? ""
+  $text = if ($null -eq $Reason) { "" } else { [string]$Reason }
   if ($text -match "ndef_exceeds_declared_card_capacity") { return "ndef_exceeds_declared_card_capacity" }
   if ($text -match "post_write_byte_mismatch") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }

@@ -20,6 +20,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("function Get-FormalWriteFailureCode");
     expect(source).toContain("card_user_area_read_failed");
     expect(source).toContain("vehicle_card_readback_fingerprint_mismatch");
+    expect(source).toContain('$text = if ($null -eq $Reason) { "" } else { [string]$Reason }');
+    expect(source).not.toContain("$Reason ??");
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
