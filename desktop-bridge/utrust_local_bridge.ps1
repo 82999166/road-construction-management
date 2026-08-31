@@ -75,11 +75,17 @@ function Get-PendingRfidConfirmation {
 }
 
 function Invoke-RfidServer {
-  param([string]$Path, [string]$BridgeToken, $Body)
+  param([string]$Path, [string]$BridgeToken, $Body, [ValidateSet("claim", "complete", "fail")][string]$Operation = "fail")
   $headers = @{ "x-rfid-bridge-token" = $BridgeToken; "Cache-Control" = "no-store" }
   $json = $Body | ConvertTo-Json -Compress -Depth 4
   try { return Invoke-RestMethod -Method Post -Uri ($serverBaseUrl + $Path) -Headers $headers -ContentType "application/json" -Body $json -TimeoutSec 25 }
-  catch { throw ("server_bridge_request_failed: " + $_.Exception.Message) }
+  catch {
+    $statusCode = $null
+    if ($_.Exception.Response) { try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {} }
+    if ($Operation -eq "claim") { throw ("server_vehicle_card_claim_failed" + $(if ($null -ne $statusCode) { "_http_" + $statusCode } else { "" })) }
+    if ($Operation -eq "complete") { throw ("server_vehicle_card_confirm_failed" + $(if ($null -ne $statusCode) { "_http_" + $statusCode } else { "" })) }
+    throw "server_bridge_failure_record_failed"
+  }
 }
 
 function Get-FormalWriteFailureCode {
@@ -93,7 +99,8 @@ function Get-FormalWriteFailureCode {
   if ($text -match "card_write_stage_clear_user_area|card_write_stage_write_ndef") { return "card_user_area_write_failed" }
   if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
-  if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
+  if ($text -match "server_vehicle_card_claim_failed") { return "server_vehicle_card_claim_failed" }
+  if ($text -match "server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
   if ($text -match "pending_vehicle_card_confirmation_not_found") { return "pending_vehicle_card_confirmation_not_found" }
   if ($text -match "vehicle_ndef_tlv_not_found|vehicle_ndef_record_not_found|vehicle_ndef_uri_record_invalid|vehicle_ndef_uri_prefix_invalid") { return "vehicle_card_ndef_entry_not_found" }
   if ($text -match "vehicle_ndef_entry_url_not_allowed|vehicle_ndef_entry_parameter_invalid") { return "vehicle_card_ndef_entry_not_allowed" }
@@ -110,7 +117,7 @@ function Invoke-FormalVehicleWrite {
   $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
   if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "vehicle_card_not_present" }
   $fingerprint = Get-UidFingerprint $uidRead.uid
-  $claim = Invoke-RfidServer "/api/local-rfid-bridge/claim" $BridgeToken @{ cardUidFingerprint = $fingerprint }
+  $claim = Invoke-RfidServer "/api/local-rfid-bridge/claim" $BridgeToken @{ cardUidFingerprint = $fingerprint } "claim"
   if (-not $claim.success -or -not $claim.payload -or [string]::IsNullOrWhiteSpace([string]$claim.payloadJson) -or -not $claim.nfcEntryUrl) { if ($claim.message) { throw ([string]$claim.message) } else { throw "server_write_payload_not_available" } }
   # 此字符串由服务端生成，必须不经 PowerShell ConvertTo-Json 重写，确保写入、回读和任务摘要针对完全相同的 UTF-8 字节。
   $payloadJson = [string]$claim.payloadJson
@@ -130,7 +137,7 @@ function Invoke-FormalVehicleWrite {
   if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
   # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
   Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
-  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint }
+  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint } "complete"
   if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
   return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint }
@@ -139,7 +146,7 @@ function Invoke-FormalVehicleWrite {
 function Invoke-PendingVehicleConfirmation {
   $receipt = Get-PendingRfidConfirmation
   if ($null -eq $receipt) { throw "pending_vehicle_card_confirmation_not_found" }
-  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" ([string]$receipt.bridgeToken) @{ cardUidFingerprint = [string]$receipt.cardUidFingerprint; payloadFingerprint = [string]$receipt.payloadFingerprint }
+  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" ([string]$receipt.bridgeToken) @{ cardUidFingerprint = [string]$receipt.cardUidFingerprint; payloadFingerprint = [string]$receipt.payloadFingerprint } "complete"
   if (-not $completed.success -or $completed.status -ne "confirmed") { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
   return @{ success = $true; jobNo = [string]$receipt.jobNo; status = "confirmed"; confirmationOnly = $true }
