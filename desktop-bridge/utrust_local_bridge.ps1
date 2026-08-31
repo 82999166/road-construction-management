@@ -38,15 +38,20 @@ function Invoke-ReaderScript {
   $text = ($output | Out-String).Trim()
   if ($LASTEXITCODE -ne 0) {
     if ($AllowStructuredFailure -and -not [string]::IsNullOrWhiteSpace($text)) {
-      try {
-        $structuredFailure = $text | ConvertFrom-Json
-        if ($null -ne $structuredFailure -and $structuredFailure.PSObject.Properties.Name -contains "success" -and -not [bool]$structuredFailure.success) { return $structuredFailure }
-      } catch {}
+      $jsonLines = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") })
+      for ($index = $jsonLines.Count - 1; $index -ge 0; $index--) {
+        try {
+          $structuredFailure = $jsonLines[$index].Trim() | ConvertFrom-Json
+          if ($null -ne $structuredFailure -and $structuredFailure.PSObject.Properties.Name -contains "success" -and -not [bool]$structuredFailure.success) { return $structuredFailure }
+        } catch {}
+      }
     }
     throw ("reader_script_failed: " + $text)
   }
   if ([string]::IsNullOrWhiteSpace($text)) { throw "reader_script_empty_result" }
-  return ($text | ConvertFrom-Json)
+  $jsonLines = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") })
+  if ($jsonLines.Count -eq 0) { throw "reader_script_invalid_result" }
+  return ($jsonLines[$jsonLines.Count - 1].Trim() | ConvertFrom-Json)
 }
 
 function Get-UidFingerprint {
