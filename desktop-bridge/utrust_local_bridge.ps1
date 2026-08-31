@@ -31,27 +31,35 @@ function Read-BridgeBody { param($Context)
   return ($text | ConvertFrom-Json)
 }
 
+function Get-StructuredReaderResult {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  $lines = @($Text -split "`r?`n")
+  for ($index = $lines.Count - 1; $index -ge 0; $index--) {
+    $line = [string]$lines[$index]
+    $start = $line.IndexOf("{")
+    $end = $line.LastIndexOf("}")
+    if ($start -lt 0 -or $end -le $start) { continue }
+    try {
+      $candidate = $line.Substring($start, $end - $start + 1) | ConvertFrom-Json
+      if ($null -ne $candidate -and $candidate.PSObject.Properties.Name -contains "success") { return $candidate }
+    } catch {}
+  }
+  return $null
+}
+
 function Invoke-ReaderScript {
   param([string]$ScriptName, [switch]$AllowStructuredFailure)
   $scriptPath = Join-Path $bridgeRoot $ScriptName
   $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath 2>&1
   $text = ($output | Out-String).Trim()
+  $structuredResult = Get-StructuredReaderResult $text
   if ($LASTEXITCODE -ne 0) {
-    if ($AllowStructuredFailure -and -not [string]::IsNullOrWhiteSpace($text)) {
-      $jsonLines = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") })
-      for ($index = $jsonLines.Count - 1; $index -ge 0; $index--) {
-        try {
-          $structuredFailure = $jsonLines[$index].Trim() | ConvertFrom-Json
-          if ($null -ne $structuredFailure -and $structuredFailure.PSObject.Properties.Name -contains "success" -and -not [bool]$structuredFailure.success) { return $structuredFailure }
-        } catch {}
-      }
-    }
-    throw ("reader_script_failed: " + $text)
+    if ($AllowStructuredFailure -and $null -ne $structuredResult -and -not [bool]$structuredResult.success) { return $structuredResult }
+    throw "reader_script_no_structured_result"
   }
-  if ([string]::IsNullOrWhiteSpace($text)) { throw "reader_script_empty_result" }
-  $jsonLines = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") })
-  if ($jsonLines.Count -eq 0) { throw "reader_script_invalid_result" }
-  return ($jsonLines[$jsonLines.Count - 1].Trim() | ConvertFrom-Json)
+  if ($null -eq $structuredResult) { throw "reader_script_no_structured_result" }
+  return $structuredResult
 }
 
 function Get-UidFingerprint {
@@ -146,6 +154,7 @@ function Get-FormalWriteFailureCode {
   if ($text -match "pending_vehicle_card_confirmation_not_found") { return "pending_vehicle_card_confirmation_not_found" }
   if ($text -match "vehicle_ndef_tlv_not_found|vehicle_ndef_record_not_found|vehicle_ndef_uri_record_invalid|vehicle_ndef_uri_prefix_invalid") { return "vehicle_card_ndef_entry_not_found" }
   if ($text -match "vehicle_ndef_entry_url_not_allowed|vehicle_ndef_entry_parameter_invalid") { return "vehicle_card_ndef_entry_not_allowed" }
+  if ($text -match "reader_script_no_structured_result") { return "card_writer_no_diagnostic_result" }
   if ($text -match "write_page_") { return "card_user_area_write_failed" }
   if ($text -match "read_page_") { return "card_user_area_read_failed" }
   if ($text -match "ntag_type2_ndef_cc_not_detected") { return "ntag_type2_ndef_cc_not_detected" }

@@ -39,9 +39,13 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("$_.ErrorDetails");
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure');
-    expect(source).toContain('if ($AllowStructuredFailure -and -not [string]::IsNullOrWhiteSpace($text))');
-    expect(source).toContain('$text -split "`r?`n"');
-    expect(source).toContain('Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") }');
+    expect(source).toContain("function Get-StructuredReaderResult");
+    expect(source).toContain('$start = $line.IndexOf("{")');
+    expect(source).toContain('$end = $line.LastIndexOf("}")');
+    expect(source).toContain('if ($AllowStructuredFailure -and $null -ne $structuredResult -and -not [bool]$structuredResult.success)');
+    expect(source).toContain('throw "reader_script_no_structured_result"');
+    expect(source).toContain('$lines = @($Text -split "`r?`n")');
+    expect(source).toContain('"card_writer_no_diagnostic_result"');
     expect(source).toContain('"server_vehicle_card_claim_card_or_payload_conflict"');
     expect(source).toContain('"server_vehicle_card_claim_authorization_or_server_unavailable"');
     expect(source).not.toContain('match "写卡授权无效');

@@ -1550,6 +1550,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         if (bridgeFailure.includes("card_user_area_write_failed")) throw new Error("bridge_write_user_area_write_failed");
         if (bridgeFailure.includes("post_write_byte_mismatch")) throw new Error("bridge_write_post_write_mismatch");
         if (bridgeFailure.includes("ntag_type2_ndef_cc_not_detected")) throw new Error("bridge_write_ndef_cc_invalid");
+        if (bridgeFailure.includes("card_writer_no_diagnostic_result")) throw new Error("bridge_write_no_diagnostic_result");
         throw new Error("bridge_write_or_readback_failed");
       }
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
@@ -1596,6 +1597,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                         ? "卡片写入后逐字节回读不一致：请勿移动卡片，重新生成任务后再写入；连续失败请更换符合要求的空白卡。"
                         : error instanceof Error && error.message === "bridge_write_ndef_cc_invalid"
                           ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
+                          : error instanceof Error && error.message === "bridge_write_no_diagnostic_result"
+                            ? "本机写卡器未返回可诊断结果：请保持卡片在感应区，关闭后重新启动 Windows 桥接程序后再生成新任务。"
                 : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {
