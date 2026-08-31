@@ -1508,6 +1508,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onError: () => toast.error("车辆卡写卡任务生成失败，请刷新后重试"),
   });
   const [writingRfidCard, setWritingRfidCard] = useState(false);
+  const [retryingRfidCardConfirmation, setRetryingRfidCardConfirmation] = useState(false);
   const writeRfidCardWithBridge = async () => {
     if (!rfidWritePreview?.bridgeToken) return toast.error("本地写卡授权无效，请重新生成 PC 写卡任务");
     setWritingRfidCard(true);
@@ -1569,6 +1570,31 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     } finally {
       window.clearTimeout(timeoutId);
       setWritingRfidCard(false);
+    }
+  };
+  const confirmRfidCardWithBridgeReceipt = async () => {
+    if (!rfidWritePreview?.bridgeToken) return toast.error("本地写卡授权无效，请重新生成 PC 写卡任务");
+    if (!window.confirm("确认仅回传服务端确认结果吗？此操作不会再次写入车辆卡，只会使用本机已验证的短时确认收据。")) return;
+    setRetryingRfidCardConfirmation(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 25_000);
+    try {
+      const response = await fetch("http://127.0.0.1:47601/api/confirm-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", cache: "no-store", signal: controller.signal });
+      const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; status?: string; message?: string };
+      if (!response.ok || !result.success || result.status !== "confirmed") {
+        if (result.message === "pending_vehicle_card_confirmation_not_found") throw new Error("bridge_confirmation_receipt_not_found");
+        throw new Error("bridge_confirmation_retry_failed");
+      }
+      await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
+      toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成服务端确认并启用。`);
+      window.requestAnimationFrame(() => setRfidWritePreview(null));
+    } catch (error) {
+      toast.error(error instanceof Error && error.message === "bridge_confirmation_receipt_not_found"
+        ? "未找到可用的本机确认收据：请重新生成任务后执行一次完整写入与回读。"
+        : "仅回传确认未完成：请保持桥接程序运行和当前卡片不动后重试；15 分钟后需重新生成任务。");
+    } finally {
+      window.clearTimeout(timeoutId);
+      setRetryingRfidCardConfirmation(false);
     }
   };
   const confirmRfidCardWrite = trpc.transport.confirmRfidCardWrite.useMutation({
@@ -3241,7 +3267,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           </DialogContent>
         </Dialog>
 
-        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "PC 受控车辆卡写入" : "受控写卡载荷"} · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "请将已绑定的 NTAG216 保持在 uTrust 4701 F CL Reader 感应区。系统仅把一次性任务授权交给本机桥接；桥接将读取 UID、向服务器领取匹配载荷、写入 NDEF 并逐字节回读，全部成功后自动确认。" : "请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。"}</DialogDescription></DialogHeader>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950"><p className="font-semibold">将卡片放在读卡器感应区后开始。</p><p className="mt-1 text-xs">不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。</p><p className="mt-2 text-xs">更换电脑后必须在新电脑启动 Windows 桥接程序并允许本站访问本机设备。手机不能连接此 Windows 本机桥接；手机端请使用 Android Chrome 的 Web NFC 入口，或使用 OTG 键盘式读卡器输出 UID。</p></div> : <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre>}<DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending || writingRfidCard}>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "关闭任务" : "记录写卡失败"}</Button>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <Button onClick={() => void writeRfidCardWithBridge()} disabled={writingRfidCard}>{writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}</Button> : <Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button>}</DialogFooter></DialogContent></Dialog>
+        <Dialog open={Boolean(rfidWritePreview)} onOpenChange={open => { if (!open) setRfidWritePreview(null); }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "PC 受控车辆卡写入" : "受控写卡载荷"} · {rfidWritePreview?.jobNo}</DialogTitle><DialogDescription>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "请将已绑定的 NTAG216 保持在 uTrust 4701 F CL Reader 感应区。系统仅把一次性任务授权交给本机桥接；桥接将读取 UID、向服务器领取匹配载荷、写入 NDEF 并逐字节回读，全部成功后自动确认。" : "请将下列载荷写入已绑定物理卡。写入成功后再确认；此处内容不保存到数据库，关闭窗口后需重新生成任务。"}</DialogDescription></DialogHeader>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950"><p className="font-semibold">将卡片放在读卡器感应区后开始。</p><p className="mt-1 text-xs">不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。</p><p className="mt-2 text-xs">若已完成写入和回读但确认暂未返回，可在当前任务有效期内使用“仅回传确认”；该操作不再次写入 NDEF，只会提交本机 DPAPI 加密短时收据。</p><p className="mt-2 text-xs">更换电脑后必须在新电脑启动 Windows 桥接程序并允许本站访问本机设备。手机不能连接此 Windows 本机桥接；手机端请使用 Android Chrome 的 Web NFC 入口，或使用 OTG 键盘式读卡器输出 UID。</p></div> : <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">{rfidWritePreview ? JSON.stringify(rfidWritePreview.payload, null, 2) : ""}</pre>}<DialogFooter><Button variant="outline" onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: false, failureReason: "现场未完成物理写卡" })} disabled={confirmRfidCardWrite.isPending || writingRfidCard || retryingRfidCardConfirmation}>{rfidWritePreview?.hardwareMode === "pc_bridge" ? "关闭任务" : "记录写卡失败"}</Button>{rfidWritePreview?.hardwareMode === "pc_bridge" ? <><Button variant="outline" onClick={() => void confirmRfidCardWithBridgeReceipt()} disabled={writingRfidCard || retryingRfidCardConfirmation}>{retryingRfidCardConfirmation ? "正在回传确认…" : "仅回传确认（不写卡）"}</Button><Button onClick={() => void writeRfidCardWithBridge()} disabled={writingRfidCard || retryingRfidCardConfirmation}>{writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}</Button></> : <Button onClick={() => rfidWritePreview && confirmRfidCardWrite.mutate({ id: rfidWritePreview.jobId, projectId: workspaceProjectId, success: true })} disabled={confirmRfidCardWrite.isPending}>{confirmRfidCardWrite.isPending ? "确认中…" : "已完成物理写卡"}</Button>}</DialogFooter></DialogContent></Dialog>
       </div>
     );
   };

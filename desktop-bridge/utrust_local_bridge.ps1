@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
+$confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
 
 function Write-BridgeJson {
   param($Context, $Payload, [int]$StatusCode = 200)
@@ -47,6 +48,32 @@ function Get-UidFingerprint {
   finally { $sha.Dispose() }
 }
 
+function Clear-PendingRfidConfirmation {
+  if (Test-Path -LiteralPath $confirmationReceiptPath) { Remove-Item -LiteralPath $confirmationReceiptPath -Force -ErrorAction SilentlyContinue }
+}
+
+function Save-PendingRfidConfirmation {
+  param([string]$BridgeToken, [string]$CardUidFingerprint, [string]$PayloadFingerprint, [string]$JobNo)
+  $receipt = @{ bridgeToken = $BridgeToken; cardUidFingerprint = $CardUidFingerprint; payloadFingerprint = $PayloadFingerprint; jobNo = $JobNo; createdAtUtc = [DateTime]::UtcNow.ToString("o"); expiresAtUtc = [DateTime]::UtcNow.AddMinutes(4).ToString("o") }
+  $json = $receipt | ConvertTo-Json -Compress -Depth 3
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  [System.IO.File]::WriteAllText($confirmationReceiptPath, [Convert]::ToBase64String($protected), [System.Text.Encoding]::ASCII)
+}
+
+function Get-PendingRfidConfirmation {
+  if (-not (Test-Path -LiteralPath $confirmationReceiptPath)) { return $null }
+  try {
+    $encoded = [System.IO.File]::ReadAllText($confirmationReceiptPath, [System.Text.Encoding]::ASCII).Trim()
+    if ([string]::IsNullOrWhiteSpace($encoded)) { Clear-PendingRfidConfirmation; return $null }
+    $protected = [Convert]::FromBase64String($encoded)
+    $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $receipt = ([System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+    if (-not $receipt.bridgeToken -or -not $receipt.cardUidFingerprint -or -not $receipt.payloadFingerprint -or -not $receipt.expiresAtUtc -or ([DateTime]::Parse([string]$receipt.expiresAtUtc).ToUniversalTime() -le [DateTime]::UtcNow)) { Clear-PendingRfidConfirmation; return $null }
+    return $receipt
+  } catch { Clear-PendingRfidConfirmation; return $null }
+}
+
 function Invoke-RfidServer {
   param([string]$Path, [string]$BridgeToken, $Body)
   $headers = @{ "x-rfid-bridge-token" = $BridgeToken; "Cache-Control" = "no-store" }
@@ -67,6 +94,7 @@ function Get-FormalWriteFailureCode {
   if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
+  if ($text -match "pending_vehicle_card_confirmation_not_found") { return "pending_vehicle_card_confirmation_not_found" }
   if ($text -match "write_page_") { return "card_user_area_write_failed" }
   if ($text -match "read_page_") { return "card_user_area_read_failed" }
   if ($text -match "ntag_type2_ndef_cc_not_detected") { return "ntag_type2_ndef_cc_not_detected" }
@@ -76,6 +104,7 @@ function Get-FormalWriteFailureCode {
 
 function Invoke-FormalVehicleWrite {
   param([string]$BridgeToken)
+  Clear-PendingRfidConfirmation
   $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
   if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "vehicle_card_not_present" }
   $fingerprint = Get-UidFingerprint $uidRead.uid
@@ -97,9 +126,21 @@ function Invoke-FormalVehicleWrite {
     if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
   }
   if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
+  # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
+  Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
   $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint }
-  if (-not $completed.success) { if ($completed.message) { throw ([string]$completed.message) } else { throw "server_vehicle_card_confirm_failed" } }
+  if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
+  Clear-PendingRfidConfirmation
   return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint }
+}
+
+function Invoke-PendingVehicleConfirmation {
+  $receipt = Get-PendingRfidConfirmation
+  if ($null -eq $receipt) { throw "pending_vehicle_card_confirmation_not_found" }
+  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" ([string]$receipt.bridgeToken) @{ cardUidFingerprint = [string]$receipt.cardUidFingerprint; payloadFingerprint = [string]$receipt.payloadFingerprint }
+  if (-not $completed.success -or $completed.status -ne "confirmed") { throw "server_vehicle_card_confirm_failed" }
+  Clear-PendingRfidConfirmation
+  return @{ success = $true; jobNo = [string]$receipt.jobNo; status = "confirmed"; confirmationOnly = $true }
 }
 
 $listener = New-Object System.Net.HttpListener
@@ -127,6 +168,10 @@ try {
           if ($safeReason -ne "server_vehicle_card_confirm_retryable") { try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } | Out-Null } catch {} }
           throw $safeReason
         }
+      }
+      if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/confirm-vehicle-card") {
+        try { $result = Invoke-PendingVehicleConfirmation; Write-BridgeJson $context $result; continue }
+        catch { throw (Get-FormalWriteFailureCode ([string]$_.Exception.Message)) }
       }
       Write-BridgeJson $context @{ success = $false; message = "bridge_path_not_found" } 404
     } catch { Write-BridgeJson $context @{ success = $false; message = $_.Exception.Message } 422 }
