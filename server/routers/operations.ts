@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -440,7 +440,7 @@ const rfidCardBindingInput = z.object({
   writerDeviceId: z.number().int().positive().nullable().optional(),
   cardUid: z.string().trim().min(4, "请读取有效射频卡 UID").max(128),
   driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机联系电话"),
-  status: z.enum(["active", "suspended", "revoked"]).default("active"),
+  status: z.enum(["active", "suspended", "revoked"]).default("suspended"),
 });
 
 const rfidWritePrepareInput = z.object({
@@ -2083,15 +2083,20 @@ export const transportRouter = router({
       cardUidMasked: maskRfidCardUid(input.cardUid),
       driverPhoneEncrypted: encryptSecret(input.driverPhone),
       driverPhoneMasked: maskSecret(input.driverPhone),
-      status: input.status,
-      revokedAt: input.status === "revoked" ? new Date() : null,
     };
     if (input.id) {
       const [existing] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.id)).limit(1);
       if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
-      await db.update(transportVehicleRfidCards).set(values).where(eq(transportVehicleRfidCards.id, input.id));
+      // 未完成过实体写入的卡不能通过普通维护接口提前启用；已挂失卡也不能借编辑绕过换卡/补写流程恢复。
+      const nextStatus = existing.status === "revoked"
+        ? "revoked"
+        : existing.lastWrittenAt
+          ? input.status
+          : input.status === "revoked" ? "revoked" : "suspended";
+      await db.update(transportVehicleRfidCards).set({ ...values, status: nextStatus, revokedAt: nextStatus === "revoked" ? existing.revokedAt ?? new Date() : null }).where(eq(transportVehicleRfidCards.id, input.id));
     } else {
-      await db.insert(transportVehicleRfidCards).values({ ...values, createdBy: user.id, issuedAt: new Date() });
+      // 新卡先建立“待写入”逻辑绑定；只有实体写入、逐字节回读和服务端确认全部成功后才转为 active。
+      await db.insert(transportVehicleRfidCards).values({ ...values, status: "suspended", revokedAt: null, createdBy: user.id, issuedAt: new Date() });
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
     return { success: true };
@@ -2213,7 +2218,19 @@ export const transportRouter = router({
     const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.cardId)).limit(1);
     if (!card || card.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
     if (!card.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆卡已解除绑定，不能进入写卡流程" });
-    if (input.action !== "revoke" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "仅已启用的车辆射频卡可写入或补写" });
+    if (card.status === "revoked") throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆卡已挂失停用，不能再生成写卡任务" });
+    if (input.action === "issue") {
+      if (card.lastWrittenAt) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆卡已完成首次写入，请使用补写流程" });
+      // 兼容历史版本中已被提前标记 active、但从未完成实体写入确认的卡；新记录正常为 suspended。
+      if (card.status !== "suspended" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆卡状态不能执行首次写入" });
+    }
+    if (input.action === "rewrite" && (card.status !== "active" || !card.lastWrittenAt)) throw new TRPCError({ code: "BAD_REQUEST", message: "仅已成功写入且仍启用的车辆卡可执行补写" });
+    const [preparedJob] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(and(
+      eq(rfidCardWriteJobs.cardId, card.id),
+      eq(rfidCardWriteJobs.status, "prepared"),
+      or(ne(rfidCardWriteJobs.executionMode, "pc_bridge"), gt(rfidCardWriteJobs.bridgeTokenExpiresAt, new Date())),
+    )).limit(1);
+    if (preparedJob) throw new TRPCError({ code: "CONFLICT", message: "该车辆卡已有处理中写卡任务，请先完成或关闭原任务" });
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
     if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未录入外部司机姓名，不能生成写卡载荷" });
     // undefined 沿用历史写卡器；null 明确表示由手机 Web NFC 发卡，不关联 Windows 写卡器。
@@ -2252,12 +2269,21 @@ export const transportRouter = router({
     if (job.status !== "prepared") throw new TRPCError({ code: "CONFLICT", message: "该写卡任务已处理，请勿重复确认" });
     if (job.executionMode === "pc_bridge") throw new TRPCError({ code: "FORBIDDEN", message: "本地 uTrust 写卡任务必须由桥接完成 UID 校验与回读确认，不能手工确认成功" });
     const now = new Date();
-    await db.update(rfidCardWriteJobs).set({ status: input.success ? "confirmed" : "failed", failureReason: input.success ? null : input.failureReason ?? "现场写卡未成功", confirmedBy: user.id, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
-    if (input.success) {
-      await db.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(eq(transportVehicleRfidCards.id, job.cardId));
-      if (job.writerDeviceId) await db.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
-    }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.success ? "confirm_rfid_card_write" : "fail_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: input.success ? "确认射频写卡任务成功" : "记录射频写卡任务失败" });
+    await db.transaction(async tx => {
+      const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: input.success ? "confirmed" : "failed", failureReason: input.success ? null : input.failureReason ?? "现场写卡未成功", confirmedBy: user.id, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
+      assertConditionalStatusWrite(jobWrite, "写卡任务");
+      if (input.success) {
+        const cardStateCondition = job.action === "issue"
+          ? and(eq(transportVehicleRfidCards.id, job.cardId), isNull(transportVehicleRfidCards.lastWrittenAt), inArray(transportVehicleRfidCards.status, ["suspended", "active"]))
+          : job.action === "rewrite"
+            ? and(eq(transportVehicleRfidCards.id, job.cardId), eq(transportVehicleRfidCards.status, "active"), isNotNull(transportVehicleRfidCards.lastWrittenAt))
+            : and(eq(transportVehicleRfidCards.id, job.cardId), ne(transportVehicleRfidCards.status, "revoked"));
+        const cardWrite = await tx.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(cardStateCondition);
+        assertConditionalStatusWrite(cardWrite, "车辆卡");
+        if (job.writerDeviceId) await tx.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
+      }
+      await tx.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.success ? "confirm_rfid_card_write" : "fail_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: input.success ? "确认射频写卡任务成功" : "记录射频写卡任务失败" });
+    });
     return { success: true, status: input.success ? "confirmed" as const : "failed" as const };
   }),
 

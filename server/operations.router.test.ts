@@ -624,7 +624,7 @@ describe("机械与运输 tRPC 路由", () => {
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "103" }));
   });
 
-  it("车辆射频卡绑定只保存 UID 指纹、司机电话密文与掩码，不将原始信息写入审计", async () => {
+  it("车辆射频卡绑定只保存 UID 指纹、司机电话密文与掩码，并在实体写入前保持待写入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
@@ -637,18 +637,20 @@ describe("机械与运输 tRPC 路由", () => {
 
     await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ projectId: 10, vehicleId: 11, writerDeviceId: null, cardUid: "ABCD1234", driverPhone: "13800138000", status: "active" })).resolves.toEqual({ success: true });
     const binding = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(binding).toMatchObject({ vehicleId: 11, cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "active" });
+    expect(binding).toMatchObject({ vehicleId: 11, cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "suspended" });
+    expect(binding).not.toHaveProperty("lastWrittenAt");
     expect(binding.cardUidFingerprint).not.toBe("ABCD1234");
     expect(binding.driverPhoneEncrypted).not.toBe("13800138000");
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "bind_vehicle_rfid_card", summary: expect.not.stringContaining("13800138000") });
   });
 
-  it("写卡任务临时返回含车牌、司机与电话的签名卡载荷，数据库只保存载荷摘要并保留确认任务", async () => {
+  it("待写入车辆卡可以生成首次写卡任务，载荷仅临时返回且数据库只保存摘要", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "active", payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [],
         [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
         [{ id: 401 }],
       ),
@@ -661,6 +663,78 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ cardId: 21, payloadVersion: 1, action: "issue" });
     expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain("13800138000");
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "prepare_rfid_card_write", targetId: "401" });
+  });
+
+  it("兼容历史上被提前标记启用但从未成功写入的车辆卡执行首次写入", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 22, projectId: 10, vehicleId: 12, writerDeviceId: null, status: "active", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138001") }],
+        [],
+        [{ id: 12, projectId: 10, status: "active", driverName: "李司机", plateNo: "粤B12345" }],
+        [{ id: 402 }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 22, writerDeviceId: null, action: "issue" })).resolves.toMatchObject({ success: true, jobId: 402 });
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ cardId: 22, action: "issue" }));
+  });
+
+  it("首次写入与补写严格区分：已写入卡不能再次 issue，待写入卡不能 rewrite", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
+      { id: 23, projectId: 10, vehicleId: 13, status: "active", lastWrittenAt: new Date("2026-08-30T03:00:00.000Z") },
+    ]) as never);
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 23, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("补写") });
+
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
+      { id: 24, projectId: 10, vehicleId: 14, status: "suspended", lastWrittenAt: null },
+    ]) as never);
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 24, writerDeviceId: null, action: "rewrite" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("已成功写入") });
+  });
+
+  it("同一车辆卡存在处理中写卡任务时拒绝重复生成任务", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
+      [{ id: 25, projectId: 10, vehicleId: 15, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138002") }],
+      [{ id: 403 }],
+    ) as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 25, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("处理中写卡任务") });
+  });
+
+  it("写卡确认成功才在同一事务中启用车辆卡，记录失败时不更新卡状态", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const successfulWrites: unknown[] = [];
+    const tx = {
+      update: vi.fn(() => ({ set: vi.fn((value: unknown) => { successfulWrites.push(value); return { where: vi.fn(async () => [{ affectedRows: 1 }]) }; }) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 404, projectId: 10, cardId: 26, writerDeviceId: null, action: "issue", status: "prepared", executionMode: "manual_confirmation" }]),
+      transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).confirmRfidCardWrite({ id: 404, projectId: 10, success: true })).resolves.toEqual({ success: true, status: "confirmed" });
+    expect(successfulWrites).toHaveLength(2);
+    expect(successfulWrites[0]).toMatchObject({ status: "confirmed" });
+    expect(successfulWrites[1]).toMatchObject({ status: "active", lastWrittenAt: expect.any(Date), revokedAt: null });
+
+    const failedWrites: unknown[] = [];
+    const failedTx = {
+      update: vi.fn(() => ({ set: vi.fn((value: unknown) => { failedWrites.push(value); return { where: vi.fn(async () => [{ affectedRows: 1 }]) }; }) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    };
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDb([{ id: 405, projectId: 10, cardId: 27, writerDeviceId: null, action: "issue", status: "prepared", executionMode: "manual_confirmation" }]),
+      transaction: vi.fn(async (callback: (client: typeof failedTx) => Promise<unknown>) => callback(failedTx)),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).confirmRfidCardWrite({ id: 405, projectId: 10, success: false, failureReason: "现场回读失败" })).resolves.toEqual({ success: true, status: "failed" });
+    expect(failedWrites).toHaveLength(1);
+    expect(failedWrites[0]).toMatchObject({ status: "failed", failureReason: "现场回读失败" });
   });
 
   it("本地硬件测试只登记项目范围内的读写结果和 UID 指纹摘要，不会签发或激活正式车辆卡", async () => {

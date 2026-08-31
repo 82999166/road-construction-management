@@ -19,6 +19,9 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(source).toContain("payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl");
     expect(source).toContain('code: "bridge_token_invalid"');
     expect(source).toContain('code: "card_uid_fingerprint_invalid"');
+    expect(source).toContain("isCardStateAllowedForJob(card, job.action)");
+    expect(source).toContain('action === "issue"');
+    expect(source).toContain('card.status === "suspended" || card.status === "active"');
   });
 
   it("仅在 UID 与回读载荷摘要均匹配时确认任务，失败会留存审计", () => {
@@ -35,5 +38,16 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(completeSource).toContain('if (job.status === "confirmed") return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", replayed: true })');
     expect(source).toContain('gt(rfidCardWriteJobs.bridgeTokenExpiresAt, new Date())');
     expect(completeSource).not.toContain('bridgeTokenHash: null, bridgeTokenExpiresAt: null');
+  });
+
+  it("完成确认以 prepared 条件更新和事务保护卡片启用，竞争失败时不继续更新卡与审计", () => {
+    const completeSource = source.slice(source.indexOf('app.post("/api/local-rfid-bridge/complete"'), source.indexOf('app.post("/api/local-rfid-bridge/fail"'));
+    expect(completeSource).toContain("const outcome = await db.transaction(async tx =>");
+    expect(completeSource).toContain('eq(rfidCardWriteJobs.status, "prepared")');
+    expect(completeSource).toContain("if (!didConditionalWriteApply(jobWrite))");
+    expect(completeSource.indexOf("if (!didConditionalWriteApply(jobWrite))")).toBeLessThan(completeSource.indexOf("const cardWrite = await tx.update(transportVehicleRfidCards)"));
+    expect(completeSource).toContain("if (!didConditionalWriteApply(cardWrite)) throw new Error");
+    expect(completeSource).toContain("isNull(transportVehicleRfidCards.lastWrittenAt)");
+    expect(completeSource).toContain("isNotNull(transportVehicleRfidCards.lastWrittenAt)");
   });
 });

@@ -1,11 +1,22 @@
 import type { Express } from "express";
-import { and, eq, gt, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { auditLogs, rfidCardWriteJobs, rfidWriterDevices, transportVehicleRfidCards } from "../drizzle/schema";
 import { getDb } from "./db";
 import { decryptSecret } from "./services/secretVault";
 import { hashRfidBridgeToken } from "./services/rfidBridge";
 
 type StoredWritePayload = { payload: Record<string, unknown>; nfcEntryUrl: string };
+
+function didConditionalWriteApply(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  return !(header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0);
+}
+
+function isCardStateAllowedForJob(card: { status: string; lastWrittenAt: Date | null }, action: string) {
+  if (action === "issue") return !card.lastWrittenAt && (card.status === "suspended" || card.status === "active");
+  if (action === "rewrite") return card.status === "active" && Boolean(card.lastWrittenAt);
+  return action === "revoke" && card.status !== "revoked";
+}
 
 function getBridgeToken(req: Parameters<Express["post"]>[1] extends never ? never : any) {
   const raw = req.header("x-rfid-bridge-token");
@@ -51,7 +62,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       if (!isFingerprint(cardUidFingerprint)) return res.status(400).json({ success: false, code: "card_uid_fingerprint_invalid", message: "卡 UID 指纹格式无效" });
       const { db, job } = await findBridgeJob(token);
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
-      if (!card || card.status !== "active" || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定不一致，已拒绝写入" });
+      if (!card || !card.vehicleId || !isCardStateAllowedForJob(card, job.action) || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定或状态不一致，已拒绝写入" });
       if (!job.payloadEncrypted) return res.status(409).json({ success: false, message: "该写卡任务不含受控载荷，请重新生成 PC 写卡任务" });
       const stored = JSON.parse(decryptSecret(job.payloadEncrypted)) as StoredWritePayload;
       if (!stored.nfcEntryUrl || !stored.payload || typeof stored.payload !== "object") throw new Error("受控写卡载荷格式无效");
@@ -77,12 +88,26 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       // 网络在服务端已确认后中断时，桥接会携带同一短时令牌再次确认；已确认任务只返回原结果，禁止重复审计或重复变更卡状态。
       if (job.status === "confirmed") return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", replayed: true });
       const now = new Date();
-      // 令牌哈希只保留到既定过期时间，作为短时幂等确认收据；仍不可用于领取已确认任务。
-      await db.update(rfidCardWriteJobs).set({ status: "confirmed", confirmedBy: job.preparedBy, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
-      await db.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(eq(transportVehicleRfidCards.id, job.cardId));
-      if (job.writerDeviceId) await db.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
-      await db.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: "confirm_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: "本地 uTrust 已完成车辆卡 UID 校验、NDEF 写入与回读确认" });
-      return res.json({ success: true, jobNo: job.jobNo, status: "confirmed" });
+      const outcome = await db.transaction(async tx => {
+        // 令牌哈希只保留到既定过期时间，作为短时幂等确认收据；仍不可用于领取已确认任务。
+        const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: "confirmed", confirmedBy: job.preparedBy, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
+        if (!didConditionalWriteApply(jobWrite)) {
+          const [latestJob] = await tx.select({ status: rfidCardWriteJobs.status }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.id, job.id)).limit(1);
+          if (latestJob?.status === "confirmed") return "replayed" as const;
+          throw new Error("写卡任务状态已经变化，未执行重复确认");
+        }
+        const cardStateCondition = job.action === "issue"
+          ? and(eq(transportVehicleRfidCards.id, job.cardId), isNull(transportVehicleRfidCards.lastWrittenAt), inArray(transportVehicleRfidCards.status, ["suspended", "active"]))
+          : job.action === "rewrite"
+            ? and(eq(transportVehicleRfidCards.id, job.cardId), eq(transportVehicleRfidCards.status, "active"), isNotNull(transportVehicleRfidCards.lastWrittenAt))
+            : and(eq(transportVehicleRfidCards.id, job.cardId), ne(transportVehicleRfidCards.status, "revoked"));
+        const cardWrite = await tx.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(cardStateCondition);
+        if (!didConditionalWriteApply(cardWrite)) throw new Error("车辆卡状态已经变化，未执行启用确认");
+        if (job.writerDeviceId) await tx.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
+        await tx.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: "confirm_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: "本地 uTrust 已完成车辆卡 UID 校验、NDEF 写入与回读确认" });
+        return "confirmed" as const;
+      });
+      return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", ...(outcome === "replayed" ? { replayed: true } : {}) });
     } catch (error) {
       return res.status(422).json({ success: false, message: error instanceof Error ? error.message : "本地桥接确认写卡失败" });
     }

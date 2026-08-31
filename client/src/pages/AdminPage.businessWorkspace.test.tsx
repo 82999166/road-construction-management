@@ -150,6 +150,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("NDEF 用户区已经清空");
   });
 
+  it("新车辆卡在实体写入与回读确认前显示待写入，并允许执行首次 PC 写卡而不是提前启用", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended" }');
+    expect(source).toContain("待写入（写入并回读确认后启用）");
+    expect(source).toContain("车辆射频卡绑定已保存为待写入；写入并回读确认成功后才会启用");
+    expect(source).toContain('card.status === "suspended" && isInitialIssue');
+    expect(source).toContain('action: isInitialIssue ? "issue" : "rewrite"');
+    expect(source).toContain('isInitialIssue ? "PC 写入车辆卡" : "PC 补写车辆卡"');
+  });
+
   it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
