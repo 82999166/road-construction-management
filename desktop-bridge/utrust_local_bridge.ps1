@@ -3,6 +3,8 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
+$bridgeVersion = "utrust-bridge-atomic-v2"
+$requiredWriterVersion = "ntag216-atomic-v2"
 
 function Write-BridgeJson {
   param($Context, $Payload, [int]$StatusCode = 200)
@@ -141,11 +143,12 @@ function Get-FormalWriteFailureCode {
   $text = if ($null -eq $Reason) { "" } else { [string]$Reason }
   if ($text -match "ndef_exceeds_declared_card_capacity") { return "ndef_exceeds_declared_card_capacity" }
   if ($text -match "post_write_byte_mismatch") { return "post_write_byte_mismatch" }
+  if ($text -match "card_writer_version_mismatch") { return "card_writer_version_mismatch" }
   if ($text -match "card_write_stage_reader_connect") { return "card_reader_connection_failed" }
   if ($text -match "card_write_stage_capability_container") { return "ntag_type2_ndef_cc_not_detected" }
   if ($text -match "card_write_stage_read_user_area") { return "card_user_area_read_failed" }
-  if ($text -match "card_write_stage_clear_user_area|card_write_stage_write_ndef") { return "card_user_area_write_failed" }
-  if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
+  if ($text -match "card_write_stage_invalidate_ndef|card_write_stage_write_ndef_body|card_write_stage_clear_old_tail|card_write_stage_commit_ndef_length") { return "card_user_area_write_failed" }
+  if ($text -match "card_write_stage_verify_ndef_body|card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_vehicle_card_claim_failed") { return "server_vehicle_card_claim_failed" }
   if ($text -match "server_vehicle_card_claim_request_invalid") { return "server_vehicle_card_claim_request_invalid" }
@@ -183,9 +186,10 @@ function Invoke-FormalVehicleWrite {
     $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty
   }
   finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
-  if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified) {
+  if ([string]$writeResult.writerVersion -ne $requiredWriterVersion) { throw "card_writer_version_mismatch" }
+  if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified -or -not $writeResult.committed) {
     $writeStage = if ($null -eq $writeResult.stage) { "" } else { [string]$writeResult.stage }
-    if ($writeStage -match "^(prepare|reader_connect|capability_container|read_user_area|clear_user_area|write_ndef|verify_ndef)$") { throw ("card_write_stage_" + $writeStage) }
+    if ($writeStage -match "^(prepare|reader_connect|capability_container|read_user_area|invalidate_ndef|write_ndef_body|clear_old_tail|verify_ndef_body|commit_ndef_length|verify_ndef)$") { throw ("card_write_stage_" + $writeStage) }
     if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
   }
   if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
@@ -194,7 +198,7 @@ function Invoke-FormalVehicleWrite {
   $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint } "complete"
   if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
-  return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint }
+  return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint; bridgeVersion = $bridgeVersion; writerVersion = [string]$writeResult.writerVersion }
 }
 
 function Invoke-PendingVehicleConfirmation {
@@ -217,7 +221,7 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
-      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names }; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; requiredWriterVersion = $requiredWriterVersion }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-uid") { $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }; Write-BridgeJson $context @{ success = $true; cardUid = $uidRead.uid }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-vehicle-entry") {
         try {

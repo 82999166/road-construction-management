@@ -40,6 +40,10 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-atomic-v2"');
+    expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
+    expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
+    expect(source).toContain('bridgeVersion = $bridgeVersion');
     expect(source).toContain("function Get-StructuredReaderResult");
     expect(source).toContain('$start = $line.IndexOf("{")');
     expect(source).toContain('$end = $line.LastIndexOf("}")');
@@ -63,6 +67,16 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("int userPageCount = (ndefCapacityBytes + 3) / 4");
     expect(source).toContain("ndef_exceeds_declared_card_capacity");
     expect(source).toContain("if (!ndef.SequenceEqual(verified.ToArray()))");
+    expect(source).toContain('WriterVersion = "ntag216-atomic-v2"');
+    expect(source).toContain('stage = "invalidate_ndef"');
+    expect(source).toContain('stage = "write_ndef_body"');
+    expect(source).toContain('stage = "verify_ndef_body"');
+    expect(source).toContain('stage = "commit_ndef_length"');
+    expect(source).toContain('WritePage(card, ref request, FirstUserPage, new byte[] { 0x00, 0x00, 0x00, 0x00 })');
+    expect(source).toContain('for (int index = 1; index < pageCount; index++)');
+    expect(source).toContain('WritePage(card, ref request, FirstUserPage, GetPage(ndef, 0))');
+    expect(source).toContain('"committed\\":true');
+    expect(source).not.toContain('for (int index = 0; index < userPageCount; index++) WritePage');
     expect(source).toContain('string stage = "prepare"');
     expect(source).toContain('stage = "read_user_area"');
     expect(source).toContain('stage = "verify_ndef"');
@@ -76,5 +90,22 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[int][UTrustNtag216RfidWrite]::Main()");
     expect(source).toContain("exit $exitCode");
     expect(source).not.toContain("[void][UTrustNtag216RfidWrite]::Main()");
+  });
+
+  it("只读车辆卡诊断必须报告 TLV 边界和锁定配置摘要且绝不发送写入指令", () => {
+    const source = readFileSync(new URL("../desktop-bridge/UTrustVehicleCardDiagnostic.cs", import.meta.url), "utf8");
+    expect(source).toContain("InspectTlv");
+    expect(source).toContain('TryReadPage(card, ref request, 0xE2');
+    expect(source).toContain('TryReadPage(card, ref request, 0xE3');
+    expect(source).toContain('TryReadPage(card, ref request, 0xE4');
+    expect(source).toContain('staticPage.Skip(2).Take(2)');
+    expect(source).toContain('dynamicLockPage.Take(3)');
+    expect(source).toContain('config0Page[3]');
+    expect(source).toContain('(config1Page[0] & 0x80)');
+    expect(source).toContain('"tlvDeclaredLength\\":"');
+    expect(source).toContain('"firstAllZeroUserPage\\":"');
+    expect(source).toContain('"writeOperation\\":false');
+    expect(source).not.toContain("0xD6");
+    expect(source).not.toContain("WritePage(");
   });
 });

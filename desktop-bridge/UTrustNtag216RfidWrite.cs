@@ -12,6 +12,7 @@ public static class UTrustNtag216RfidWrite
     private const uint ProtocolT0OrT1 = 3;
     private const uint LeaveCard = 0;
     private const int FirstUserPage = 4;
+    private const string WriterVersion = "ntag216-atomic-v2";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct IoRequest { public uint Protocol; public uint PciLength; }
@@ -47,6 +48,12 @@ public static class UTrustNtag216RfidWrite
     {
         if (data == null || data.Length != 4) throw new ArgumentException("page_data_must_be_4_bytes");
         Transmit(card, ref request, new byte[] { 0xFF, 0xD6, 0x00, (byte)page, 0x04, data[0], data[1], data[2], data[3] }, "write_page_" + page);
+    }
+    private static byte[] GetPage(byte[] bytes, int pageIndex) { return bytes.Skip(pageIndex * 4).Take(4).ToArray(); }
+    private static void RequirePageMatches(IntPtr card, ref IoRequest request, int page, byte[] expected)
+    {
+        byte[] actual = ReadPage(card, ref request, page);
+        if (!expected.SequenceEqual(actual)) throw new InvalidOperationException("post_write_byte_mismatch_page_" + page);
     }
     private static bool IsBlankNdefArea(byte[] data)
     {
@@ -86,6 +93,9 @@ public static class UTrustNtag216RfidWrite
     {
         IntPtr context = IntPtr.Zero; IntPtr card = IntPtr.Zero;
         string stage = "prepare";
+        int failedPage = -1;
+        bool writeAttempted = false;
+        bool committed = false;
         try
         {
             string payloadBase64 = Environment.GetEnvironmentVariable("RC_RFID_PAYLOAD_B64");
@@ -119,18 +129,55 @@ public static class UTrustNtag216RfidWrite
             List<byte> existing = new List<byte>();
             for (int index = 0; index < userPageCount; index++) existing.AddRange(ReadPage(card, ref request, FirstUserPage + index));
             if (!allowOverwrite && !IsBlankNdefArea(existing.ToArray())) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"result\":\"card_user_area_not_blank\"}"); return 4; }
-            stage = "clear_user_area";
-            if (allowOverwrite) for (int index = 0; index < userPageCount; index++) WritePage(card, ref request, FirstUserPage + index, new byte[] { 0x00, 0x00, 0x00, 0x00 });
-            stage = "write_ndef";
-            for (int index = 0; index < pageCount; index++) WritePage(card, ref request, FirstUserPage + index, ndef.Skip(index * 4).Take(4).ToArray());
+            byte[] existingBytes = existing.ToArray();
+            int lastExistingByte = Array.FindLastIndex(existingBytes, value => value != 0x00);
+            int existingPageCount = lastExistingByte < 0 ? 0 : (lastExistingByte / 4) + 1;
+
+            // 第 4 页包含 TLV 类型和长度。先将其置为未提交，再写正文与尾部，最后一次性提交真实长度。
+            // 这样读卡器或卡片中途离场时不会留下一个声明为完整、实际却只有部分正文的 NDEF 消息。
+            writeAttempted = true;
+            stage = "invalidate_ndef";
+            failedPage = FirstUserPage;
+            WritePage(card, ref request, FirstUserPage, new byte[] { 0x00, 0x00, 0x00, 0x00 });
+
+            stage = "write_ndef_body";
+            for (int index = 1; index < pageCount; index++)
+            {
+                failedPage = FirstUserPage + index;
+                WritePage(card, ref request, failedPage, GetPage(ndef, index));
+            }
+
+            stage = "clear_old_tail";
+            for (int index = pageCount; index < existingPageCount; index++)
+            {
+                failedPage = FirstUserPage + index;
+                WritePage(card, ref request, failedPage, new byte[] { 0x00, 0x00, 0x00, 0x00 });
+            }
+
+            stage = "verify_ndef_body";
+            for (int index = 1; index < pageCount; index++)
+            {
+                failedPage = FirstUserPage + index;
+                RequirePageMatches(card, ref request, failedPage, GetPage(ndef, index));
+            }
+
+            stage = "commit_ndef_length";
+            failedPage = FirstUserPage;
+            WritePage(card, ref request, FirstUserPage, GetPage(ndef, 0));
+            committed = true;
+
             stage = "verify_ndef";
             List<byte> verified = new List<byte>();
-            for (int index = 0; index < pageCount; index++) verified.AddRange(ReadPage(card, ref request, FirstUserPage + index));
+            for (int index = 0; index < pageCount; index++)
+            {
+                failedPage = FirstUserPage + index;
+                verified.AddRange(ReadPage(card, ref request, failedPage));
+            }
             if (!ndef.SequenceEqual(verified.ToArray())) throw new InvalidOperationException("post_write_byte_mismatch");
-            Console.WriteLine("{\"success\":true,\"written\":true,\"verified\":true,\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(payloadJson) + "\",\"writeProtectionChanged\":false}");
+            Console.WriteLine("{\"success\":true,\"written\":true,\"verified\":true,\"committed\":true,\"writerVersion\":\"" + WriterVersion + "\",\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(payloadJson) + "\",\"writeProtectionChanged\":false}");
             return 0;
         }
-        catch (Exception ex) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"stage\":\"" + JsonEscape(stage) + "\",\"result\":\"" + JsonEscape(ex.Message) + "\"}"); return 1; }
+        catch (Exception ex) { Console.WriteLine("{\"success\":false,\"written\":" + (writeAttempted ? "true" : "false") + ",\"verified\":false,\"committed\":" + (committed ? "true" : "false") + ",\"writerVersion\":\"" + WriterVersion + "\",\"failedPage\":" + failedPage + ",\"stage\":\"" + JsonEscape(stage) + "\",\"result\":\"" + JsonEscape(ex.Message) + "\"}"); return 1; }
         finally { if (card != IntPtr.Zero) SCardDisconnect(card, LeaveCard); if (context != IntPtr.Zero) SCardReleaseContext(context); }
     }
 }

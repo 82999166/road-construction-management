@@ -34,6 +34,20 @@ public static class UTrustVehicleCardDiagnostic
     }
     private static byte[] ReadPage(IntPtr card, ref IoRequest request, int page) { return Transmit(card, ref request, new byte[] { 0xFF, 0xB0, 0x00, (byte)page, 0x04 }, "read_page_" + page); }
     private static string FingerprintUid(byte[] uid) { return Sha256(Encoding.UTF8.GetBytes("road-rfid-card:v1:" + BitConverter.ToString(uid).Replace("-", ""))); }
+    private static string Hex(byte[] value) { return BitConverter.ToString(value ?? new byte[0]).Replace("-", ""); }
+    private static string SafeReadStatus(string message)
+    {
+        string value = message ?? "";
+        int statusIndex = value.LastIndexOf("_status_", StringComparison.Ordinal);
+        if (statusIndex >= 0 && statusIndex + 8 <= value.Length) return "status_" + value.Substring(statusIndex + 8);
+        if (value.IndexOf("_transport_", StringComparison.Ordinal) >= 0) return "transport_failed";
+        return "read_failed";
+    }
+    private static bool TryReadPage(IntPtr card, ref IoRequest request, int page, out byte[] data, out string status)
+    {
+        try { data = ReadPage(card, ref request, page); status = "ok"; return data.Length == 4; }
+        catch (Exception ex) { data = new byte[0]; status = SafeReadStatus(ex.Message); return false; }
+    }
     private static int ReadTlvLength(byte[] bytes, ref int position)
     {
         if (position >= bytes.Length) throw new InvalidOperationException("ndef_tlv_length_missing");
@@ -66,6 +80,45 @@ public static class UTrustVehicleCardDiagnostic
         }
         return "ok:records=" + records + ";uri=" + (uri ? "1" : "0") + ";text=" + (text ? "1" : "0") + ";rc3=" + (rc3 ? "1" : "0");
     }
+    private static string InspectTlv(byte[] bytes, out int tlvOffset, out int lengthFieldBytes, out int declaredLength, out int availableBytes, out bool terminatorPresent)
+    {
+        int position = 0;
+        while (position < bytes.Length && bytes[position] == 0x00) position++;
+        tlvOffset = position < bytes.Length ? position : -1;
+        lengthFieldBytes = 0;
+        declaredLength = -1;
+        availableBytes = 0;
+        terminatorPresent = false;
+        if (position >= bytes.Length) return "empty";
+        if (bytes[position++] != 0x03) return "ndef_tlv_missing";
+        int lengthStart = position;
+        try { declaredLength = ReadTlvLength(bytes, ref position); }
+        catch { return "ndef_tlv_length_missing"; }
+        lengthFieldBytes = position - lengthStart;
+        availableBytes = bytes.Length - position;
+        if (declaredLength <= 0 || declaredLength > availableBytes) return "ndef_tlv_length_invalid";
+        int terminatorIndex = position + declaredLength;
+        terminatorPresent = terminatorIndex < bytes.Length && bytes[terminatorIndex] == 0xFE;
+        return InspectNdef(bytes);
+    }
+    private static int CountContiguousNonZeroPages(byte[] bytes)
+    {
+        int pages = bytes.Length / 4;
+        int count = 0;
+        for (int page = 0; page < pages; page++)
+        {
+            bool nonZero = false;
+            for (int offset = 0; offset < 4; offset++) if (bytes[page * 4 + offset] != 0x00) { nonZero = true; break; }
+            if (!nonZero) break;
+            count++;
+        }
+        return count;
+    }
+    private static int LastNonZeroUserPage(byte[] bytes)
+    {
+        for (int index = bytes.Length - 1; index >= 0; index--) if (bytes[index] != 0x00) return 4 + (index / 4);
+        return -1;
+    }
     public static int Main()
     {
         IntPtr context = IntPtr.Zero; IntPtr card = IntPtr.Zero;
@@ -83,7 +136,23 @@ public static class UTrustVehicleCardDiagnostic
             int capacity = cc[2] * 8; int pages = (capacity + 3) / 4;
             if (4 + pages > 0x100) throw new InvalidOperationException("ntag_ndef_user_area_out_of_range");
             List<byte> memory = new List<byte>(); for (int index = 0; index < pages; index++) memory.AddRange(ReadPage(card, ref request, 4 + index));
-            Console.WriteLine("{\"success\":true,\"operation\":\"read_only_vehicle_card_diagnostic\",\"reader\":\"" + Escape(reader) + "\",\"uidFingerprint\":\"" + FingerprintUid(uid) + "\",\"cc\":\"" + BitConverter.ToString(cc).Replace("-", "") + "\",\"ndefCapacityBytes\":" + capacity + ",\"pagesRead\":" + pages + ",\"ndefStructure\":\"" + Escape(InspectNdef(memory.ToArray())) + "\",\"writeOperation\":false}");
+            byte[] memoryBytes = memory.ToArray();
+            int tlvOffset; int lengthFieldBytes; int declaredLength; int availableBytes; bool terminatorPresent;
+            string ndefStructure = InspectTlv(memoryBytes, out tlvOffset, out lengthFieldBytes, out declaredLength, out availableBytes, out terminatorPresent);
+            int contiguousNonZeroPages = CountContiguousNonZeroPages(memoryBytes);
+            int firstAllZeroPage = contiguousNonZeroPages < pages ? 4 + contiguousNonZeroPages : -1;
+            byte[] staticPage; byte[] dynamicLockPage; byte[] config0Page; byte[] config1Page;
+            string staticStatus; string dynamicStatus; string config0Status; string config1Status;
+            bool staticReadable = TryReadPage(card, ref request, 2, out staticPage, out staticStatus);
+            bool dynamicReadable = TryReadPage(card, ref request, 0xE2, out dynamicLockPage, out dynamicStatus);
+            bool config0Readable = TryReadPage(card, ref request, 0xE3, out config0Page, out config0Status);
+            bool config1Readable = TryReadPage(card, ref request, 0xE4, out config1Page, out config1Status);
+            string staticLock = staticReadable ? Hex(staticPage.Skip(2).Take(2).ToArray()) : "unreadable";
+            string dynamicLock = dynamicReadable ? Hex(dynamicLockPage.Take(3).ToArray()) : "unreadable";
+            string auth0 = config0Readable ? string.Format("{0:X2}", config0Page[3]) : "unreadable";
+            bool readProtection = config1Readable && (config1Page[0] & 0x80) != 0;
+            bool configLocked = config1Readable && (config1Page[0] & 0x40) != 0;
+            Console.WriteLine("{\"success\":true,\"operation\":\"read_only_vehicle_card_diagnostic\",\"reader\":\"" + Escape(reader) + "\",\"uidFingerprint\":\"" + FingerprintUid(uid) + "\",\"cc\":\"" + Hex(cc) + "\",\"ndefCapacityBytes\":" + capacity + ",\"pagesRead\":" + pages + ",\"ndefStructure\":\"" + Escape(ndefStructure) + "\",\"tlvOffset\":" + tlvOffset + ",\"tlvLengthFieldBytes\":" + lengthFieldBytes + ",\"tlvDeclaredLength\":" + declaredLength + ",\"tlvAvailableBytes\":" + availableBytes + ",\"tlvTerminatorPresent\":" + (terminatorPresent ? "true" : "false") + ",\"contiguousNonZeroPages\":" + contiguousNonZeroPages + ",\"firstAllZeroUserPage\":" + firstAllZeroPage + ",\"lastNonZeroUserPage\":" + LastNonZeroUserPage(memoryBytes) + ",\"staticLock\":\"" + staticLock + "\",\"staticLockRead\":\"" + staticStatus + "\",\"dynamicLock\":\"" + dynamicLock + "\",\"dynamicLockRead\":\"" + dynamicStatus + "\",\"auth0\":\"" + auth0 + "\",\"config0Read\":\"" + config0Status + "\",\"config1Read\":\"" + config1Status + "\",\"readProtection\":" + (readProtection ? "true" : "false") + ",\"configLocked\":" + (configLocked ? "true" : "false") + ",\"writeOperation\":false}");
             return 0;
         }
         catch (Exception ex) { Console.WriteLine("{\"success\":false,\"operation\":\"read_only_vehicle_card_diagnostic\",\"writeOperation\":false,\"result\":\"" + Escape(ex.Message) + "\"}"); return 1; }
