@@ -30,6 +30,9 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("DataProtectionScope]::CurrentUser");
     expect(source).toContain('"/api/confirm-vehicle-card"');
     expect(source).toContain("Invoke-PendingVehicleConfirmation");
+    expect(source).toContain('"/api/read-vehicle-entry"');
+    expect(source).toContain("run_utrust_read_vehicle_entry.ps1");
+    expect(source).toContain("vehicle_card_ndef_entry_not_allowed");
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {

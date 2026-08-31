@@ -1508,6 +1508,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onError: () => toast.error("车辆卡写卡任务生成失败，请刷新后重试"),
   });
   const [writingRfidCard, setWritingRfidCard] = useState(false);
+  const [readingVehicleCardEntry, setReadingVehicleCardEntry] = useState(false);
   const [retryingRfidCardConfirmation, setRetryingRfidCardConfirmation] = useState(false);
   const writeRfidCardWithBridge = async () => {
     if (!rfidWritePreview?.bridgeToken) return toast.error("本地写卡授权无效，请重新生成 PC 写卡任务");
@@ -1570,6 +1571,37 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     } finally {
       window.clearTimeout(timeoutId);
       setWritingRfidCard(false);
+    }
+  };
+  const openVehicleTransportFromBridge = async () => {
+    setReadingVehicleCardEntry(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 20_000);
+    try {
+      const response = await fetch("http://127.0.0.1:47601/api/read-vehicle-entry", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", cache: "no-store", signal: controller.signal });
+      const result = await response.json().catch(() => ({})) as { success?: boolean; nfcEntryUrl?: string; message?: string };
+      if (!response.ok || !result.success || !result.nfcEntryUrl) {
+        if (result.message === "vehicle_card_ndef_entry_not_found") throw new Error("vehicle_card_ndef_entry_not_found");
+        if (result.message === "vehicle_card_ndef_entry_not_allowed") throw new Error("vehicle_card_ndef_entry_not_allowed");
+        throw new Error("vehicle_card_entry_read_failed");
+      }
+      const target = new URL(result.nfcEntryUrl);
+      if (target.protocol !== "https:" || target.hostname !== "yx.maomaoyx.com" || target.port || target.pathname !== "/mobile/transport" || target.hash || target.searchParams.size !== 1 || !target.searchParams.get("nfc")) throw new Error("vehicle_card_ndef_entry_not_allowed");
+      window.location.assign(target.toString());
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "刷卡读取超时：请保持车辆卡在 uTrust 感应区后重试。"
+        : error instanceof TypeError
+          ? "无法访问本机读卡桥接：请启动 Windows 桥接程序并允许当前网站访问本机设备。"
+          : error instanceof Error && error.message === "vehicle_card_ndef_entry_not_found"
+            ? "未读取到有效车辆卡网页入口：请使用已完成受控写入的车辆卡，勿使用测试卡。"
+            : error instanceof Error && error.message === "vehicle_card_ndef_entry_not_allowed"
+              ? "该卡片入口不属于受控运输页面，已拒绝打开。"
+              : "读取车辆卡入口失败：请保持卡片稳定放在读卡器感应区后重试。";
+      toast.error(message);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setReadingVehicleCardEntry(false);
     }
   };
   const confirmRfidCardWithBridgeReceipt = async () => {
@@ -3217,7 +3249,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     return (
       <div className="space-y-5">
         <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
-          <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-sm font-medium text-[#203c48]">射频写卡 · 受控预留</p><CardTitle className="mt-1 text-base">车辆卡绑定与写卡任务</CardTitle><CardDescription className="mt-1 max-w-3xl">系统生成并审计车辆、车型、货厢、司机与联系电话载荷；当前不伪造 USB/串口直连，现场需使用已登记写卡器完成物理写入后再确认结果。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => { setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM); setRfidWriterDialogOpen(true); }}>登记写卡器</Button><Button size="sm" onClick={() => { const firstVehicle = transportVehicleLedger.data?.[0]; setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: firstVehicle ? String(firstVehicle.id) : "", writerDeviceId: writerDevices[0] ? String(writerDevices[0].id) : "", driverPhone: firstVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} disabled={!transportVehicleLedger.data?.length}>绑定车辆卡</Button></div></CardHeader>
+          <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><p className="text-sm font-medium text-[#203c48]">射频写卡 · 受控预留</p><CardTitle className="mt-1 text-base">车辆卡绑定与写卡任务</CardTitle><CardDescription className="mt-1 max-w-3xl">系统生成并审计车辆、车型、货厢、司机与联系电话载荷；电脑读卡器刷有效车辆卡时，可经本机桥接读取受控深链并进入对应运输页面。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void openVehicleTransportFromBridge()} disabled={readingVehicleCardEntry}>{readingVehicleCardEntry ? "正在读取车辆卡…" : "开始刷车辆卡"}</Button><Button size="sm" variant="outline" onClick={() => { setRfidWriterDeviceForm(EMPTY_RFID_WRITER_DEVICE_FORM); setRfidWriterDialogOpen(true); }}>登记写卡器</Button><Button size="sm" onClick={() => { const firstVehicle = transportVehicleLedger.data?.[0]; setRfidCardForm({ ...EMPTY_RFID_CARD_FORM, vehicleId: firstVehicle ? String(firstVehicle.id) : "", writerDeviceId: writerDevices[0] ? String(writerDevices[0].id) : "", driverPhone: firstVehicle?.driverPhone || "" }); setRfidCardDialogOpen(true); }} disabled={!transportVehicleLedger.data?.length}>绑定车辆卡</Button></div></CardHeader>
           <CardContent className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
             <div className="space-y-2"><p className="text-sm font-medium text-slate-800">写卡器设备</p>{writerDevices.length ? writerDevices.map(device => <div key={device.id} className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-slate-800">{device.displayName}</p><BusinessStatusBadge status={device.status} /></div><p className="mt-1 text-xs text-slate-500">编号 {device.deviceCode} · 型号 {device.model || "待采购/未登记"} · {device.connectionMode === "manual_placeholder" ? "人工确认模式" : device.connectionMode}</p></div>) : <EmptyState text="尚未登记写卡器。可先登记编号和型号，硬件协议后续再受控接入。" />}</div>
             <div className="space-y-2"><p className="text-sm font-medium text-slate-800">车辆射频卡</p>{cards.length ? cards.map(renderVehicleRfidCard) : <EmptyState text="尚未绑定车辆射频卡。请先登记车辆和司机，再读取卡 UID 完成绑定。" />}</div>

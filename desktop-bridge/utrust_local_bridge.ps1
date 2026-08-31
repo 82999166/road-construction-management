@@ -95,6 +95,8 @@ function Get-FormalWriteFailureCode {
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
   if ($text -match "pending_vehicle_card_confirmation_not_found") { return "pending_vehicle_card_confirmation_not_found" }
+  if ($text -match "vehicle_ndef_tlv_not_found|vehicle_ndef_record_not_found|vehicle_ndef_uri_record_invalid|vehicle_ndef_uri_prefix_invalid") { return "vehicle_card_ndef_entry_not_found" }
+  if ($text -match "vehicle_ndef_entry_url_not_allowed|vehicle_ndef_entry_parameter_invalid") { return "vehicle_card_ndef_entry_not_allowed" }
   if ($text -match "write_page_") { return "card_user_area_write_failed" }
   if ($text -match "read_page_") { return "card_user_area_read_failed" }
   if ($text -match "ntag_type2_ndef_cc_not_detected") { return "ntag_type2_ndef_cc_not_detected" }
@@ -156,6 +158,14 @@ try {
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-uid") { $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }; Write-BridgeJson $context @{ success = $true; cardUid = $uidRead.uid }; continue }
+      if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-vehicle-entry") {
+        try {
+          $entry = Invoke-ReaderScript "run_utrust_read_vehicle_entry.ps1"
+          if (-not $entry.success -or [string]::IsNullOrWhiteSpace([string]$entry.nfcEntryUrl)) { throw "vehicle_card_ndef_entry_not_found" }
+          Write-BridgeJson $context @{ success = $true; nfcEntryUrl = [string]$entry.nfcEntryUrl; reader = [string]$entry.reader }
+          continue
+        } catch { throw (Get-FormalWriteFailureCode ([string]$_.Exception.Message)) }
+      }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/test-write") { $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "test_card_not_present" }; $writeResult = Invoke-ReaderScript "run_utrust_authorized_overwrite.ps1"; if (-not $writeResult.written -or -not $writeResult.verified) { throw "test_write_or_verify_failed" }; $recheck = Invoke-ReaderScript "run_utrust_read_ndef.ps1"; if (-not $recheck.payloadPersisted) { throw "test_ndef_recheck_failed" }; Write-BridgeJson $context @{ success = $true; message = "test_write_verified"; cardUidFingerprint = (Get-UidFingerprint $uidRead.uid) }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/erase-initial-card") { $request = Read-BridgeBody $context; if ($request.confirmErase -ne "ERASE_NTAG216_USER_AREA") { throw "erase_confirmation_required" }; $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }; $eraseResult = Invoke-ReaderScript "run_utrust_erase_initial.ps1"; if (-not $eraseResult.success -or -not $eraseResult.erased -or -not $eraseResult.verified) { throw "erase_initial_card_failed" }; Write-BridgeJson $context @{ success = $true; message = "initial_card_restored"; cardUidFingerprint = (Get-UidFingerprint $uidRead.uid); initialNdef = $true; writeProtectionChanged = $false }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/write-vehicle-card") {
