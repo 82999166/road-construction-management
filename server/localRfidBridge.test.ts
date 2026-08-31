@@ -9,6 +9,8 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(source).toContain("hashRfidBridgeToken(token)");
     expect(source).toContain("decryptSecret(job.payloadEncrypted)");
     expect(source).toContain("card.cardUidFingerprint !== cardUidFingerprint");
+    expect(source).toContain("const payloadJson = JSON.stringify(stored.payload)");
+    expect(source).toContain("payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl");
   });
 
   it("仅在 UID 与回读载荷摘要均匹配时确认任务，失败会留存审计", () => {

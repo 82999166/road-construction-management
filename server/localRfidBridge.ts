@@ -51,7 +51,9 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       if (!job.payloadEncrypted) return res.status(409).json({ success: false, message: "该写卡任务不含受控载荷，请重新生成 PC 写卡任务" });
       const stored = JSON.parse(decryptSecret(job.payloadEncrypted)) as StoredWritePayload;
       if (!stored.nfcEntryUrl || !stored.payload || typeof stored.payload !== "object") throw new Error("受控写卡载荷格式无效");
-      return res.json({ success: true, jobNo: job.jobNo, payload: stored.payload, nfcEntryUrl: stored.nfcEntryUrl, payloadFingerprint: job.payloadFingerprint });
+      // PC 桥接必须原样写入此规范 JSON，再按完全相同 UTF-8 字节计算回读摘要；禁止由 PowerShell 重新序列化后改变字段顺序或 Unicode 转义方式。
+      const payloadJson = JSON.stringify(stored.payload);
+      return res.json({ success: true, jobNo: job.jobNo, payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl, payloadFingerprint: job.payloadFingerprint });
     } catch (error) {
       return res.status(422).json({ success: false, message: error instanceof Error ? error.message : "本地桥接领取写卡载荷失败" });
     }
