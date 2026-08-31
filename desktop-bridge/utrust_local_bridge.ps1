@@ -3,7 +3,7 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-atomic-v2"
+$bridgeVersion = "utrust-bridge-diagnostic-v3"
 $requiredWriterVersion = "ntag216-atomic-v2"
 
 function Write-BridgeJson {
@@ -144,6 +144,8 @@ function Get-FormalWriteFailureCode {
   if ($text -match "ndef_exceeds_declared_card_capacity") { return "ndef_exceeds_declared_card_capacity" }
   if ($text -match "post_write_byte_mismatch") { return "post_write_byte_mismatch" }
   if ($text -match "card_writer_version_mismatch") { return "card_writer_version_mismatch" }
+  if ($text -match "writer_source_not_found|writer_load_failed|writer_invocation_failed") { return "card_writer_load_failed" }
+  if ($text -match "card_write_stage_prepare") { return "card_write_prepare_failed" }
   if ($text -match "card_write_stage_reader_connect") { return "card_reader_connection_failed" }
   if ($text -match "card_write_stage_capability_container") { return "ntag_type2_ndef_cc_not_detected" }
   if ($text -match "card_write_stage_read_user_area") { return "card_user_area_read_failed" }
@@ -240,8 +242,21 @@ try {
         catch {
           $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message)
           # 已经完成实体写入与回读时，确认回传的瞬时网络失败必须保留 prepared 任务和短时令牌，允许同一窗口再次确认；不得错误标记失败。
-          if ($safeReason -ne "server_vehicle_card_confirm_retryable") { try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } | Out-Null } catch {} }
-          throw $safeReason
+          $failureRecorded = $null
+          $failureRecordCode = ""
+          if ($safeReason -ne "server_vehicle_card_confirm_retryable") {
+            try {
+              $failed = Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } "fail"
+              $failureRecorded = [bool]$failed.success
+              if (-not $failureRecorded) { $failureRecordCode = "server_bridge_failure_record_rejected" }
+            }
+            catch {
+              $failureRecorded = $false
+              $failureRecordCode = "server_bridge_failure_record_failed"
+            }
+          }
+          Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion } 422
+          continue
         }
       }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/confirm-vehicle-card") {

@@ -12,11 +12,13 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-atomic-v2"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-diagnostic-v3"');
     expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
     expect(source).toContain("healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION");
     expect(source).toContain("bridge_write_version_mismatch");
     expect(source).toContain("当前 Windows 桥接程序或写卡器版本过旧，已在写卡前停止操作");
+    expect(source).toContain("本机正式写卡器源码未能加载或编译：当前卡没有开始写入");
+    expect(source).toContain("正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入");
     expect(source).toContain("车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。");
     expect(source).toContain("window.requestAnimationFrame(() => setRfidWritePreview(null))");
   });

@@ -22,10 +22,15 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("vehicle_card_readback_fingerprint_mismatch");
     expect(source).toContain('$text = if ($null -eq $Reason) { "" } else { [string]$Reason }');
     expect(source).not.toContain("$Reason ??");
+    expect(source).toContain("card_write_stage_prepare");
+    expect(source).toContain("card_write_prepare_failed");
+    expect(source).toContain("card_writer_load_failed");
     expect(source).toContain("card_write_stage_read_user_area");
     expect(source).toContain("card_write_stage_verify_ndef");
     expect(source).toContain("server_vehicle_card_confirm_retryable");
     expect(source).toContain('if ($safeReason -ne "server_vehicle_card_confirm_retryable")');
+    expect(source).toContain("failureRecorded = [bool]$failed.success");
+    expect(source).toContain("server_bridge_failure_record_failed");
     expect(source).toContain("rfid_confirm_receipt.dpapi");
     expect(source).toContain("DataProtectionScope]::CurrentUser");
     expect(source).toContain('"/api/confirm-vehicle-card"');
@@ -40,7 +45,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-atomic-v2"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-diagnostic-v3"');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
     expect(source).toContain('bridgeVersion = $bridgeVersion');
@@ -89,6 +94,9 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('Join-Path $PSScriptRoot "UTrustNtag216RfidWrite.cs"');
     expect(source).toContain("[int][UTrustNtag216RfidWrite]::Main()");
     expect(source).toContain("exit $exitCode");
+    expect(source).toContain('$wrapperVersion = "utrust-writer-wrapper-diagnostic-v3"');
+    expect(source).toContain('"writer_load_failed"');
+    expect(source).toContain("ConvertTo-Json -Compress");
     expect(source).not.toContain("[void][UTrustNtag216RfidWrite]::Main()");
   });
 
@@ -107,5 +115,16 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('"writeOperation\\":false');
     expect(source).not.toContain("0xD6");
     expect(source).not.toContain("WritePage(");
+  });
+
+  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 v3 健康并在失败时回滚", () => {
+    const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
+    expect(source).toContain('$installerVersion = "utrust-upgrader-diagnostic-v3"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-diagnostic-v3"');
+    expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
+    expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
+    expect(source).toContain("backup-diagnostic-v3-");
+    expect(source).toContain("Test-UTrustBridgeVersion");
+    expect(source).toContain("previousVersionRestored = $rollbackHealthy");
   });
 });

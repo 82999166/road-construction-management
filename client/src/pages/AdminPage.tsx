@@ -198,7 +198,7 @@ const EMPTY_DIESEL_PRICE_FORM: DieselPriceForm = { projectId: "", pricePerLiter:
 const EMPTY_DIESEL_REFUEL_FORM: DieselRefuelForm = { projectId: "", assetType: "vehicle", vehicleId: "", machineId: "", transportTripId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toLocalDateTimeInput(new Date()), meterReading: "", receiptNo: "", remarks: "", status: "approved" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
 const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended" };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-atomic-v2";
+const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-diagnostic-v3";
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
@@ -1555,6 +1555,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         if (bridgeFailure.includes("post_write_byte_mismatch")) throw new Error("bridge_write_post_write_mismatch");
         if (bridgeFailure.includes("ntag_type2_ndef_cc_not_detected")) throw new Error("bridge_write_ndef_cc_invalid");
         if (bridgeFailure.includes("card_writer_no_diagnostic_result")) throw new Error("bridge_write_no_diagnostic_result");
+        if (bridgeFailure.includes("card_writer_load_failed")) throw new Error("bridge_write_writer_load_failed");
+        if (bridgeFailure.includes("card_write_prepare_failed")) throw new Error("bridge_write_prepare_failed");
         if (bridgeFailure.includes("card_writer_version_mismatch")) throw new Error("bridge_write_version_mismatch");
         throw new Error("bridge_write_or_readback_failed");
       }
@@ -1606,6 +1608,10 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                           ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
                           : error instanceof Error && error.message === "bridge_write_no_diagnostic_result"
                             ? "本机写卡器未返回可诊断结果：请保持卡片在感应区，关闭后重新启动 Windows 桥接程序后再生成新任务。"
+                          : error instanceof Error && error.message === "bridge_write_writer_load_failed"
+                            ? "本机正式写卡器源码未能加载或编译：当前卡没有开始写入。请更新写卡器文件并重启桥接后再生成任务。"
+                          : error instanceof Error && error.message === "bridge_write_prepare_failed"
+                            ? "正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入。请保留任务号并停止重试。"
                 : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {
