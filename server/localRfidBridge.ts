@@ -4,8 +4,9 @@ import { auditLogs, rfidCardWriteJobs, rfidWriterDevices, transportVehicleRfidCa
 import { getDb } from "./db";
 import { decryptSecret } from "./services/secretVault";
 import { hashRfidBridgeToken } from "./services/rfidBridge";
+import { createTransportNfcCardPayloadContract, type TransportNfcCardPayloadV2 } from "./services/rfidCardPayload";
 
-type StoredWritePayload = { payload: Record<string, unknown>; nfcEntryUrl: string };
+type StoredWritePayload = { payloadJson?: string; payload?: Record<string, unknown>; nfcEntryUrl: string };
 
 function didConditionalWriteApply(result: unknown) {
   const header = Array.isArray(result) ? result[0] : result;
@@ -65,11 +66,16 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       if (!card || !card.vehicleId || !isCardStateAllowedForJob(card, job.action) || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定或状态不一致，已拒绝写入" });
       if (!job.payloadEncrypted) return res.status(409).json({ success: false, message: "该写卡任务不含受控载荷，请重新生成 PC 写卡任务" });
       const stored = JSON.parse(decryptSecret(job.payloadEncrypted)) as StoredWritePayload;
-      if (!stored.nfcEntryUrl || !stored.payload || typeof stored.payload !== "object") throw new Error("受控写卡载荷格式无效");
+      if (!stored.nfcEntryUrl) throw new Error("受控写卡载荷格式无效");
+      // 新任务保存唯一规范 JSON 原文；为不影响已生成的历史任务，旧格式仅在领取时转换一次后做摘要一致性校验。
+      const payloadJson = typeof stored.payloadJson === "string" ? stored.payloadJson : stored.payload ? JSON.stringify(stored.payload) : "";
+      let payload: TransportNfcCardPayloadV2;
+      try { payload = JSON.parse(payloadJson) as TransportNfcCardPayloadV2; } catch { throw new Error("受控写卡载荷格式无效"); }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("受控写卡载荷格式无效");
+      const payloadContract = createTransportNfcCardPayloadContract(payload);
+      if (payloadContract.payloadJson !== payloadJson || payloadContract.payloadFingerprint !== job.payloadFingerprint) throw new Error("受控写卡载荷摘要不一致");
       // PC 桥接必须原样写入此规范 JSON，再按完全相同 UTF-8 字节计算回读摘要；禁止由 PowerShell 重新序列化后改变字段顺序或 Unicode 转义方式。
-      const payloadJson = JSON.stringify(stored.payload);
-      const payloadUtf8ByteLength = Buffer.byteLength(payloadJson, "utf8");
-      return res.json({ success: true, jobNo: job.jobNo, payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl, payloadFingerprint: job.payloadFingerprint, payloadUtf8ByteLength });
+      return res.json({ success: true, jobNo: job.jobNo, payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl, payloadFingerprint: payloadContract.payloadFingerprint, payloadUtf8ByteLength: payloadContract.payloadUtf8ByteLength });
     } catch (error) {
       return res.status(422).json({ success: false, message: error instanceof Error ? error.message : "本地桥接领取写卡载荷失败" });
     }

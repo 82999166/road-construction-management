@@ -3,7 +3,9 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-fingerprint-v5"
+$bridgeVersion = "utrust-bridge-fingerprint-v6"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"
+$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
 $lastFormalWriteFailure = $null
@@ -207,7 +209,7 @@ function Invoke-FormalVehicleWrite {
   $script:formalWriteStage = "claim"
   $claim = Invoke-RfidServer "/api/local-rfid-bridge/claim" $BridgeToken @{ cardUidFingerprint = $fingerprint } "claim"
   $script:formalWriteStage = "validate_claim"
-  if (-not $claim.success -or -not $claim.payload -or [string]::IsNullOrWhiteSpace([string]$claim.payloadJson) -or -not $claim.nfcEntryUrl) { if ($claim.message) { throw ([string]$claim.message) } else { throw "server_write_payload_not_available" } }
+  if (-not $claim.success -or -not $claim.payload -or [string]::IsNullOrWhiteSpace([string]$claim.payloadJson) -or -not $claim.nfcEntryUrl -or [string]$claim.payloadFingerprint -notmatch "^[a-f0-9]{64}$" -or $null -eq $claim.payloadUtf8ByteLength -or [int]$claim.payloadUtf8ByteLength -lt 0) { if ($claim.message) { throw ([string]$claim.message) } else { throw "bridge_payload_shape_invalid" } }
   # 此字符串由服务端生成，必须不经 PowerShell ConvertTo-Json 重写，确保写入、回读和任务摘要针对完全相同的 UTF-8 字节。
   $script:formalWriteStage = "prepare_writer_payload"
   $payloadJson = [string]$claim.payloadJson
@@ -228,6 +230,7 @@ function Invoke-FormalVehicleWrite {
     if ($writeStage -match "^(prepare|reader_connect|capability_container|read_user_area|invalidate_ndef|write_ndef_body|clear_old_tail|verify_ndef_body|commit_ndef_length|verify_ndef)$") { throw ("card_write_stage_" + $writeStage) }
     if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
   }
+  if ([string]$writeResult.payloadFingerprint -notmatch "^[a-f0-9]{64}$" -or $null -eq $writeResult.payloadUtf8ByteLength -or [int]$writeResult.payloadUtf8ByteLength -lt 0) { throw "card_writer_result_invalid" }
   $script:formalWriteStage = "verify_payload_fingerprint"
   $expectedPayloadFingerprint = [string]$claim.payloadFingerprint
   $actualPayloadFingerprint = [string]$writeResult.payloadFingerprint
@@ -252,7 +255,7 @@ function Invoke-FormalVehicleWrite {
   if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
   $script:formalWriteStage = "finished"
-  return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint; bridgeVersion = $bridgeVersion; writerVersion = [string]$writeResult.writerVersion }
+  return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = [string]$writeResult.writerVersion }
 }
 
 function Invoke-PendingVehicleConfirmation {
@@ -275,9 +278,9 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
-      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; requiredWriterVersion = $requiredWriterVersion }; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion }; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/api/last-write-failure") {
-        if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion }; continue }
+        if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion }; continue }
         Write-BridgeJson $context $script:lastFormalWriteFailure
         continue
       }
@@ -314,8 +317,8 @@ try {
               $failureRecordCode = "server_bridge_failure_record_failed"
             }
           }
-          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion; diagnostics = $script:lastFormalWriteDiagnostics; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
-          Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion } 422
+          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion; diagnostics = $script:lastFormalWriteDiagnostics; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
+          Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion } 422
           continue
         }
       }

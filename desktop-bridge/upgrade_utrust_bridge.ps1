@@ -1,10 +1,12 @@
 $sourceRoot = $PSScriptRoot
 $targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-fingerprint-v5"
+$bridgeVersion = "utrust-bridge-fingerprint-v6"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"
+$bridgeContentSha256 = "a6ecc64cc56e27fd64c24d1dc8d2c61e860cc311eb4c5ff61316f11602d2e2c2"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-fingerprint-v5"
+$installerVersion = "utrust-upgrader-fingerprint-v6"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "7a282bcc4117fdb44c55538025ca2e3c97b44fc810d1715e5b6ea92c1f7fe699"
+  "utrust_local_bridge.ps1" = "a6ecc64cc56e27fd64c24d1dc8d2c61e860cc311eb4c5ff61316f11602d2e2c2"
   "run_utrust_rfid_write.ps1" = "940b0ad441a4cf8afdad1971d03264ce5e88612f1410f373b39c623e18dafa17"
   "UTrustNtag216RfidWrite.cs" = "ec4e4b342c325d8e2ec95d36604ed9d0d28277aeb17984df7a595a9347d52337"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
@@ -61,8 +63,8 @@ function Test-UTrustBridgeVersion {
       $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/health" -TimeoutSec 3
       $health = $response.Content | ConvertFrom-Json
       if ($response.StatusCode -eq 200 -and [bool]$health.success) {
-        if ([string]$health.bridgeVersion -eq $bridgeVersion -and [string]$health.requiredWriterVersion -eq $writerVersion) { return @{ Success = $true; Reason = "ok" } }
-        return @{ Success = $false; Reason = "bridge_version_mismatch" }
+        if ([string]$health.bridgeVersion -eq $bridgeVersion -and [string]$health.bridgeBuildId -eq $bridgeBuildId -and [string]$health.bridgeContentSha256 -eq $bridgeContentSha256 -and [string]$health.requiredWriterVersion -eq $writerVersion) { return @{ Success = $true; Reason = "ok" } }
+        return @{ Success = $false; Reason = "bridge_build_identity_mismatch" }
       }
     } catch {}
     Start-Sleep -Seconds 1
@@ -96,7 +98,7 @@ try {
   }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v5-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v6-" + (Get-Date -Format "yyyyMMddHHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -106,24 +108,24 @@ try {
   $stage = "stop_previous_bridge"
   Stop-UTrustBridge | Out-Null
 
-  $stage = "install_fingerprint_v5_files"
+  $stage = "install_fingerprint_v6_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name
-    $tempPath = $targetPath + ".fingerprint-v5.tmp"
+    $tempPath = $targetPath + ".fingerprint-v6.tmp"
     Copy-Item -LiteralPath $sourcePath -Destination $tempPath -Force
     Move-Item -LiteralPath $tempPath -Destination $targetPath -Force
     $installedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $expectedHashes[$name]) { throw "installed_file_checksum_mismatch" }
   }
 
-  $stage = "start_fingerprint_v5_bridge"
-  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v5"
-  $stage = "verify_fingerprint_v5_health"
+  $stage = "start_fingerprint_v6_bridge"
+  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v6"
+  $stage = "verify_fingerprint_v6_health"
   $healthResult = Test-UTrustBridgeVersion -StartedProcess $newBridge
   if (-not [bool]$healthResult.Success) { $stage = [string]$healthResult.Reason; throw $stage }
 
-  @{ success = $true; installerVersion = $installerVersion; bridgeVersion = $bridgeVersion; writerVersion = $writerVersion; backupCreated = $true; targetRoot = $targetRoot } | ConvertTo-Json -Compress
+  @{ success = $true; installerVersion = $installerVersion; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $writerVersion; backupCreated = $true; targetRoot = $targetRoot } | ConvertTo-Json -Compress
   exit 0
 } catch {
   $failureStage = $stage

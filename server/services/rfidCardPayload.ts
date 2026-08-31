@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { ENV } from "../_core/env";
 
 export type TransportNfcCardPayloadV2 = {
@@ -12,6 +12,20 @@ export type TransportNfcCardPayloadV2 = {
   n: string;
   s: string;
 };
+
+/**
+ * 正式车辆卡 RC3 正文的唯一字节契约。任务创建、加密保存、PC 桥接领取和 C# 写卡器
+ * 都必须以本函数产出的 payloadJson UTF-8 字节为准；不得在中间环节重新序列化对象。
+ */
+export function createTransportNfcCardPayloadContract(payload: TransportNfcCardPayloadV2) {
+  const payloadJson = JSON.stringify(payload);
+  const payloadUtf8Bytes = Buffer.from(payloadJson, "utf8");
+  return {
+    payloadJson,
+    payloadFingerprint: createHash("sha256").update(payloadUtf8Bytes).digest("hex"),
+    payloadUtf8ByteLength: payloadUtf8Bytes.length,
+  };
+}
 
 const SIGNATURE_CONTEXT = "road-construction-transport-nfc/v2";
 const DEEP_LINK_SIGNATURE_CONTEXT = "road-construction-transport-nfc/deep-link/v1";

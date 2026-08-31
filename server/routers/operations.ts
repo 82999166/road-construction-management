@@ -47,7 +47,7 @@ import { makeRequest, type GeocodingResult } from "../_core/map";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
-import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
+import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, createTransportNfcCardPayloadContract, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { storageGetSignedUrl } from "../storage";
@@ -2217,7 +2217,7 @@ export const transportRouter = router({
     if (!card) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "首次发卡绑定创建失败" });
 
     const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
-    const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const payloadContract = createTransportNfcCardPayloadContract(payload);
     const jobNo = createRfidWriteJobNo(input.projectId);
     const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
     await db.insert(rfidCardWriteJobs).values({
@@ -2227,8 +2227,8 @@ export const transportRouter = router({
       cardId: card.id,
       writerDeviceId: null,
       action: "issue",
-      payloadFingerprint,
-      payloadEncrypted: encryptSecret(JSON.stringify({ payload, nfcEntryUrl })),
+      payloadFingerprint: payloadContract.payloadFingerprint,
+      payloadEncrypted: encryptSecret(JSON.stringify({ payloadJson: payloadContract.payloadJson, nfcEntryUrl })),
       executionMode: "mobile_web_nfc",
       payloadVersion: card.payloadVersion,
       preparedBy: user.id,
@@ -2243,7 +2243,7 @@ export const transportRouter = router({
       targetId: String(card.id),
       summary: `准备手机首次发卡：车辆 ${vehicle.plateNo}，系统卡号 ${card.cardUidMasked}`,
     });
-    return { success: true, jobId: job.id, jobNo, cardId: card.id, cardCode: card.cardUidMasked, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "mobile_web_nfc" as const };
+    return { success: true, jobId: job.id, jobNo, cardId: card.id, cardCode: card.cardUidMasked, payload, nfcEntryUrl, payloadFingerprint: payloadContract.payloadFingerprint, hardwareMode: "mobile_web_nfc" as const };
   }),
 
   /** 管理员准备一次写卡任务。返回的载荷只在本次受控响应中提供，数据库仅保存其摘要以防止卡片内容被静态导出。 */
@@ -2304,18 +2304,18 @@ export const transportRouter = router({
     const driverPhone = card.driverPhoneEncrypted ? decryptSecret(card.driverPhoneEncrypted) : "";
     if (!driverPhone) throw new TRPCError({ code: "BAD_REQUEST", message: "该车辆射频卡未保存司机电话，不能生成现场可核对的写卡载荷" });
     const payload = buildTransportNfcCardPayload({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion, plateNo: vehicle.plateNo, driverName: vehicle.driverName, driverPhone });
-    const payloadFingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const payloadContract = createTransportNfcCardPayloadContract(payload);
     const jobNo = createRfidWriteJobNo(input.projectId);
     const nfcEntryUrl = buildTransportNfcDeepLink({ cardId: card.id, projectId: input.projectId, payloadVersion: card.payloadVersion });
     const bridgeToken = input.executionMode === "pc_bridge" ? createRfidBridgeToken() : null;
     const bridgeTokenExpiresAt = bridgeToken ? new Date(Date.now() + RFID_BRIDGE_TOKEN_TTL_MS) : null;
-    await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint, payloadEncrypted: encryptSecret(JSON.stringify({ payload, nfcEntryUrl })), executionMode: input.executionMode, bridgeTokenHash: bridgeToken ? hashRfidBridgeToken(bridgeToken) : null, bridgeTokenExpiresAt, payloadVersion: card.payloadVersion, preparedBy: user.id });
+    await db.insert(rfidCardWriteJobs).values({ jobNo, projectId: input.projectId, vehicleId: vehicle.id, cardId: card.id, writerDeviceId: writerDeviceId ?? null, action: input.action, payloadFingerprint: payloadContract.payloadFingerprint, payloadEncrypted: encryptSecret(JSON.stringify({ payloadJson: payloadContract.payloadJson, nfcEntryUrl })), executionMode: input.executionMode, bridgeTokenHash: bridgeToken ? hashRfidBridgeToken(bridgeToken) : null, bridgeTokenExpiresAt, payloadVersion: card.payloadVersion, preparedBy: user.id });
     const [job] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.jobNo, jobNo)).limit(1);
     if (!job) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "写卡任务创建失败" });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "prepare_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: `准备${input.action === "rewrite" ? "补写" : input.action === "revoke" ? "挂失" : "写入"}车辆 ${vehicle.plateNo} 的射频卡任务` });
     return input.executionMode === "pc_bridge"
-      ? { success: true, jobId: job.id, jobNo, payloadFingerprint, bridgeToken, bridgeTokenExpiresAt: bridgeTokenExpiresAt?.toISOString() ?? null, hardwareMode: "pc_bridge" as const }
-      : { success: true, jobId: job.id, jobNo, payload, nfcEntryUrl, payloadFingerprint, hardwareMode: "manual_confirmation" as const };
+      ? { success: true, jobId: job.id, jobNo, payloadFingerprint: payloadContract.payloadFingerprint, bridgeToken, bridgeTokenExpiresAt: bridgeTokenExpiresAt?.toISOString() ?? null, hardwareMode: "pc_bridge" as const }
+      : { success: true, jobId: job.id, jobNo, payload, nfcEntryUrl, payloadFingerprint: payloadContract.payloadFingerprint, hardwareMode: "manual_confirmation" as const };
   }),
 
   /** 物理写卡器接入前由现场管理员确认结果；失败和确认均保留任务审计，不能通过前端静默修改卡状态。 */

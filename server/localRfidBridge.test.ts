@@ -15,10 +15,12 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(source).toContain("hashRfidBridgeToken(token)");
     expect(source).toContain("decryptSecret(job.payloadEncrypted)");
     expect(source).toContain("card.cardUidFingerprint !== cardUidFingerprint");
-    expect(source).toContain("const payloadJson = JSON.stringify(stored.payload)");
-    expect(source).toContain('Buffer.byteLength(payloadJson, "utf8")');
+    expect(source).toContain('typeof stored.payloadJson === "string" ? stored.payloadJson');
+    expect(source).toContain("createTransportNfcCardPayloadContract(payload)");
+    expect(source).toContain("payloadContract.payloadJson !== payloadJson");
+    expect(source).toContain("payloadContract.payloadFingerprint !== job.payloadFingerprint");
     expect(source).toContain("payloadUtf8ByteLength");
-    expect(source).toContain("payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl");
+    expect(source).toContain("payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl");
     expect(source).toContain('code: "bridge_token_invalid"');
     expect(source).toContain('code: "card_uid_fingerprint_invalid"');
     expect(source).toContain("isCardStateAllowedForJob(card, job.action)");

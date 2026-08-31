@@ -198,7 +198,8 @@ const EMPTY_DIESEL_PRICE_FORM: DieselPriceForm = { projectId: "", pricePerLiter:
 const EMPTY_DIESEL_REFUEL_FORM: DieselRefuelForm = { projectId: "", assetType: "vehicle", vehicleId: "", machineId: "", transportTripId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toLocalDateTimeInput(new Date()), meterReading: "", receiptNo: "", remarks: "", status: "approved" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
 const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", managementCode: "", cardUid: "", driverPhone: "", status: "suspended", reuseRevokedUnboundCard: false };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-fingerprint-v5";
+const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-fingerprint-v6";
+const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-fingerprint-20260831-rc3diag-a";
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
@@ -1540,8 +1541,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
     try {
       const healthResponse = await fetch("http://127.0.0.1:47601/health", { method: "GET", cache: "no-store", signal: controller.signal });
-      const healthResult = await healthResponse.json().catch(() => ({})) as { success?: boolean; bridgeVersion?: string };
-      if (!healthResponse.ok || !healthResult.success || healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION) throw new Error("bridge_write_version_mismatch");
+      const healthResult = await healthResponse.json().catch(() => ({})) as { success?: boolean; bridgeVersion?: string; bridgeBuildId?: string };
+      if (!healthResponse.ok || !healthResult.success || healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION || healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID) throw new Error("bridge_write_version_mismatch");
       const response = await fetch("http://127.0.0.1:47601/api/write-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: rfidWritePreview.bridgeToken }), cache: "no-store", signal: controller.signal });
       const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; message?: string; status?: string };
       if (response.status === 404) throw new Error("bridge_write_endpoint_missing");
@@ -1583,7 +1584,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         : error instanceof TypeError
           ? "浏览器无法访问正式写卡接口：请保持 Windows 桥接程序运行，并允许当前网站访问本机 127.0.0.1 设备后重试。"
           : error instanceof Error && error.message === "bridge_write_version_mismatch"
-            ? "当前 Windows 桥接程序或写卡器版本过旧，已在写卡前停止操作；请覆盖最新版桥接文件并重启后再生成任务。"
+            ? "当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作；请安装唯一编号的最新版桥接包并重启后再生成任务。"
           : error instanceof Error && error.message === "bridge_write_endpoint_missing"
             ? "当前 Windows 桥接程序未安装正式车辆卡写入接口：测试写卡可用，但请更新桥接程序后再办理正式车辆卡。"
             : error instanceof Error && error.message === "bridge_write_authorization_rejected"

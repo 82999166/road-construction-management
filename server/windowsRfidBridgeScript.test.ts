@@ -49,10 +49,14 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v5"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v6"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"');
+    expect(source).toContain('$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
     expect(source).toContain('bridgeVersion = $bridgeVersion');
+    expect(source).toContain('bridgeBuildId = $bridgeBuildId');
+    expect(source).toContain('bridgeContentSha256 = $bridgeContentSha256');
     expect(source).toContain("function Get-StructuredReaderResult");
     expect(source).toContain('$start = $line.IndexOf("{")');
     expect(source).toContain('$end = $line.LastIndexOf("}")');
@@ -75,6 +79,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('$script:formalWriteStage = "validate_writer_result"');
     expect(source).toContain('"/api/last-write-failure"');
     expect(source).toContain("lastFormalWriteFailure");
+    expect(source).toContain('if ([string]$writeResult.payloadFingerprint -notmatch "^[a-f0-9]{64}$"');
+    expect(source).toContain('throw "card_writer_result_invalid"');
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
@@ -129,14 +135,19 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 fingerprint v5 健康并在失败时回滚", () => {
+  it("Windows 唯一构建升级器必须校验核心文件、备份旧版、验证 v6 健康构建标识并在失败时回滚", () => {
     const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
-    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v5"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v5"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v6"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v6"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"');
+    expect(source).toContain('$bridgeContentSha256 = "a6ecc64cc56e27fd64c24d1dc8d2c61e860cc311eb4c5ff61316f11602d2e2c2"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
-    expect(source).toContain("backup-fingerprint-v5-");
+    expect(source).toContain("backup-fingerprint-v6-");
     expect(source).toContain("Test-UTrustBridgeVersion");
+    expect(source).toContain('[string]$health.bridgeBuildId -eq $bridgeBuildId');
+    expect(source).toContain('[string]$health.bridgeContentSha256 -eq $bridgeContentSha256');
+    expect(source).toContain('Reason = "bridge_build_identity_mismatch"');
     expect(source).toContain("previousVersionRestored = $rollbackHealthy");
   });
 });
