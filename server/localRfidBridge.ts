@@ -47,7 +47,8 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
     try {
       const token = getBridgeToken(req);
       const cardUidFingerprint = req.body?.cardUidFingerprint;
-      if (!token || !isFingerprint(cardUidFingerprint)) return res.status(400).json({ success: false, message: "本地桥接授权或卡 UID 指纹格式无效" });
+      if (!token) return res.status(400).json({ success: false, code: "bridge_token_invalid", message: "本地桥接授权格式无效" });
+      if (!isFingerprint(cardUidFingerprint)) return res.status(400).json({ success: false, code: "card_uid_fingerprint_invalid", message: "卡 UID 指纹格式无效" });
       const { db, job } = await findBridgeJob(token);
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
       if (!card || card.status !== "active" || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定不一致，已拒绝写入" });
@@ -68,7 +69,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const token = getBridgeToken(req);
       const cardUidFingerprint = req.body?.cardUidFingerprint;
       const payloadFingerprint = req.body?.payloadFingerprint;
-      if (!token || !isFingerprint(cardUidFingerprint) || !isFingerprint(payloadFingerprint)) return res.status(400).json({ success: false, message: "本地桥接完成参数格式无效" });
+      if (!token || !isFingerprint(cardUidFingerprint) || !isFingerprint(payloadFingerprint)) return res.status(400).json({ success: false, code: "bridge_complete_request_invalid", message: "本地桥接完成参数格式无效" });
       const { db, job } = await findBridgeJob(token, true);
       if (job.payloadFingerprint !== payloadFingerprint) return res.status(409).json({ success: false, message: "回读载荷摘要与写卡任务不一致，已拒绝确认" });
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);

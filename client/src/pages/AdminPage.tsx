@@ -1525,6 +1525,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (!response.ok || !result.success || result.status !== "confirmed") {
         if (bridgeFailure.includes("vehicle_card_readback_fingerprint_mismatch")) throw new Error("bridge_write_readback_fingerprint_mismatch");
         if (bridgeFailure.includes("bridge_payload_shape_invalid")) throw new Error("bridge_write_payload_shape_invalid");
+        if (bridgeFailure.includes("server_vehicle_card_claim_token_invalid")) throw new Error("bridge_write_server_claim_token_invalid");
+        if (bridgeFailure.includes("server_vehicle_card_claim_uid_invalid")) throw new Error("bridge_write_server_claim_uid_invalid");
         if (bridgeFailure.includes("server_vehicle_card_claim_request_invalid")) throw new Error("bridge_write_server_claim_request_invalid");
         if (bridgeFailure.includes("server_vehicle_card_claim_card_or_payload_conflict")) throw new Error("bridge_write_server_claim_card_or_payload_conflict");
         if (bridgeFailure.includes("server_vehicle_card_claim_authorization_or_server_unavailable")) throw new Error("bridge_write_server_claim_authorization_or_server_unavailable");
@@ -1556,6 +1558,10 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                   ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动，关闭窗口后重新生成任务再写入。"
                   : error instanceof Error && error.message === "bridge_write_payload_shape_invalid"
                     ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
+                    : error instanceof Error && error.message === "bridge_write_server_claim_token_invalid"
+                      ? "本次 PC 写卡授权未被桥接正确提交：当前卡没有开始写入。请关闭窗口并重新生成任务后立即写入。"
+                    : error instanceof Error && error.message === "bridge_write_server_claim_uid_invalid"
+                      ? "本机读取的卡 UID 未能生成有效指纹：当前卡没有开始写入。请保持卡片不动，重新读取 UID 并核对绑定后再生成任务。"
                     : error instanceof Error && error.message === "bridge_write_server_claim_request_invalid"
                       ? "本次写卡请求格式无效：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
                     : error instanceof Error && error.message === "bridge_write_server_claim_card_or_payload_conflict"

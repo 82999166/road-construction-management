@@ -78,11 +78,25 @@ function Invoke-RfidServer {
   param([string]$Path, [string]$BridgeToken, $Body, [ValidateSet("claim", "complete", "fail")][string]$Operation = "fail")
   $headers = @{ "x-rfid-bridge-token" = $BridgeToken; "Cache-Control" = "no-store" }
   $json = $Body | ConvertTo-Json -Compress -Depth 4
-  try { return Invoke-RestMethod -Method Post -Uri ($serverBaseUrl + $Path) -Headers $headers -ContentType "application/json" -Body $json -TimeoutSec 25 }
+  $utf8Body = [System.Text.Encoding]::UTF8.GetBytes($json)
+  try { return Invoke-RestMethod -Method Post -Uri ($serverBaseUrl + $Path) -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 25 }
   catch {
     $statusCode = $null
     if ($_.Exception.Response) { try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {} }
+    $serverCode = ""
+    if ($_.Exception.Response) {
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        if ($null -ne $stream) {
+          $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+          $errorJson = $reader.ReadToEnd(); $reader.Dispose(); $stream.Dispose()
+          if (-not [string]::IsNullOrWhiteSpace($errorJson)) { $serverCode = [string](($errorJson | ConvertFrom-Json).code) }
+        }
+      } catch {}
+    }
     if ($Operation -eq "claim") {
+      if ($serverCode -eq "bridge_token_invalid") { throw "server_vehicle_card_claim_token_invalid" }
+      if ($serverCode -eq "card_uid_fingerprint_invalid") { throw "server_vehicle_card_claim_uid_invalid" }
       if ($statusCode -eq 400) { throw "server_vehicle_card_claim_request_invalid" }
       if ($statusCode -eq 409) { throw "server_vehicle_card_claim_card_or_payload_conflict" }
       if ($statusCode -eq 422) { throw "server_vehicle_card_claim_authorization_or_server_unavailable" }
@@ -106,6 +120,8 @@ function Get-FormalWriteFailureCode {
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_vehicle_card_claim_failed") { return "server_vehicle_card_claim_failed" }
   if ($text -match "server_vehicle_card_claim_request_invalid") { return "server_vehicle_card_claim_request_invalid" }
+  if ($text -match "server_vehicle_card_claim_token_invalid") { return "server_vehicle_card_claim_token_invalid" }
+  if ($text -match "server_vehicle_card_claim_uid_invalid") { return "server_vehicle_card_claim_uid_invalid" }
   if ($text -match "server_vehicle_card_claim_card_or_payload_conflict") { return "server_vehicle_card_claim_card_or_payload_conflict" }
   if ($text -match "server_vehicle_card_claim_authorization_or_server_unavailable") { return "server_vehicle_card_claim_authorization_or_server_unavailable" }
   if ($text -match "server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
