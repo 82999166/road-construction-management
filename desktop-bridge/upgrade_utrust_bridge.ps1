@@ -1,14 +1,14 @@
 ﻿$sourceRoot = $PSScriptRoot
 $targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-fingerprint-v10"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-e"
-$bridgeContentSha256 = "b1069554ffebf2091809d8faaeb8e401b7468752413d9dd68bcabbe6d5c917e6"
+$bridgeVersion = "utrust-bridge-confirm-v11"
+$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"
+$bridgeContentSha256 = "4a47e8d071bf62bcbb71052d78c93d46939fd763264d9fb11c366c7db4b0a6ca"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-fingerprint-v10"
+$installerVersion = "utrust-upgrader-confirm-v11"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "b1069554ffebf2091809d8faaeb8e401b7468752413d9dd68bcabbe6d5c917e6"
+  "utrust_local_bridge.ps1" = "4a47e8d071bf62bcbb71052d78c93d46939fd763264d9fb11c366c7db4b0a6ca"
   "run_utrust_rfid_write.ps1" = "1efff811e5149b7f6846848881635a5e81ed9e76c9aa741deb334d3ecbd551ac"
-  "UTrustNtag216RfidWrite.cs" = "ec4e4b342c325d8e2ec95d36604ed9d0d28277aeb17984df7a595a9347d52337"
+  "UTrustNtag216RfidWrite.cs" = "b602906ad5c982c0e2a5d6945409f77c379f16ff32996094f4b8a243ebb4bd78"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
 }
 
@@ -113,7 +113,7 @@ try {
   if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v10-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-confirm-v11-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name

@@ -101,6 +101,7 @@ public static class UTrustNtag216RfidWrite
             string payloadBase64 = Environment.GetEnvironmentVariable("RC_RFID_PAYLOAD_B64");
             string urlBase64 = Environment.GetEnvironmentVariable("RC_RFID_URL_B64");
             bool allowOverwrite = string.Equals(Environment.GetEnvironmentVariable("RC_RFID_ALLOW_OVERWRITE"), "true", StringComparison.OrdinalIgnoreCase);
+            bool verifyOnly = string.Equals(Environment.GetEnvironmentVariable("RC_RFID_VERIFY_ONLY"), "true", StringComparison.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(payloadBase64) || string.IsNullOrWhiteSpace(urlBase64)) throw new InvalidOperationException("bridge_payload_not_supplied");
             string payloadJson = Encoding.UTF8.GetString(Convert.FromBase64String(payloadBase64));
             string entryUrl = Encoding.UTF8.GetString(Convert.FromBase64String(urlBase64));
@@ -128,8 +129,17 @@ public static class UTrustNtag216RfidWrite
             stage = "read_user_area";
             List<byte> existing = new List<byte>();
             for (int index = 0; index < userPageCount; index++) existing.AddRange(ReadPage(card, ref request, FirstUserPage + index));
-            if (!allowOverwrite && !IsBlankNdefArea(existing.ToArray())) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"result\":\"card_user_area_not_blank\"}"); return 4; }
             byte[] existingBytes = existing.ToArray();
+            if (verifyOnly)
+            {
+                stage = "verify_existing_ndef";
+                if (existingBytes.Length < ndef.Length || !ndef.SequenceEqual(existingBytes.Take(ndef.Length))) throw new InvalidOperationException("existing_ndef_byte_mismatch");
+                committed = true;
+                byte[] verifiedPayloadUtf8Bytes = Encoding.UTF8.GetBytes(payloadJson);
+                Console.WriteLine("{\"success\":true,\"written\":false,\"verified\":true,\"committed\":true,\"verifyOnly\":true,\"writerVersion\":\"" + WriterVersion + "\",\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(verifiedPayloadUtf8Bytes) + "\",\"payloadUtf8ByteLength\":" + verifiedPayloadUtf8Bytes.Length + ",\"writeProtectionChanged\":false}");
+                return 0;
+            }
+            if (!allowOverwrite && !IsBlankNdefArea(existingBytes)) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"result\":\"card_user_area_not_blank\"}"); return 4; }
             int lastExistingByte = Array.FindLastIndex(existingBytes, value => value != 0x00);
             int existingPageCount = lastExistingByte < 0 ? 0 : (lastExistingByte / 4) + 1;
 

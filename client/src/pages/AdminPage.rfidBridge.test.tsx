@@ -12,8 +12,8 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-fingerprint-v10"');
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-fingerprint-20260831-rc3diag-e"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-confirm-v11"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-confirm-recovery-20260831-readonly-a"');
     expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
     expect(source).toContain("healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION");
     expect(source).toContain("healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID");
@@ -25,5 +25,9 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("本机写卡器返回结果不完整：当前卡未通过写入确认");
     expect(source).toContain("车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。");
     expect(source).toContain("window.requestAnimationFrame(() => setRfidWritePreview(null))");
+    expect(source).toContain("trpc.transport.recoverRfidCardConfirmation.useMutation()");
+    expect(source).toContain('fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"');
+    expect(source).toContain("result.wroteCard !== false");
+    expect(source).toContain("只读复核并启用");
   });
 });

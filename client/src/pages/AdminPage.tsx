@@ -198,8 +198,8 @@ const EMPTY_DIESEL_PRICE_FORM: DieselPriceForm = { projectId: "", pricePerLiter:
 const EMPTY_DIESEL_REFUEL_FORM: DieselRefuelForm = { projectId: "", assetType: "vehicle", vehicleId: "", machineId: "", transportTripId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toLocalDateTimeInput(new Date()), meterReading: "", receiptNo: "", remarks: "", status: "approved" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
 const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", managementCode: "", cardUid: "", driverPhone: "", status: "suspended", reuseRevokedUnboundCard: false };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-fingerprint-v10";
-const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-fingerprint-20260831-rc3diag-e";
+const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-confirm-v11";
+const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-confirm-recovery-20260831-readonly-a";
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
@@ -1534,6 +1534,36 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [writingRfidCard, setWritingRfidCard] = useState(false);
   const [readingVehicleCardEntry, setReadingVehicleCardEntry] = useState(false);
   const [retryingRfidCardConfirmation, setRetryingRfidCardConfirmation] = useState(false);
+  const recoverRfidCardConfirmation = trpc.transport.recoverRfidCardConfirmation.useMutation();
+  const verifyAndConfirmWrittenRfidCard = async (jobId: number) => {
+    if (!window.confirm("确认只读复核当前车辆卡并完成启用吗？此操作只读取卡内现有 NDEF 并逐字节比对，绝不会再次写入卡片。")) return;
+    setRetryingRfidCardConfirmation(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
+    try {
+      const recovery = await recoverRfidCardConfirmation.mutateAsync({ id: jobId, projectId: workspaceProjectId });
+      const healthResponse = await fetch("http://127.0.0.1:47601/health", { method: "GET", cache: "no-store", signal: controller.signal });
+      const health = await healthResponse.json().catch(() => ({})) as { success?: boolean; bridgeVersion?: string; bridgeBuildId?: string };
+      if (!healthResponse.ok || !health.success || health.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION || health.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID) throw new Error("bridge_recovery_version_mismatch");
+      const response = await fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: recovery.bridgeToken }), cache: "no-store", signal: controller.signal });
+      const result = await response.json().catch(() => ({})) as { success?: boolean; status?: string; message?: string; wroteCard?: boolean; readbackVerified?: boolean };
+      if (!response.ok || !result.success || result.status !== "confirmed" || result.wroteCard !== false || result.readbackVerified !== true) throw new Error(result.message || "bridge_recovery_readback_failed");
+      await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
+      toast.success("车辆卡现有内容已逐字节只读复核，服务端确认完成并已启用；本次没有再次写卡。");
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "只读复核超时：请保持车辆卡不动，不要重新写卡。"
+        : error instanceof Error && error.message === "bridge_recovery_version_mismatch"
+          ? "Windows 桥接版本不支持只读复核，已停止操作；卡片未被再次写入。"
+          : error instanceof TypeError
+            ? "浏览器无法访问本机只读复核接口；卡片未被再次写入。"
+            : "现有卡内容未通过只读复核或任务状态已变化；请停止操作，不要重新写卡。";
+      toast.error(message);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setRetryingRfidCardConfirmation(false);
+    }
+  };
   const writeRfidCardWithBridge = async () => {
     if (!rfidWritePreview?.bridgeToken) return toast.error("本地写卡授权无效，请重新生成 PC 写卡任务");
     setWritingRfidCard(true);
@@ -1592,7 +1622,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
               : error instanceof Error && error.message === "bridge_write_card_or_payload_mismatch"
                 ? "当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。"
                 : error instanceof Error && error.message === "bridge_write_readback_fingerprint_mismatch"
-                  ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动，关闭窗口后重新生成任务再写入。"
+                  ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动并停止操作，不要重新写卡。"
                   : error instanceof Error && error.message === "bridge_write_payload_shape_invalid"
                     ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
                     : error instanceof Error && error.message === "bridge_write_server_claim_token_invalid"
@@ -1608,7 +1638,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                     : error instanceof Error && error.message === "bridge_write_server_claim_failed"
                       ? "服务器未返回本次正式写卡载荷：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务；不要点击“仅回传确认”。"
                     : error instanceof Error && error.message === "bridge_write_server_confirm_retryable"
-                      ? "本机写入回读已完成，但服务端确认暂未返回：请保持卡片和桥接程序不变，在当前窗口再次点击“写入并回读确认”；仍失败再重新生成任务。"
+                      ? "本机写入回读已完成，但服务端确认暂未返回：请保持卡片和桥接程序不变，只点击“仅回传确认（不写卡）”，不得再次写入。"
                       : error instanceof Error && error.message === "bridge_write_reader_connection_failed"
                         ? "正式写卡时读卡器连接中断：请保持卡片在 uTrust 感应区，关闭其他读卡程序后重新生成任务。"
                 : error instanceof Error && error.message === "bridge_write_card_capacity_insufficient"
@@ -1618,7 +1648,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                     : error instanceof Error && error.message === "bridge_write_user_area_write_failed"
                       ? "写入卡片 NDEF 用户区失败：请确认卡片未被写保护，并保持卡片稳定停留在感应区后重新生成任务。"
                       : error instanceof Error && error.message === "bridge_write_post_write_mismatch"
-                        ? "卡片写入后逐字节回读不一致：请勿移动卡片，重新生成任务后再写入；连续失败请更换符合要求的空白卡。"
+                        ? "卡片写入后逐字节回读不一致：请保持卡片不动并停止操作，不要再次写入。"
                         : error instanceof Error && error.message === "bridge_write_ndef_cc_invalid"
                           ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
                           : error instanceof Error && error.message === "bridge_write_no_diagnostic_result"
@@ -3319,7 +3349,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         <TableCell className="whitespace-nowrap text-xs text-slate-600">{card.driverPhoneMasked || "未登记"}</TableCell>
         <TableCell className="whitespace-nowrap text-xs text-slate-600">{card.writerName || "未指定"}{card.writerModel ? `（${card.writerModel}）` : ""}</TableCell>
         <TableCell className="whitespace-nowrap text-xs text-slate-600">{displayDate(card.lastWrittenAt)}</TableCell>
-        <TableCell><div className="flex min-w-max items-center gap-2"><Button size="sm" variant="outline" onClick={() => handleRevokeVehicleRfidCard(Number(card.id))} disabled={revokeVehicleRfidCard.isPending || card.status === "revoked"}>{revokeVehicleRfidCard.isPending ? "处理中…" : "挂失停用"}</Button><Button size="sm" variant="outline" onClick={() => handleUnbindVehicleRfidCard(Number(card.id))} disabled={unbindVehicleRfidCard.isPending || !card.vehicleId}>{unbindVehicleRfidCard.isPending ? "处理中…" : "解除绑定"}</Button>{canRebind ? <Button size="sm" variant="outline" onClick={openRevokedUnboundCardRebind} disabled={saveVehicleRfidCard.isPending}>重新绑定</Button> : null}<Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: isInitialIssue ? "issue" : "rewrite", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || !canWrite}>{prepareRfidCardWrite.isPending ? "生成中…" : isInitialIssue ? "PC 写入车辆卡" : "PC 补写车辆卡"}</Button></div></TableCell>
+        <TableCell><div className="flex min-w-max items-center gap-2"><Button size="sm" variant="outline" onClick={() => handleRevokeVehicleRfidCard(Number(card.id))} disabled={revokeVehicleRfidCard.isPending || card.status === "revoked"}>{revokeVehicleRfidCard.isPending ? "处理中…" : "挂失停用"}</Button><Button size="sm" variant="outline" onClick={() => handleUnbindVehicleRfidCard(Number(card.id))} disabled={unbindVehicleRfidCard.isPending || !card.vehicleId}>{unbindVehicleRfidCard.isPending ? "处理中…" : "解除绑定"}</Button>{canRebind ? <Button size="sm" variant="outline" onClick={openRevokedUnboundCardRebind} disabled={saveVehicleRfidCard.isPending}>重新绑定</Button> : null}{card.confirmationRecoveryJobId ? <Button size="sm" variant="outline" onClick={() => void verifyAndConfirmWrittenRfidCard(Number(card.confirmationRecoveryJobId))} disabled={retryingRfidCardConfirmation || recoverRfidCardConfirmation.isPending}>{retryingRfidCardConfirmation || recoverRfidCardConfirmation.isPending ? "只读复核中…" : "只读复核并启用"}</Button> : null}<Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: isInitialIssue ? "issue" : "rewrite", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || !canWrite || Boolean(card.confirmationRecoveryJobId)}>{prepareRfidCardWrite.isPending ? "生成中…" : isInitialIssue ? "PC 写入车辆卡" : "PC 补写车辆卡"}</Button></div></TableCell>
       </TableRow>;
     };
     return (

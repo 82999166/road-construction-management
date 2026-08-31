@@ -49,6 +49,7 @@ import { sendOfficialAccountDriverNotification } from "../services/officialAccou
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, createTransportNfcCardPayloadContract, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
+import { isRfidConfirmationRecoveryEligible, RFID_CONFIRMATION_RECEIPT_FAILURE } from "../services/rfidConfirmationRecovery";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { storageGetSignedUrl } from "../storage";
 import {
@@ -479,6 +480,11 @@ const rfidWriteConfirmInput = z.object({
   projectId: z.number().int().positive(),
   success: z.boolean(),
   failureReason: z.string().trim().max(500).nullable().optional(),
+});
+
+const rfidConfirmationRecoveryInput = z.object({
+  id: z.number().int().positive(),
+  projectId: z.number().int().positive(),
 });
 
 /** 本地环回桥接仅返回 UID 指纹；后台不接收或持久化测试卡的原始 UID。 */
@@ -2035,7 +2041,20 @@ export const transportRouter = router({
       .where(eq(transportVehicleRfidCards.projectId, input.projectId))
       .orderBy(desc(transportVehicleRfidCards.updatedAt));
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
-    return isDriverOnly ? rows.filter(row => row.driverUserId === user.id) : rows;
+    if (isDriverOnly) return rows.filter(row => row.driverUserId === user.id).map(row => ({ ...row, confirmationRecoveryJobId: null }));
+    const recoveryJobs = await db.select({ id: rfidCardWriteJobs.id, cardId: rfidCardWriteJobs.cardId })
+      .from(rfidCardWriteJobs)
+      .where(and(
+        eq(rfidCardWriteJobs.projectId, input.projectId),
+        eq(rfidCardWriteJobs.executionMode, "pc_bridge"),
+        eq(rfidCardWriteJobs.status, "failed"),
+        eq(rfidCardWriteJobs.failureReason, RFID_CONFIRMATION_RECEIPT_FAILURE),
+      ))
+      .orderBy(desc(rfidCardWriteJobs.id))
+      .limit(100);
+    const latestRecoveryJobByCardId = new Map<number, number>();
+    for (const job of recoveryJobs) if (!latestRecoveryJobByCardId.has(job.cardId)) latestRecoveryJobByCardId.set(job.cardId, job.id);
+    return rows.map(row => ({ ...row, confirmationRecoveryJobId: latestRecoveryJobByCardId.get(row.id) ?? null }));
   }),
 
   revokeVehicleRfidCard: protectedProcedure.input(rfidCardManagementInput).mutation(async ({ ctx, input }) => {
@@ -2316,6 +2335,52 @@ export const transportRouter = router({
     return input.executionMode === "pc_bridge"
       ? { success: true, jobId: job.id, jobNo, payloadFingerprint: payloadContract.payloadFingerprint, bridgeToken, bridgeTokenExpiresAt: bridgeTokenExpiresAt?.toISOString() ?? null, hardwareMode: "pc_bridge" as const }
       : { success: true, jobId: job.id, jobNo, payload, nfcEntryUrl, payloadFingerprint: payloadContract.payloadFingerprint, hardwareMode: "manual_confirmation" as const };
+  }),
+
+  /**
+   * 本机已完成写入、逐字节回读和摘要一致，但 DPAPI 收据保存失败时，仅重新签发一次短时令牌。
+   * 该接口绝不直接确认成功；桥接仍须读取同一实体卡并以只读方式逐字节复核完整 NDEF 后调用 complete。
+   */
+  recoverRfidCardConfirmation: protectedProcedure.input(rfidConfirmationRecoveryInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
+    assertCanManageTransportResources(roleCodes);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const [job] = await db.select().from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.id, input.id)).limit(1);
+    if (!job || job.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "待恢复的写卡任务不存在或不属于当前项目" });
+    const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
+    const [latestJob] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.cardId, job.cardId)).orderBy(desc(rfidCardWriteJobs.id)).limit(1);
+    if (!card || !latestJob || !isRfidConfirmationRecoveryEligible({ job, card, latestJobIdForCard: latestJob.id })) {
+      throw new TRPCError({ code: "CONFLICT", message: "该任务不符合只读复核恢复条件，请勿重新写卡" });
+    }
+    const bridgeToken = createRfidBridgeToken();
+    const bridgeTokenExpiresAt = new Date(Date.now() + RFID_BRIDGE_TOKEN_TTL_MS);
+    await db.transaction(async tx => {
+      const jobWrite = await tx.update(rfidCardWriteJobs).set({
+        status: "prepared",
+        failureReason: "confirmation_recovery_prepared",
+        bridgeTokenHash: hashRfidBridgeToken(bridgeToken),
+        bridgeTokenExpiresAt,
+        confirmedBy: null,
+        confirmedAt: null,
+      }).where(and(
+        eq(rfidCardWriteJobs.id, job.id),
+        eq(rfidCardWriteJobs.status, "failed"),
+        eq(rfidCardWriteJobs.failureReason, RFID_CONFIRMATION_RECEIPT_FAILURE),
+      ));
+      assertConditionalStatusWrite(jobWrite, "写卡确认恢复任务");
+      await tx.insert(auditLogs).values({
+        userId: user.id,
+        module: "transport",
+        action: "recover_rfid_card_confirmation",
+        targetType: "rfid_card_write_job",
+        targetId: String(job.id),
+        summary: `重新签发车辆卡任务 ${job.jobNo} 的只读复核确认授权；不再次写入实体卡`,
+      });
+    });
+    return { success: true, jobId: job.id, jobNo: job.jobNo, bridgeToken, bridgeTokenExpiresAt: bridgeTokenExpiresAt.toISOString() };
   }),
 
   /** 物理写卡器接入前由现场管理员确认结果；失败和确认均保留任务审计，不能通过前端静默修改卡状态。 */

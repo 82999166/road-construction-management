@@ -31,7 +31,13 @@ describe("本地 uTrust 正式写卡服务", () => {
   it("仅在 UID 与回读载荷摘要均匹配时确认任务，失败会留存审计", () => {
     expect(source).toContain('"/api/local-rfid-bridge/complete"');
     expect(source).toContain("job.payloadFingerprint !== payloadFingerprint");
-    expect(source).toContain('action: "confirm_rfid_bridge_write"');
+    expect(source).toContain('isConfirmationRecovery ? "confirm_rfid_bridge_readback_recovery" : "confirm_rfid_bridge_write"');
+    expect(source).toContain('job.failureReason === "confirmation_recovery_prepared"');
+    expect(source).toContain('req.body?.confirmationMode !== "verify_existing_ndef"');
+    expect(source).toContain("req.body?.wroteCard !== false");
+    expect(source).toContain("req.body?.readbackVerified !== true");
+    expect(source).toContain("failureReason: null");
+    expect(source).toContain("未再次写卡并完成确认");
     expect(source).toContain('"/api/local-rfid-bridge/fail"');
     expect(source).toContain('action: "fail_rfid_bridge_write"');
   });

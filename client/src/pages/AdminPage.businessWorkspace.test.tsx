@@ -119,10 +119,12 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("卡片写入后逐字节回读不一致");
     expect(source).toContain("回读摘要与本次受控任务不一致");
     expect(source).toContain("服务端确认暂未返回");
-    expect(source).toContain("在当前窗口再次点击“写入并回读确认”");
+    expect(source).toContain("只点击“仅回传确认（不写卡）”，不得再次写入");
     expect(source).toContain("仅回传确认（不写卡）");
     expect(source).toContain("本机 DPAPI 加密短时收据");
     expect(source).toContain('"http://127.0.0.1:47601/api/confirm-vehicle-card"');
+    expect(source).toContain('"http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"');
+    expect(source).toContain("只读复核并启用");
     expect(source).toContain('"http://127.0.0.1:47601/api/read-vehicle-entry"');
     expect(source).toContain('"bridge_write_server_claim_failed"');
     expect(source).toContain("服务器未返回本次正式写卡载荷");

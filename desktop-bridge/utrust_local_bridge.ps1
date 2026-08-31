@@ -3,8 +3,8 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-fingerprint-v10"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-e"
+$bridgeVersion = "utrust-bridge-confirm-v11"
+$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -279,15 +279,50 @@ function Invoke-FormalVehicleWrite {
     }
     throw (New-PayloadFingerprintMismatchException $expectedPayloadFingerprint $actualPayloadFingerprint $expectedPayloadUtf8ByteLength $actualPayloadUtf8ByteLength)
   }
-  # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
-  $script:formalWriteStage = "save_pending_confirmation"
-  Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
   $script:formalWriteStage = "complete"
-  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint } "complete"
+  try {
+    $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint } "complete"
+  }
+  catch {
+    # 正常链路先直接确认；仅确认请求瞬时失败时才尝试保存 DPAPI 短时收据，收据失败绝不触发再次写卡。
+    $script:formalWriteStage = "save_pending_confirmation"
+    Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
+    throw
+  }
   if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
   $script:formalWriteStage = "finished"
   return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = [string]$writeResult.writerVersion }
+}
+
+function Invoke-VerifiedVehicleConfirmation {
+  param([string]$BridgeToken)
+  $script:formalWriteStage = "verify_confirmation_read_uid"
+  $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
+  if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }
+  $fingerprint = Get-UidFingerprint $uidRead.uid
+  $script:formalWriteStage = "verify_confirmation_claim"
+  $claim = Invoke-RfidServer "/api/local-rfid-bridge/claim" $BridgeToken @{ cardUidFingerprint = $fingerprint } "claim"
+  if (-not $claim.success -or [string]::IsNullOrWhiteSpace([string]$claim.payloadJson) -or -not $claim.nfcEntryUrl -or [string]$claim.payloadFingerprint -notmatch "^[a-f0-9]{64}$" -or $null -eq $claim.payloadUtf8ByteLength) { throw "bridge_payload_shape_invalid" }
+  $oldPayload = $env:RC_RFID_PAYLOAD_B64; $oldUrl = $env:RC_RFID_URL_B64; $oldVerifyOnly = $env:RC_RFID_VERIFY_ONLY; $oldOverwrite = $env:RC_RFID_ALLOW_OVERWRITE
+  try {
+    $env:RC_RFID_PAYLOAD_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$claim.payloadJson))
+    $env:RC_RFID_URL_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$claim.nfcEntryUrl))
+    $env:RC_RFID_VERIFY_ONLY = "true"
+    $env:RC_RFID_ALLOW_OVERWRITE = "false"
+    $script:formalWriteStage = "verify_confirmation_readback"
+    $verifyResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty
+  }
+  finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_VERIFY_ONLY = $oldVerifyOnly; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
+  if (-not $verifyResult.success -or [bool]$verifyResult.written -or -not $verifyResult.verified -or -not $verifyResult.committed -or -not $verifyResult.verifyOnly) { throw "vehicle_card_readback_verification_failed" }
+  if ([string]$verifyResult.writerVersion -ne $requiredWriterVersion) { throw "card_writer_version_mismatch" }
+  if ([string]$verifyResult.payloadFingerprint -ne [string]$claim.payloadFingerprint -or [int]$verifyResult.payloadUtf8ByteLength -ne [int]$claim.payloadUtf8ByteLength) { throw "vehicle_card_readback_fingerprint_mismatch" }
+  $script:formalWriteStage = "verify_confirmation_complete"
+  $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = [string]$verifyResult.payloadFingerprint; confirmationMode = "verify_existing_ndef"; wroteCard = $false; readbackVerified = $true } "complete"
+  if (-not $completed.success -or $completed.status -ne "confirmed") { throw "server_vehicle_card_confirm_failed" }
+  Clear-PendingRfidConfirmation
+  $script:formalWriteStage = "finished"
+  return @{ success = $true; jobNo = [string]$claim.jobNo; status = "confirmed"; confirmationOnly = $true; readbackVerified = $true; wroteCard = $false; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = [string]$verifyResult.writerVersion }
 }
 
 function Invoke-PendingVehicleConfirmation {
@@ -358,7 +393,17 @@ try {
       }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/confirm-vehicle-card") {
         try { $result = Invoke-PendingVehicleConfirmation; Write-BridgeJson $context $result; continue }
-        catch { throw (Get-FormalWriteFailureCode ([string]$_.Exception.Message)) }
+        catch { Write-BridgeJson $context @{ success = $false; message = (Get-FormalWriteFailureCode ([string]$_.Exception.Message)) } 422; continue }
+      }
+      if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/verify-and-confirm-vehicle-card") {
+        try {
+          $request = Read-BridgeBody $context; $bridgeToken = [string]$request.bridgeToken
+          if ([string]::IsNullOrWhiteSpace($bridgeToken) -or $bridgeToken.Length -lt 32) { throw "bridge_token_required" }
+          $result = Invoke-VerifiedVehicleConfirmation $bridgeToken
+          Write-BridgeJson $context $result
+          continue
+        }
+        catch { Write-BridgeJson $context @{ success = $false; message = (Get-FormalWriteFailureCode ([string]$_.Exception.Message)); wroteCard = $false } 422; continue }
       }
       Write-BridgeJson $context @{ success = $false; message = "bridge_path_not_found" } 404
     } catch { Write-BridgeJson $context @{ success = $false; message = $_.Exception.Message } 422 }

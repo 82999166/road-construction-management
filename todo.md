@@ -964,13 +964,21 @@
 
 - [ ] 修复已核验 `utrust-bridge-fingerprint-v6` 构建中 `verify_payload_fingerprint` 失败记录仍返回 `diagnostics=null` 的异常边界传递缺陷：不得依赖函数作用域中 `$script:lastFormalWriteDiagnostics` 是否保留，必须在同一异常捕获边界从仅含摘要前缀/UTF-8 长度的受控诊断载体重建并写入最近失败记录；不得记录 RC3 正文、深链、UID、令牌、APDU 或底层异常。
 
-- [ ] 修复 Windows v7 桥接原子升级后 `new_bridge_process_exited` 的启动兼容性故障：升级器已自动恢复上一版，未写卡。Windows PowerShell 5.1 对 v7 脚本静态解析已返回 `UnexpectedToken`，根因锁定为新增异常对象构造表达式的非兼容写法。须改用 PowerShell 5.1 标准对象创建语法，并在停止旧桥接前执行 Parser 预检查；生成不会提前退出的唯一新构建，且不得降低文件摘要、健康标识和自动回滚校验，不得在排查阶段触碰卡片或要求再次写卡。
+- [x] 修复 Windows v7 桥接原子升级后 `new_bridge_process_exited` 的启动兼容性故障：已将异常对象构造改为 Windows PowerShell 5.1 标准语法，并由 v10 升级器在停止旧桥接前解析升级器和桥接脚本；现场 v10 返回 `success=true`，版本、构建标识、内容摘要与写卡器版本均匹配。升级失败自动回滚、文件摘要和健康门禁保持不变。
 
-- [ ] 修复 Windows v8 升级器自身在第 63 行发生 `UnexpectedToken` 解析错误的问题：该错误发生在任何安装、停止旧桥接或读写卡操作之前。须以最保守的 Windows PowerShell 5.1 语法重写预检查函数，避免把 `try/catch` 写在同一行或使用易产生歧义的括号表达式；v9 必须同时预检升级器与新桥接脚本，才允许接触旧桥接进程。
+- [x] 修复 Windows v8 升级器自身在第 63 行发生 `UnexpectedToken` 解析错误的问题：预检查函数已改为保守 Windows PowerShell 5.1 语法，v10 分发入口统一 UTF-8 BOM；真实 Windows 5.1 与现场中文 Windows 均确认升级器可解析和运行，错误发生前未触碰卡片。
 
-- [ ] 停止反复向用户交付未经真实 Windows PowerShell 5.1 解析验证的升级包：v9 升级器仍在第 62 行 `UnexpectedToken`，且错误发生于安装、停止桥接或写卡前。用户已明确要求使用最高强度独立审计；须先由独立调试审计给出括号/语法根因，再在真实 PowerShell 5.1 环境对升级器与桥接脚本执行零解析错误、启动健康和失败自动回滚验证，验证完成前不得再要求用户运行命令或操作实体卡。
+- [x] 停止反复向用户交付未经真实 Windows PowerShell 5.1 解析验证的升级包：已完成独立调试审计，并新增真实 Windows PowerShell 5.1 持续门禁；全部 RFID 脚本、UTF-8 BOM 和模拟 ZIP 解包文件均逐个验证通过后才交付 v10。现场 v10 安装成功，未再以 Linux 静态测试代替 Windows 兼容验证。
 
-- [ ] 修复分发编码导致的中文 Windows PowerShell 5.1 解析差异：独立调试审计已完成，GitHub `windows-latest` 的 Windows PowerShell 5.1 已逐个确认仓库中全部 RFID `.ps1` 均 `parsed_ok`；仓库文件、v9 ZIP 文件摘要完全一致，但升级器和桥接脚本文件头均不是 UTF-8 BOM。须将 Windows 分发脚本统一为 UTF-8 BOM，并新增 BOM 字节门禁与从 ZIP 解包后的真实 5.1 解析检查；该门禁全绿前不得再交付用户测试。
+- [x] 修复分发编码导致的中文 Windows PowerShell 5.1 解析差异：v10 的升级器、桥接与正式写卡包装器统一为 UTF-8 BOM；真实 Windows PowerShell 5.1 已确认源码及模拟 ZIP 解包后三个入口全部 `parsed_ok`，BOM 字节门禁全绿；中文 Windows 现场安装返回 `success=true`。
+
+- [x] 完成 `utrust-bridge-fingerprint-v10` Windows 原子安装现场核验：`bridgeBuildId=utrust-rfid-fingerprint-20260831-rc3diag-e`、运行脚本内容摘要与 `ntag216-atomic-v2` 均通过升级器健康门禁。安装步骤未放卡、未写卡；下一步仍只允许单张卡一次性取得脱敏摘要差异，失败后立即停止。
+
+- [ ] 处理 v10 单卡操作在 `stage=claim` 被 `server_vehicle_card_claim_card_or_payload_conflict` 拒绝的问题：该证据表明服务器在下发 RC3 载荷和启动写卡器之前即发现当前实体卡指纹与任务目标卡不一致，本次没有写卡，故 `diagnostics=null` 属于预期。须只读核对任务目标卡指纹、桥接读取的实体卡指纹、车辆卡台账唯一记录、绑定车辆和任务状态；不得继续改写写卡器、重复写卡或绕过领取校验。
+
+- [ ] 核对实体卡与任务目标卡的确定尾号差异：v10 本机只读接口实际读取 `uidTail=5981`，而最新任务目标为管理编号 YX0095、UID 安全尾号 5980、绑定车辆湘AZ5555。须只读查询 5981 与 5980 两条台账记录的管理编号、绑定车辆、状态、是否已写入和历史任务，不得以修改指纹、删除记录或绕过 claim 校验解决。
+
+- [ ] 修复新卡 5981 首次正式写入在 `stage=save_pending_confirmation` 失败的问题：该阶段只可能在写卡器已返回 written/verified/committed、写卡器版本校验通过且服务端与回读摘要一致之后到达，因此实体 NDEF 已写入并逐字节回读成功；当前仅本机 DPAPI 加密确认收据保存失败，服务器任务尚未 confirmed。不得再次写卡、不得作废当前任务；须审计收据目录/DPAPI/原子文件保存，并提供仅确认、不重写 NDEF 的安全恢复路径。
 
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。

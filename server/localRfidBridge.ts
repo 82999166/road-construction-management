@@ -89,6 +89,10 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const payloadFingerprint = req.body?.payloadFingerprint;
       if (!token || !isFingerprint(cardUidFingerprint) || !isFingerprint(payloadFingerprint)) return res.status(400).json({ success: false, code: "bridge_complete_request_invalid", message: "本地桥接完成参数格式无效" });
       const { db, job } = await findBridgeJob(token, true);
+      const isConfirmationRecovery = job.failureReason === "confirmation_recovery_prepared";
+      if (isConfirmationRecovery && (req.body?.confirmationMode !== "verify_existing_ndef" || req.body?.wroteCard !== false || req.body?.readbackVerified !== true)) {
+        return res.status(409).json({ success: false, message: "恢复任务未提供完整只读复核结果，已拒绝确认" });
+      }
       if (job.payloadFingerprint !== payloadFingerprint) return res.status(409).json({ success: false, message: "回读载荷摘要与写卡任务不一致，已拒绝确认" });
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
       if (!card || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定不一致，已拒绝确认" });
@@ -97,7 +101,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const now = new Date();
       const outcome = await db.transaction(async tx => {
         // 令牌哈希只保留到既定过期时间，作为短时幂等确认收据；仍不可用于领取已确认任务。
-        const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: "confirmed", confirmedBy: job.preparedBy, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
+        const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: "confirmed", failureReason: null, confirmedBy: job.preparedBy, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
         if (!didConditionalWriteApply(jobWrite)) {
           const [latestJob] = await tx.select({ status: rfidCardWriteJobs.status }).from(rfidCardWriteJobs).where(eq(rfidCardWriteJobs.id, job.id)).limit(1);
           if (latestJob?.status === "confirmed") return "replayed" as const;
@@ -111,7 +115,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
         const cardWrite = await tx.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(cardStateCondition);
         if (!didConditionalWriteApply(cardWrite)) throw new Error("车辆卡状态已经变化，未执行启用确认");
         if (job.writerDeviceId) await tx.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
-        await tx.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: "confirm_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: "本地 uTrust 已完成车辆卡 UID 校验、NDEF 写入与回读确认" });
+        await tx.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: isConfirmationRecovery ? "confirm_rfid_bridge_readback_recovery" : "confirm_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: isConfirmationRecovery ? "本地 uTrust 已对既有车辆卡执行 UID 校验和 NDEF 逐字节只读复核，未再次写卡并完成确认" : "本地 uTrust 已完成车辆卡 UID 校验、NDEF 写入与回读确认" });
         return "confirmed" as const;
       });
       return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", ...(outcome === "replayed" ? { replayed: true } : {}) });
