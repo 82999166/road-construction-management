@@ -31,6 +31,10 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('"/api/confirm-vehicle-card"');
     expect(source).toContain("Invoke-PendingVehicleConfirmation");
     expect(source).toContain('"server_vehicle_card_claim_failed"');
+    expect(source).toContain('"server_vehicle_card_claim_authorization_invalid"');
+    expect(source).toContain('"server_vehicle_card_claim_card_mismatch"');
+    expect(source).toContain('"server_vehicle_card_claim_payload_unavailable"');
+    expect(source).toContain('"server_vehicle_card_claim_database_unavailable"');
     expect(source).toContain('"claim"');
     expect(source).toContain('"complete"');
     expect(source).toContain('"/api/read-vehicle-entry"');

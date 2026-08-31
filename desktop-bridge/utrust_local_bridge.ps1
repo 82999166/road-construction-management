@@ -82,7 +82,24 @@ function Invoke-RfidServer {
   catch {
     $statusCode = $null
     if ($_.Exception.Response) { try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {} }
-    if ($Operation -eq "claim") { throw ("server_vehicle_card_claim_failed" + $(if ($null -ne $statusCode) { "_http_" + $statusCode } else { "" })) }
+    $serverMessage = ""
+    if ($_.Exception.Response) {
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        if ($null -ne $stream) {
+          $reader = New-Object System.IO.StreamReader($stream)
+          $raw = $reader.ReadToEnd(); $reader.Dispose(); $stream.Dispose()
+          if (-not [string]::IsNullOrWhiteSpace($raw)) { $serverMessage = [string](($raw | ConvertFrom-Json).message) }
+        }
+      } catch {}
+    }
+    if ($Operation -eq "claim") {
+      if ($serverMessage -match "写卡授权无效|已过期|已处理") { throw "server_vehicle_card_claim_authorization_invalid" }
+      if ($serverMessage -match "感应卡.*绑定不一致") { throw "server_vehicle_card_claim_card_mismatch" }
+      if ($serverMessage -match "不含受控载荷|载荷格式") { throw "server_vehicle_card_claim_payload_unavailable" }
+      if ($serverMessage -match "数据库") { throw "server_vehicle_card_claim_database_unavailable" }
+      throw ("server_vehicle_card_claim_failed" + $(if ($null -ne $statusCode) { "_http_" + $statusCode } else { "" }))
+    }
     if ($Operation -eq "complete") { throw ("server_vehicle_card_confirm_failed" + $(if ($null -ne $statusCode) { "_http_" + $statusCode } else { "" })) }
     throw "server_bridge_failure_record_failed"
   }
@@ -100,6 +117,10 @@ function Get-FormalWriteFailureCode {
   if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_vehicle_card_claim_failed") { return "server_vehicle_card_claim_failed" }
+  if ($text -match "server_vehicle_card_claim_authorization_invalid") { return "server_vehicle_card_claim_authorization_invalid" }
+  if ($text -match "server_vehicle_card_claim_card_mismatch") { return "server_vehicle_card_claim_card_mismatch" }
+  if ($text -match "server_vehicle_card_claim_payload_unavailable") { return "server_vehicle_card_claim_payload_unavailable" }
+  if ($text -match "server_vehicle_card_claim_database_unavailable") { return "server_vehicle_card_claim_database_unavailable" }
   if ($text -match "server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
   if ($text -match "pending_vehicle_card_confirmation_not_found") { return "pending_vehicle_card_confirmation_not_found" }
   if ($text -match "vehicle_ndef_tlv_not_found|vehicle_ndef_record_not_found|vehicle_ndef_uri_record_invalid|vehicle_ndef_uri_prefix_invalid") { return "vehicle_card_ndef_entry_not_found" }
