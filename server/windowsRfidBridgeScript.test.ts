@@ -69,4 +69,12 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('"stage\\":\\"" + JsonEscape(stage)');
     expect(source).not.toContain("UserPageCount = 222");
   });
+
+  it("正式写卡 PowerShell 包装器必须保留 C# 的结构化控制台输出并传递 Main 返回码", () => {
+    const source = readFileSync(new URL("../desktop-bridge/run_utrust_rfid_write.ps1", import.meta.url), "utf8");
+    expect(source).toContain('Join-Path $PSScriptRoot "UTrustNtag216RfidWrite.cs"');
+    expect(source).toContain("[int][UTrustNtag216RfidWrite]::Main()");
+    expect(source).toContain("exit $exitCode");
+    expect(source).not.toContain("[void][UTrustNtag216RfidWrite]::Main()");
+  });
 });
