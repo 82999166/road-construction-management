@@ -12,7 +12,7 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-stage-v4"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-fingerprint-v5"');
     expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
     expect(source).toContain("healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION");
     expect(source).toContain("bridge_write_version_mismatch");
