@@ -635,9 +635,9 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ projectId: 10, vehicleId: 11, writerDeviceId: null, cardUid: "ABCD1234", driverPhone: "13800138000", status: "active" })).resolves.toEqual({ success: true });
+    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ projectId: 10, vehicleId: 11, writerDeviceId: null, managementCode: "RFID-001", cardUid: "ABCD1234", driverPhone: "13800138000", status: "active" })).resolves.toEqual({ success: true });
     const binding = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(binding).toMatchObject({ vehicleId: 11, cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "suspended" });
+    expect(binding).toMatchObject({ vehicleId: 11, managementCode: "RFID-001", cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "suspended" });
     expect(binding).not.toHaveProperty("lastWrittenAt");
     expect(binding.cardUidFingerprint).not.toBe("ABCD1234");
     expect(binding.driverPhoneEncrypted).not.toBe("13800138000");
@@ -660,9 +660,9 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ id: 31, projectId: 10, vehicleId: 11, writerDeviceId: null, cardUid: "ABCD1234", driverPhone: "13800138000", status: "active", reuseRevokedUnboundCard: true })).resolves.toEqual({ success: true });
+    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ id: 31, projectId: 10, vehicleId: 11, writerDeviceId: null, managementCode: "RFID-031", cardUid: "ABCD1234", driverPhone: "13800138000", status: "active", reuseRevokedUnboundCard: true })).resolves.toEqual({ success: true });
 
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: 11, status: "suspended", revokedAt: null, lastWrittenAt: null, payloadVersion: 4 }));
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: 11, managementCode: "RFID-031", status: "suspended", revokedAt: null, lastWrittenAt: null, payloadVersion: 4 }));
     expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "rebind_revoked_unbound_vehicle_rfid_card", targetId: "31", summary: expect.not.stringContaining("13800138000") }));
   });
 

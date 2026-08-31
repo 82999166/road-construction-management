@@ -153,7 +153,7 @@ describe("统一后台业务工作区范围保护", () => {
   it("新车辆卡在实体写入与回读确认前显示待写入，并允许执行首次 PC 写卡而不是提前启用", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended", reuseRevokedUnboundCard: false }');
+    expect(source).toContain('EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", managementCode: "", cardUid: "", driverPhone: "", status: "suspended", reuseRevokedUnboundCard: false }');
     expect(source).toContain("待写入（写入并回读确认后启用）");
     expect(source).toContain("车辆射频卡绑定已保存为待写入；写入并回读确认成功后才会启用");
     expect(source).toContain('card.status === "suspended" && isInitialIssue');
@@ -162,6 +162,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('const canRebind = card.status === "revoked" && !card.vehicleId;');
     expect(source).toContain("重新绑定已解绑车辆卡");
     expect(source).toContain("reuseRevokedUnboundCard: true");
+    expect(source).toContain("车辆卡管理编号（后台完整显示）");
+    expect(source).toContain("管理编号完整显示；芯片 UID 仅显示受控尾号");
+    expect(source).toContain('className="min-w-[1120px]"');
   });
 
   it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {

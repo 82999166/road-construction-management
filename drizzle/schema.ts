@@ -1375,6 +1375,8 @@ export const transportVehicleRfidCards = mysqlTable(
     writerDeviceId: int("writerDeviceId"),
     cardUidFingerprint: varchar("cardUidFingerprint", { length: 64 }).notNull(),
     cardUidMasked: varchar("cardUidMasked", { length: 32 }).notNull(),
+    /** 面向后台台账的非敏感人工管理编号；不等同于芯片 UID，也不写入实体卡。 */
+    managementCode: varchar("managementCode", { length: 64 }),
     /** 仅用于管理员在写卡时临时生成载荷和司机本人通知，不向普通列表或事件审计返回。 */
     driverPhoneEncrypted: text("driverPhoneEncrypted"),
     driverPhoneMasked: varchar("driverPhoneMasked", { length: 32 }),
@@ -1389,6 +1391,7 @@ export const transportVehicleRfidCards = mysqlTable(
   },
   table => ({
     cardUidUnique: uniqueIndex("transport_vehicle_rfid_cards_uid_unique").on(table.cardUidFingerprint),
+    projectManagementCodeUnique: uniqueIndex("transport_vehicle_rfid_cards_project_management_code_unique").on(table.projectId, table.managementCode),
     vehicleStatusIndex: index("transport_vehicle_rfid_cards_vehicle_status_index").on(table.vehicleId, table.status),
     projectStatusIndex: index("transport_vehicle_rfid_cards_project_status_index").on(table.projectId, table.status),
   }),

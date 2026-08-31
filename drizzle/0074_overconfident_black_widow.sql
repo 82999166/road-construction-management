@@ -1,0 +1,2 @@
+ALTER TABLE `transport_vehicle_rfid_cards` ADD `managementCode` varchar(64);--> statement-breakpoint
+ALTER TABLE `transport_vehicle_rfid_cards` ADD CONSTRAINT `transport_vehicle_rfid_cards_project_management_code_unique` UNIQUE(`projectId`,`managementCode`);

@@ -438,11 +438,16 @@ const rfidCardBindingInput = z.object({
   projectId: z.number().int().positive(),
   vehicleId: z.number().int().positive(),
   writerDeviceId: z.number().int().positive().nullable().optional(),
+  managementCode: z.string().trim().min(2, "请填写至少 2 位车辆卡管理编号").max(64, "车辆卡管理编号不能超过 64 位").transform(value => value.toUpperCase()).nullable().optional(),
   cardUid: z.string().trim().min(4, "请读取有效射频卡 UID").max(128),
   driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机联系电话"),
   status: z.enum(["active", "suspended", "revoked"]).default("suspended"),
   reuseRevokedUnboundCard: z.boolean().optional().default(false),
 });
+
+function createRfidCardManagementCode() {
+  return `RFID-${randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+}
 
 const rfidWritePrepareInput = z.object({
   cardId: z.number().int().positive(),
@@ -2007,6 +2012,7 @@ export const transportRouter = router({
       projectId: transportVehicleRfidCards.projectId,
       vehicleId: transportVehicleRfidCards.vehicleId,
       writerDeviceId: transportVehicleRfidCards.writerDeviceId,
+      managementCode: transportVehicleRfidCards.managementCode,
       cardUidMasked: transportVehicleRfidCards.cardUidMasked,
       driverPhoneMasked: transportVehicleRfidCards.driverPhoneMasked,
       payloadVersion: transportVehicleRfidCards.payloadVersion,
@@ -2092,10 +2098,17 @@ export const transportRouter = router({
       const [preparedJob] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(and(eq(rfidCardWriteJobs.cardId, input.id!), eq(rfidCardWriteJobs.status, "prepared"))).limit(1);
       if (preparedJob) throw new TRPCError({ code: "CONFLICT", message: "该历史车辆卡仍有处理中写卡任务，请等待任务结束后再重新绑定" });
     }
+    const managementCode = input.managementCode?.trim() || existing?.managementCode || createRfidCardManagementCode();
+    const [existingByManagementCode] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(and(
+      eq(transportVehicleRfidCards.projectId, input.projectId),
+      eq(transportVehicleRfidCards.managementCode, managementCode),
+    )).limit(1);
+    if (existingByManagementCode && existingByManagementCode.id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "当前项目已使用该车辆卡管理编号，请更换编号后保存" });
     const values = {
       projectId: input.projectId,
       vehicleId: input.vehicleId,
       writerDeviceId: input.writerDeviceId ?? null,
+      managementCode,
       cardUidFingerprint,
       cardUidMasked: maskRfidCardUid(input.cardUid),
       driverPhoneEncrypted: encryptSecret(input.driverPhone),
@@ -2121,7 +2134,7 @@ export const transportRouter = router({
       // 新卡先建立“待写入”逻辑绑定；只有实体写入、逐字节回读和服务端确认全部成功后才转为 active。
       await db.insert(transportVehicleRfidCards).values({ ...values, status: "suspended", revokedAt: null, createdBy: user.id, issuedAt: new Date() });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: reusingRevokedUnboundCard ? "rebind_revoked_unbound_vehicle_rfid_card" : input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${reusingRevokedUnboundCard ? "重新绑定已解绑" : input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: reusingRevokedUnboundCard ? "rebind_revoked_unbound_vehicle_rfid_card" : input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${reusingRevokedUnboundCard ? "重新绑定已解绑" : input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（管理编号 ${managementCode}）` });
     return { success: true };
   }),
 
@@ -2189,6 +2202,7 @@ export const transportRouter = router({
         writerDeviceId: null,
         cardUidFingerprint,
         cardUidMasked,
+        managementCode: createRfidCardManagementCode(),
         driverPhoneEncrypted: encryptSecret(driverPhone),
         driverPhoneMasked: maskSecret(driverPhone),
         payloadVersion: 3,
