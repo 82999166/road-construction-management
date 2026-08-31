@@ -3,8 +3,8 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-fingerprint-v7"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-b"
+$bridgeVersion = "utrust-bridge-fingerprint-v8"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-c"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -28,7 +28,7 @@ function New-PayloadFingerprintMismatchException {
     fingerprintMatches = $false
     utf8ByteLengthMatches = ($ExpectedUtf8ByteLength -eq $ActualUtf8ByteLength)
   }
-  $exception = New-Object System.InvalidOperationException("vehicle_card_readback_fingerprint_mismatch")
+  $exception = New-Object -TypeName System.InvalidOperationException -ArgumentList @("vehicle_card_readback_fingerprint_mismatch")
   $exception.Data["rfidSafeDiagnostics"] = $diagnostics
   return $exception
 }
