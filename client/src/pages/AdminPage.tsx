@@ -1524,6 +1524,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         if (bridgeFailure.includes("vehicle_card_readback_fingerprint_mismatch")) throw new Error("bridge_write_readback_fingerprint_mismatch");
         if (bridgeFailure.includes("bridge_payload_shape_invalid")) throw new Error("bridge_write_payload_shape_invalid");
         if (bridgeFailure.includes("server_bridge_request_failed") || bridgeFailure.includes("server_vehicle_card_confirm_failed")) throw new Error("bridge_write_server_confirm_failed");
+        if (bridgeFailure.includes("card_reader_connection_failed")) throw new Error("bridge_write_reader_connection_failed");
         if (bridgeFailure.includes("ndef_exceeds_declared_card_capacity")) throw new Error("bridge_write_card_capacity_insufficient");
         if (bridgeFailure.includes("card_user_area_read_failed")) throw new Error("bridge_write_user_area_read_failed");
         if (bridgeFailure.includes("card_user_area_write_failed")) throw new Error("bridge_write_user_area_write_failed");
@@ -1551,6 +1552,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                     ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
                     : error instanceof Error && error.message === "bridge_write_server_confirm_failed"
                       ? "本机写入回读已完成，但无法回传服务端确认：请保持桥接运行并重新生成任务后重试。"
+                      : error instanceof Error && error.message === "bridge_write_reader_connection_failed"
+                        ? "正式写卡时读卡器连接中断：请保持卡片在 uTrust 感应区，关闭其他读卡程序后重新生成任务。"
                 : error instanceof Error && error.message === "bridge_write_card_capacity_insufficient"
                   ? "当前卡片可用 NDEF 容量不足以写入正式车辆卡：请使用符合 NTAG216 容量要求的空白卡，勿用测试卡替代。"
                   : error instanceof Error && error.message === "bridge_write_user_area_read_failed"

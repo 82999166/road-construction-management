@@ -85,6 +85,7 @@ public static class UTrustNtag216RfidWrite
     public static int Main()
     {
         IntPtr context = IntPtr.Zero; IntPtr card = IntPtr.Zero;
+        string stage = "prepare";
         try
         {
             string payloadBase64 = Environment.GetEnvironmentVariable("RC_RFID_PAYLOAD_B64");
@@ -94,6 +95,7 @@ public static class UTrustNtag216RfidWrite
             string payloadJson = Encoding.UTF8.GetString(Convert.FromBase64String(payloadBase64));
             string entryUrl = Encoding.UTF8.GetString(Convert.FromBase64String(urlBase64));
             if (!payloadJson.StartsWith("{\"t\":\"RC3\"", StringComparison.Ordinal) || !entryUrl.StartsWith("https://yx.maomaoyx.com/mobile/transport?nfc=", StringComparison.Ordinal)) throw new InvalidOperationException("bridge_payload_shape_invalid");
+            stage = "reader_connect";
             int rc = SCardEstablishContext(ScopeSystem, IntPtr.Zero, IntPtr.Zero, out context);
             if (rc != 0) throw new InvalidOperationException("establish_context_" + Error(rc));
             uint length = 0; rc = SCardListReaders(context, null, IntPtr.Zero, ref length);
@@ -105,6 +107,7 @@ public static class UTrustNtag216RfidWrite
             uint protocol; rc = SCardConnect(context, reader, ShareShared, ProtocolT0OrT1, out card, out protocol);
             if (rc != 0) throw new InvalidOperationException("connect_" + Error(rc));
             IoRequest request = new IoRequest { Protocol = protocol, PciLength = (uint)Marshal.SizeOf(typeof(IoRequest)) };
+            stage = "capability_container";
             byte[] cc = ReadPage(card, ref request, 3);
             if (cc.Length != 4 || cc[0] != 0xE1 || cc[1] != 0x10 || cc[2] == 0x00) throw new InvalidOperationException("ntag_type2_ndef_cc_not_detected");
             int ndefCapacityBytes = cc[2] * 8;
@@ -112,18 +115,22 @@ public static class UTrustNtag216RfidWrite
             if (FirstUserPage + userPageCount > 0x100) throw new InvalidOperationException("ntag_ndef_user_area_out_of_range");
             byte[] ndef = BuildVehicleNdef(entryUrl, payloadJson, ndefCapacityBytes);
             int pageCount = ndef.Length / 4;
+            stage = "read_user_area";
             List<byte> existing = new List<byte>();
             for (int index = 0; index < userPageCount; index++) existing.AddRange(ReadPage(card, ref request, FirstUserPage + index));
             if (!allowOverwrite && !IsBlankNdefArea(existing.ToArray())) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"result\":\"card_user_area_not_blank\"}"); return 4; }
+            stage = "clear_user_area";
             if (allowOverwrite) for (int index = 0; index < userPageCount; index++) WritePage(card, ref request, FirstUserPage + index, new byte[] { 0x00, 0x00, 0x00, 0x00 });
+            stage = "write_ndef";
             for (int index = 0; index < pageCount; index++) WritePage(card, ref request, FirstUserPage + index, ndef.Skip(index * 4).Take(4).ToArray());
+            stage = "verify_ndef";
             List<byte> verified = new List<byte>();
             for (int index = 0; index < pageCount; index++) verified.AddRange(ReadPage(card, ref request, FirstUserPage + index));
             if (!ndef.SequenceEqual(verified.ToArray())) throw new InvalidOperationException("post_write_byte_mismatch");
             Console.WriteLine("{\"success\":true,\"written\":true,\"verified\":true,\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(payloadJson) + "\",\"writeProtectionChanged\":false}");
             return 0;
         }
-        catch (Exception ex) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"result\":\"" + JsonEscape(ex.Message) + "\"}"); return 1; }
+        catch (Exception ex) { Console.WriteLine("{\"success\":false,\"written\":false,\"verified\":false,\"stage\":\"" + JsonEscape(stage) + "\",\"result\":\"" + JsonEscape(ex.Message) + "\"}"); return 1; }
         finally { if (card != IntPtr.Zero) SCardDisconnect(card, LeaveCard); if (context != IntPtr.Zero) SCardReleaseContext(context); }
     }
 }

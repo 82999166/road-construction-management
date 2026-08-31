@@ -60,6 +60,11 @@ function Get-FormalWriteFailureCode {
   $text = if ($null -eq $Reason) { "" } else { [string]$Reason }
   if ($text -match "ndef_exceeds_declared_card_capacity") { return "ndef_exceeds_declared_card_capacity" }
   if ($text -match "post_write_byte_mismatch") { return "post_write_byte_mismatch" }
+  if ($text -match "card_write_stage_reader_connect") { return "card_reader_connection_failed" }
+  if ($text -match "card_write_stage_capability_container") { return "ntag_type2_ndef_cc_not_detected" }
+  if ($text -match "card_write_stage_read_user_area") { return "card_user_area_read_failed" }
+  if ($text -match "card_write_stage_clear_user_area|card_write_stage_write_ndef") { return "card_user_area_write_failed" }
+  if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
   if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_failed" }
   if ($text -match "write_page_") { return "card_user_area_write_failed" }
@@ -86,7 +91,11 @@ function Invoke-FormalVehicleWrite {
     $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1"
   }
   finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
-  if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified) { if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" } }
+  if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified) {
+    $writeStage = if ($null -eq $writeResult.stage) { "" } else { [string]$writeResult.stage }
+    if ($writeStage -match "^(prepare|reader_connect|capability_container|read_user_area|clear_user_area|write_ndef|verify_ndef)$") { throw ("card_write_stage_" + $writeStage) }
+    if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
+  }
   if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
   $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint }
   if (-not $completed.success) { if ($completed.message) { throw ([string]$completed.message) } else { throw "server_vehicle_card_confirm_failed" } }

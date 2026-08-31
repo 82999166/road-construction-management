@@ -108,6 +108,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("卡片写入后逐字节回读不一致");
     expect(source).toContain("回读摘要与本次受控任务不一致");
     expect(source).toContain("无法回传服务端确认");
+    expect(source).toContain("正式写卡时读卡器连接中断");
     expect(source).toContain("更换电脑后需重新安装/启动桥接程序");
     expect(source).toContain("手机不能连接此 Windows 本机桥接");
     const readBridge = source.slice(source.indexOf("const readRfidBindingUid"), source.indexOf("const prepareRfidCardWrite"));

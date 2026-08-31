@@ -22,6 +22,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("vehicle_card_readback_fingerprint_mismatch");
     expect(source).toContain('$text = if ($null -eq $Reason) { "" } else { [string]$Reason }');
     expect(source).not.toContain("$Reason ??");
+    expect(source).toContain("card_write_stage_read_user_area");
+    expect(source).toContain("card_write_stage_verify_ndef");
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
@@ -30,6 +32,10 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("int userPageCount = (ndefCapacityBytes + 3) / 4");
     expect(source).toContain("ndef_exceeds_declared_card_capacity");
     expect(source).toContain("if (!ndef.SequenceEqual(verified.ToArray()))");
+    expect(source).toContain('string stage = "prepare"');
+    expect(source).toContain('stage = "read_user_area"');
+    expect(source).toContain('stage = "verify_ndef"');
+    expect(source).toContain('"stage\\":\\"" + JsonEscape(stage)');
     expect(source).not.toContain("UserPageCount = 222");
   });
 });
