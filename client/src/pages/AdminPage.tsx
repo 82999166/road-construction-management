@@ -1516,12 +1516,25 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     try {
       const response = await fetch("http://127.0.0.1:47601/api/write-vehicle-card", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bridgeToken: rfidWritePreview.bridgeToken }), cache: "no-store", signal: controller.signal });
       const result = await response.json().catch(() => ({})) as { success?: boolean; jobNo?: string; message?: string; status?: string };
-      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error("本地写卡未通过回读校验");
+      if (response.status === 404) throw new Error("bridge_write_endpoint_missing");
+      if (response.status === 401 || response.status === 403) throw new Error("bridge_write_authorization_rejected");
+      if (response.status === 409) throw new Error("bridge_write_card_or_payload_mismatch");
+      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error("bridge_write_or_readback_failed");
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
       toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
       window.requestAnimationFrame(() => setRfidWritePreview(null));
     } catch (error) {
-      const message = error instanceof DOMException && error.name === "AbortError" ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。" : "无法访问本机写卡桥接程序：请启动 Windows 桥接程序并允许浏览器访问本机设备后重试。";
+      const message = error instanceof DOMException && error.name === "AbortError"
+        ? "本地写卡超时：请保持车辆卡停留在 uTrust 感应区，并检查桥接连接。"
+        : error instanceof TypeError
+          ? "浏览器无法访问正式写卡接口：请保持 Windows 桥接程序运行，并允许当前网站访问本机 127.0.0.1 设备后重试。"
+          : error instanceof Error && error.message === "bridge_write_endpoint_missing"
+            ? "当前 Windows 桥接程序未安装正式车辆卡写入接口：测试写卡可用，但请更新桥接程序后再办理正式车辆卡。"
+            : error instanceof Error && error.message === "bridge_write_authorization_rejected"
+              ? "本次写卡任务授权已失效或被拒绝：请关闭窗口后重新生成 PC 写卡任务，再立即写入。"
+              : error instanceof Error && error.message === "bridge_write_card_or_payload_mismatch"
+                ? "当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。"
+                : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {
       window.clearTimeout(timeoutId);

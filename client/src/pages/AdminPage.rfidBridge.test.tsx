@@ -8,6 +8,10 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("PC 受控车辆卡写入");
     expect(source).toContain("http://127.0.0.1:47601/api/write-vehicle-card");
     expect(source).toContain("写入并回读确认");
+    expect(source).toContain("bridge_write_endpoint_missing");
+    expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
+    expect(source).toContain("bridge_write_authorization_rejected");
+    expect(source).toContain("bridge_write_card_or_payload_mismatch");
     expect(source).toContain("车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。");
     expect(source).toContain("window.requestAnimationFrame(() => setRfidWritePreview(null))");
   });
