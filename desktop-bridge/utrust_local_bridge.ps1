@@ -3,10 +3,17 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-stage-v4"
+$bridgeVersion = "utrust-bridge-fingerprint-v5"
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
 $lastFormalWriteFailure = $null
+$lastFormalWriteDiagnostics = $null
+
+function Get-SafeFingerprintPrefix {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  return $Value.Substring(0, [Math]::Min(12, $Value.Length))
+}
 
 function Write-BridgeJson {
   param($Context, $Payload, [int]$StatusCode = 200)
@@ -191,6 +198,7 @@ function Get-FormalWriteStageFailureCode {
 function Invoke-FormalVehicleWrite {
   param([string]$BridgeToken)
   $script:formalWriteStage = "clear_pending_confirmation"
+  $script:lastFormalWriteDiagnostics = $null
   Clear-PendingRfidConfirmation
   $script:formalWriteStage = "read_uid"
   $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
@@ -221,7 +229,21 @@ function Invoke-FormalVehicleWrite {
     if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
   }
   $script:formalWriteStage = "verify_payload_fingerprint"
-  if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
+  $expectedPayloadFingerprint = [string]$claim.payloadFingerprint
+  $actualPayloadFingerprint = [string]$writeResult.payloadFingerprint
+  $expectedPayloadUtf8ByteLength = if ($null -eq $claim.payloadUtf8ByteLength) { -1 } else { [int]$claim.payloadUtf8ByteLength }
+  $actualPayloadUtf8ByteLength = if ($null -eq $writeResult.payloadUtf8ByteLength) { -1 } else { [int]$writeResult.payloadUtf8ByteLength }
+  if ($actualPayloadFingerprint -ne $expectedPayloadFingerprint) {
+    $script:lastFormalWriteDiagnostics = @{
+      expectedPayloadFingerprintPrefix = Get-SafeFingerprintPrefix $expectedPayloadFingerprint
+      actualPayloadFingerprintPrefix = Get-SafeFingerprintPrefix $actualPayloadFingerprint
+      expectedPayloadUtf8ByteLength = $expectedPayloadUtf8ByteLength
+      actualPayloadUtf8ByteLength = $actualPayloadUtf8ByteLength
+      fingerprintMatches = $false
+      utf8ByteLengthMatches = ($expectedPayloadUtf8ByteLength -ge 0 -and $actualPayloadUtf8ByteLength -ge 0 -and $expectedPayloadUtf8ByteLength -eq $actualPayloadUtf8ByteLength)
+    }
+    throw "vehicle_card_readback_fingerprint_mismatch"
+  }
   # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
   $script:formalWriteStage = "save_pending_confirmation"
   Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
@@ -292,7 +314,7 @@ try {
               $failureRecordCode = "server_bridge_failure_record_failed"
             }
           }
-          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
+          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion; diagnostics = $script:lastFormalWriteDiagnostics; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
           Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion } 422
           continue
         }

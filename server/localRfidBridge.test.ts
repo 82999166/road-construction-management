@@ -16,6 +16,8 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(source).toContain("decryptSecret(job.payloadEncrypted)");
     expect(source).toContain("card.cardUidFingerprint !== cardUidFingerprint");
     expect(source).toContain("const payloadJson = JSON.stringify(stored.payload)");
+    expect(source).toContain('Buffer.byteLength(payloadJson, "utf8")');
+    expect(source).toContain("payloadUtf8ByteLength");
     expect(source).toContain("payload: stored.payload, payloadJson, nfcEntryUrl: stored.nfcEntryUrl");
     expect(source).toContain('code: "bridge_token_invalid"');
     expect(source).toContain('code: "card_uid_fingerprint_invalid"');

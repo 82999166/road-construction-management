@@ -7,6 +7,10 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("claim.payloadJson");
     expect(source).toContain("$payloadJson = [string]$claim.payloadJson");
     expect(source).toContain("UTF8.GetBytes($payloadJson)");
+    expect(source).toContain("claim.payloadUtf8ByteLength");
+    expect(source).toContain("writeResult.payloadUtf8ByteLength");
+    expect(source).toContain("expectedPayloadFingerprintPrefix");
+    expect(source).toContain("actualPayloadFingerprintPrefix");
     expect(source).not.toContain("UTF8.GetBytes(($claim.payload | ConvertTo-Json");
   });
 
@@ -45,7 +49,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-stage-v4"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v5"');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
     expect(source).toContain('bridgeVersion = $bridgeVersion');
@@ -80,6 +84,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("ndef_exceeds_declared_card_capacity");
     expect(source).toContain("if (!ndef.SequenceEqual(verified.ToArray()))");
     expect(source).toContain('WriterVersion = "ntag216-atomic-v2"');
+    expect(source).toContain('"payloadUtf8ByteLength\\":" + payloadUtf8Bytes.Length');
     expect(source).toContain('stage = "invalidate_ndef"');
     expect(source).toContain('stage = "write_ndef_body"');
     expect(source).toContain('stage = "verify_ndef_body"');
@@ -124,13 +129,13 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 v4 健康并在失败时回滚", () => {
+  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 fingerprint v5 健康并在失败时回滚", () => {
     const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
-    expect(source).toContain('$installerVersion = "utrust-upgrader-stage-v4"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-stage-v4"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v5"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v5"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
-    expect(source).toContain("backup-stage-v4-");
+    expect(source).toContain("backup-fingerprint-v5-");
     expect(source).toContain("Test-UTrustBridgeVersion");
     expect(source).toContain("previousVersionRestored = $rollbackHealthy");
   });

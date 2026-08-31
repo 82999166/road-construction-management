@@ -85,9 +85,9 @@ public static class UTrustNtag216RfidWrite
         if (tlv.Count > ndefCapacityBytes) throw new InvalidOperationException("ndef_exceeds_declared_card_capacity");
         return tlv.ToArray();
     }
-    private static string Sha256(string value)
+    private static string Sha256(byte[] bytes)
     {
-        using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-", "").ToLowerInvariant();
+        using (SHA256 sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
     }
     public static int Main()
     {
@@ -174,7 +174,8 @@ public static class UTrustNtag216RfidWrite
                 verified.AddRange(ReadPage(card, ref request, failedPage));
             }
             if (!ndef.SequenceEqual(verified.ToArray())) throw new InvalidOperationException("post_write_byte_mismatch");
-            Console.WriteLine("{\"success\":true,\"written\":true,\"verified\":true,\"committed\":true,\"writerVersion\":\"" + WriterVersion + "\",\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(payloadJson) + "\",\"writeProtectionChanged\":false}");
+            byte[] payloadUtf8Bytes = Encoding.UTF8.GetBytes(payloadJson);
+            Console.WriteLine("{\"success\":true,\"written\":true,\"verified\":true,\"committed\":true,\"writerVersion\":\"" + WriterVersion + "\",\"pages\":" + pageCount + ",\"ndefCapacityBytes\":" + ndefCapacityBytes + ",\"payloadFingerprint\":\"" + Sha256(payloadUtf8Bytes) + "\",\"payloadUtf8ByteLength\":" + payloadUtf8Bytes.Length + ",\"writeProtectionChanged\":false}");
             return 0;
         }
         catch (Exception ex) { Console.WriteLine("{\"success\":false,\"written\":" + (writeAttempted ? "true" : "false") + ",\"verified\":false,\"committed\":" + (committed ? "true" : "false") + ",\"writerVersion\":\"" + WriterVersion + "\",\"failedPage\":" + failedPage + ",\"stage\":\"" + JsonEscape(stage) + "\",\"result\":\"" + JsonEscape(ex.Message) + "\"}"); return 1; }
