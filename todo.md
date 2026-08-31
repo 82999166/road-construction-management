@@ -970,6 +970,8 @@
 
 - [ ] 停止反复向用户交付未经真实 Windows PowerShell 5.1 解析验证的升级包：v9 升级器仍在第 62 行 `UnexpectedToken`，且错误发生于安装、停止桥接或写卡前。用户已明确要求使用最高强度独立审计；须先由独立调试审计给出括号/语法根因，再在真实 PowerShell 5.1 环境对升级器与桥接脚本执行零解析错误、启动健康和失败自动回滚验证，验证完成前不得再要求用户运行命令或操作实体卡。
 
+- [ ] 修复分发编码导致的中文 Windows PowerShell 5.1 解析差异：独立调试审计已完成，GitHub `windows-latest` 的 Windows PowerShell 5.1 已逐个确认仓库中全部 RFID `.ps1` 均 `parsed_ok`；仓库文件、v9 ZIP 文件摘要完全一致，但升级器和桥接脚本文件头均不是 UTF-8 BOM。须将 Windows 分发脚本统一为 UTF-8 BOM，并新增 BOM 字节门禁与从 ZIP 解包后的真实 5.1 解析检查；该门禁全绿前不得再交付用户测试。
+
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
 

@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $sourcePath = Join-Path $PSScriptRoot "UTrustNtag216RfidWrite.cs"
 $wrapperVersion = "utrust-writer-wrapper-diagnostic-v3"
 $stage = "load_writer"

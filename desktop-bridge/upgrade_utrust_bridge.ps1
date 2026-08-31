@@ -1,13 +1,13 @@
-$sourceRoot = $PSScriptRoot
+﻿$sourceRoot = $PSScriptRoot
 $targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-fingerprint-v9"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-d"
-$bridgeContentSha256 = "62e8f2ca215503eafb350a84007caf01ce320e00d30f9994835a13b0b71a0eb1"
+$bridgeVersion = "utrust-bridge-fingerprint-v10"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-e"
+$bridgeContentSha256 = "b1069554ffebf2091809d8faaeb8e401b7468752413d9dd68bcabbe6d5c917e6"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-fingerprint-v9"
+$installerVersion = "utrust-upgrader-fingerprint-v10"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "62e8f2ca215503eafb350a84007caf01ce320e00d30f9994835a13b0b71a0eb1"
-  "run_utrust_rfid_write.ps1" = "940b0ad441a4cf8afdad1971d03264ce5e88612f1410f373b39c623e18dafa17"
+  "utrust_local_bridge.ps1" = "b1069554ffebf2091809d8faaeb8e401b7468752413d9dd68bcabbe6d5c917e6"
+  "run_utrust_rfid_write.ps1" = "1efff811e5149b7f6846848881635a5e81ed9e76c9aa741deb334d3ecbd551ac"
   "UTrustNtag216RfidWrite.cs" = "ec4e4b342c325d8e2ec95d36604ed9d0d28277aeb17984df7a595a9347d52337"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
 }
@@ -113,7 +113,7 @@ try {
   if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v9-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v10-" + (Get-Date -Format "yyyyMMddHHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -123,20 +123,20 @@ try {
   $stage = "stop_previous_bridge"
   Stop-UTrustBridge | Out-Null
 
-  $stage = "install_fingerprint_v9_files"
+  $stage = "install_fingerprint_v10_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name
-    $tempPath = $targetPath + ".fingerprint-v9.tmp"
+    $tempPath = $targetPath + ".fingerprint-v10.tmp"
     Copy-Item -LiteralPath $sourcePath -Destination $tempPath -Force
     Move-Item -LiteralPath $tempPath -Destination $targetPath -Force
     $installedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $expectedHashes[$name]) { throw "installed_file_checksum_mismatch" }
   }
 
-  $stage = "start_fingerprint_v9_bridge"
-  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v9"
-  $stage = "verify_fingerprint_v9_health"
+  $stage = "start_fingerprint_v10_bridge"
+  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v10"
+  $stage = "verify_fingerprint_v10_health"
   $healthResult = Test-UTrustBridgeVersion -StartedProcess $newBridge
   if (-not [bool]$healthResult.Success) { $stage = [string]$healthResult.Reason; throw $stage }
 
