@@ -43,6 +43,8 @@ async function startServer() {
   const standardJsonParser = express.json({ limit: "1mb" });
   const evidenceJsonParser = express.json({ limit: "32mb" });
   app.use("/api/trpc", (req, res, next) => (isLargeTrpcBodyRequest(req) ? evidenceJsonParser(req, res, next) : standardJsonParser(req, res, next)));
+  // 本机 RFID 桥接仅接收极小的令牌、UID 指纹与摘要 JSON，不继承全局大正文能力。
+  app.use("/api/local-rfid-bridge", standardJsonParser);
   app.use(express.urlencoded({ limit: "256kb", extended: false }));
   registerStorageProxy(app);
   registerIdentityRecoveryRoute(app);

@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest";
 
 describe("本地 uTrust 正式写卡服务", () => {
   const source = readFileSync(new URL("./localRfidBridge.ts", import.meta.url), "utf8");
+  const serverSource = readFileSync(new URL("./_core/index.ts", import.meta.url), "utf8");
+
+  it("在本地桥接路由前注册受限 JSON 解析，避免领取写卡载荷时请求体为空", () => {
+    expect(serverSource).toContain('app.use("/api/local-rfid-bridge", standardJsonParser)');
+    expect(serverSource.indexOf('app.use("/api/local-rfid-bridge", standardJsonParser)')).toBeLessThan(serverSource.indexOf("registerLocalRfidBridgeRoutes(app)"));
+  });
 
   it("只允许以一次性桥接令牌领取加密暂存的写卡载荷", () => {
     expect(source).toContain('"/api/local-rfid-bridge/claim"');
