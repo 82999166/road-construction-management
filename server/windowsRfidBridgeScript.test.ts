@@ -49,8 +49,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v8"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-c"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v9"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-d"');
     expect(source).toContain('$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
@@ -141,18 +141,19 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 唯一构建升级器必须在停止旧桥接前解析新脚本、校验核心文件、备份旧版、验证 v8 健康构建标识并在失败时回滚", () => {
+  it("Windows 唯一构建升级器必须在停止旧桥接前解析升级器和新桥接、校验核心文件、备份旧版、验证 v9 健康构建标识并在失败时回滚", () => {
     const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
-    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v8"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v8"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-c"');
-    expect(source).toContain('$bridgeContentSha256 = "83cc0293c55d1b4e5b13447b5d8cd67cde5713e72c5ece54548717dda3ff456f"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v9"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v9"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-d"');
+    expect(source).toContain('$bridgeContentSha256 = "62e8f2ca215503eafb350a84007caf01ce320e00d30f9994835a13b0b71a0eb1"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
-    expect(source).toContain("function Test-BridgeScriptSyntax");
+    expect(source).toContain("function Test-PowerShellScriptSyntax");
     expect(source).toContain("[System.Management.Automation.Language.Parser]::ParseFile");
+    expect(source).toContain('$stage = "verify_upgrade_script_syntax"');
     expect(source).toContain('$stage = "verify_bridge_script_syntax"');
-    expect(source).toContain("backup-fingerprint-v8-");
+    expect(source).toContain("backup-fingerprint-v9-");
     expect(source).toContain("Test-UTrustBridgeVersion");
     expect(source).toContain('[string]$health.bridgeBuildId -eq $bridgeBuildId');
     expect(source).toContain('[string]$health.bridgeContentSha256 -eq $bridgeContentSha256');

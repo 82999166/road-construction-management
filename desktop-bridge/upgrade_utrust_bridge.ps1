@@ -1,12 +1,12 @@
 $sourceRoot = $PSScriptRoot
 $targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-fingerprint-v8"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-c"
-$bridgeContentSha256 = "83cc0293c55d1b4e5b13447b5d8cd67cde5713e72c5ece54548717dda3ff456f"
+$bridgeVersion = "utrust-bridge-fingerprint-v9"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-d"
+$bridgeContentSha256 = "62e8f2ca215503eafb350a84007caf01ce320e00d30f9994835a13b0b71a0eb1"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-fingerprint-v8"
+$installerVersion = "utrust-upgrader-fingerprint-v9"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "83cc0293c55d1b4e5b13447b5d8cd67cde5713e72c5ece54548717dda3ff456f"
+  "utrust_local_bridge.ps1" = "62e8f2ca215503eafb350a84007caf01ce320e00d30f9994835a13b0b71a0eb1"
   "run_utrust_rfid_write.ps1" = "940b0ad441a4cf8afdad1971d03264ce5e88612f1410f373b39c623e18dafa17"
   "UTrustNtag216RfidWrite.cs" = "ec4e4b342c325d8e2ec95d36604ed9d0d28277aeb17984df7a595a9347d52337"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
@@ -52,15 +52,14 @@ function Start-UTrustBridge {
   return @{ Process = $process; StdOut = $stdoutPath; StdErr = $stderrPath }
 }
 
-# 在停止任何现有桥接前，先用运行该升级器的 Windows PowerShell 解析新脚本。
-function Test-BridgeScriptSyntax {
+# 在停止任何现有桥接前，先用运行该升级器的 Windows PowerShell 解析每个新脚本。
+function Test-PowerShellScriptSyntax {
   param([string]$ScriptPath)
-  try {
-    $tokens = $null
-    $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors) | Out-Null
-    return (@($errors).Count -eq 0)
-  } catch { return $false }
+  $tokens = $null
+  $parseErrors = $null
+  [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+  if ($parseErrors -and $parseErrors.Count -gt 0) { return $false }
+  return $true
 }
 
 function Test-UTrustBridgeVersion {
@@ -108,11 +107,13 @@ try {
     if ($actualHash -ne $expectedHashes[$name]) { throw "upgrade_file_checksum_mismatch" }
   }
 
+  $stage = "verify_upgrade_script_syntax"
+  if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "upgrade_utrust_bridge.ps1"))) { throw "upgrade_script_parse_invalid" }
   $stage = "verify_bridge_script_syntax"
-  if (-not (Test-BridgeScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
+  if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v8-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-fingerprint-v9-" + (Get-Date -Format "yyyyMMddHHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -122,20 +123,20 @@ try {
   $stage = "stop_previous_bridge"
   Stop-UTrustBridge | Out-Null
 
-  $stage = "install_fingerprint_v8_files"
+  $stage = "install_fingerprint_v9_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name
-    $tempPath = $targetPath + ".fingerprint-v8.tmp"
+    $tempPath = $targetPath + ".fingerprint-v9.tmp"
     Copy-Item -LiteralPath $sourcePath -Destination $tempPath -Force
     Move-Item -LiteralPath $tempPath -Destination $targetPath -Force
     $installedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $expectedHashes[$name]) { throw "installed_file_checksum_mismatch" }
   }
 
-  $stage = "start_fingerprint_v8_bridge"
-  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v8"
-  $stage = "verify_fingerprint_v8_health"
+  $stage = "start_fingerprint_v9_bridge"
+  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v9"
+  $stage = "verify_fingerprint_v9_health"
   $healthResult = Test-UTrustBridgeVersion -StartedProcess $newBridge
   if (-not [bool]$healthResult.Success) { $stage = [string]$healthResult.Reason; throw $stage }
 
