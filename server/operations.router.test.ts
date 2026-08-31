@@ -724,7 +724,31 @@ describe("机械与运输 tRPC 路由", () => {
       [{ id: 403 }],
     ) as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 25, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("处理中写卡任务") });
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 25, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("未完成写卡任务") });
+  });
+
+  it("已到期的 PC 桥接写卡任务会安全作废，不阻塞新的首次写卡任务", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const tx = {
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: insertValues })),
+    };
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 27, projectId: 10, vehicleId: 17, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138003") }],
+        [{ id: 405, jobNo: "CARD-EXPIRED", executionMode: "pc_bridge", bridgeTokenExpiresAt: new Date(Date.now() - 60_000) }],
+        [{ id: 17, projectId: 10, status: "active", driverName: "王司机", plateNo: "粤C12345" }],
+        [{ id: 406 }],
+      ),
+      transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 27, writerDeviceId: null, action: "issue" })).resolves.toMatchObject({ success: true, jobId: 406 });
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "cancelled", failureReason: "bridge_token_expired_before_start" }));
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "cancel_expired_rfid_card_write", targetId: "405" }));
   });
 
   it("写卡确认成功才在同一事务中启用车辆卡，记录失败时不更新卡状态", async () => {

@@ -455,6 +455,8 @@ const rfidWritePrepareInput = z.object({
   writerDeviceId: z.number().int().positive().nullable().optional(),
   action: z.enum(["issue", "rewrite", "revoke"]).default("issue"),
   executionMode: z.enum(["manual_confirmation", "pc_bridge"]).default("manual_confirmation"),
+  /** 管理员显式确认后才允许作废仍有效的旧 PC 任务并生成新一次性令牌。 */
+  replacePreparedPcBridgeJob: z.boolean().optional().default(false),
 });
 
 const rfidCardManagementInput = z.object({
@@ -2262,12 +2264,35 @@ export const transportRouter = router({
       if (card.status !== "suspended" && card.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆卡状态不能执行首次写入" });
     }
     if (input.action === "rewrite" && (card.status !== "active" || !card.lastWrittenAt)) throw new TRPCError({ code: "BAD_REQUEST", message: "仅已成功写入且仍启用的车辆卡可执行补写" });
-    const [preparedJob] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(and(
+    const now = new Date();
+    const preparedJobs = await db.select({
+      id: rfidCardWriteJobs.id,
+      jobNo: rfidCardWriteJobs.jobNo,
+      executionMode: rfidCardWriteJobs.executionMode,
+      bridgeTokenExpiresAt: rfidCardWriteJobs.bridgeTokenExpiresAt,
+    }).from(rfidCardWriteJobs).where(and(
       eq(rfidCardWriteJobs.cardId, card.id),
       eq(rfidCardWriteJobs.status, "prepared"),
-      or(ne(rfidCardWriteJobs.executionMode, "pc_bridge"), gt(rfidCardWriteJobs.bridgeTokenExpiresAt, new Date())),
-    )).limit(1);
-    if (preparedJob) throw new TRPCError({ code: "CONFLICT", message: "该车辆卡已有处理中写卡任务，请先完成或关闭原任务" });
+    )).limit(20);
+    const expiredPcBridgeJobs = preparedJobs.filter(job => job.executionMode === "pc_bridge" && (!job.bridgeTokenExpiresAt || job.bridgeTokenExpiresAt.getTime() <= now.getTime()));
+    if (expiredPcBridgeJobs.length) {
+      await db.transaction(async tx => {
+        for (const expiredJob of expiredPcBridgeJobs) {
+          const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: "cancelled", failureReason: "bridge_token_expired_before_start" }).where(and(eq(rfidCardWriteJobs.id, expiredJob.id), eq(rfidCardWriteJobs.status, "prepared")));
+          if (!didConditionalWriteApply(jobWrite)) continue;
+          await tx.insert(auditLogs).values({ userId: user.id, module: "transport", action: "cancel_expired_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(expiredJob.id), summary: `一次性桥接授权已到期，已安全作废车辆卡写卡任务 ${expiredJob.jobNo}` });
+        }
+      });
+    }
+    const preparedJob = preparedJobs.find(job => !expiredPcBridgeJobs.some(expiredJob => expiredJob.id === job.id));
+    if (preparedJob) {
+      if (!input.replacePreparedPcBridgeJob) throw new TRPCError({ code: "CONFLICT", message: "该车辆卡仍有未完成写卡任务，请确认结束原任务后重新生成" });
+      await db.transaction(async tx => {
+        const jobWrite = await tx.update(rfidCardWriteJobs).set({ status: "cancelled", failureReason: "administrator_replaced_before_write" }).where(and(eq(rfidCardWriteJobs.id, preparedJob.id), eq(rfidCardWriteJobs.status, "prepared")));
+        assertConditionalStatusWrite(jobWrite, "原写卡任务");
+        await tx.insert(auditLogs).values({ userId: user.id, module: "transport", action: "replace_rfid_card_write", targetType: "rfid_card_write_job", targetId: String(preparedJob.id), summary: `管理员确认结束原车辆卡写卡任务 ${preparedJob.jobNo} 并重新生成任务` });
+      });
+    }
     const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
     if (!vehicle.driverName?.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆未录入外部司机姓名，不能生成写卡载荷" });
     // undefined 沿用历史写卡器；null 明确表示由手机 Web NFC 发卡，不关联 Windows 写卡器。

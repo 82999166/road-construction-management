@@ -167,6 +167,15 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('className="min-w-[1120px]"');
   });
 
+  it("车辆卡写卡任务会在管理员确认后替换未完成任务，并明确关闭即作废", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("replacePreparedPcBridgeJob");
+    expect(source).toContain("确认结束原任务并生成新的单次写卡任务吗？");
+    expect(source).toContain("关闭并作废任务");
+    expect(source).toContain("原写卡任务状态已变化，请刷新列表后重新操作。");
+  });
+
   it("持续提供员工保险到期筛选、资源条件筛选、CSV 导出和车辆机械维修保养费用汇总", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
