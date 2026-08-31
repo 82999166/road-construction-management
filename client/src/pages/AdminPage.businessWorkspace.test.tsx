@@ -103,6 +103,11 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口：测试写卡可用，但请更新桥接程序后再办理正式车辆卡。");
     expect(source).toContain("本次写卡任务授权已失效或被拒绝：请关闭窗口后重新生成 PC 写卡任务，再立即写入。");
     expect(source).toContain("当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。");
+    expect(source).toContain("当前卡片可用 NDEF 容量不足以写入正式车辆卡");
+    expect(source).toContain("读取卡片 NDEF 用户区失败");
+    expect(source).toContain("卡片写入后逐字节回读不一致");
+    expect(source).toContain("回读摘要与本次受控任务不一致");
+    expect(source).toContain("无法回传服务端确认");
     expect(source).toContain("更换电脑后需重新安装/启动桥接程序");
     expect(source).toContain("手机不能连接此 Windows 本机桥接");
     const readBridge = source.slice(source.indexOf("const readRfidBindingUid"), source.indexOf("const prepareRfidCardWrite"));

@@ -17,5 +17,17 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("vehicle_card_readback_fingerprint_mismatch");
     expect(source).toContain('Invoke-RfidServer "/api/local-rfid-bridge/complete"');
     expect(source).toContain('$env:RC_RFID_ALLOW_OVERWRITE = "true"');
+    expect(source).toContain("function Get-FormalWriteFailureCode");
+    expect(source).toContain("card_user_area_read_failed");
+    expect(source).toContain("vehicle_card_readback_fingerprint_mismatch");
+  });
+
+  it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
+    const source = readFileSync(new URL("../desktop-bridge/UTrustNtag216RfidWrite.cs", import.meta.url), "utf8");
+    expect(source).toContain("int ndefCapacityBytes = cc[2] * 8");
+    expect(source).toContain("int userPageCount = (ndefCapacityBytes + 3) / 4");
+    expect(source).toContain("ndef_exceeds_declared_card_capacity");
+    expect(source).toContain("if (!ndef.SequenceEqual(verified.ToArray()))");
+    expect(source).not.toContain("UserPageCount = 222");
   });
 });

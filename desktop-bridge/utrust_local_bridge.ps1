@@ -55,6 +55,20 @@ function Invoke-RfidServer {
   catch { throw ("server_bridge_request_failed: " + $_.Exception.Message) }
 }
 
+function Get-FormalWriteFailureCode {
+  param([string]$Reason)
+  $text = $Reason ?? ""
+  if ($text -match "ndef_exceeds_declared_card_capacity") { return "ndef_exceeds_declared_card_capacity" }
+  if ($text -match "post_write_byte_mismatch") { return "post_write_byte_mismatch" }
+  if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
+  if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_failed" }
+  if ($text -match "write_page_") { return "card_user_area_write_failed" }
+  if ($text -match "read_page_") { return "card_user_area_read_failed" }
+  if ($text -match "ntag_type2_ndef_cc_not_detected") { return "ntag_type2_ndef_cc_not_detected" }
+  if ($text -match "bridge_payload_shape_invalid") { return "bridge_payload_shape_invalid" }
+  return "vehicle_card_write_or_readback_failed"
+}
+
 function Invoke-FormalVehicleWrite {
   param([string]$BridgeToken)
   $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
@@ -98,7 +112,7 @@ try {
         $request = Read-BridgeBody $context; $bridgeToken = [string]$request.bridgeToken
         if ([string]::IsNullOrWhiteSpace($bridgeToken) -or $bridgeToken.Length -lt 32) { throw "bridge_token_required" }
         try { $result = Invoke-FormalVehicleWrite $bridgeToken; Write-BridgeJson $context $result; continue }
-        catch { try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $_.Exception.Message } | Out-Null } catch {}; throw }
+        catch { $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message); try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } | Out-Null } catch {}; throw $safeReason }
       }
       Write-BridgeJson $context @{ success = $false; message = "bridge_path_not_found" } 404
     } catch { Write-BridgeJson $context @{ success = $false; message = $_.Exception.Message } 422 }

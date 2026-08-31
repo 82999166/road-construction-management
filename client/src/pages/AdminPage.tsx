@@ -1519,7 +1519,18 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (response.status === 404) throw new Error("bridge_write_endpoint_missing");
       if (response.status === 401 || response.status === 403) throw new Error("bridge_write_authorization_rejected");
       if (response.status === 409) throw new Error("bridge_write_card_or_payload_mismatch");
-      if (!response.ok || !result.success || result.status !== "confirmed") throw new Error("bridge_write_or_readback_failed");
+      const bridgeFailure = typeof result.message === "string" ? result.message : "";
+      if (!response.ok || !result.success || result.status !== "confirmed") {
+        if (bridgeFailure.includes("vehicle_card_readback_fingerprint_mismatch")) throw new Error("bridge_write_readback_fingerprint_mismatch");
+        if (bridgeFailure.includes("bridge_payload_shape_invalid")) throw new Error("bridge_write_payload_shape_invalid");
+        if (bridgeFailure.includes("server_bridge_request_failed") || bridgeFailure.includes("server_vehicle_card_confirm_failed")) throw new Error("bridge_write_server_confirm_failed");
+        if (bridgeFailure.includes("ndef_exceeds_declared_card_capacity")) throw new Error("bridge_write_card_capacity_insufficient");
+        if (bridgeFailure.includes("card_user_area_read_failed")) throw new Error("bridge_write_user_area_read_failed");
+        if (bridgeFailure.includes("card_user_area_write_failed")) throw new Error("bridge_write_user_area_write_failed");
+        if (bridgeFailure.includes("post_write_byte_mismatch")) throw new Error("bridge_write_post_write_mismatch");
+        if (bridgeFailure.includes("ntag_type2_ndef_cc_not_detected")) throw new Error("bridge_write_ndef_cc_invalid");
+        throw new Error("bridge_write_or_readback_failed");
+      }
       await Promise.all([vehicleRfidCards.refetch(), rfidWriterDevices.refetch(), audits.refetch()]);
       toast.success(`车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。`);
       window.requestAnimationFrame(() => setRfidWritePreview(null));
@@ -1534,6 +1545,22 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
               ? "本次写卡任务授权已失效或被拒绝：请关闭窗口后重新生成 PC 写卡任务，再立即写入。"
               : error instanceof Error && error.message === "bridge_write_card_or_payload_mismatch"
                 ? "当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。"
+                : error instanceof Error && error.message === "bridge_write_readback_fingerprint_mismatch"
+                  ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动，关闭窗口后重新生成任务再写入。"
+                  : error instanceof Error && error.message === "bridge_write_payload_shape_invalid"
+                    ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
+                    : error instanceof Error && error.message === "bridge_write_server_confirm_failed"
+                      ? "本机写入回读已完成，但无法回传服务端确认：请保持桥接运行并重新生成任务后重试。"
+                : error instanceof Error && error.message === "bridge_write_card_capacity_insufficient"
+                  ? "当前卡片可用 NDEF 容量不足以写入正式车辆卡：请使用符合 NTAG216 容量要求的空白卡，勿用测试卡替代。"
+                  : error instanceof Error && error.message === "bridge_write_user_area_read_failed"
+                    ? "读取卡片 NDEF 用户区失败：请保持卡片稳定停留在感应区，并确认不是低容量或受保护卡。"
+                    : error instanceof Error && error.message === "bridge_write_user_area_write_failed"
+                      ? "写入卡片 NDEF 用户区失败：请确认卡片未被写保护，并保持卡片稳定停留在感应区后重新生成任务。"
+                      : error instanceof Error && error.message === "bridge_write_post_write_mismatch"
+                        ? "卡片写入后逐字节回读不一致：请勿移动卡片，重新生成任务后再写入；连续失败请更换符合要求的空白卡。"
+                        : error instanceof Error && error.message === "bridge_write_ndef_cc_invalid"
+                          ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
                 : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {
