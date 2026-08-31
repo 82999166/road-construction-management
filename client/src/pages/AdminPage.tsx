@@ -1525,10 +1525,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (!response.ok || !result.success || result.status !== "confirmed") {
         if (bridgeFailure.includes("vehicle_card_readback_fingerprint_mismatch")) throw new Error("bridge_write_readback_fingerprint_mismatch");
         if (bridgeFailure.includes("bridge_payload_shape_invalid")) throw new Error("bridge_write_payload_shape_invalid");
-        if (bridgeFailure.includes("server_vehicle_card_claim_authorization_invalid")) throw new Error("bridge_write_server_claim_authorization_invalid");
-        if (bridgeFailure.includes("server_vehicle_card_claim_card_mismatch")) throw new Error("bridge_write_server_claim_card_mismatch");
-        if (bridgeFailure.includes("server_vehicle_card_claim_payload_unavailable")) throw new Error("bridge_write_server_claim_payload_unavailable");
-        if (bridgeFailure.includes("server_vehicle_card_claim_database_unavailable")) throw new Error("bridge_write_server_claim_database_unavailable");
+        if (bridgeFailure.includes("server_vehicle_card_claim_request_invalid")) throw new Error("bridge_write_server_claim_request_invalid");
+        if (bridgeFailure.includes("server_vehicle_card_claim_card_or_payload_conflict")) throw new Error("bridge_write_server_claim_card_or_payload_conflict");
+        if (bridgeFailure.includes("server_vehicle_card_claim_authorization_or_server_unavailable")) throw new Error("bridge_write_server_claim_authorization_or_server_unavailable");
         if (bridgeFailure.includes("server_vehicle_card_claim_failed")) throw new Error("bridge_write_server_claim_failed");
         if (bridgeFailure.includes("server_vehicle_card_confirm_retryable")) throw new Error("bridge_write_server_confirm_retryable");
         if (bridgeFailure.includes("card_reader_connection_failed")) throw new Error("bridge_write_reader_connection_failed");
@@ -1557,14 +1556,12 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                   ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动，关闭窗口后重新生成任务再写入。"
                   : error instanceof Error && error.message === "bridge_write_payload_shape_invalid"
                     ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
-                    : error instanceof Error && error.message === "bridge_write_server_claim_authorization_invalid"
-                      ? "本次 PC 写卡授权已过期、已处理或不匹配：当前卡没有开始写入。请关闭窗口，保持同一张卡在感应区后重新生成任务并立即写入。"
-                    : error instanceof Error && error.message === "bridge_write_server_claim_card_mismatch"
-                      ? "当前感应卡与所选车辆卡绑定不一致：当前卡没有开始写入。请先用“读取卡 UID 并绑定”核对卡片，再重新生成任务。"
-                    : error instanceof Error && error.message === "bridge_write_server_claim_payload_unavailable"
-                      ? "本次任务缺少可领取的正式写卡载荷：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
-                    : error instanceof Error && error.message === "bridge_write_server_claim_database_unavailable"
-                      ? "服务器暂时无法读取写卡任务：当前卡没有开始写入。请稍后关闭窗口并重新生成任务。"
+                    : error instanceof Error && error.message === "bridge_write_server_claim_request_invalid"
+                      ? "本次写卡请求格式无效：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
+                    : error instanceof Error && error.message === "bridge_write_server_claim_card_or_payload_conflict"
+                      ? "当前感应卡与所选车辆卡不匹配，或该任务载荷不可用：当前卡没有开始写入。请先核对卡片绑定后重新生成任务。"
+                    : error instanceof Error && error.message === "bridge_write_server_claim_authorization_or_server_unavailable"
+                      ? "本次写卡授权已过期、已处理，或服务器暂时无法读取任务：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
                     : error instanceof Error && error.message === "bridge_write_server_claim_failed"
                       ? "服务器未返回本次正式写卡载荷：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务；不要点击“仅回传确认”。"
                     : error instanceof Error && error.message === "bridge_write_server_confirm_retryable"

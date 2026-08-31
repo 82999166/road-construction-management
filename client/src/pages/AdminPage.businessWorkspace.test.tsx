@@ -115,8 +115,8 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain('"http://127.0.0.1:47601/api/read-vehicle-entry"');
     expect(source).toContain('"bridge_write_server_claim_failed"');
     expect(source).toContain("服务器未返回本次正式写卡载荷");
-    expect(source).toContain("本次 PC 写卡授权已过期、已处理或不匹配");
-    expect(source).toContain("当前感应卡与所选车辆卡绑定不一致");
+    expect(source).toContain("本次写卡授权已过期、已处理，或服务器暂时无法读取任务");
+    expect(source).toContain("当前感应卡与所选车辆卡不匹配，或该任务载荷不可用");
     expect(source).toContain("开始刷车辆卡");
     expect(source).toContain('target.hostname !== "yx.maomaoyx.com"');
     expect(source).toContain('target.pathname !== "/mobile/transport"');
