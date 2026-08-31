@@ -18,6 +18,8 @@ jobs:
     name: 类型、迁移、测试与构建
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      JWT_SECRET: ci-only-rfid-signing-secret-not-for-production
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
