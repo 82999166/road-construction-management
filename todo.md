@@ -984,6 +984,8 @@
 
 - [ ] 修复 GitHub 主质量作业缺少测试专用 `JWT_SECRET`、导致 RFID 签名载荷回归在 CI 中被安全拒绝的问题：只允许使用明确标注为 CI-only 的固定非生产测试值，不得读取、提交或复用正式服务器签名密钥；修复后须确认全量测试与真实 Windows 5.1 分发门禁同时通过。
 
+- [ ] 修复 GitHub 全量回归缺少临时管理员测试环境变量导致认证测试收到空用户名/口令的问题：仅配置明确的 CI-only 假账号与强测试口令，不得引用正式管理员账号、正式口令或部署密钥；修复后须让 Linux 全量门禁与 Windows 5.1 分发门禁同次全绿。
+
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
 

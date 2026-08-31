@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 20
     env:
       JWT_SECRET: ci-only-rfid-signing-secret-not-for-production
+      TEMP_ADMIN_USERNAME: ci-only-temporary-admin
+      TEMP_ADMIN_PASSWORD: ci-only-Temporary-Admin-Password-2026
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
