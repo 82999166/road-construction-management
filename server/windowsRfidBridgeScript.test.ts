@@ -45,7 +45,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-diagnostic-v3"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-stage-v4"');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
     expect(source).toContain('bridgeVersion = $bridgeVersion');
@@ -64,6 +64,13 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('"/api/read-vehicle-entry"');
     expect(source).toContain("run_utrust_read_vehicle_entry.ps1");
     expect(source).toContain("vehicle_card_ndef_entry_not_allowed");
+    expect(source).toContain("function Get-FormalWriteStageFailureCode");
+    expect(source).toContain('$script:formalWriteStage = "read_uid"');
+    expect(source).toContain('$script:formalWriteStage = "claim"');
+    expect(source).toContain('$script:formalWriteStage = "invoke_writer"');
+    expect(source).toContain('$script:formalWriteStage = "validate_writer_result"');
+    expect(source).toContain('"/api/last-write-failure"');
+    expect(source).toContain("lastFormalWriteFailure");
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
@@ -117,13 +124,13 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 v3 健康并在失败时回滚", () => {
+  it("Windows 一致版本升级器必须校验核心文件、备份旧版、验证 v4 健康并在失败时回滚", () => {
     const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
-    expect(source).toContain('$installerVersion = "utrust-upgrader-diagnostic-v3"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-diagnostic-v3"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-stage-v4"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-stage-v4"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
-    expect(source).toContain("backup-diagnostic-v3-");
+    expect(source).toContain("backup-stage-v4-");
     expect(source).toContain("Test-UTrustBridgeVersion");
     expect(source).toContain("previousVersionRestored = $rollbackHealthy");
   });

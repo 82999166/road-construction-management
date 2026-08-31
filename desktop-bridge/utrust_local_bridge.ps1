@@ -3,8 +3,10 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-diagnostic-v3"
+$bridgeVersion = "utrust-bridge-stage-v4"
 $requiredWriterVersion = "ntag216-atomic-v2"
+$formalWriteStage = "idle"
+$lastFormalWriteFailure = $null
 
 function Write-BridgeJson {
   param($Context, $Payload, [int]$StatusCode = 200)
@@ -146,6 +148,8 @@ function Get-FormalWriteFailureCode {
   if ($text -match "card_writer_version_mismatch") { return "card_writer_version_mismatch" }
   if ($text -match "writer_source_not_found|writer_load_failed|writer_invocation_failed") { return "card_writer_load_failed" }
   if ($text -match "card_write_stage_prepare") { return "card_write_prepare_failed" }
+  if ($text -match "vehicle_card_not_present") { return "card_uid_read_failed" }
+  if ($text -match "server_write_payload_not_available") { return "card_write_prepare_failed" }
   if ($text -match "card_write_stage_reader_connect") { return "card_reader_connection_failed" }
   if ($text -match "card_write_stage_capability_container") { return "ntag_type2_ndef_cc_not_detected" }
   if ($text -match "card_write_stage_read_user_area") { return "card_user_area_read_failed" }
@@ -170,36 +174,62 @@ function Get-FormalWriteFailureCode {
   return "vehicle_card_write_or_readback_failed"
 }
 
+function Get-FormalWriteStageFailureCode {
+  param([string]$Stage)
+  if ($Stage -eq "read_uid") { return "card_uid_read_failed" }
+  if ($Stage -eq "claim") { return "server_vehicle_card_claim_failed" }
+  if ($Stage -eq "validate_claim" -or $Stage -eq "prepare_writer_payload") { return "card_write_prepare_failed" }
+  if ($Stage -eq "invoke_writer") { return "card_writer_execution_failed" }
+  if ($Stage -eq "validate_writer_version") { return "card_writer_version_mismatch" }
+  if ($Stage -eq "validate_writer_result") { return "card_writer_result_invalid" }
+  if ($Stage -eq "verify_payload_fingerprint") { return "vehicle_card_readback_fingerprint_mismatch" }
+  if ($Stage -eq "save_pending_confirmation") { return "local_confirmation_receipt_failed" }
+  if ($Stage -eq "complete") { return "server_vehicle_card_confirm_retryable" }
+  return "vehicle_card_write_or_readback_failed"
+}
+
 function Invoke-FormalVehicleWrite {
   param([string]$BridgeToken)
+  $script:formalWriteStage = "clear_pending_confirmation"
   Clear-PendingRfidConfirmation
+  $script:formalWriteStage = "read_uid"
   $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
   if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "vehicle_card_not_present" }
   $fingerprint = Get-UidFingerprint $uidRead.uid
+  $script:formalWriteStage = "claim"
   $claim = Invoke-RfidServer "/api/local-rfid-bridge/claim" $BridgeToken @{ cardUidFingerprint = $fingerprint } "claim"
+  $script:formalWriteStage = "validate_claim"
   if (-not $claim.success -or -not $claim.payload -or [string]::IsNullOrWhiteSpace([string]$claim.payloadJson) -or -not $claim.nfcEntryUrl) { if ($claim.message) { throw ([string]$claim.message) } else { throw "server_write_payload_not_available" } }
   # 此字符串由服务端生成，必须不经 PowerShell ConvertTo-Json 重写，确保写入、回读和任务摘要针对完全相同的 UTF-8 字节。
+  $script:formalWriteStage = "prepare_writer_payload"
   $payloadJson = [string]$claim.payloadJson
   $oldPayload = $env:RC_RFID_PAYLOAD_B64; $oldUrl = $env:RC_RFID_URL_B64; $oldOverwrite = $env:RC_RFID_ALLOW_OVERWRITE
   try {
     $env:RC_RFID_PAYLOAD_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($payloadJson))
     $env:RC_RFID_URL_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$claim.nfcEntryUrl))
     $env:RC_RFID_ALLOW_OVERWRITE = "true"
+    $script:formalWriteStage = "invoke_writer"
     $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty
   }
   finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
+  $script:formalWriteStage = "validate_writer_version"
   if ([string]$writeResult.writerVersion -ne $requiredWriterVersion) { throw "card_writer_version_mismatch" }
+  $script:formalWriteStage = "validate_writer_result"
   if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified -or -not $writeResult.committed) {
     $writeStage = if ($null -eq $writeResult.stage) { "" } else { [string]$writeResult.stage }
     if ($writeStage -match "^(prepare|reader_connect|capability_container|read_user_area|invalidate_ndef|write_ndef_body|clear_old_tail|verify_ndef_body|commit_ndef_length|verify_ndef)$") { throw ("card_write_stage_" + $writeStage) }
     if ($writeResult.result) { throw ([string]$writeResult.result) } else { throw "vehicle_card_write_or_readback_failed" }
   }
+  $script:formalWriteStage = "verify_payload_fingerprint"
   if ($writeResult.payloadFingerprint -ne $claim.payloadFingerprint) { throw "vehicle_card_readback_fingerprint_mismatch" }
   # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
+  $script:formalWriteStage = "save_pending_confirmation"
   Save-PendingRfidConfirmation $BridgeToken $fingerprint ([string]$writeResult.payloadFingerprint) ([string]$claim.jobNo)
+  $script:formalWriteStage = "complete"
   $completed = Invoke-RfidServer "/api/local-rfid-bridge/complete" $BridgeToken @{ cardUidFingerprint = $fingerprint; payloadFingerprint = $writeResult.payloadFingerprint } "complete"
   if (-not $completed.success) { throw "server_vehicle_card_confirm_failed" }
   Clear-PendingRfidConfirmation
+  $script:formalWriteStage = "finished"
   return @{ success = $true; jobNo = $claim.jobNo; status = $completed.status; cardUidFingerprint = $fingerprint; bridgeVersion = $bridgeVersion; writerVersion = [string]$writeResult.writerVersion }
 }
 
@@ -224,6 +254,11 @@ try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; requiredWriterVersion = $requiredWriterVersion }; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/api/last-write-failure") {
+        if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion }; continue }
+        Write-BridgeJson $context $script:lastFormalWriteFailure
+        continue
+      }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-uid") { $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }; Write-BridgeJson $context @{ success = $true; cardUid = $uidRead.uid }; continue }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/read-vehicle-entry") {
         try {
@@ -240,7 +275,9 @@ try {
         if ([string]::IsNullOrWhiteSpace($bridgeToken) -or $bridgeToken.Length -lt 32) { throw "bridge_token_required" }
         try { $result = Invoke-FormalVehicleWrite $bridgeToken; Write-BridgeJson $context $result; continue }
         catch {
+          $diagnosticStage = [string]$script:formalWriteStage
           $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message)
+          if ($safeReason -eq "vehicle_card_write_or_readback_failed") { $safeReason = Get-FormalWriteStageFailureCode $diagnosticStage }
           # 已经完成实体写入与回读时，确认回传的瞬时网络失败必须保留 prepared 任务和短时令牌，允许同一窗口再次确认；不得错误标记失败。
           $failureRecorded = $null
           $failureRecordCode = ""
@@ -255,6 +292,7 @@ try {
               $failureRecordCode = "server_bridge_failure_record_failed"
             }
           }
+          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
           Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; writerVersion = $requiredWriterVersion } 422
           continue
         }

@@ -198,7 +198,7 @@ const EMPTY_DIESEL_PRICE_FORM: DieselPriceForm = { projectId: "", pricePerLiter:
 const EMPTY_DIESEL_REFUEL_FORM: DieselRefuelForm = { projectId: "", assetType: "vehicle", vehicleId: "", machineId: "", transportTripId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toLocalDateTimeInput(new Date()), meterReading: "", receiptNo: "", remarks: "", status: "approved" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
 const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended" };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-diagnostic-v3";
+const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-stage-v4";
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
 const EMPTY_SETTING_FORM: SettingForm = { category: "微信公众号服务号", settingKey: "", displayName: "", value: "", isSensitive: false, remarks: "" };
@@ -1557,6 +1557,10 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         if (bridgeFailure.includes("card_writer_no_diagnostic_result")) throw new Error("bridge_write_no_diagnostic_result");
         if (bridgeFailure.includes("card_writer_load_failed")) throw new Error("bridge_write_writer_load_failed");
         if (bridgeFailure.includes("card_write_prepare_failed")) throw new Error("bridge_write_prepare_failed");
+        if (bridgeFailure.includes("card_uid_read_failed")) throw new Error("bridge_write_uid_read_failed");
+        if (bridgeFailure.includes("card_writer_execution_failed")) throw new Error("bridge_write_writer_execution_failed");
+        if (bridgeFailure.includes("card_writer_result_invalid")) throw new Error("bridge_write_writer_result_invalid");
+        if (bridgeFailure.includes("local_confirmation_receipt_failed")) throw new Error("bridge_write_confirmation_receipt_failed");
         if (bridgeFailure.includes("card_writer_version_mismatch")) throw new Error("bridge_write_version_mismatch");
         throw new Error("bridge_write_or_readback_failed");
       }
@@ -1612,6 +1616,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                             ? "本机正式写卡器源码未能加载或编译：当前卡没有开始写入。请更新写卡器文件并重启桥接后再生成任务。"
                           : error instanceof Error && error.message === "bridge_write_prepare_failed"
                             ? "正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入。请保留任务号并停止重试。"
+                          : error instanceof Error && error.message === "bridge_write_uid_read_failed"
+                            ? "本机未能稳定读取当前车辆卡 UID：当前卡没有开始写入。请保持卡片在感应区并关闭其他读卡程序。"
+                          : error instanceof Error && error.message === "bridge_write_writer_execution_failed"
+                            ? "本机调用正式写卡器失败：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                          : error instanceof Error && error.message === "bridge_write_writer_result_invalid"
+                            ? "本机写卡器返回结果不完整：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                          : error instanceof Error && error.message === "bridge_write_confirmation_receipt_failed"
+                            ? "卡片写入回读后，本机短时确认收据保存失败：请保持卡片和桥接不变，停止再次写入。"
                 : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {

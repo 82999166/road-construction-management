@@ -1,10 +1,10 @@
 $sourceRoot = $PSScriptRoot
 $targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-diagnostic-v3"
+$bridgeVersion = "utrust-bridge-stage-v4"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-diagnostic-v3"
+$installerVersion = "utrust-upgrader-stage-v4"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "1f971bacd93fd9f173ddf9f1861cebc7364646798c9663beaecf5a87d279fe81"
+  "utrust_local_bridge.ps1" = "d6715efabd489703c2e0c5c834b6d6d6a1252543aec899d24816f6d7d94c0a8f"
   "run_utrust_rfid_write.ps1" = "940b0ad441a4cf8afdad1971d03264ce5e88612f1410f373b39c623e18dafa17"
   "UTrustNtag216RfidWrite.cs" = "0c6d65c4c39f2d7611003efb6cfc074331889c4038d857c9d69a122fe18787df"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
@@ -96,7 +96,7 @@ try {
   }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-diagnostic-v3-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-stage-v4-" + (Get-Date -Format "yyyyMMddHHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -106,20 +106,20 @@ try {
   $stage = "stop_previous_bridge"
   Stop-UTrustBridge | Out-Null
 
-  $stage = "install_diagnostic_v3_files"
+  $stage = "install_stage_v4_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name
-    $tempPath = $targetPath + ".diagnostic-v3.tmp"
+    $tempPath = $targetPath + ".stage-v4.tmp"
     Copy-Item -LiteralPath $sourcePath -Destination $tempPath -Force
     Move-Item -LiteralPath $tempPath -Destination $targetPath -Force
     $installedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $expectedHashes[$name]) { throw "installed_file_checksum_mismatch" }
   }
 
-  $stage = "start_diagnostic_v3_bridge"
-  $newBridge = Start-UTrustBridge -OutputSuffix "diagnostic-v3"
-  $stage = "verify_diagnostic_v3_health"
+  $stage = "start_stage_v4_bridge"
+  $newBridge = Start-UTrustBridge -OutputSuffix "stage-v4"
+  $stage = "verify_stage_v4_health"
   $healthResult = Test-UTrustBridgeVersion -StartedProcess $newBridge
   if (-not [bool]$healthResult.Success) { $stage = [string]$healthResult.Reason; throw $stage }
 

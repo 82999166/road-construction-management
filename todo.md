@@ -927,3 +927,7 @@
 - [ ] 定位新版后台与 `utrust-bridge-atomic-v2` 已生效后任务 `CARD-1-20260831-3B89B5FB` 仍返回“本机写卡未通过写入或回读校验”的真实阶段：卡片正确保持“待写入”，本次不得重写或仅回传确认；先从正式服务器只读取得该任务 `/fail` 受控原因，再对同一卡执行扩展只读诊断，区分正文页写入失败、长度字段最终提交失败或逐字节回读不一致后实施最小修复。
 
 - [ ] 修复新版桥接在首次写页前失败仍显示通用“写入或回读校验”且服务端任务保持 prepared 的问题：现场健康返回 `utrust-bridge-atomic-v2` 与 `ntag216-atomic-v2`，同一卡写后仍为完整旧 NDEF `records=1;uri=0;text=1;rc3=0`、TLV 长度 25、终止符存在、锁定位/认证配置未变，证明第 4 页未被触碰。须让 C# `prepare/reader_connect/capability_container/read_user_area` 及载荷形状失败返回独立安全码，同时将 `/fail` 回传结果或受控失败码返回浏览器，不得继续静默吞掉。
+
+- [ ] 定位 `utrust-bridge-diagnostic-v3` 已成功安装且正式后台已发布后仍显示旧通用写卡提示的问题：停止再次写卡；只读查询最新任务状态、`failureReason` 和 fail 审计，核对浏览器实际收到的本机 422 JSON 是否含 `message`、`failureRecorded`、`bridgeVersion`，并直接验证 `run_utrust_rfid_write.ps1` 在无业务载荷条件下能返回结构化 `wrapperVersion/stage/result`，不得依赖截图猜测。
+
+- [ ] 为诊断 v3 未覆盖的写页前异常增加受控主流程阶段：现场 `/health` 已确认 `utrust-bridge-diagnostic-v3`，直接运行包装器也确认 C# 可编译并结构化返回 `stage=prepare/result=bridge_payload_not_supplied`，最新正式任务已登记 failed 但原因仍为通用码。桥接须记录并仅返回 `read_uid/claim/validate_claim/invoke_writer/validate_writer_version/validate_writer_result/verify_fingerprint/complete` 等安全阶段，并提供不含 UID、令牌、载荷、URL、APDU 或路径的只读最近失败摘要。
