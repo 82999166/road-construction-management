@@ -66,7 +66,7 @@ function Get-FormalWriteFailureCode {
   if ($text -match "card_write_stage_clear_user_area|card_write_stage_write_ndef") { return "card_user_area_write_failed" }
   if ($text -match "card_write_stage_verify_ndef") { return "post_write_byte_mismatch" }
   if ($text -match "vehicle_card_readback_fingerprint_mismatch") { return "vehicle_card_readback_fingerprint_mismatch" }
-  if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_failed" }
+  if ($text -match "server_bridge_request_failed|server_vehicle_card_confirm_failed") { return "server_vehicle_card_confirm_retryable" }
   if ($text -match "write_page_") { return "card_user_area_write_failed" }
   if ($text -match "read_page_") { return "card_user_area_read_failed" }
   if ($text -match "ntag_type2_ndef_cc_not_detected") { return "ntag_type2_ndef_cc_not_detected" }
@@ -121,7 +121,12 @@ try {
         $request = Read-BridgeBody $context; $bridgeToken = [string]$request.bridgeToken
         if ([string]::IsNullOrWhiteSpace($bridgeToken) -or $bridgeToken.Length -lt 32) { throw "bridge_token_required" }
         try { $result = Invoke-FormalVehicleWrite $bridgeToken; Write-BridgeJson $context $result; continue }
-        catch { $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message); try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } | Out-Null } catch {}; throw $safeReason }
+        catch {
+          $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message)
+          # 已经完成实体写入与回读时，确认回传的瞬时网络失败必须保留 prepared 任务和短时令牌，允许同一窗口再次确认；不得错误标记失败。
+          if ($safeReason -ne "server_vehicle_card_confirm_retryable") { try { Invoke-RfidServer "/api/local-rfid-bridge/fail" $bridgeToken @{ reason = $safeReason } | Out-Null } catch {} }
+          throw $safeReason
+        }
       }
       Write-BridgeJson $context @{ success = $false; message = "bridge_path_not_found" } 404
     } catch { Write-BridgeJson $context @{ success = $false; message = $_.Exception.Message } 422 }

@@ -1523,7 +1523,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (!response.ok || !result.success || result.status !== "confirmed") {
         if (bridgeFailure.includes("vehicle_card_readback_fingerprint_mismatch")) throw new Error("bridge_write_readback_fingerprint_mismatch");
         if (bridgeFailure.includes("bridge_payload_shape_invalid")) throw new Error("bridge_write_payload_shape_invalid");
-        if (bridgeFailure.includes("server_bridge_request_failed") || bridgeFailure.includes("server_vehicle_card_confirm_failed")) throw new Error("bridge_write_server_confirm_failed");
+        if (bridgeFailure.includes("server_bridge_request_failed") || bridgeFailure.includes("server_vehicle_card_confirm_retryable")) throw new Error("bridge_write_server_confirm_retryable");
         if (bridgeFailure.includes("card_reader_connection_failed")) throw new Error("bridge_write_reader_connection_failed");
         if (bridgeFailure.includes("ndef_exceeds_declared_card_capacity")) throw new Error("bridge_write_card_capacity_insufficient");
         if (bridgeFailure.includes("card_user_area_read_failed")) throw new Error("bridge_write_user_area_read_failed");
@@ -1550,8 +1550,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
                   ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动，关闭窗口后重新生成任务再写入。"
                   : error instanceof Error && error.message === "bridge_write_payload_shape_invalid"
                     ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
-                    : error instanceof Error && error.message === "bridge_write_server_confirm_failed"
-                      ? "本机写入回读已完成，但无法回传服务端确认：请保持桥接运行并重新生成任务后重试。"
+                    : error instanceof Error && error.message === "bridge_write_server_confirm_retryable"
+                      ? "本机写入回读已完成，但服务端确认暂未返回：请保持卡片和桥接程序不变，在当前窗口再次点击“写入并回读确认”；仍失败再重新生成任务。"
                       : error instanceof Error && error.message === "bridge_write_reader_connection_failed"
                         ? "正式写卡时读卡器连接中断：请保持卡片在 uTrust 感应区，关闭其他读卡程序后重新生成任务。"
                 : error instanceof Error && error.message === "bridge_write_card_capacity_insufficient"

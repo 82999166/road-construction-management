@@ -24,6 +24,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("$Reason ??");
     expect(source).toContain("card_write_stage_read_user_area");
     expect(source).toContain("card_write_stage_verify_ndef");
+    expect(source).toContain("server_vehicle_card_confirm_retryable");
+    expect(source).toContain('if ($safeReason -ne "server_vehicle_card_confirm_retryable")');
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {

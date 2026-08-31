@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, or } from "drizzle-orm";
 import { auditLogs, rfidCardWriteJobs, rfidWriterDevices, transportVehicleRfidCards } from "../drizzle/schema";
 import { getDb } from "./db";
 import { decryptSecret } from "./services/secretVault";
@@ -16,13 +16,16 @@ function isFingerprint(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
 
-async function findPreparedBridgeJob(token: string) {
+async function findBridgeJob(token: string, includeConfirmed = false) {
   const db = await getDb();
   if (!db) throw new Error("数据库连接暂不可用");
+  const statusCondition = includeConfirmed
+    ? or(eq(rfidCardWriteJobs.status, "prepared"), eq(rfidCardWriteJobs.status, "confirmed"))
+    : eq(rfidCardWriteJobs.status, "prepared");
   const [job] = await db.select().from(rfidCardWriteJobs).where(and(
     eq(rfidCardWriteJobs.bridgeTokenHash, hashRfidBridgeToken(token)),
     eq(rfidCardWriteJobs.executionMode, "pc_bridge"),
-    eq(rfidCardWriteJobs.status, "prepared"),
+    statusCondition,
     gt(rfidCardWriteJobs.bridgeTokenExpiresAt, new Date()),
   )).limit(1);
   if (!job) throw new Error("写卡授权无效、已过期或已处理，请回到管理端重新生成任务");
@@ -45,7 +48,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const token = getBridgeToken(req);
       const cardUidFingerprint = req.body?.cardUidFingerprint;
       if (!token || !isFingerprint(cardUidFingerprint)) return res.status(400).json({ success: false, message: "本地桥接授权或卡 UID 指纹格式无效" });
-      const { db, job } = await findPreparedBridgeJob(token);
+      const { db, job } = await findBridgeJob(token);
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
       if (!card || card.status !== "active" || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定不一致，已拒绝写入" });
       if (!job.payloadEncrypted) return res.status(409).json({ success: false, message: "该写卡任务不含受控载荷，请重新生成 PC 写卡任务" });
@@ -66,12 +69,15 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const cardUidFingerprint = req.body?.cardUidFingerprint;
       const payloadFingerprint = req.body?.payloadFingerprint;
       if (!token || !isFingerprint(cardUidFingerprint) || !isFingerprint(payloadFingerprint)) return res.status(400).json({ success: false, message: "本地桥接完成参数格式无效" });
-      const { db, job } = await findPreparedBridgeJob(token);
+      const { db, job } = await findBridgeJob(token, true);
       if (job.payloadFingerprint !== payloadFingerprint) return res.status(409).json({ success: false, message: "回读载荷摘要与写卡任务不一致，已拒绝确认" });
       const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, job.cardId)).limit(1);
       if (!card || card.cardUidFingerprint !== cardUidFingerprint) return res.status(409).json({ success: false, message: "当前感应卡与写卡任务绑定不一致，已拒绝确认" });
+      // 网络在服务端已确认后中断时，桥接会携带同一短时令牌再次确认；已确认任务只返回原结果，禁止重复审计或重复变更卡状态。
+      if (job.status === "confirmed") return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", replayed: true });
       const now = new Date();
-      await db.update(rfidCardWriteJobs).set({ status: "confirmed", confirmedBy: job.preparedBy, confirmedAt: now, bridgeTokenHash: null, bridgeTokenExpiresAt: null }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
+      // 令牌哈希只保留到既定过期时间，作为短时幂等确认收据；仍不可用于领取已确认任务。
+      await db.update(rfidCardWriteJobs).set({ status: "confirmed", confirmedBy: job.preparedBy, confirmedAt: now }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
       await db.update(transportVehicleRfidCards).set({ lastWrittenAt: now, status: job.action === "revoke" ? "revoked" : "active", revokedAt: job.action === "revoke" ? now : null }).where(eq(transportVehicleRfidCards.id, job.cardId));
       if (job.writerDeviceId) await db.update(rfidWriterDevices).set({ lastConfirmedAt: now }).where(eq(rfidWriterDevices.id, job.writerDeviceId));
       await db.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: "confirm_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: "本地 uTrust 已完成车辆卡 UID 校验、NDEF 写入与回读确认" });
@@ -87,7 +93,7 @@ export function registerLocalRfidBridgeRoutes(app: Express) {
       const token = getBridgeToken(req);
       const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 500) : "本地 uTrust 写卡失败";
       if (!token) return res.status(400).json({ success: false, message: "本地桥接授权无效" });
-      const { db, job } = await findPreparedBridgeJob(token);
+      const { db, job } = await findBridgeJob(token);
       const now = new Date();
       await db.update(rfidCardWriteJobs).set({ status: "failed", failureReason: reason, confirmedBy: job.preparedBy, confirmedAt: now, bridgeTokenHash: null, bridgeTokenExpiresAt: null }).where(and(eq(rfidCardWriteJobs.id, job.id), eq(rfidCardWriteJobs.status, "prepared")));
       await db.insert(auditLogs).values({ userId: job.preparedBy, module: "transport", action: "fail_rfid_bridge_write", targetType: "rfid_card_write_job", targetId: String(job.id), summary: `本地 uTrust 写卡失败：${reason}` });

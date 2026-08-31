@@ -20,4 +20,12 @@ describe("本地 uTrust 正式写卡服务", () => {
     expect(source).toContain('"/api/local-rfid-bridge/fail"');
     expect(source).toContain('action: "fail_rfid_bridge_write"');
   });
+
+  it("确认回传在未过期短时令牌内支持幂等重试，不重复变更状态或重复写入审计", () => {
+    const completeSource = source.slice(source.indexOf('app.post("/api/local-rfid-bridge/complete"'), source.indexOf('app.post("/api/local-rfid-bridge/fail"'));
+    expect(source).toContain('const { db, job } = await findBridgeJob(token, true)');
+    expect(completeSource).toContain('if (job.status === "confirmed") return res.json({ success: true, jobNo: job.jobNo, status: "confirmed", replayed: true })');
+    expect(source).toContain('gt(rfidCardWriteJobs.bridgeTokenExpiresAt, new Date())');
+    expect(completeSource).not.toContain('bridgeTokenHash: null, bridgeTokenExpiresAt: null');
+  });
 });
