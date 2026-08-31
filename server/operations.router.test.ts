@@ -644,6 +644,28 @@ describe("机械与运输 tRPC 路由", () => {
     expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "bind_vehicle_rfid_card", summary: expect.not.stringContaining("13800138000") });
   });
 
+  it("仅允许已挂失且已解绑的同一实体卡受控重新绑定为待写入，并使旧载荷版本失效", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345" }],
+        [{ id: 31, projectId: 10, vehicleId: null, writerDeviceId: 2, status: "revoked", cardUidFingerprint: createHash("sha256").update("road-rfid-card:v1:ABCD1234").digest("hex"), cardUidMasked: "****1234", lastWrittenAt: null, payloadVersion: 3, revokedAt: new Date(), driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [{ id: 31 }],
+        [],
+        [],
+      ),
+      update: vi.fn(() => ({ set: updateSet })),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ id: 31, projectId: 10, vehicleId: 11, writerDeviceId: null, cardUid: "ABCD1234", driverPhone: "13800138000", status: "active", reuseRevokedUnboundCard: true })).resolves.toEqual({ success: true });
+
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: 11, status: "suspended", revokedAt: null, lastWrittenAt: null, payloadVersion: 4 }));
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "rebind_revoked_unbound_vehicle_rfid_card", targetId: "31", summary: expect.not.stringContaining("13800138000") }));
+  });
+
   it("待写入车辆卡可以生成首次写卡任务，载荷仅临时返回且数据库只保存摘要", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);

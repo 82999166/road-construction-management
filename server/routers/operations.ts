@@ -441,6 +441,7 @@ const rfidCardBindingInput = z.object({
   cardUid: z.string().trim().min(4, "请读取有效射频卡 UID").max(128),
   driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机联系电话"),
   status: z.enum(["active", "suspended", "revoked"]).default("suspended"),
+  reuseRevokedUnboundCard: z.boolean().optional().default(false),
 });
 
 const rfidWritePrepareInput = z.object({
@@ -2073,8 +2074,24 @@ export const transportRouter = router({
       if (!writer || writer.projectId !== input.projectId || writer.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择当前项目可用的写卡器" });
     }
     const cardUidFingerprint = fingerprintRfidCardUid(input.cardUid);
+    const [existing] = input.id
+      ? await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.id)).limit(1)
+      : [];
+    if (input.id && (!existing || existing.projectId !== input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
+    const reusingRevokedUnboundCard = Boolean(input.reuseRevokedUnboundCard && existing && existing.status === "revoked" && !existing.vehicleId && existing.cardUidFingerprint === cardUidFingerprint);
+    if (input.reuseRevokedUnboundCard && !reusingRevokedUnboundCard) throw new TRPCError({ code: "BAD_REQUEST", message: "仅已挂失、已解绑且 UID 未变化的历史车辆卡可重新绑定" });
     const [existingByUid] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.cardUidFingerprint, cardUidFingerprint)).limit(1);
-    if (existingByUid && existingByUid.id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "该射频卡已绑定其他车辆，请先挂失或解除原绑定" });
+    if (existingByUid && existingByUid.id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "该射频卡仍由其他车辆卡台账占用，请先在对应台账完成挂失和解除绑定" });
+    if (reusingRevokedUnboundCard) {
+      const [activeCardForVehicle] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(and(
+        eq(transportVehicleRfidCards.projectId, input.projectId),
+        eq(transportVehicleRfidCards.vehicleId, input.vehicleId),
+        eq(transportVehicleRfidCards.status, "active"),
+      )).limit(1);
+      if (activeCardForVehicle && activeCardForVehicle.id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "所选车辆已有已启用车辆卡，请先确认原卡状态后再重新绑定" });
+      const [preparedJob] = await db.select({ id: rfidCardWriteJobs.id }).from(rfidCardWriteJobs).where(and(eq(rfidCardWriteJobs.cardId, input.id!), eq(rfidCardWriteJobs.status, "prepared"))).limit(1);
+      if (preparedJob) throw new TRPCError({ code: "CONFLICT", message: "该历史车辆卡仍有处理中写卡任务，请等待任务结束后再重新绑定" });
+    }
     const values = {
       projectId: input.projectId,
       vehicleId: input.vehicleId,
@@ -2085,20 +2102,26 @@ export const transportRouter = router({
       driverPhoneMasked: maskSecret(input.driverPhone),
     };
     if (input.id) {
-      const [existing] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, input.id)).limit(1);
-      if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "车辆射频卡绑定不存在或不属于当前项目" });
       // 未完成过实体写入的卡不能通过普通维护接口提前启用；已挂失卡也不能借编辑绕过换卡/补写流程恢复。
-      const nextStatus = existing.status === "revoked"
+      const nextStatus = reusingRevokedUnboundCard
+        ? "suspended"
+        : existing.status === "revoked"
         ? "revoked"
         : existing.lastWrittenAt
           ? input.status
           : input.status === "revoked" ? "revoked" : "suspended";
-      await db.update(transportVehicleRfidCards).set({ ...values, status: nextStatus, revokedAt: nextStatus === "revoked" ? existing.revokedAt ?? new Date() : null }).where(eq(transportVehicleRfidCards.id, input.id));
+      await db.update(transportVehicleRfidCards).set({
+        ...values,
+        status: nextStatus,
+        revokedAt: nextStatus === "revoked" ? existing.revokedAt ?? new Date() : null,
+        lastWrittenAt: reusingRevokedUnboundCard ? null : existing.lastWrittenAt,
+        payloadVersion: reusingRevokedUnboundCard ? existing.payloadVersion + 1 : existing.payloadVersion,
+      }).where(eq(transportVehicleRfidCards.id, input.id));
     } else {
       // 新卡先建立“待写入”逻辑绑定；只有实体写入、逐字节回读和服务端确认全部成功后才转为 active。
       await db.insert(transportVehicleRfidCards).values({ ...values, status: "suspended", revokedAt: null, createdBy: user.id, issuedAt: new Date() });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: reusingRevokedUnboundCard ? "rebind_revoked_unbound_vehicle_rfid_card" : input.id ? "update_vehicle_rfid_card" : "bind_vehicle_rfid_card", targetType: "transport_vehicle_rfid_card", targetId: String(input.id ?? input.vehicleId), summary: `${reusingRevokedUnboundCard ? "重新绑定已解绑" : input.id ? "维护" : "绑定"}车辆 ${vehicle.plateNo} 的射频卡（${maskRfidCardUid(input.cardUid)}）` });
     return { success: true };
   }),
 

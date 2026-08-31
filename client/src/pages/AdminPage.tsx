@@ -138,7 +138,7 @@ type DieselPriceForm = { id?: number; projectId: string; pricePerLiter: string; 
 type DieselRefuelForm = { id?: number; projectId: string; assetType: "vehicle" | "machine"; vehicleId: string; machineId: string; transportTripId: string; supplyMethod: "project_supply" | "external_station"; stationOrSupplierName: string; liters: string; actualUnitPrice: string; deductFromFreight: boolean; refueledAt: string; meterReading: string; receiptNo: string; remarks: string; status: "draft" | "approved" | "void" };
 type RiskRuleForm = { enabled: boolean; maxFuelFillRatio: string; maxTransportSpeedKmh: string; maxTransportDurationMinutes: string; maxOpenCheckInHours: string; maxPendingReportHours: string; overdueEscalationEnabled: boolean; overdueEscalationHourChina: string };
 type RfidWriterDeviceForm = { id?: number; deviceCode: string; displayName: string; model: string; connectionMode: "manual_placeholder" | "usb" | "serial" | "network"; status: "active" | "disabled" | "maintenance"; remarks: string };
-type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked" };
+type RfidCardForm = { id?: number; vehicleId: string; writerDeviceId: string; cardUid: string; driverPhone: string; status: "active" | "suspended" | "revoked"; reuseRevokedUnboundCard: boolean };
 type LocalAccountStatus = "active" | "disabled";
 type LocalLoginMode = "pc" | "mobile" | "both";
 type LocalAccountEditForm = { userId: number; username: string; displayName: string; status: LocalAccountStatus; loginMode: LocalLoginMode };
@@ -197,7 +197,7 @@ const EMPTY_ASSET_MAINTENANCE_FORM: AssetMaintenanceForm = { assetType: "vehicle
 const EMPTY_DIESEL_PRICE_FORM: DieselPriceForm = { projectId: "", pricePerLiter: "", effectiveFrom: toLocalDateInput(), effectiveTo: "", status: "active", remarks: "" };
 const EMPTY_DIESEL_REFUEL_FORM: DieselRefuelForm = { projectId: "", assetType: "vehicle", vehicleId: "", machineId: "", transportTripId: "", supplyMethod: "project_supply", stationOrSupplierName: "", liters: "", actualUnitPrice: "", deductFromFreight: false, refueledAt: toLocalDateTimeInput(new Date()), meterReading: "", receiptNo: "", remarks: "", status: "approved" };
 const EMPTY_RFID_WRITER_DEVICE_FORM: RfidWriterDeviceForm = { deviceCode: "", displayName: "", model: "", connectionMode: "manual_placeholder", status: "active", remarks: "" };
-const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended" };
+const EMPTY_RFID_CARD_FORM: RfidCardForm = { vehicleId: "", writerDeviceId: "", cardUid: "", driverPhone: "", status: "suspended", reuseRevokedUnboundCard: false };
 const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-stage-v4";
 const EMPTY_ROLE_FORM: RoleForm = { code: "", name: "", category: "business", description: "", status: "active", isSystem: false };
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = { userId: "", roleId: "", organizationId: "", projectId: "", validFrom: "", validTo: "" };
@@ -1465,13 +1465,13 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     onError: error => toast.error(error.message),
   });
   const saveVehicleRfidCard = trpc.transport.saveVehicleRfidCard.useMutation({
-    onSuccess: async () => {
-      toast.success("车辆射频卡绑定已保存为待写入；写入并回读确认成功后才会启用");
+    onSuccess: async (_data, variables) => {
+      toast.success(variables.reuseRevokedUnboundCard ? "历史车辆卡已重新绑定为待写入；请生成新任务完成写入和回读确认" : "车辆射频卡绑定已保存为待写入；写入并回读确认成功后才会启用");
       setRfidCardForm(EMPTY_RFID_CARD_FORM);
       setRfidCardDialogOpen(false);
       await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(error.message === "该射频卡仍由其他车辆卡台账占用，请先在对应台账完成挂失和解除绑定" ? "当前实体卡仍由另一条车辆卡台账占用，请先处理对应台账后再重新绑定。" : error.message),
   });
   const revokeVehicleRfidCard = trpc.transport.revokeVehicleRfidCard.useMutation({
     onSuccess: async () => { toast.success("车辆射频卡已挂失停用"); await Promise.all([vehicleRfidCards.refetch(), audits.refetch()]); },
@@ -3294,6 +3294,12 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       const canWrite = Boolean(card.vehicleId) && (isInitialIssue
         ? card.status === "suspended" || card.status === "active"
         : card.status === "active");
+      const canRebind = card.status === "revoked" && !card.vehicleId;
+      const openRevokedUnboundCardRebind = () => {
+        const firstVehicle = transportVehicleLedger.data?.find(vehicle => vehicle.status === "active") ?? transportVehicleLedger.data?.[0];
+        setRfidCardForm({ id: Number(card.id), vehicleId: firstVehicle ? String(firstVehicle.id) : "", writerDeviceId: card.writerDeviceId ? String(card.writerDeviceId) : writerDevices[0] ? String(writerDevices[0].id) : "", cardUid: "", driverPhone: firstVehicle?.driverPhone || "", status: "suspended", reuseRevokedUnboundCard: true });
+        setRfidCardDialogOpen(true);
+      };
       return <div key={card.id} className="rounded-xl border border-slate-200 bg-white p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -3303,6 +3309,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button size="sm" variant="outline" onClick={() => handleRevokeVehicleRfidCard(Number(card.id))} disabled={revokeVehicleRfidCard.isPending || card.status === "revoked"}>{revokeVehicleRfidCard.isPending ? "处理中…" : "挂失停用"}</Button>
             <Button size="sm" variant="outline" onClick={() => handleUnbindVehicleRfidCard(Number(card.id))} disabled={unbindVehicleRfidCard.isPending || !card.vehicleId}>{unbindVehicleRfidCard.isPending ? "处理中…" : "解除绑定"}</Button>
+            {canRebind ? <Button size="sm" variant="outline" onClick={openRevokedUnboundCardRebind} disabled={saveVehicleRfidCard.isPending}>重新绑定</Button> : null}
             <Button size="sm" onClick={() => prepareRfidCardWrite.mutate({ cardId: Number(card.id), projectId: workspaceProjectId, writerDeviceId: card.writerDeviceId ?? null, action: isInitialIssue ? "issue" : "rewrite", executionMode: "pc_bridge" })} disabled={prepareRfidCardWrite.isPending || !canWrite}>{prepareRfidCardWrite.isPending ? "生成中…" : isInitialIssue ? "PC 写入车辆卡" : "PC 补写车辆卡"}</Button>
           </div>
         </div>
@@ -3323,8 +3330,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         <Dialog open={rfidCardDialogOpen} onOpenChange={setRfidCardDialogOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>绑定车辆射频卡</DialogTitle>
-              <DialogDescription>此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。</DialogDescription>
+              <DialogTitle>{rfidCardForm.reuseRevokedUnboundCard ? "重新绑定已解绑车辆卡" : "绑定车辆射频卡"}</DialogTitle>
+              <DialogDescription>{rfidCardForm.reuseRevokedUnboundCard ? "此操作只适用于已挂失且已解绑的同一张实体卡。请读取当前卡 ID，选择新的目标车辆；系统会保留历史台账与审计、使旧深链失效，并将该卡恢复为待写入。" : "此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。"}</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -3356,7 +3363,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRfidCardDialogOpen(false)}>取消</Button>
-              <Button disabled={!rfidCardForm.vehicleId || !rfidCardForm.cardUid.trim() || !rfidCardForm.driverPhone.trim() || saveVehicleRfidCard.isPending} onClick={() => saveVehicleRfidCard.mutate({ projectId: workspaceProjectId, vehicleId: Number(rfidCardForm.vehicleId), writerDeviceId: rfidCardForm.writerDeviceId ? Number(rfidCardForm.writerDeviceId) : null, cardUid: rfidCardForm.cardUid, driverPhone: rfidCardForm.driverPhone, status: rfidCardForm.status })}>{saveVehicleRfidCard.isPending ? "保存中…" : "保存绑定"}</Button>
+              <Button disabled={!rfidCardForm.vehicleId || !rfidCardForm.cardUid.trim() || !rfidCardForm.driverPhone.trim() || saveVehicleRfidCard.isPending} onClick={() => saveVehicleRfidCard.mutate({ id: rfidCardForm.id, projectId: workspaceProjectId, vehicleId: Number(rfidCardForm.vehicleId), writerDeviceId: rfidCardForm.writerDeviceId ? Number(rfidCardForm.writerDeviceId) : null, cardUid: rfidCardForm.cardUid, driverPhone: rfidCardForm.driverPhone, status: rfidCardForm.status, reuseRevokedUnboundCard: rfidCardForm.reuseRevokedUnboundCard })}>{saveVehicleRfidCard.isPending ? "保存中…" : rfidCardForm.reuseRevokedUnboundCard ? "确认重新绑定" : "保存绑定"}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
