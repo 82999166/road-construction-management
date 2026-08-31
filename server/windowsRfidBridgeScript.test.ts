@@ -35,6 +35,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain('"server_vehicle_card_claim_token_invalid"');
     expect(source).toContain('"server_vehicle_card_claim_uid_invalid"');
     expect(source).toContain('"application/json; charset=utf-8"');
+    expect(source).toContain("Invoke-WebRequest -UseBasicParsing");
+    expect(source).toContain("$_.ErrorDetails");
     expect(source).toContain('"server_vehicle_card_claim_card_or_payload_conflict"');
     expect(source).toContain('"server_vehicle_card_claim_authorization_or_server_unavailable"');
     expect(source).not.toContain('match "写卡授权无效');

@@ -79,21 +79,26 @@ function Invoke-RfidServer {
   $headers = @{ "x-rfid-bridge-token" = $BridgeToken; "Cache-Control" = "no-store" }
   $json = $Body | ConvertTo-Json -Compress -Depth 4
   $utf8Body = [System.Text.Encoding]::UTF8.GetBytes($json)
-  try { return Invoke-RestMethod -Method Post -Uri ($serverBaseUrl + $Path) -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 25 }
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri ($serverBaseUrl + $Path) -Headers $headers -ContentType "application/json; charset=utf-8" -Body $utf8Body -TimeoutSec 25
+    return ($response.Content | ConvertFrom-Json)
+  }
   catch {
     $statusCode = $null
     if ($_.Exception.Response) { try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {} }
     $serverCode = ""
+    $errorJson = if ($_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace([string]$_.ErrorDetails.Message)) { [string]$_.ErrorDetails.Message } else { "" }
     if ($_.Exception.Response) {
       try {
         $stream = $_.Exception.Response.GetResponseStream()
         if ($null -ne $stream) {
           $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-          $errorJson = $reader.ReadToEnd(); $reader.Dispose(); $stream.Dispose()
-          if (-not [string]::IsNullOrWhiteSpace($errorJson)) { $serverCode = [string](($errorJson | ConvertFrom-Json).code) }
+          if ([string]::IsNullOrWhiteSpace($errorJson)) { $errorJson = $reader.ReadToEnd() }
+          $reader.Dispose(); $stream.Dispose()
         }
       } catch {}
     }
+    if (-not [string]::IsNullOrWhiteSpace($errorJson)) { try { $serverCode = [string](($errorJson | ConvertFrom-Json).code) } catch {} }
     if ($Operation -eq "claim") {
       if ($serverCode -eq "bridge_token_invalid") { throw "server_vehicle_card_claim_token_invalid" }
       if ($serverCode -eq "card_uid_fingerprint_invalid") { throw "server_vehicle_card_claim_uid_invalid" }
