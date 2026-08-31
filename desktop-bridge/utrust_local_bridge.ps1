@@ -32,7 +32,7 @@ function Read-BridgeBody { param($Context)
 }
 
 function Get-StructuredReaderResult {
-  param([string]$Text)
+  param([string]$Text, [switch]$RequireSuccessProperty)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
   $lines = @($Text -split "`r?`n")
   for ($index = $lines.Count - 1; $index -ge 0; $index--) {
@@ -42,23 +42,26 @@ function Get-StructuredReaderResult {
     if ($start -lt 0 -or $end -le $start) { continue }
     try {
       $candidate = $line.Substring($start, $end - $start + 1) | ConvertFrom-Json
-      if ($null -ne $candidate -and $candidate.PSObject.Properties.Name -contains "success") { return $candidate }
+      if ($null -ne $candidate -and (-not $RequireSuccessProperty -or $candidate.PSObject.Properties.Name -contains "success")) { return $candidate }
     } catch {}
   }
   return $null
 }
 
 function Invoke-ReaderScript {
-  param([string]$ScriptName, [switch]$AllowStructuredFailure)
+  param([string]$ScriptName, [switch]$AllowStructuredFailure, [switch]$RequireSuccessProperty)
   $scriptPath = Join-Path $bridgeRoot $ScriptName
   $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath 2>&1
   $text = ($output | Out-String).Trim()
-  $structuredResult = Get-StructuredReaderResult $text
+  $structuredResult = Get-StructuredReaderResult $text -RequireSuccessProperty:$RequireSuccessProperty
   if ($LASTEXITCODE -ne 0) {
     if ($AllowStructuredFailure -and $null -ne $structuredResult -and -not [bool]$structuredResult.success) { return $structuredResult }
     throw "reader_script_no_structured_result"
   }
-  if ($null -eq $structuredResult) { throw "reader_script_no_structured_result" }
+  if ($null -eq $structuredResult) {
+    if ($RequireSuccessProperty) { throw "reader_script_no_structured_result" }
+    throw "reader_script_invalid_result"
+  }
   return $structuredResult
 }
 
@@ -177,7 +180,7 @@ function Invoke-FormalVehicleWrite {
     $env:RC_RFID_PAYLOAD_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($payloadJson))
     $env:RC_RFID_URL_B64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$claim.nfcEntryUrl))
     $env:RC_RFID_ALLOW_OVERWRITE = "true"
-    $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure
+    $writeResult = Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty
   }
   finally { $env:RC_RFID_PAYLOAD_B64 = $oldPayload; $env:RC_RFID_URL_B64 = $oldUrl; $env:RC_RFID_ALLOW_OVERWRITE = $oldOverwrite }
   if (-not $writeResult.success -or -not $writeResult.written -or -not $writeResult.verified) {
