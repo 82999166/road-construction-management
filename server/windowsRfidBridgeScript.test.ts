@@ -49,8 +49,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v6"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v7"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-b"');
     expect(source).toContain('$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
@@ -81,6 +81,11 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("lastFormalWriteFailure");
     expect(source).toContain('if ([string]$writeResult.payloadFingerprint -notmatch "^[a-f0-9]{64}$"');
     expect(source).toContain('throw "card_writer_result_invalid"');
+    expect(source).toContain("function New-PayloadFingerprintMismatchException");
+    expect(source).toContain('$exception.Data["rfidSafeDiagnostics"] = $diagnostics');
+    expect(source).toContain("function Get-FormalWriteExceptionDiagnostics");
+    expect(source).toContain('$failureDiagnostics = Get-FormalWriteExceptionDiagnostics $_.Exception');
+    expect(source).toContain("diagnostics = $failureDiagnostics");
   });
 
   it("C# 写卡器必须按 CC 声明容量限制用户区读写，并保留实际 NDEF 字节回读校验", () => {
@@ -135,15 +140,15 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 唯一构建升级器必须校验核心文件、备份旧版、验证 v6 健康构建标识并在失败时回滚", () => {
+  it("Windows 唯一构建升级器必须校验核心文件、备份旧版、验证 v7 健康构建标识并在失败时回滚", () => {
     const source = readFileSync(new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url), "utf8");
-    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v6"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v6"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"');
-    expect(source).toContain('$bridgeContentSha256 = "a6ecc64cc56e27fd64c24d1dc8d2c61e860cc311eb4c5ff61316f11602d2e2c2"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-fingerprint-v7"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-fingerprint-v7"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-b"');
+    expect(source).toContain('$bridgeContentSha256 = "9c5a2a24a89053f35af212b965e1e961c2dd6383fe522b6d6a4bcb61976d28f4"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
-    expect(source).toContain("backup-fingerprint-v6-");
+    expect(source).toContain("backup-fingerprint-v7-");
     expect(source).toContain("Test-UTrustBridgeVersion");
     expect(source).toContain('[string]$health.bridgeBuildId -eq $bridgeBuildId');
     expect(source).toContain('[string]$health.bridgeContentSha256 -eq $bridgeContentSha256');

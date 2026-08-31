@@ -3,8 +3,8 @@ $bridgeRoot = "D:\manus"
 $serverBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-fingerprint-v6"
-$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-a"
+$bridgeVersion = "utrust-bridge-fingerprint-v7"
+$bridgeBuildId = "utrust-rfid-fingerprint-20260831-rc3diag-b"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -15,6 +15,38 @@ function Get-SafeFingerprintPrefix {
   param([string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
   return $Value.Substring(0, [Math]::Min(12, $Value.Length))
+}
+
+# PowerShell 函数作用域可能使脚本变量在外层 HTTP 捕获边界不可用；只随异常传递脱敏摘要元数据。
+function New-PayloadFingerprintMismatchException {
+  param([string]$ExpectedFingerprint, [string]$ActualFingerprint, [int]$ExpectedUtf8ByteLength, [int]$ActualUtf8ByteLength)
+  $diagnostics = @{
+    expectedPayloadFingerprintPrefix = Get-SafeFingerprintPrefix $ExpectedFingerprint
+    actualPayloadFingerprintPrefix = Get-SafeFingerprintPrefix $ActualFingerprint
+    expectedPayloadUtf8ByteLength = $ExpectedUtf8ByteLength
+    actualPayloadUtf8ByteLength = $ActualUtf8ByteLength
+    fingerprintMatches = $false
+    utf8ByteLengthMatches = ($ExpectedUtf8ByteLength -eq $ActualUtf8ByteLength)
+  }
+  $exception = New-Object System.InvalidOperationException("vehicle_card_readback_fingerprint_mismatch")
+  $exception.Data["rfidSafeDiagnostics"] = $diagnostics
+  return $exception
+}
+
+function Get-FormalWriteExceptionDiagnostics {
+  param($Exception)
+  try {
+    $candidate = $Exception.Data["rfidSafeDiagnostics"]
+    if ($null -eq $candidate) { return $null }
+    return @{
+      expectedPayloadFingerprintPrefix = Get-SafeFingerprintPrefix ([string]$candidate.expectedPayloadFingerprintPrefix)
+      actualPayloadFingerprintPrefix = Get-SafeFingerprintPrefix ([string]$candidate.actualPayloadFingerprintPrefix)
+      expectedPayloadUtf8ByteLength = [int]$candidate.expectedPayloadUtf8ByteLength
+      actualPayloadUtf8ByteLength = [int]$candidate.actualPayloadUtf8ByteLength
+      fingerprintMatches = $false
+      utf8ByteLengthMatches = ([int]$candidate.expectedPayloadUtf8ByteLength -eq [int]$candidate.actualPayloadUtf8ByteLength)
+    }
+  } catch { return $null }
 }
 
 function Write-BridgeJson {
@@ -245,7 +277,7 @@ function Invoke-FormalVehicleWrite {
       fingerprintMatches = $false
       utf8ByteLengthMatches = ($expectedPayloadUtf8ByteLength -ge 0 -and $actualPayloadUtf8ByteLength -ge 0 -and $expectedPayloadUtf8ByteLength -eq $actualPayloadUtf8ByteLength)
     }
-    throw "vehicle_card_readback_fingerprint_mismatch"
+    throw (New-PayloadFingerprintMismatchException $expectedPayloadFingerprint $actualPayloadFingerprint $expectedPayloadUtf8ByteLength $actualPayloadUtf8ByteLength)
   }
   # 仅在实体写入、逐字节回读和摘要比对均成功后保存当前用户可解密的短时确认收据；不保存 RC3 明文或写保护信息。
   $script:formalWriteStage = "save_pending_confirmation"
@@ -301,6 +333,8 @@ try {
         try { $result = Invoke-FormalVehicleWrite $bridgeToken; Write-BridgeJson $context $result; continue }
         catch {
           $diagnosticStage = [string]$script:formalWriteStage
+          $failureDiagnostics = Get-FormalWriteExceptionDiagnostics $_.Exception
+          if ($null -eq $failureDiagnostics) { $failureDiagnostics = $script:lastFormalWriteDiagnostics }
           $safeReason = Get-FormalWriteFailureCode ([string]$_.Exception.Message)
           if ($safeReason -eq "vehicle_card_write_or_readback_failed") { $safeReason = Get-FormalWriteStageFailureCode $diagnosticStage }
           # 已经完成实体写入与回读时，确认回传的瞬时网络失败必须保留 prepared 任务和短时令牌，允许同一窗口再次确认；不得错误标记失败。
@@ -317,7 +351,7 @@ try {
               $failureRecordCode = "server_bridge_failure_record_failed"
             }
           }
-          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion; diagnostics = $script:lastFormalWriteDiagnostics; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
+          $script:lastFormalWriteFailure = @{ success = $true; hasFailure = $true; reason = $safeReason; stage = $diagnosticStage; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion; diagnostics = $failureDiagnostics; occurredAtUtc = [DateTime]::UtcNow.ToString("o") }
           Write-BridgeJson $context @{ success = $false; message = $safeReason; failureRecorded = $failureRecorded; failureRecordCode = $failureRecordCode; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion } 422
           continue
         }

@@ -960,7 +960,11 @@
 
 - [ ] 停止猜测性修改并对“写入与回读完成、回读摘要与受控任务不一致”执行独立深度审计：用户明确要求采用最高强度分析，不再进行重复写卡。须独立核查服务端任务摘要计算、桥接 Base64/UTF-8 传递、C# URI+RC3 记录构造、NDEF 解析、RC3 原始 JSON 字节与 SHA-256 比较，先给出可复现字节级根因与最小修复方案，再更新 Windows/正式后台并只用单张卡验收。
 
-- [ ] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。须引入唯一桥接构建指纹并由后台同时校验版本名和构建指纹，升级器只安装带该指纹的完整核心文件；下一次单卡操作必须返回脱敏摘要前缀与长度，禁止继续依名称推断版本。
+- [ ] 已在唯一 `utrust-bridge-fingerprint-v6`（构建标识、内容摘要与写卡器版本均已现场核验）下对单张待写入卡执行一次写入并回读，仍安全失败于“回读摘要与本次受控任务不一致”。不得对该卡再次写入、不得仅回传确认、不得擦卡或重新生成任务；下一步只读取 `/api/last-write-failure` 的脱敏期望/实际摘要前缀与 UTF-8 字节长度，以实际差异定位最小根因。
+
+- [ ] 修复已核验 `utrust-bridge-fingerprint-v6` 构建中 `verify_payload_fingerprint` 失败记录仍返回 `diagnostics=null` 的异常边界传递缺陷：不得依赖函数作用域中 `$script:lastFormalWriteDiagnostics` 是否保留，必须在同一异常捕获边界从仅含摘要前缀/UTF-8 长度的受控诊断载体重建并写入最近失败记录；不得记录 RC3 正文、深链、UID、令牌、APDU 或底层异常。
+
+- [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
 
 - [x] 修复正式后台与已安装写卡桥接的版本门禁常量不一致：后台要求已从 `utrust-bridge-stage-v4` 对齐至现场健康检查确认的 `utrust-bridge-fingerprint-v5`，写卡器继续要求 `ntag216-atomic-v2`。仅改动当前写卡版本门禁及其回归断言；定向 7 项、TypeScript 与完整发布级门禁通过，发布后仍需单卡验证窗口和回读。
