@@ -980,6 +980,8 @@
 
 - [ ] 修复新卡 5981 首次正式写入在 `stage=save_pending_confirmation` 失败的问题：该阶段只可能在写卡器已返回 written/verified/committed、写卡器版本校验通过且服务端与回读摘要一致之后到达，因此实体 NDEF 已写入并逐字节回读成功；当前仅本机 DPAPI 加密确认收据保存失败，服务器任务尚未 confirmed。不得再次写卡、不得作废当前任务；须审计收据目录/DPAPI/原子文件保存，并提供仅确认、不重写 NDEF 的安全恢复路径。
 
+- [ ] 修复 GitHub 质量作业在 `actions/setup-node` 启用 pnpm 缓存时尚未安装 pnpm、导致主质量门禁未执行的问题：真实 Windows PowerShell 5.1 RFID 源码与 ZIP 分发解析已通过；须先安装固定版本 pnpm，再配置 Node 缓存，并重新确认 Linux 全量门禁和 Windows 5.1 门禁同时通过。
+
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
 
