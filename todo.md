@@ -980,7 +980,9 @@
 - [x] 修复 GitHub 质量作业在 `actions/setup-node` 启用 pnpm 缓存时尚未安装 pnpm、导致主质量门禁未执行的问题：现已先安装固定版本 pnpm 再配置 Node 缓存，同次 Linux 主质量作业全部步骤通过。
 - [x] 修复 GitHub 主质量作业缺少测试专用 `JWT_SECRET`、导致 RFID 签名载荷回归在 CI 中被安全拒绝的问题：仅使用明确的 CI-only 固定非生产测试值，未读取、提交或复用正式服务器签名密钥。
 - [x] 修复 GitHub 全量回归缺少临时管理员测试环境变量导致认证测试收到空用户名/口令的问题：仅使用 CI-only 假账号与测试口令，未引用正式管理员账号、正式口令或部署密钥；Linux 全量门禁与真实 Windows PowerShell 5.1 源码/BOM/ZIP 分发门禁已在同一次运行中全部通过。
-- [ ] 在中文 Windows PowerShell 5.1 安装唯一 `utrust-bridge-confirm-v11` 构建，先只读核验版本、构建标识、内容摘要和写卡器版本；随后只使用后台“只读复核并启用”读取新卡 5981 已存在的 NDEF、逐字节验证 URI + RC3 两记录并回传当前恢复任务确认。不得点击“写入并回读确认”、不得再次写卡、不得手工确认或作废任务；最终须核验服务器任务 confirmed、卡状态 active、lastWrittenAt 已写入且旧 5980 历史仍保留。
+- [x] 在中文 Windows PowerShell 5.1 安装唯一 `utrust-bridge-confirm-v11` 构建，并通过后台“只读复核并启用”读取新卡 5981 已存在的 NDEF、逐字节验证 URI + RC3 两记录并回传服务器确认；用户已确认写卡成功。恢复流程明确 `wroteCard=false`，未重复写入，卡片已完成正式确认和启用闭环，旧 5980 历史仍保留。
+
+- [ ] 修复新卡 5981 已完成 v11 只读逐字节复核、服务器确认并启用后，重新刷卡未自动进入确认发票界面的问题：根因已定位为移动运输页将深链条件写反，`nfcLinkToken` 存在时反而不打开发票弹窗。现已改为仅在受控 URL 含 `nfc` 参数时自动打开确认发票界面，定向 10 项、TypeScript 与完整发布级门禁通过，并已按 SHA-256、隔离解包、软链切换、连续健康检查和失败回滚流程发布到正式服务器；不得重写卡或改变运输状态机，仍待用户实体刷卡确认。
 
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。

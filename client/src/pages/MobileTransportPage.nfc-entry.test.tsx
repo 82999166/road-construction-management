@@ -14,6 +14,14 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(source).toContain("拍照车牌发票");
   });
 
+  it("仅在车辆卡安全深链含 nfc 参数时自动打开确认发票界面", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('new URLSearchParams(window.location.search).get("nfc")');
+    expect(source).toContain("if (nfcLinkToken) setMobileNfcInvoiceOpen(true)");
+    expect(source).not.toContain("if (!nfcLinkToken) setMobileNfcInvoiceOpen(true)");
+  });
+
   it("将两类发票操作置于项目选择后和统计台账前，并使用统一中文术语", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
     const projectSelector = source.indexOf('id="transport-project-select"');

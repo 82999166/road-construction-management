@@ -259,7 +259,7 @@ export default function MobileTransportPage() {
   }, [fieldReaderDeviceId]);
 
   useEffect(() => {
-    if (!nfcLinkToken) setMobileNfcInvoiceOpen(true);
+    if (nfcLinkToken) setMobileNfcInvoiceOpen(true);
   }, [nfcLinkToken]);
 
   /** 定位仅在用户主动打开趟次录入后发起；初次坐标作为起点，持续更新作为终点。 */
