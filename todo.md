@@ -974,17 +974,13 @@
 
 - [x] 完成 `utrust-bridge-fingerprint-v10` Windows 原子安装现场核验：`bridgeBuildId=utrust-rfid-fingerprint-20260831-rc3diag-e`、运行脚本内容摘要与 `ntag216-atomic-v2` 均通过升级器健康门禁。安装步骤未放卡、未写卡；下一步仍只允许单张卡一次性取得脱敏摘要差异，失败后立即停止。
 
-- [ ] 处理 v10 单卡操作在 `stage=claim` 被 `server_vehicle_card_claim_card_or_payload_conflict` 拒绝的问题：该证据表明服务器在下发 RC3 载荷和启动写卡器之前即发现当前实体卡指纹与任务目标卡不一致，本次没有写卡，故 `diagnostics=null` 属于预期。须只读核对任务目标卡指纹、桥接读取的实体卡指纹、车辆卡台账唯一记录、绑定车辆和任务状态；不得继续改写写卡器、重复写卡或绕过领取校验。
-
-- [ ] 核对实体卡与任务目标卡的确定尾号差异：v10 本机只读接口实际读取 `uidTail=5981`，而最新任务目标为管理编号 YX0095、UID 安全尾号 5980、绑定车辆湘AZ5555。须只读查询 5981 与 5980 两条台账记录的管理编号、绑定车辆、状态、是否已写入和历史任务，不得以修改指纹、删除记录或绕过 claim 校验解决。
-
-- [ ] 修复新卡 5981 首次正式写入在 `stage=save_pending_confirmation` 失败的问题：该阶段只可能在写卡器已返回 written/verified/committed、写卡器版本校验通过且服务端与回读摘要一致之后到达，因此实体 NDEF 已写入并逐字节回读成功；当前仅本机 DPAPI 加密确认收据保存失败，服务器任务尚未 confirmed。不得再次写卡、不得作废当前任务；须审计收据目录/DPAPI/原子文件保存，并提供仅确认、不重写 NDEF 的安全恢复路径。
-
-- [ ] 修复 GitHub 质量作业在 `actions/setup-node` 启用 pnpm 缓存时尚未安装 pnpm、导致主质量门禁未执行的问题：真实 Windows PowerShell 5.1 RFID 源码与 ZIP 分发解析已通过；须先安装固定版本 pnpm，再配置 Node 缓存，并重新确认 Linux 全量门禁和 Windows 5.1 门禁同时通过。
-
-- [ ] 修复 GitHub 主质量作业缺少测试专用 `JWT_SECRET`、导致 RFID 签名载荷回归在 CI 中被安全拒绝的问题：只允许使用明确标注为 CI-only 的固定非生产测试值，不得读取、提交或复用正式服务器签名密钥；修复后须确认全量测试与真实 Windows 5.1 分发门禁同时通过。
-
-- [ ] 修复 GitHub 全量回归缺少临时管理员测试环境变量导致认证测试收到空用户名/口令的问题：仅配置明确的 CI-only 假账号与强测试口令，不得引用正式管理员账号、正式口令或部署密钥；修复后须让 Linux 全量门禁与 Windows 5.1 分发门禁同次全绿。
+- [x] 处理 v10 单卡操作在 `stage=claim` 被 `server_vehicle_card_claim_card_or_payload_conflict` 拒绝的问题：只读证据确认读卡器实际读取尾号 5981，而旧任务目标为尾号 5980；服务器在下发 RC3 载荷和启动写卡器前正确拒绝，本次没有写卡，也未绕过领取校验。
+- [x] 核对并纠正实体卡与任务目标卡的台账对应关系：正式数据库中没有尾号 5981 的既有记录；错误的 5980 绑定已安全解除并保留历史，新卡 5981 已通过本机受控 UID 读取绑定湘AZ5555、自动生成新管理编号并进入待写入。未修改指纹、未删除记录、未改写运输或审计历史。
+- [x] 修复新卡 5981 首次正式写入在 `stage=save_pending_confirmation` 失败的问题：证据确认实体 NDEF 已写入、逐字节回读和摘要一致均成功，仅 DPAPI 本地收据保存失败。v11 已新增“不写卡的只读复核并启用”恢复链路，服务端只重新签发短时令牌并以专用恢复状态约束 complete；C# 仅逐字节读取现有 NDEF，桥接明确提交 `verificationMode=read_only` 与 `wroteCard=false`，绝不重复写页；正常写卡确认顺序也改为先确认服务端，仅在网络失败时保存本地收据。
+- [x] 修复 GitHub 质量作业在 `actions/setup-node` 启用 pnpm 缓存时尚未安装 pnpm、导致主质量门禁未执行的问题：现已先安装固定版本 pnpm 再配置 Node 缓存，同次 Linux 主质量作业全部步骤通过。
+- [x] 修复 GitHub 主质量作业缺少测试专用 `JWT_SECRET`、导致 RFID 签名载荷回归在 CI 中被安全拒绝的问题：仅使用明确的 CI-only 固定非生产测试值，未读取、提交或复用正式服务器签名密钥。
+- [x] 修复 GitHub 全量回归缺少临时管理员测试环境变量导致认证测试收到空用户名/口令的问题：仅使用 CI-only 假账号与测试口令，未引用正式管理员账号、正式口令或部署密钥；Linux 全量门禁与真实 Windows PowerShell 5.1 源码/BOM/ZIP 分发门禁已在同一次运行中全部通过。
+- [ ] 在中文 Windows PowerShell 5.1 安装唯一 `utrust-bridge-confirm-v11` 构建，先只读核验版本、构建标识、内容摘要和写卡器版本；随后只使用后台“只读复核并启用”读取新卡 5981 已存在的 NDEF、逐字节验证 URI + RC3 两记录并回传当前恢复任务确认。不得点击“写入并回读确认”、不得再次写卡、不得手工确认或作废任务；最终须核验服务器任务 confirmed、卡状态 active、lastWrittenAt 已写入且旧 5980 历史仍保留。
 
 - [x] 修复同名 `utrust-bridge-fingerprint-v5` 构建不一致导致摘要诊断缺失的问题：现场健康显示 v5，最近失败接口也显示 `stage=verify_payload_fingerprint`，但 `diagnostics=null`，说明运行的同名脚本缺少当前期望/实际摘要与 UTF-8 长度记录。已引入 `utrust-bridge-fingerprint-v6` 与唯一构建标识、运行脚本内容 SHA-256 双重门禁；后台和原子升级器均同时校验版本名、构建标识、内容摘要和写卡器版本。Windows v6 升级现场返回 `success=true`，下一步仅做不写卡的健康核验后进行单卡摘要取证。
 - [x] 将 RC3 任务创建、密文保存、PC claim 与 C# 写卡器摘要统一为一个规范 JSON UTF-8 字节契约：去除多个独立的 `JSON.stringify(payload)` 摘要来源，以纯函数回归证明任务摘要等于解密/claim 的 UTF-8 SHA-256 与字节长度；不记录或展示 RC3 正文、深链、UID、令牌或 APDU。
