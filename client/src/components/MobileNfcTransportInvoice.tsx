@@ -43,13 +43,31 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const scanTokenRef = useRef("");
   const announce = (message: string) => {
     if (!("speechSynthesis" in window)) return toast.info("当前浏览器不支持语音播报，请查看大字号成功提示");
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.resume();
+    const synthesizer = window.speechSynthesis;
+    synthesizer.cancel();
+    synthesizer.resume();
     const speech = new SpeechSynthesisUtterance(message);
     speech.lang = "zh-CN";
     speech.rate = 0.8;
     speech.volume = 1;
-    window.setTimeout(() => window.speechSynthesis.speak(speech), 80);
+    speech.pitch = 1;
+    const chineseVoice = synthesizer.getVoices().find(voice => voice.lang.toLowerCase().startsWith("zh"));
+    if (chineseVoice) speech.voice = chineseVoice;
+    speech.onerror = () => toast.info("自动播报被手机系统拦截，请点击“播放成功语音”重试，并检查手机媒体音量");
+    window.setTimeout(() => {
+      synthesizer.speak(speech);
+      window.setTimeout(() => synthesizer.resume(), 120);
+    }, 80);
+  };
+  const unlockSpeech = () => {
+    if (!("speechSynthesis" in window)) return;
+    const synthesizer = window.speechSynthesis;
+    synthesizer.cancel();
+    synthesizer.resume();
+    const primer = new SpeechSynthesisUtterance(" ");
+    primer.lang = "zh-CN";
+    primer.volume = 0;
+    synthesizer.speak(primer);
   };
   const preview = trpc.transport.previewMobileNfcInvoice.useQuery({ token }, { enabled: open && Boolean(token), retry: false });
   const issue = trpc.transport.confirmMobileNfcInvoice.useMutation({
@@ -142,7 +160,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     if (!token || !preview.data) return;
     setOperationError("");
     if (!preview.data.activeTrip && !routePresetId) return toast.error("请先选择运输线路");
-    if ("speechSynthesis" in window) window.speechSynthesis.resume();
+    unlockSpeech();
     let latitude: number | undefined;
     let longitude: number | undefined;
     if (preview.data.activeTrip) {

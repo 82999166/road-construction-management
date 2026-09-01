@@ -11,6 +11,12 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("保存并开具发票");
     expect(source).toContain("该车还未卸土，不能开具新发票");
     expect(source).toContain("speechSynthesis");
+    expect(source).toContain("unlockSpeech()");
+    expect(source).toContain('getVoices().find(voice => voice.lang.toLowerCase().startsWith("zh"))');
+    expect(source).toContain("speech.volume = 1");
+    expect(source).toContain("speech.onerror");
+    expect(source).toContain("自动播报被手机系统拦截");
+    expect(source).toContain("播放成功语音");
     expect(source).toContain("text-3xl font-black");
     expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
     expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");
