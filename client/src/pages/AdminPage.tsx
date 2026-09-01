@@ -32,6 +32,7 @@ import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, WATERMARK_FIELD_OPTIONS, type Evid
 import {
   Building2,
   BarChart3,
+  BookOpen,
   Calculator,
   ChevronDown,
   DatabaseBackup,
@@ -108,6 +109,7 @@ const ADMIN_MENU: DashboardMenuItem[] = [
   { icon: KeyRound, label: "微信登录管理", path: "/admin/wechat-login", section: "平台治理" },
   { icon: BarChart3, label: "业务治理与备份", path: "/admin/business", section: "平台治理" },
   { icon: Settings2, label: "系统设置", path: "/admin/settings", section: "平台治理" },
+  { icon: BookOpen, label: "使用教程", path: "/help", section: "平台治理" },
   { icon: ScrollText, label: "发布与审计", path: "/admin/audit", section: "平台治理" },
 ];
 
