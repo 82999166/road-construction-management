@@ -17,6 +17,15 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("speech.onerror");
     expect(source).toContain("自动播报被手机系统拦截");
     expect(source).toContain("播放成功语音");
+    expect(source).toContain("测试语音播报（不提交发票）");
+    expect(source).toContain("语音测试正常，刷卡发票成功后将自动播报");
+    const testSpeechStart = source.indexOf("const testSpeech = () => {");
+    const previewStart = source.indexOf("const preview =", testSpeechStart);
+    const testSpeechBlock = source.slice(testSpeechStart, previewStart);
+    expect(testSpeechStart).toBeGreaterThan(-1);
+    expect(previewStart).toBeGreaterThan(testSpeechStart);
+    expect(testSpeechBlock).not.toContain("issue.mutate");
+    expect(testSpeechBlock).not.toContain("confirmMobileNfcInvoice");
     expect(source).toContain("text-3xl font-black");
     expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
     expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");

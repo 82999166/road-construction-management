@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { CircleCheck, Radio, RotateCw, SmartphoneNfc, Truck } from "lucide-react";
+import { CircleCheck, Radio, RotateCw, SmartphoneNfc, Truck, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -40,9 +40,15 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const [operationError, setOperationError] = useState("");
   const [readerState, setReaderState] = useState<"checking" | "ready" | "unsupported" | "blocked" | "waiting">("checking");
   const [scanAttempt, setScanAttempt] = useState(0);
+  const [speechStatus, setSpeechStatus] = useState("");
   const scanTokenRef = useRef("");
+
   const announce = (message: string) => {
-    if (!("speechSynthesis" in window)) return toast.info("当前浏览器不支持语音播报，请查看大字号成功提示");
+    if (!("speechSynthesis" in window)) {
+      setSpeechStatus("当前浏览器不支持语音播报，请查看页面大字号结果。");
+      toast.info("当前浏览器不支持语音播报，请查看大字号成功提示");
+      return;
+    }
     const synthesizer = window.speechSynthesis;
     synthesizer.cancel();
     synthesizer.resume();
@@ -53,12 +59,18 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     speech.pitch = 1;
     const chineseVoice = synthesizer.getVoices().find(voice => voice.lang.toLowerCase().startsWith("zh"));
     if (chineseVoice) speech.voice = chineseVoice;
-    speech.onerror = () => toast.info("自动播报被手机系统拦截，请点击“播放成功语音”重试，并检查手机媒体音量");
+    speech.onstart = () => setSpeechStatus("正在播报…");
+    speech.onend = () => setSpeechStatus("语音播报完成。");
+    speech.onerror = () => {
+      setSpeechStatus("自动播报被手机系统拦截，请点击“播放成功语音”重试，并检查手机媒体音量。");
+      toast.info("自动播报被手机系统拦截，请点击“播放成功语音”重试，并检查手机媒体音量");
+    };
     window.setTimeout(() => {
       synthesizer.speak(speech);
       window.setTimeout(() => synthesizer.resume(), 120);
     }, 80);
   };
+
   const unlockSpeech = () => {
     if (!("speechSynthesis" in window)) return;
     const synthesizer = window.speechSynthesis;
@@ -69,16 +81,31 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     primer.volume = 0;
     synthesizer.speak(primer);
   };
+
+  const testSpeech = () => {
+    setSpeechStatus("正在测试手机语音…");
+    unlockSpeech();
+    window.setTimeout(() => announce("语音测试正常，刷卡发票成功后将自动播报。"), 60);
+  };
+
   const preview = trpc.transport.previewMobileNfcInvoice.useQuery({ token }, { enabled: open && Boolean(token), retry: false });
   const issue = trpc.transport.confirmMobileNfcInvoice.useMutation({
     onSuccess: async result => {
       const singleScanClosed = Boolean(result.singleScanClosed);
-      const successMessage = result.stage === "in_transit" ? "发票成功，车辆已发车，请前往卸土点。" : singleScanClosed ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。" : "卸土成功，本趟运输已完成。";
+      const successMessage = result.stage === "in_transit"
+        ? "发票成功，车辆已发车，请前往卸土点。"
+        : singleScanClosed
+          ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。"
+          : "卸土成功，本趟运输已完成。";
       setSuccessResult({ stage: result.stage, tripNo: result.tripNo, singleScanClosed });
       toast.success(successMessage);
       announce(successMessage);
       await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
-      setScanStatus(result.stage === "in_transit" ? `开票成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。` : singleScanClosed ? `单次刷卡闭环完成，运单号 ${result.tripNo}；已进入待核验状态。` : `卸土闭环成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。`);
+      setScanStatus(result.stage === "in_transit"
+        ? `开票成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。`
+        : singleScanClosed
+          ? `单次刷卡闭环完成，运单号 ${result.tripNo}；已进入待核验状态。`
+          : `卸土闭环成功，运单号 ${result.tripNo}；服务号通知已进入投递队列。`);
     },
     onError: error => {
       const guidance = error.message.includes("卸土点中文详细地址尚未完成地图定位校验")
@@ -97,6 +124,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     setSuccessResult(null);
     setOperationError("");
     setReaderState("checking");
+    setSpeechStatus("");
     setScanStatus(initialToken ? "已从车辆卡安全链接读取车辆信息。" : "正在等待车辆卡靠近手机…");
   }, [initialToken, open]);
 
@@ -107,6 +135,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
       setSuccessResult(null);
       setToken("");
       setRoutePresetId("");
+      setSpeechStatus("");
       setScanStatus("本次开票已完成，请贴下一张已启用车辆卡…");
     }, 3_000);
     return () => window.clearTimeout(resetTimer);
@@ -176,5 +205,82 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     issue.mutate({ token, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
   };
 
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]"><DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />刷 NFC 卡发票</DialogTitle></DialogHeader><div className="space-y-3"><p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>{successResult ? <div aria-live="assertive" className="rounded-2xl border-2 border-[#4f875a] bg-[#eef9ee] px-4 py-5 text-center text-[#1f5f30]"><p className="text-3xl font-black tracking-wide">{successResult.stage === "in_transit" ? "发票成功" : successResult.singleScanClosed ? "单次刷卡闭环完成" : "卸土成功"}</p><p className="mt-3 text-lg font-bold">{successResult.stage === "in_transit" ? "车辆已发车，请前往卸土点" : successResult.singleScanClosed ? "本趟运输已进入待核验状态" : "本趟运输已完成闭环"}</p><p className="mt-2 text-sm font-semibold">运单号：{successResult.tripNo}</p><Button variant="outline" className="mt-4 border-[#4f875a] bg-white text-[#1f5f30]" onClick={() => announce(successResult.stage === "in_transit" ? "发票成功，车辆已发车，请前往卸土点。" : successResult.singleScanClosed ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。" : "卸土成功，本趟运输已完成。")} >播放成功语音</Button></div> : null}<Card className="border-[#b4d0db] bg-white"><CardContent className="p-3"><div className="flex items-start gap-2"><SmartphoneNfc className={`mt-0.5 h-4 w-4 shrink-0 ${readerState === "ready" ? "text-[#2f8051]" : "text-[#286f8f]"}`} /><div className="min-w-0 flex-1"><p className="text-sm font-medium text-[#24546b]">{scanStatus}</p><p className="mt-1 text-[11px] text-[#658495]">{readerState === "ready" ? "已启动 Android Chrome 页面内读卡。" : readerState === "unsupported" ? "当前浏览器不支持 Web NFC 页面内读取。" : readerState === "blocked" ? "NFC 权限未授权或被浏览器拦截。" : "正在检查 NFC 能力…"}</p></div></div>{(readerState === "blocked" || readerState === "ready") ? <Button type="button" variant="outline" size="sm" className="mt-3 w-full border-[#a9ccd9] text-[#24546b]" onClick={() => { setToken(""); setRoutePresetId(""); setOperationError(""); scanTokenRef.current = ""; setScanAttempt(value => value + 1); }}><RotateCw className="mr-1 h-3.5 w-3.5" />重新启动读卡</Button> : null}{preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}{preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{preview.error.message}</p> : null}{operationError ? <div role="alert" className="mt-3 rounded-xl border border-[#c56632] bg-[#fff6ed] px-3 py-3 text-sm leading-6 text-[#824b2a]"><p className="font-bold">本次操作未完成</p><p className="mt-1">{operationError}</p></div> : null}{preview.data ? <div className="mt-3 space-y-2"><div className="rounded-xl bg-[#edf7fb] p-3"><div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div><p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p></div>{preview.data.activeTrip ? <div className="rounded-xl border-2 border-[#c56632] bg-[#fff6ed] p-3 text-sm text-[#824b2a]"><p className="font-bold">该车还未卸土，不能开具新发票</p><p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p><p className="mt-1 text-xs">路线：{preview.data.activeTrip.loadSiteName} → {preview.data.activeTrip.unloadSiteName}</p><p className="mt-2 text-xs">请在卸土点确认卸土闭环后，才能开具下一张发票。</p></div> : <><Select value={routePresetId} onValueChange={setRoutePresetId}><SelectTrigger className="border-[#a9ccd9]"><SelectValue placeholder="选择运输线路" /></SelectTrigger><SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {route.distanceKm} km</SelectItem>)}</SelectContent></Select>{!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}</>}<Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}><CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}</Button></div> : null}</CardContent></Card></div></DialogContent></Dialog>;
+  const successMessage = successResult?.stage === "in_transit"
+    ? "发票成功，车辆已发车，请前往卸土点。"
+    : successResult?.singleScanClosed
+      ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。"
+      : "卸土成功，本趟运输已完成闭环。";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]">
+        <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />刷 NFC 卡发票</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>
+          <Button type="button" variant="outline" size="sm" className="w-full border-[#a9ccd9] bg-white text-[#24546b]" onClick={testSpeech}>
+            <Volume2 className="mr-1 h-4 w-4" />测试语音播报（不提交发票）
+          </Button>
+          {speechStatus && !successResult ? <p aria-live="polite" className="text-xs text-[#527487]">{speechStatus}</p> : null}
+
+          {successResult ? (
+            <div aria-live="assertive" className="rounded-2xl border-2 border-[#4f875a] bg-[#eef9ee] px-4 py-5 text-center text-[#1f5f30]">
+              <p className="text-3xl font-black tracking-wide">{successResult.stage === "in_transit" ? "发票成功" : successResult.singleScanClosed ? "单次刷卡闭环完成" : "卸土成功"}</p>
+              <p className="mt-3 text-lg font-bold">{successResult.stage === "in_transit" ? "车辆已发车，请前往卸土点" : successResult.singleScanClosed ? "本趟运输已进入待核验状态" : "本趟运输已完成闭环"}</p>
+              <p className="mt-2 text-sm font-semibold">运单号：{successResult.tripNo}</p>
+              <Button variant="outline" className="mt-4 border-[#4f875a] bg-white text-[#1f5f30]" onClick={() => announce(successMessage)}>播放成功语音</Button>
+              {speechStatus ? <p aria-live="polite" className="mt-2 text-xs font-medium">{speechStatus}</p> : null}
+            </div>
+          ) : null}
+
+          <Card className="border-[#b4d0db] bg-white">
+            <CardContent className="p-3">
+              <div className="flex items-start gap-2">
+                <SmartphoneNfc className={`mt-0.5 h-4 w-4 shrink-0 ${readerState === "ready" ? "text-[#2f8051]" : "text-[#286f8f]"}`} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-[#24546b]">{scanStatus}</p>
+                  <p className="mt-1 text-[11px] text-[#658495]">{readerState === "ready" ? "已启动 Android Chrome 页面内读卡。" : readerState === "unsupported" ? "当前浏览器不支持 Web NFC 页面内读取。" : readerState === "blocked" ? "NFC 权限未授权或被浏览器拦截。" : "正在检查 NFC 能力…"}</p>
+                </div>
+              </div>
+              {(readerState === "blocked" || readerState === "ready") ? (
+                <Button type="button" variant="outline" size="sm" className="mt-3 w-full border-[#a9ccd9] text-[#24546b]" onClick={() => { setToken(""); setRoutePresetId(""); setOperationError(""); scanTokenRef.current = ""; setScanAttempt(value => value + 1); }}>
+                  <RotateCw className="mr-1 h-3.5 w-3.5" />重新启动读卡
+                </Button>
+              ) : null}
+              {preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}
+              {preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{preview.error.message}</p> : null}
+              {operationError ? <div role="alert" className="mt-3 rounded-xl border border-[#c56632] bg-[#fff6ed] px-3 py-3 text-sm leading-6 text-[#824b2a]"><p className="font-bold">本次操作未完成</p><p className="mt-1">{operationError}</p></div> : null}
+
+              {preview.data ? (
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-xl bg-[#edf7fb] p-3">
+                    <div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div>
+                    <p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p>
+                  </div>
+                  {preview.data.activeTrip ? (
+                    <div className="rounded-xl border-2 border-[#c56632] bg-[#fff6ed] p-3 text-sm text-[#824b2a]">
+                      <p className="font-bold">该车还未卸土，不能开具新发票</p>
+                      <p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p>
+                      <p className="mt-1 text-xs">路线：{preview.data.activeTrip.loadSiteName} → {preview.data.activeTrip.unloadSiteName}</p>
+                      <p className="mt-2 text-xs">请在卸土点确认卸土闭环后，才能开具下一张发票。</p>
+                    </div>
+                  ) : (
+                    <>
+                      <Select value={routePresetId} onValueChange={setRoutePresetId}>
+                        <SelectTrigger className="border-[#a9ccd9]"><SelectValue placeholder="选择运输线路" /></SelectTrigger>
+                        <SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {route.distanceKm} km</SelectItem>)}</SelectContent>
+                      </Select>
+                      {!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}
+                    </>
+                  )}
+                  <Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}>
+                    <CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}
+                  </Button>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
