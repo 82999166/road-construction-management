@@ -23,6 +23,13 @@ describe("移动运输运单台账", () => {
     expect(source).toContain("装土确认时间");
     expect(source).toContain("卸土确认时间");
     expect(source).toContain("onClick={() => setSelectedTripId(trip.id)}");
+    expect(source).toContain('trip.invoiceMode === "plate_photo"');
+    expect(source).toContain("Boolean(trip.loadConfirmedAt)");
+    expect(source).toContain("!trip.unloadConfirmedAt");
+    expect(source).toContain('!["void", "settled"].includes(trip.status)');
+    expect(source).toContain("确认卸土");
+    expect(source).toContain("拍摄卸土现场并确认卸土");
+    expect(source).toContain("onConfirmPlatePhotoUnload?.(tripId)");
     expect(source).toContain("运输运单详情");
     expect(source).toContain("查看受控加油凭证");
     expect(source).not.toContain("longitude");

@@ -39,6 +39,20 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(source).not.toContain('onClick={() => window.print()}');
   });
 
+  it("将装卸土点与路线设置收敛到顶部图标，并从底部移除重复配置卡片", () => {
+    const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
+    const header = source.indexOf("<header");
+    const main = source.indexOf("<main");
+    const topSettings = source.indexOf('triggerVariant="icon"');
+
+    expect(header).toBeGreaterThan(-1);
+    expect(topSettings).toBeGreaterThan(header);
+    expect(topSettings).toBeLessThan(main);
+    expect(source.match(/<MobileTransportSiteManager/g)).toHaveLength(1);
+    expect(source).toContain("isSuperAdmin || Boolean(transportSiteManagementAccess.data?.canManage)");
+    expect(source).toContain("onConfirmPlatePhotoUnload={openPlatePhotoUnloadDialog}");
+  });
+
   it("提供换电脑恢复、手机 NFC 与键盘式读卡器备用操作说明", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
 
