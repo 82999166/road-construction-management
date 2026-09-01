@@ -5,6 +5,7 @@
 export type ManagementAccessMode = "login" | "checking" | "super-admin" | "scoped-manager" | "unavailable";
 
 const MANAGEMENT_MODULE_PATH_BY_CODE: Record<string, string> = {
+  TOOL_KNOWLEDGE: "/tools",
   CONSTRUCTION: "/admin/construction",
   LABOR: "/admin/labor",
   MACHINERY: "/admin/machinery",

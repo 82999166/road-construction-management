@@ -19,6 +19,7 @@ import { useIsMobile } from "./hooks/useMobile";
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const Home = lazy(() => import("./pages/Home"));
 const HelpCenterPage = lazy(() => import("./pages/HelpCenterPage"));
+const ToolKnowledgePage = lazy(() => import("./pages/ToolKnowledgePage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
 const DriverPortalPage = lazy(() => import("./pages/DriverPortalPage"));
@@ -103,6 +104,7 @@ function Router() {
 	      <Route path={"/driver-wechat-bind"} component={DriverWechatBindPage} />
 	      <Route path={"/driver-portal"} component={DriverPortalPage} />
 	      <Route path={"/help"} component={HelpCenterPage} />
+	      <Route path={"/tools"} component={ToolKnowledgePage} />
 	      <Route path={"/"} component={Home} />
       <Route path={"/mobile"} component={MobileWorkbench} />
       <Route path={"/mobile/attendance"} component={MobileAttendancePage} />

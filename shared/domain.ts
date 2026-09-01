@@ -166,6 +166,7 @@ export function assertEvidenceImageSignature(bytes: Uint8Array, mimeType: "image
 /** 业务移动端菜单目录，由服务端根据岗位/角色进行动态过滤。 */
 export const MOBILE_MENU_CATALOG = [
   { code: "WORKBENCH", title: "工作台", icon: "LayoutDashboard", roles: ["ALL"] },
+  { code: "TOOL_KNOWLEDGE", title: "工具知识", icon: "Calculator", roles: ["ALL"] },
   { code: "CONSTRUCTION", title: "施工现场", icon: "HardHat", roles: ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "SAFETY_MANAGER"] },
   { code: "LABOR", title: "劳务工资", icon: "ContactRound", roles: ["LABOR_MANAGER", "ACCOUNTANT", "FINANCE_MANAGER", "PROJECT_MANAGER"] },
   { code: "MACHINERY", title: "机械管理", icon: "Tractor", roles: ["MACHINERY_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER"] },

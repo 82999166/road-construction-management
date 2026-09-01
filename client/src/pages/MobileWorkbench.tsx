@@ -5,6 +5,8 @@ import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
 import {
   Bell,
+  BookOpen,
+  Calculator,
   Camera,
   ChevronDown,
   ClipboardCheck,
@@ -35,6 +37,7 @@ import { useLocation } from "wouter";
  */
 const MENU_ICONS: Record<string, LucideIcon> = {
   WORKBENCH: LayoutDashboard,
+  TOOL_KNOWLEDGE: Calculator,
   CONSTRUCTION: HardHat,
   LABOR: ContactRound,
   MACHINERY: Tractor,
@@ -241,14 +244,15 @@ export default function MobileWorkbench() {
   const isUsingSnapshot = !activeWorkbench && Boolean(snapshot);
   const menus = (activeWorkbench?.menus ?? snapshot?.menus ?? []).filter(menu => menu.code !== "WORKBENCH");
   // 消息中心属于所有已登录人员的通用入口，已由顶部和底部导航提供；“我的业务”只展示部门可办理模块。
-  const businessMenus = menus.filter(menu => menu.code !== "MESSAGES");
+  // 超级管理员的角色由服务端下发，界面仅作来源说明，不能据此绕过任何接口鉴权。
+  const hasGlobalBusinessAccess = activeWorkbench?.user.roleCodes.includes("SUPER_ADMIN") ?? false;
+  const isManagementUser = hasGlobalBusinessAccess || (activeWorkbench?.user.roleCodes ?? []).some(code => code !== "ALL" && code !== "DRIVER");
+  const businessMenus = menus.filter(menu => menu.code !== "MESSAGES" && (menu.code !== "TOOL_KNOWLEDGE" || isManagementUser));
   const statistics = activeWorkbench?.statistics ?? snapshot?.statistics;
   const greetingName = activeWorkbench?.user.name ?? snapshot?.userName ?? user?.name ?? "同事";
   const departmentNames = activeWorkbench?.user.departments.map(department => department.name) ?? snapshot?.departmentNames ?? [];
   const departmentModules = activeWorkbench?.user.departmentModules ?? snapshot?.departmentModules ?? [];
   const userSpecificModules = activeWorkbench?.user.userSpecificModules ?? [];
-  // 超级管理员的角色由服务端下发，界面仅作来源说明，不能据此绕过任何接口鉴权。
-  const hasGlobalBusinessAccess = activeWorkbench?.user.roleCodes.includes("SUPER_ADMIN") ?? false;
 
   return (
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
@@ -290,11 +294,14 @@ export default function MobileWorkbench() {
             <div className="grid grid-cols-4 gap-3 sm:grid-cols-5">
               {businessMenus.map(menu => {
                 const Icon = MENU_ICONS[menu.code] ?? LayoutDashboard;
-                return <button key={menu.code} disabled={!isOnline} className="group flex min-w-0 flex-col items-center gap-2 rounded-2xl bg-white px-2 py-3 text-center shadow-[0_6px_18px_rgba(71,42,30,.06)] transition-transform enabled:active:scale-95 disabled:cursor-not-allowed disabled:opacity-60" onClick={() => navigate(`/mobile/${menu.code.toLowerCase()}`)}><span className="grid h-11 w-11 place-items-center rounded-2xl bg-[#fbefe0] text-[#9f582b] transition-colors group-hover:bg-[#f4dfc3]"><Icon className="h-5 w-5" /></span><span className="line-clamp-2 text-xs font-medium leading-4 text-[#5b3b2e]">{menu.title}</span></button>;
+                const path = menu.code === "TOOL_KNOWLEDGE" ? "/tools" : `/mobile/${menu.code.toLowerCase()}`;
+                return <button key={menu.code} disabled={!isOnline} className="group flex min-w-0 flex-col items-center gap-2 rounded-2xl bg-white px-2 py-3 text-center shadow-[0_6px_18px_rgba(71,42,30,.06)] transition-transform enabled:active:scale-95 disabled:cursor-not-allowed disabled:opacity-60" onClick={() => navigate(path)}><span className="grid h-11 w-11 place-items-center rounded-2xl bg-[#fbefe0] text-[#9f582b] transition-colors group-hover:bg-[#f4dfc3]"><Icon className="h-5 w-5" /></span><span className="line-clamp-2 text-xs font-medium leading-4 text-[#5b3b2e]">{menu.title}</span></button>;
               })}
               {!businessMenus.length ? <p className="col-span-4 rounded-xl bg-white p-4 text-center text-xs text-[#8f7566]">当前账号尚未获分配业务岗位，请联系超级管理员授权。</p> : null}
             </div>
           </section>
+
+          {isManagementUser ? <section className="grid grid-cols-2 gap-3"><button type="button" className="rounded-2xl border border-[#dfc5aa] bg-[#fff7ec] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)]" onClick={() => navigate("/tools")}><Calculator className="h-5 w-5 text-[#a45d2f]" /><p className="mt-3 text-sm font-semibold text-[#5b3b2e]">工具知识</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">材料估算与税费利润测算</p></button><button type="button" className="rounded-2xl border border-[#d6e4dc] bg-[#f3faf6] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)]" onClick={() => navigate("/help?guide=mobile")}><BookOpen className="h-5 w-5 text-[#39745a]" /><p className="mt-3 text-sm font-semibold text-[#345643]">使用教程</p><p className="mt-1 text-xs leading-5 text-[#708d7e]">查看移动端操作说明</p></button></section> : null}
         </main>
 
         <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><LayoutDashboard className="h-5 w-5" /><span className="text-[10px] font-medium">工作台</span></button><button disabled={!isOnline} className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566] disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>

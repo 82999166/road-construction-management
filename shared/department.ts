@@ -27,5 +27,5 @@ export function getDepartmentBusinessModuleName(code: DepartmentBusinessModule) 
   return DEPARTMENT_BUSINESS_MODULES.find(item => item.code === code)?.name ?? code;
 }
 
-/** 移动端中的个人资料与消息中心属于所有已登录人员的基础入口，不计入部门业务模块。 */
-export const DEPARTMENT_AGNOSTIC_MOBILE_MENUS = ["WORKBENCH", "MESSAGES"] as const;
+/** 工作台、工具知识与消息中心不读取部门业务数据；工具知识仍由前端仅向管理人员呈现。 */
+export const DEPARTMENT_AGNOSTIC_MOBILE_MENUS = ["WORKBENCH", "TOOL_KNOWLEDGE", "MESSAGES"] as const;

@@ -7,6 +7,8 @@ import { getAuthorizedManagementModules, getManagementModulePath } from "@/lib/m
 import { trpc } from "@/lib/trpc";
 import {
   Bell,
+  BookOpen,
+  Calculator,
   Camera,
   ContactRound,
   FileText,
@@ -28,6 +30,7 @@ import { useLocation } from "wouter";
 
 /** 图标仅用于视觉呈现；业务模块及其可见性始终来自服务端 workbench 投影。 */
 const MANAGEMENT_MODULE_ICONS: Record<string, LucideIcon> = {
+  TOOL_KNOWLEDGE: Calculator,
   CONSTRUCTION: HardHat,
   LABOR: ContactRound,
   MACHINERY: Tractor,
@@ -77,7 +80,8 @@ export default function ManagementPortal() {
     return <div className="grid min-h-screen place-items-center bg-[#f7f1e8] p-6 text-center text-[#3b2118]"><div className="max-w-sm rounded-[28px] bg-white p-7 shadow-[0_18px_48px_rgba(71,42,30,.11)]"><div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#fbebd9] text-[#a85a28]"><ShieldCheck className="h-6 w-6" /></div><h1 className="mt-5 text-xl font-semibold">管理权限暂时无法同步</h1><p className="mt-3 text-sm leading-6 text-[#816658]">系统未显示任何默认全局功能。请重新同步；若问题持续，请联系超级管理员核验角色、部门和项目授权。</p><Button className="mt-6 bg-[#203c48] hover:bg-[#17313b]" onClick={() => void workbench.refetch()}><RefreshCw className="mr-2 h-4 w-4" />重新同步</Button></div></div>;
   }
 
-  const modules = getAuthorizedManagementModules(workbench.data.menus);
+  const isManagementUser = workbench.data.user.roleCodes.includes("ALL") || workbench.data.user.roleCodes.some(code => code !== "ALL" && code !== "DRIVER");
+  const modules = getAuthorizedManagementModules(workbench.data.menus).filter(module => module.code !== "TOOL_KNOWLEDGE" || isManagementUser);
   const departmentNames = workbench.data.user.departments.map(department => department.name);
   const roleCodes = workbench.data.user.roleCodes.filter(code => code !== "ALL");
   const projectScopeLabel = workbench.data.dataScope.hasAllProjects
@@ -120,6 +124,7 @@ export default function ManagementPortal() {
       <aside className="space-y-4">
         <Card className="border-[#e5d2bd] bg-[#fffaf4] shadow-[0_10px_28px_rgba(71,42,30,.06)]"><CardContent className="p-5"><div className="flex items-center gap-2 text-sm font-semibold text-[#4b2d21]"><MapPin className="h-4 w-4 text-[#a66031]" />数据与组织范围</div><dl className="mt-4 space-y-3 text-sm"><div><dt className="text-xs text-[#9a7c6a]">项目范围</dt><dd className="mt-1 font-medium">{projectScopeLabel}</dd></div><div><dt className="text-xs text-[#9a7c6a]">所属部门</dt><dd className="mt-1 font-medium">{departmentNames.length ? departmentNames.join("、") : "暂未配置"}</dd></div><div><dt className="text-xs text-[#9a7c6a]">有效角色</dt><dd className="mt-1 font-medium">{roleCodes.length ? roleCodes.join("、") : "暂未配置"}</dd></div></dl></CardContent></Card>
         <Card className="border-[#e5d2bd] bg-[#fffaf4] shadow-[0_10px_28px_rgba(71,42,30,.06)]"><CardContent className="p-5"><div className="flex items-center gap-2 text-sm font-semibold text-[#4b2d21]"><Bell className="h-4 w-4 text-[#a66031]" />消息与待办</div><p className="mt-3 text-sm leading-6 text-[#806353]">您有 <strong className="text-[#4b2d21]">{workbench.data.statistics.unreadMessages}</strong> 条未读消息。业务审批、待办和状态提醒均仅显示在授权范围内。</p><Button variant="outline" className="mt-4 w-full border-[#d7bda4] bg-white text-[#6a3f2b] hover:bg-[#f9eee1]" onClick={() => navigate("/mobile/messages")}>查看消息中心</Button></CardContent></Card>
+        <Card className="border-[#d5e3dc] bg-[#f4faf7] shadow-[0_10px_28px_rgba(71,42,30,.06)]"><CardContent className="p-5"><div className="flex items-center gap-2 text-sm font-semibold text-[#345d4a]"><BookOpen className="h-4 w-4 text-[#39745a]" />使用教程</div><p className="mt-3 text-sm leading-6 text-[#647d70]">查看管理员与移动端的操作说明，不读取或变更任何业务数据。</p><Button variant="outline" className="mt-4 w-full border-[#b8d3c5] bg-white text-[#2e694d] hover:bg-[#eaf6f0]" onClick={() => navigate("/help?guide=admin")}>打开管理员教程</Button></CardContent></Card>
       </aside>
     </div>
     <MobileBottomNavigation forceVisible />
