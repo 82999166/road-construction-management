@@ -3723,7 +3723,29 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-        <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}><DialogContent className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "max-h-[92vh] max-w-[min(96vw,1320px)] overflow-y-auto" : "max-w-2xl"}><DialogHeader><DialogTitle>{desktopRecordDetail?.title}</DialogTitle><DialogDescription>{desktopRecordDetail?.description}</DialogDescription></DialogHeader><dl className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "grid gap-3 py-2 sm:grid-cols-2 xl:grid-cols-4" : "grid gap-3 py-2 sm:grid-cols-2"}>{desktopRecordDetail?.fields.map(field => <div key={field.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><dt className="text-xs text-slate-500">{field.label}</dt><dd className="mt-1 text-sm font-medium text-slate-800">{field.value}</dd></div>)}</dl>{desktopRecordDetail?.note ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}<DialogFooter><Button onClick={() => setDesktopRecordDetail(null)}>关闭</Button></DialogFooter></DialogContent></Dialog>
+        <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}>
+          <DialogContent className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "flex h-[min(92vh,920px)] w-[calc(100vw-2rem)] max-w-[1320px] flex-col overflow-hidden p-0 sm:max-w-[1320px]" : "max-w-2xl"}>
+            <DialogHeader className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "shrink-0 border-b border-slate-200 px-6 py-5" : undefined}>
+              <DialogTitle>{desktopRecordDetail?.title}</DialogTitle>
+              <DialogDescription>{desktopRecordDetail?.description}</DialogDescription>
+            </DialogHeader>
+            {desktopRecordDetail?.title.startsWith("单车收益支出分析") ? (
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                <dl className="grid content-start gap-4 md:grid-cols-3 xl:grid-cols-4">
+                  {desktopRecordDetail.fields.map(field => {
+                    const isDetailTable = field.label === "按月汇总" || field.label === "按日明细";
+                    return <div key={field.label} className={isDetailTable ? "overflow-hidden rounded-xl border border-slate-200 bg-white md:col-span-3 xl:col-span-4" : "rounded-xl border border-slate-100 bg-slate-50 p-4"}>
+                      <dt className={isDetailTable ? "px-4 pt-3 text-xs font-medium text-slate-600" : "text-xs text-slate-500"}>{field.label}</dt>
+                      <dd className={isDetailTable ? "mt-2 text-sm font-medium text-slate-800" : "mt-1 text-sm font-medium text-slate-800"}>{field.value}</dd>
+                    </div>;
+                  })}
+                </dl>
+                {desktopRecordDetail.note ? <p className="mt-4 rounded-xl bg-amber-50 p-4 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}
+              </div>
+            ) : <><dl className="grid gap-3 py-2 sm:grid-cols-2">{desktopRecordDetail?.fields.map(field => <div key={field.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><dt className="text-xs text-slate-500">{field.label}</dt><dd className="mt-1 text-sm font-medium text-slate-800">{field.value}</dd></div>)}</dl>{desktopRecordDetail?.note ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">{desktopRecordDetail.note}</p> : null}</>}
+            <DialogFooter className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "shrink-0 border-t border-slate-200 bg-white px-6 py-4" : undefined}><Button onClick={() => setDesktopRecordDetail(null)}>关闭</Button></DialogFooter>
+          </DialogContent>
+        </Dialog>
         <Dialog open={machineDialogOpen} onOpenChange={open => { if (!open) { setMachineDialogOpen(false); setMachineForm(EMPTY_MACHINE_FORM); } }}>
           <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
             <DialogHeader><DialogTitle>{machineForm.id ? "维护机械档案" : "新建机械档案"}</DialogTitle><DialogDescription>项目、操作员、产权/租赁、资产标识与状态均由超级管理后台受控维护；已退役机械仅改变状态，不物理删除历史成本与责任记录。</DialogDescription></DialogHeader>

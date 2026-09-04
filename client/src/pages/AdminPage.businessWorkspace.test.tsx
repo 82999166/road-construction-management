@@ -83,6 +83,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveMachineCost.mutate");
   });
 
+  it("单车收益支出分析使用宽屏分区弹窗，完整承载统计卡和月度、按日明细", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('w-[calc(100vw-2rem)] max-w-[1320px]');
+    expect(source).toContain('md:col-span-3 xl:col-span-4');
+    expect(source).toContain('field.label === "按月汇总" || field.label === "按日明细"');
+    expect(source).toContain('min-h-0 flex-1 overflow-y-auto px-6 py-5');
+    expect(source).not.toContain('max-w-[min(96vw,1320px)]');
+  });
+
   it("车辆射频卡绑定窗口展示完整车辆信息，并可在窗口内直接读取卡 ID", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
@@ -337,7 +347,8 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("车辆分析期间");
     expect(source).toContain("本期 / 累计总趟数");
     expect(source).toContain("柴油占比 / 每趟油费");
-    expect(source).toContain("max-w-[min(96vw,1320px)]");
+    expect(source).toContain('w-[calc(100vw-2rem)] max-w-[1320px]');
+    expect(source).toContain('md:col-span-3 xl:col-span-4');
   });
 
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {

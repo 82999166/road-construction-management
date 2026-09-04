@@ -17,7 +17,7 @@ expected_checksum="$(awk '{print $1}' "$checksum_path")"
 package_name="$(basename "$package_path")"
 
 ssh_options=(
-  -T
+  -tt
   -o PreferredAuthentications=password,keyboard-interactive
   -o PubkeyAuthentication=no
   -o ConnectTimeout=12
@@ -25,7 +25,22 @@ ssh_options=(
 )
 
 SSHPASS="${SSHPASS:?缺少受控 SSH 凭据}" sshpass -e ssh "${ssh_options[@]}" "$remote_host" "mkdir -p '$app_root/incoming' '$app_root/releases'"
-SSHPASS="$SSHPASS" sshpass -e scp -O -q "${ssh_options[@]}" "$package_path" "$checksum_path" "$remote_host:$app_root/incoming/"
+
+# 正式服务器仅接受分配交互终端的 SSH 命令，且关闭 SFTP/legacy SCP。
+# 伪终端不直接传输二进制文件：本地无换行 Base64 编码，远端解码至 incoming，
+# 再由远端脚本对收到的归档执行 SHA-256 校验，绝不直接覆盖 current。
+upload_via_ssh() {
+  local source_path="$1"
+  local remote_path="$2"
+  local upload_sentinel="__YX_RELEASE_UPLOAD_END__"
+  base64 -w 0 "$source_path" | {
+    cat
+    printf '\n%s\n' "$upload_sentinel"
+  } | SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" "$remote_host" "stty -echo; temp_upload=\$(mktemp); cleanup_upload() { stty echo; rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
+}
+
+upload_via_ssh "$package_path" "$app_root/incoming/$package_name"
+upload_via_ssh "$checksum_path" "$app_root/incoming/${package_name}.sha256"
 
 SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" "$remote_host" \
   "APP_ROOT='$app_root' SERVICE_NAME='$service_name' HEALTH_URL='$health_url' RELEASE_TAG='$release_tag' EXPECTED_CHECKSUM='$expected_checksum' PACKAGE_NAME='$package_name' bash -s" <<'REMOTE_SCRIPT'
