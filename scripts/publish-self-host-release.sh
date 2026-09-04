@@ -25,7 +25,7 @@ ssh_options=(
 )
 
 SSHPASS="${SSHPASS:?缺少受控 SSH 凭据}" sshpass -e ssh "${ssh_options[@]}" "$remote_host" "mkdir -p '$app_root/incoming' '$app_root/releases'"
-SSHPASS="$SSHPASS" sshpass -e scp -q "${ssh_options[@]}" "$package_path" "$checksum_path" "$remote_host:$app_root/incoming/"
+SSHPASS="$SSHPASS" sshpass -e scp -O -q "${ssh_options[@]}" "$package_path" "$checksum_path" "$remote_host:$app_root/incoming/"
 
 SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" "$remote_host" \
   "APP_ROOT='$app_root' SERVICE_NAME='$service_name' HEALTH_URL='$health_url' RELEASE_TAG='$release_tag' EXPECTED_CHECKSUM='$expected_checksum' PACKAGE_NAME='$package_name' bash -s" <<'REMOTE_SCRIPT'

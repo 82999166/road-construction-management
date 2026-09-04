@@ -12,8 +12,8 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-confirm-v11"');
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-confirm-recovery-20260831-readonly-a"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v12"');
+    expect(source).toContain('const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20260904-firstsetup-a"');
     expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
     expect(source).toContain("healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION");
     expect(source).toContain("healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID");
@@ -29,5 +29,8 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain('fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"');
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
+    expect(source).toContain('const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v12-20260904_c9a2c597.zip"');
+    expect(source).toContain("安装写卡依赖");
+    expect(source).toContain('window.open(RFID_FIRST_INSTALL_PACKAGE_URL, "_blank", "noopener,noreferrer")');
   });
 });

@@ -1,15 +1,22 @@
 ﻿$sourceRoot = $PSScriptRoot
-$targetRoot = "D:\manus"
-$bridgeVersion = "utrust-bridge-confirm-v11"
-$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"
-$bridgeContentSha256 = "4a47e8d071bf62bcbb71052d78c93d46939fd763264d9fb11c366c7db4b0a6ca"
+$configuredTargetRoot = [Environment]::GetEnvironmentVariable("YUEXIN_RFID_BRIDGE_ROOT", "User")
+$targetRoot = if ([string]::IsNullOrWhiteSpace($configuredTargetRoot)) { if (Test-Path -LiteralPath "D:\") { "D:\manus" } else { Join-Path $env:ProgramData "YuexinRfidBridge" } } else { $configuredTargetRoot }
+$bridgeVersion = "utrust-bridge-installer-v12"
+$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"
+$bridgeContentSha256 = "c831475f7842c2458d007f9490cec90889654f4dc0694a55fd6eec03c74b8680"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-confirm-v11"
+$installerVersion = "utrust-upgrader-installer-v12"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "4a47e8d071bf62bcbb71052d78c93d46939fd763264d9fb11c366c7db4b0a6ca"
+  "utrust_local_bridge.ps1" = "c831475f7842c2458d007f9490cec90889654f4dc0694a55fd6eec03c74b8680"
   "run_utrust_rfid_write.ps1" = "1efff811e5149b7f6846848881635a5e81ed9e76c9aa741deb334d3ecbd551ac"
   "UTrustNtag216RfidWrite.cs" = "b602906ad5c982c0e2a5d6945409f77c379f16ff32996094f4b8a243ebb4bd78"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
+  "run_utrust_vehicle_card_diagnostic.ps1" = "09628a067d33c373d4d0b0eec634db5ab0b3ae541e26bd3b099e765281470d3e"
+  "UTrustReadVehicleEntry.cs" = "a784630441f2a087b20b0596ce584a38015736765b759d936917bad3473c944d"
+  "run_utrust_read_vehicle_entry.ps1" = "8c94c05f8c507125181b057cbe5ce8ebd44c1a3f7475253960597db1508428c4"
+  "UTrustBridgeSupport.cs" = "1d43f62684fd277fd42a0d958762245bff023dee98078a3063eed0850c724e81"
+  "run_utrust_read_uid.ps1" = "29e767ceaad276426d377435f610c19e4405b347ce7f10c5dc481d6f8763cd8f"
+  "utrust_probe.ps1" = "8c4be3cf2fb03a3c083e530777e5dd3fa38a1b27da46446ca87e991d3266e64d"
 }
 
 function Get-BridgeListenerProcessIds {
@@ -113,7 +120,7 @@ try {
   if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-confirm-v11-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+  $backupRoot = Join-Path $targetRoot ("backup-installer-v12-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -123,7 +130,7 @@ try {
   $stage = "stop_previous_bridge"
   Stop-UTrustBridge | Out-Null
 
-  $stage = "install_fingerprint_v10_files"
+  $stage = "install_verified_bridge_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name

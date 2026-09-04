@@ -14,6 +14,7 @@
     "db:check": "node scripts/check-migration-hygiene.mjs",
     "db:push": "pnpm db:check && drizzle-kit generate && drizzle-kit migrate",
     "audit:prod": "node scripts/security-audit.mjs",
+    "package:utrust-first-install": "node scripts/package-utrust-first-install.mjs",
     "backup:self-host": "node scripts/self-host-db-backup.mjs",
     "backup:self-host:verify": "node scripts/verify-self-host-db-backup.mjs",
     "verify:release": "pnpm check && pnpm test && pnpm build && pnpm build:self-host && pnpm db:check && pnpm audit:prod"
@@ -70,7 +71,7 @@
     "input-otp": "^1.4.2",
     "jose": "6.1.0",
     "lucide-react": "^0.453.0",
-    "mysql2": "^3.15.0",
+    "mysql2": "^3.24.3",
     "nanoid": "^5.1.16",
     "next-themes": "^0.4.6",
     "proxy-agent": "^8.0.2",

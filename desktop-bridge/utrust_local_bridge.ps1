@@ -1,10 +1,23 @@
 ﻿$ErrorActionPreference = "Stop"
-$bridgeRoot = "D:\manus"
-$serverBaseUrl = "https://yx.maomaoyx.com"
-$allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
+$defaultBridgeRoot = "D:\manus"
+$bridgeRoot = [Environment]::GetEnvironmentVariable("YUEXIN_RFID_BRIDGE_ROOT", "User")
+if ([string]::IsNullOrWhiteSpace($bridgeRoot)) { $bridgeRoot = $defaultBridgeRoot }
+$defaultServerBaseUrl = "https://yx.maomaoyx.com"
+$defaultAllowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
+$serverBaseUrl = $defaultServerBaseUrl
+$allowedOrigins = $defaultAllowedOrigins
+$bridgeConfigPath = Join-Path $bridgeRoot "bridge.config.json"
+if (Test-Path -LiteralPath $bridgeConfigPath) {
+  try {
+    $bridgeConfig = Get-Content -Raw -LiteralPath $bridgeConfigPath | ConvertFrom-Json
+    if ([string]$bridgeConfig.serverBaseUrl -eq $defaultServerBaseUrl) { $serverBaseUrl = [string]$bridgeConfig.serverBaseUrl }
+    $configuredOrigins = @($bridgeConfig.allowedOrigins | Where-Object { $defaultAllowedOrigins -contains [string]$_ })
+    if ($configuredOrigins.Count -gt 0) { $allowedOrigins = $configuredOrigins }
+  } catch {}
+}
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-confirm-v11"
-$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"
+$bridgeVersion = "utrust-bridge-installer-v12"
+$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"

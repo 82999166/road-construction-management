@@ -49,8 +49,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-confirm-v11"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v12"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"');
     expect(source).toContain('$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('if ([string]$writeResult.writerVersion -ne $requiredWriterVersion)');
@@ -159,7 +159,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).not.toContain("WritePage(");
   });
 
-  it("Windows 唯一构建升级器必须在停止旧桥接前解析升级器和新桥接、校验核心文件、备份旧版、验证 v11 健康构建标识并在失败时回滚", () => {
+  it("Windows 唯一构建升级器必须在停止旧桥接前解析升级器和新桥接、校验首次安装所需核心文件、备份旧版、验证 v12 健康构建标识并在失败时回滚", () => {
     const upgradeUrl = new URL("../desktop-bridge/upgrade_utrust_bridge.ps1", import.meta.url);
     const source = readFileSync(upgradeUrl, "utf8");
     const upgradeBytes = readFileSync(upgradeUrl);
@@ -168,21 +168,41 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     for (const bytes of [upgradeBytes, bridgeBytes, wrapperBytes]) {
       expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
     }
-    expect(source).toContain('$installerVersion = "utrust-upgrader-confirm-v11"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-confirm-v11"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-confirm-recovery-20260831-readonly-a"');
-    expect(source).toContain('$bridgeContentSha256 = "4a47e8d071bf62bcbb71052d78c93d46939fd763264d9fb11c366c7db4b0a6ca"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-installer-v12"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v12"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"');
+    expect(source).toContain('$bridgeContentSha256 = "c831475f7842c2458d007f9490cec90889654f4dc0694a55fd6eec03c74b8680"');
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
     expect(source).toContain("function Test-PowerShellScriptSyntax");
     expect(source).toContain("[System.Management.Automation.Language.Parser]::ParseFile");
     expect(source).toContain('$stage = "verify_upgrade_script_syntax"');
     expect(source).toContain('$stage = "verify_bridge_script_syntax"');
-    expect(source).toContain("backup-confirm-v11-");
+    expect(source).toContain("backup-installer-v12-");
     expect(source).toContain("Test-UTrustBridgeVersion");
     expect(source).toContain('[string]$health.bridgeBuildId -eq $bridgeBuildId');
     expect(source).toContain('[string]$health.bridgeContentSha256 -eq $bridgeContentSha256');
     expect(source).toContain('Reason = "bridge_build_identity_mismatch"');
     expect(source).toContain("previousVersionRestored = $rollbackHealthy");
+    for (const requiredFile of ["UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1", "UTrustReadVehicleEntry.cs", "run_utrust_read_vehicle_entry.ps1"]) {
+      expect(source).toContain(`"${requiredFile}" = `);
+    }
+  });
+
+  it("首次安装脚本必须仅保存非敏感本机配置、检查 Windows 环境并注册当前用户登录自启动", () => {
+    const installer = readFileSync(new URL("../desktop-bridge/install-utrust-bridge.ps1", import.meta.url), "utf8");
+    const packer = readFileSync(new URL("../scripts/package-utrust-first-install.mjs", import.meta.url), "utf8");
+    expect(installer).toContain('$PSVersionTable.PSVersion.Major -lt 5');
+    expect(installer).toContain('System32\\winscard.dll');
+    expect(installer).toContain("administrator_permission_required");
+    expect(installer).toContain("Register-ScheduledTask");
+    expect(installer).toContain("YUEXIN_RFID_BRIDGE_ROOT");
+    expect(installer).toContain("server_issued_short_lived_not_persisted");
+    expect(installer).toContain("tokenPersisted = $false");
+    expect(installer).not.toContain("bridgeToken =");
+    for (const requiredFile of ["install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
+      expect(packer).toContain(`"${requiredFile}"`);
+    }
+    expect(packer).toContain("utf8Bom");
   });
 });
