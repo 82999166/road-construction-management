@@ -1,6 +1,5 @@
 import {
   PRINT_PREVIEW_DIALOG_BODY_CLASS,
-  PRINT_PREVIEW_DIALOG_CONTENT_CLASS,
   PRINT_PREVIEW_DIALOG_FOOTER_CLASS,
   PRINT_PREVIEW_DIALOG_HEADER_CLASS,
   PRINT_PREVIEW_TABLE_SCROLL_CLASS,
@@ -32,6 +31,19 @@ type PrintMode = "current" | "daily" | "vehicle" | "machine";
 const money = (value: number | string) => `¥${Number(value || 0).toFixed(2)}`;
 const dateTime = (value: Date | string) => formatChinaDateTime(value);
 const statusLabel = (status: string) => ({ draft: "草稿", approved: "已记账", settled: "已结算", void: "已作废" } as Record<string, string>)[status] ?? "待处理";
+/** 柴油明细列较多，预览在大屏上按业务工作区尺寸展示，避免缩为居中的小纸张。 */
+const DIESEL_PRINT_PREVIEW_DIALOG_CONTENT_CLASS = [
+  "w-[calc(100vw-3rem)]",
+  "max-w-[1680px]",
+  "sm:max-w-[1680px]",
+  "h-[min(82vh,820px)]",
+  "max-h-[calc(100vh-4rem)]",
+  "lg:left-[calc(50%+5rem)]",
+  "grid-rows-[auto_minmax(0,1fr)_auto]",
+  "gap-0",
+  "overflow-hidden",
+  "p-0",
+].join(" ");
 
 /** 后台柴油打印只接收已由服务端项目范围过滤后的真实记录，打印逻辑不再读取页面 DOM。 */
 export default function DieselRefuelPrintDialog({ open, onOpenChange, mode, projectName, dateLabel, records }: {
@@ -53,7 +65,7 @@ export default function DieselRefuelPrintDialog({ open, onOpenChange, mode, proj
   };
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className={PRINT_PREVIEW_DIALOG_CONTENT_CLASS}>
+    <DialogContent className={DIESEL_PRINT_PREVIEW_DIALOG_CONTENT_CLASS}>
       <div className={PRINT_PREVIEW_DIALOG_HEADER_CLASS}>
         <DialogHeader>
           <DialogTitle>{modeTitle}</DialogTitle>
@@ -61,10 +73,10 @@ export default function DieselRefuelPrintDialog({ open, onOpenChange, mode, proj
         </DialogHeader>
       </div>
       <div className={PRINT_PREVIEW_DIALOG_BODY_CLASS}>
-        <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs text-[#15110e]">
-          <div className="mb-3 text-center"><p className="text-lg font-bold">{modeTitle}</p><p className="mt-1 text-slate-600">{projectName} · {dateLabel}</p></div>
+        <div className="min-w-[1180px] rounded-xl border border-slate-200 bg-white p-5 text-sm text-[#15110e]">
+          <div className="mb-4 text-center"><p className="text-xl font-bold">{modeTitle}</p><p className="mt-1 text-sm text-slate-600">{projectName} · {dateLabel}</p></div>
           <div className={PRINT_PREVIEW_TABLE_SCROLL_CLASS}>
-            <table className="min-w-[1180px] w-full border-collapse">
+            <table className="min-w-[1320px] w-full border-collapse">
               <thead><tr className="bg-slate-100"><th>时间</th><th>对象</th><th>类型</th><th>供油方式</th><th>油量</th><th>单价</th><th>金额</th><th>表数</th><th>扣油</th></tr></thead>
               <tbody>
                 {records.map(item => <tr key={item.id} className="border-t"><td>{dateTime(item.refueledAt)}</td><td>{item.assetName}</td><td>{item.assetType === "vehicle" ? "车辆" : "机械"}</td><td>{item.supplyMethod === "project_supply" ? "项目部供油" : item.stationOrSupplierName || "加油站"}</td><td>{Number(item.liters).toFixed(2)} L</td><td>{money(item.appliedUnitPrice)}</td><td>{money(item.amount)}</td><td>{item.meterReading ?? "未记录"}</td><td>{item.deductFromFreight ? "扣运费" : "不扣"}</td></tr>)}
