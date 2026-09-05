@@ -42,6 +42,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const [scanAttempt, setScanAttempt] = useState(0);
   const [speechStatus, setSpeechStatus] = useState("");
   const scanTokenRef = useRef("");
+  const automaticUnloadTokenRef = useRef("");
 
   const announce = (message: string) => {
     if (!("speechSynthesis" in window)) {
@@ -119,6 +120,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   useEffect(() => {
     if (!open) return;
     scanTokenRef.current = "";
+    automaticUnloadTokenRef.current = "";
     setToken(initialToken?.trim() || "");
     setRoutePresetId("");
     setSuccessResult(null);
@@ -205,6 +207,35 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     issue.mutate({ token, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
   };
 
+  const autoConfirmUnload = async () => {
+    if (!token || !preview.data?.activeTrip) return;
+    setOperationError("");
+    setScanStatus("已识别为卸土点补刷卡，正在核验最短运输时间与现场定位…");
+    unlockSpeech();
+    if (!navigator.geolocation) {
+      const message = "当前设备无法获取定位，不能自动确认已到达卸土点";
+      setOperationError(message);
+      toast.error(message);
+      return;
+    }
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 }));
+      issue.mutate({ token, idempotencyKey: `mobile-nfc-unload-${crypto.randomUUID()}`, latitude: position.coords.latitude, longitude: position.coords.longitude, occurredAt: new Date().toISOString() });
+    } catch {
+      const message = "未取得卸土定位，不能自动确认卸土。请允许定位权限后重新刷卡";
+      setOperationError(message);
+      toast.error(message);
+    }
+  };
+
+  const unloadOnlyAutoClose = Boolean(preview.data?.activeTrip?.unloadOnlyCloseEnabled);
+
+  useEffect(() => {
+    if (!open || !token || !unloadOnlyAutoClose || issue.isPending || successResult || automaticUnloadTokenRef.current === token) return;
+    automaticUnloadTokenRef.current = token;
+    void autoConfirmUnload();
+  }, [open, token, unloadOnlyAutoClose, issue.isPending, successResult]);
+
   const successMessage = successResult?.stage === "in_transit"
     ? "发票成功，车辆已发车，请前往卸土点。"
     : successResult?.singleScanClosed
@@ -214,7 +245,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]">
-        <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />刷 NFC 卡发票</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />{unloadOnlyAutoClose ? "正在确认卸土刷卡" : "刷 NFC 卡发票"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>
           <Button type="button" variant="outline" size="sm" className="w-full border-[#a9ccd9] bg-white text-[#24546b]" onClick={testSpeech}>
@@ -256,7 +287,13 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
                     <div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div>
                     <p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p>
                   </div>
-                  {preview.data.activeTrip ? (
+                  {preview.data.activeTrip && unloadOnlyAutoClose ? (
+                    <div aria-live="polite" className="rounded-xl border-2 border-[#4f875a] bg-[#eef9ee] p-3 text-sm text-[#1f5f30]">
+                      <p className="font-bold">已按路线设置进入卸土刷卡流程</p>
+                      <p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p>
+                      <p className="mt-1 text-xs">正在核验最短运输时间与卸土现场定位，核验通过后将直接显示卸土成功。</p>
+                    </div>
+                  ) : preview.data.activeTrip ? (
                     <div className="rounded-xl border-2 border-[#c56632] bg-[#fff6ed] p-3 text-sm text-[#824b2a]">
                       <p className="font-bold">该车还未卸土，不能开具新发票</p>
                       <p className="mt-1 font-semibold">当前在途运单：{preview.data.activeTrip.tripNo}</p>
@@ -272,9 +309,9 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
                       {!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}
                     </>
                   )}
-                  <Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}>
+                  {!unloadOnlyAutoClose ? <Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}>
                     <CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}
-                  </Button>
+                  </Button> : null}
                 </div>
               ) : null}
             </CardContent>

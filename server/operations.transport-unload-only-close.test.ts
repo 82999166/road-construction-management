@@ -38,4 +38,10 @@ describe("运输卸土点补刷卡闭环", () => {
     expect(routerSource).toContain("triggerTransportRiskScan(input.projectId)");
     expect(routerSource).toContain("卸土点补刷卡闭环完成");
   });
+
+  it("在手机 NFC 预览中仅将已开启补刷卡的在途路线标记为卸土优先，仍由确认接口执行定位与间隔校验", () => {
+    expect(routerSource).toContain("unloadOnlyCloseEnabled: Boolean(activeRoute?.unloadOnlyCloseEnabled)");
+    expect(routerSource).toContain("recordTransportCardEvent(ctx, { tripId: trip.id");
+    expect(routerSource).toContain('}, "unload")');
+  });
 });

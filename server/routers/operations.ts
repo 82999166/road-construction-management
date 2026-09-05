@@ -1134,6 +1134,12 @@ async function resolveMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态，不能开具运输发票" });
   const transitKey = `nfc:${parsed.projectId}:${card.id}`;
   const [activeTrip] = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, parsed.projectId), eq(transportTrips.nfcTransitKey, transitKey), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled"))).orderBy(desc(transportTrips.id)).limit(1);
+  const activeRoutePresetId = activeTrip
+    ? Number((activeTrip.routeSnapshot as { routePresetId?: unknown } | null)?.routePresetId)
+    : 0;
+  const [activeRoute] = activeTrip && Number.isInteger(activeRoutePresetId) && activeRoutePresetId > 0
+    ? await db.select().from(transportRoutePresets).where(and(eq(transportRoutePresets.id, activeRoutePresetId), eq(transportRoutePresets.projectId, parsed.projectId), eq(transportRoutePresets.status, "active"))).limit(1)
+    : [];
   const routeRows = activeTrip ? [] : await db.select().from(transportRoutePresets).where(and(eq(transportRoutePresets.projectId, parsed.projectId), eq(transportRoutePresets.status, "active"))).orderBy(desc(transportRoutePresets.isDefault), desc(transportRoutePresets.updatedAt));
   const siteIds = Array.from(new Set([...routeRows.flatMap(route => [route.loadSiteId, route.unloadSiteId]), activeTrip?.loadSiteId ?? 0, activeTrip?.unloadSiteId ?? 0].filter(Boolean)));
   const sites = siteIds.length ? (await Promise.all(siteIds.map(async id => (await db.select().from(transportSites).where(eq(transportSites.id, id)).limit(1))[0]))).filter((site): site is typeof transportSites.$inferSelect => Boolean(site)) : [];
@@ -1144,7 +1150,7 @@ async function resolveMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     cardFingerprint: card.cardUidFingerprint,
     vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: null },
     routes: routeRows.map(route => ({ id: route.id, isDefault: route.isDefault, distanceKm: route.presetDistanceKm, loadSiteName: siteById.get(route.loadSiteId)?.name ?? "装土点", unloadSiteName: siteById.get(route.unloadSiteId)?.name ?? "卸土点" })),
-    activeTrip: activeTrip ? { id: activeTrip.id, tripNo: activeTrip.tripNo, loadSiteName: siteById.get(activeTrip.loadSiteId ?? 0)?.name ?? "装土点", unloadSiteName: siteById.get(activeTrip.unloadSiteId ?? 0)?.name ?? "卸土点" } : null,
+    activeTrip: activeTrip ? { id: activeTrip.id, tripNo: activeTrip.tripNo, loadSiteName: siteById.get(activeTrip.loadSiteId ?? 0)?.name ?? "装土点", unloadSiteName: siteById.get(activeTrip.unloadSiteId ?? 0)?.name ?? "卸土点", unloadOnlyCloseEnabled: Boolean(activeRoute?.unloadOnlyCloseEnabled) } : null,
   };
 }
 

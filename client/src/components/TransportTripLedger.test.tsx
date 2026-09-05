@@ -53,6 +53,10 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("卸土补刷卡闭环 · 待核验");
     expect(source).toContain("但未记录装土点刷卡，系统不会伪造实际装土时间");
     expect(source).toContain("卸土补刷卡时间");
+    expect(source).toContain("tripStatusVisualRules");
+    expect(source).toContain("#2f8051");
+    expect(source).toContain("#c97816");
+    expect(source).toContain("transport-trip-table");
   });
 
   it("按后台当前筛选提供 A4 横向运费明细 PDF，并在最末行汇总金额、趟数和车辆数", () => {
