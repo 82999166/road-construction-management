@@ -3,7 +3,8 @@ import {
   PRINT_PREVIEW_DIALOG_CONTENT_CLASS,
   PRINT_PREVIEW_DIALOG_FOOTER_CLASS,
   PRINT_PREVIEW_DIALOG_HEADER_CLASS,
-  PRINT_PREVIEW_TABLE_SCROLL_CLASS,
+  PRINT_PREVIEW_TABLE_FIT_CLASS,
+  PRINT_PREVIEW_TABLE_FRAME_CLASS,
 } from "@/components/PrintPreviewDialogLayout";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -66,8 +67,8 @@ export function FinancialLedgerPrintPreviewDialog({
             <p className="mt-1 text-xs">项目：{projectName}　|　会计期间：{period}</p>
             <p className="mt-1 text-[11px] text-slate-600">筛选：{filterLabel}　|　生成时间：{formatChinaDateTime(new Date())}</p>
           </header>
-          <div className={`${PRINT_PREVIEW_TABLE_SCROLL_CLASS} mt-4`}>
-            <table className="min-w-[1180px] w-full table-fixed border-collapse text-xs print:min-w-0">
+          <div className={PRINT_PREVIEW_TABLE_FRAME_CLASS}>
+            <table className={`${PRINT_PREVIEW_TABLE_FIT_CLASS} text-xs`}>
               <thead className="bg-[#e8f1ed]"><tr>{columns.map(column => <th key={column.label} className="border-b border-slate-200 px-3 py-2 text-left font-semibold" style={column.width ? { width: column.width } : undefined}>{column.label}</th>)}</tr></thead>
               <tbody>{rows.length ? <>{rows.map(row => <tr key={row.id} className="border-b border-slate-100 align-top">{row.cells.map((cell, cellIndex) => <td key={`${row.id}-${cellIndex}`} className={cellIndex ? "px-3 py-2 text-right" : "px-3 py-2"}>{cell}</td>)}</tr>)}<tr className="bg-[#eff7f2] font-semibold"><td colSpan={columns.length} className="px-3 py-3">{summaryLabel}</td></tr></> : <tr><td colSpan={columns.length} className="px-3 py-10 text-center text-slate-500">{emptyText}</td></tr>}</tbody>
             </table>

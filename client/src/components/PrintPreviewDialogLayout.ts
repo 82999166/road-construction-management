@@ -5,10 +5,12 @@
  * 受服务端权限约束的数据来源，不能用本布局改变实际纸张输出、筛选或统计口径。
  */
 export const PRINT_PREVIEW_DIALOG_CONTENT_CLASS = [
-  "w-[calc(100vw-2rem)]",
-  "max-w-[1600px]",
-  "sm:max-w-[1600px]",
-  "h-[min(94vh,1024px)]",
+  "w-[calc(100vw-3rem)]",
+  "max-w-[1680px]",
+  "sm:max-w-[1680px]",
+  "h-[min(82vh,820px)]",
+  "max-h-[calc(100vh-4rem)]",
+  "lg:left-[calc(50%+5rem)]",
   "grid-rows-[auto_minmax(0,1fr)_auto]",
   "gap-0",
   "overflow-hidden",
@@ -29,3 +31,10 @@ export const PRINT_PREVIEW_DIALOG_FOOTER_CLASS =
 
 export const PRINT_PREVIEW_TABLE_SCROLL_CLASS =
   "overflow-x-auto rounded-xl border border-slate-200 bg-white print:overflow-visible";
+
+/** 桌面筛选打印的宽表在工作区宽度内分配列宽，不以左右拖动替代完整预览。 */
+export const PRINT_PREVIEW_TABLE_FRAME_CLASS =
+  "mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white";
+
+export const PRINT_PREVIEW_TABLE_FIT_CLASS =
+  "min-w-0 w-full table-fixed border-collapse [overflow-wrap:anywhere] print:min-w-0";
