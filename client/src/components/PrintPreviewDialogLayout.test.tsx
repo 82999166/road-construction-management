@@ -22,7 +22,11 @@ describe("PC 筛选打印预览宽屏布局契约", () => {
     expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("w-[calc(100vw-3rem)]");
     expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("max-w-[1680px]");
     expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("h-[min(82vh,820px)]");
-    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:left-[calc(50%+5rem)]");
+    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:left-24");
+    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:right-6");
+    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:w-auto");
+    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:max-w-none");
+    expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("lg:translate-x-0");
     expect(PRINT_PREVIEW_DIALOG_CONTENT_CLASS).toContain("grid-rows-[auto_minmax(0,1fr)_auto]");
     expect(PRINT_PREVIEW_DIALOG_HEADER_CLASS).toContain("shrink-0");
     expect(PRINT_PREVIEW_DIALOG_BODY_CLASS).toContain("min-h-0");
