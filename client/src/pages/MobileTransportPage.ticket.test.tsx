@@ -42,14 +42,17 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("直拍票据");
   });
 
-  it("签名 NFC 深链必须直达自动刷卡开票页，并保留车辆核验和路线确认", () => {
+  it("签名 NFC 深链必须先进入统一现场扫描状态机，卸土闭环不得打开发票确认页", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('get("nfc")');
+    expect(source).toContain("scanNfcLink.mutate");
+    expect(source).toContain("nfcLinkScanStartedRef");
+    expect(source).toContain("卸土成功");
     expect(source).toContain("MobileNfcTransportInvoice");
-    expect(source).toContain("setMobileNfcInvoiceOpen(true)");
-    expect(source).toContain("刷 NFC 卡发票");
+    expect(source).toContain("刷 NFC 发票");
     expect(source).toContain("自动读取车辆");
+    expect(source.indexOf("nfcLinkScanStartedRef.current = true")).toBeLessThan(source.indexOf("setMobileNfcInvoiceOpen(true)"));
   });
 
   it("司机在运输页可直接进入站内消息，且发票主操作位于统计和台账之前", () => {

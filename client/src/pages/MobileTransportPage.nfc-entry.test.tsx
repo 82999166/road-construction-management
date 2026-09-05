@@ -14,11 +14,14 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(source).toContain("拍照车牌发票");
   });
 
-  it("仅在车辆卡安全深链含 nfc 参数时自动打开确认发票界面", () => {
+  it("仅在车辆卡安全深链含 nfc 参数时自动进入统一现场扫描，不强制打开发票确认界面", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('new URLSearchParams(window.location.search).get("nfc")');
-    expect(source).toContain("if (nfcLinkToken) setMobileNfcInvoiceOpen(true)");
+    expect(source).toContain("nfcLinkScanStartedRef.current = true");
+    expect(source).toContain("submitNfcLinkScan()");
+    expect(source).toContain("scanNfcLink.mutate");
+    expect(source).not.toContain("if (nfcLinkToken) setMobileNfcInvoiceOpen(true)");
     expect(source).not.toContain("if (!nfcLinkToken) setMobileNfcInvoiceOpen(true)");
   });
 
