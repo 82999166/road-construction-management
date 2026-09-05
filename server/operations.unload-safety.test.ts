@@ -26,9 +26,9 @@ describe("运输卸土时长与地点安全校验", () => {
     expect(source).toContain("不能完成卸土");
     expect(source).toContain("calculateCoordinateDistanceMeters");
     expect(source).toContain("return markNeedsReview");
-    expect(source).toContain("unloadSite.minimumTransitMinutes");
-    expect(source).toContain("unloadSite.unloadGeofenceMeters");
-    expect(source).not.toContain("if (elapsedMinutes < route.minimumTransitMinutes)");
+    expect(source).toContain("route.minimumTransitMinutes");
+    expect(source).toContain("route.unloadGeofenceMeters");
+    expect(source).toContain("if (elapsedMinutes < route.minimumTransitMinutes)");
   });
 
   it("关闭任一安全开关后仅留待核验提示，不能绕过实际时长或距离记录", () => {

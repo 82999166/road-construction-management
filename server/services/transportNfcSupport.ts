@@ -26,6 +26,24 @@ export async function assertVehicleMinimumNfcInvoiceInterval(db: Database, input
   }
 }
 
+/**
+ * 装土点未刷卡的特殊卸土补刷卡场景不能伪造实际运输起点。
+ * 因此仅以同一车辆上一笔已结束运输的结束时间约束连续补刷卡间隔，首笔不凭空计算时长。
+ */
+export async function assertVehicleMinimumUnloadOnlyScanInterval(db: Database, input: { projectId: number; vehicleId: number; plateNo: string; occurredAt: Date; minimumTransitMinutes: number }) {
+  const [latestCompletedTrip] = await db.select({ tripNo: transportTrips.tripNo, endAt: transportTrips.endAt }).from(transportTrips).where(and(
+    eq(transportTrips.projectId, input.projectId),
+    eq(transportTrips.vehicleId, input.vehicleId),
+    ne(transportTrips.status, "void"),
+    isNull(transportTrips.activeVehicleTransitKey),
+  )).orderBy(desc(transportTrips.endAt)).limit(1);
+  if (!latestCompletedTrip?.endAt) return;
+  const elapsedMinutes = Math.max(0, Math.floor((input.occurredAt.getTime() - new Date(latestCompletedTrip.endAt).getTime()) / 60_000));
+  if (elapsedMinutes < input.minimumTransitMinutes) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `卸土点补刷卡间隔拦截：车辆 ${input.plateNo} 距上一笔已结束运输仅 ${elapsedMinutes} 分钟，未达到路线最小间隔 ${input.minimumTransitMinutes} 分钟` });
+  }
+}
+
 /** 仅项目显式开启单次刷卡闭环时调用；条件更新避免和卸土事件产生并发覆盖。 */
 export async function completeNfcTripBySingleScan(db: Database, input: { tripId: number; userId: number; occurredAt: Date; routeSnapshot: unknown }) {
   const routeSnapshot = { ...getRouteSnapshot(input.routeSnapshot), nfcSingleScanClosed: true, nfcSingleScanClosedAt: input.occurredAt.toISOString(), nfcSingleScanClosedBy: input.userId };

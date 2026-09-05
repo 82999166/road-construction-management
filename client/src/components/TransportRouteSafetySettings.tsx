@@ -7,7 +7,7 @@ import { ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-type SafetyDraft = { minimumTransitMinutes: string; minimumTransitEnabled: boolean; unloadGeofenceMeters: string; unloadGeofenceEnabled: boolean };
+type SafetyDraft = { minimumTransitMinutes: string; minimumTransitEnabled: boolean; unloadGeofenceMeters: string; unloadGeofenceEnabled: boolean; unloadOnlyCloseEnabled: boolean };
 
 export function TransportRouteSafetySettings({ projectId, compact = false, canConfigure = true }: { projectId?: number; compact?: boolean; canConfigure?: boolean }) {
   const utils = trpc.useUtils();
@@ -35,7 +35,7 @@ export function TransportRouteSafetySettings({ projectId, compact = false, canCo
     setDrafts(current => {
       const next = { ...current };
       for (const route of routes.data) {
-        if (!next[route.id]) next[route.id] = { minimumTransitMinutes: String(route.minimumTransitMinutes), minimumTransitEnabled: route.minimumTransitEnabled, unloadGeofenceMeters: String(route.unloadGeofenceMeters), unloadGeofenceEnabled: route.unloadGeofenceEnabled };
+        if (!next[route.id]) next[route.id] = { minimumTransitMinutes: String(route.minimumTransitMinutes), minimumTransitEnabled: route.minimumTransitEnabled, unloadGeofenceMeters: String(route.unloadGeofenceMeters), unloadGeofenceEnabled: route.unloadGeofenceEnabled, unloadOnlyCloseEnabled: route.unloadOnlyCloseEnabled };
       }
       return next;
     });
@@ -67,15 +67,15 @@ export function TransportRouteSafetySettings({ projectId, compact = false, canCo
             </div>
           </div>
           {routes.isLoading ? <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">正在读取路线安全阈值…</p> : activeRoutes.length ? <div className="space-y-2">{activeRoutes.map(route => {
-            const draft = drafts[route.id] ?? { minimumTransitMinutes: String(route.minimumTransitMinutes), minimumTransitEnabled: route.minimumTransitEnabled, unloadGeofenceMeters: String(route.unloadGeofenceMeters), unloadGeofenceEnabled: route.unloadGeofenceEnabled };
+            const draft = drafts[route.id] ?? { minimumTransitMinutes: String(route.minimumTransitMinutes), minimumTransitEnabled: route.minimumTransitEnabled, unloadGeofenceMeters: String(route.unloadGeofenceMeters), unloadGeofenceEnabled: route.unloadGeofenceEnabled, unloadOnlyCloseEnabled: route.unloadOnlyCloseEnabled };
             const setDraft = (patch: Partial<SafetyDraft>) => setDrafts(current => ({ ...current, [route.id]: { ...draft, ...patch } }));
             const persist = () => {
               const minimumTransitMinutes = Number(draft.minimumTransitMinutes);
               const unloadGeofenceMeters = Number(draft.unloadGeofenceMeters);
               if (!Number.isInteger(minimumTransitMinutes) || minimumTransitMinutes < 1 || !Number.isInteger(unloadGeofenceMeters) || unloadGeofenceMeters < 30) return toast.error("最短时间至少 1 分钟，定位容差至少 30 米");
-              save.mutate({ id: route.id, projectId: route.projectId, loadSiteId: route.loadSiteId, unloadSiteId: route.unloadSiteId, freightRuleId: route.freightRuleId, presetDistanceKm: Number(route.presetDistanceKm), minimumTransitMinutes, minimumTransitEnabled: draft.minimumTransitEnabled, unloadGeofenceMeters, unloadGeofenceEnabled: draft.unloadGeofenceEnabled, isDefault: route.isDefault, status: route.status });
+              save.mutate({ id: route.id, projectId: route.projectId, loadSiteId: route.loadSiteId, unloadSiteId: route.unloadSiteId, freightRuleId: route.freightRuleId, presetDistanceKm: Number(route.presetDistanceKm), minimumTransitMinutes, minimumTransitEnabled: draft.minimumTransitEnabled, unloadGeofenceMeters, unloadGeofenceEnabled: draft.unloadGeofenceEnabled, unloadOnlyCloseEnabled: draft.unloadOnlyCloseEnabled, isDefault: route.isDefault, status: route.status });
             };
-            return <div key={route.id} className="rounded-xl bg-white p-3"><p className="text-xs font-semibold text-[#5f4328]">路线 #{route.id} · {route.presetDistanceKm} km</p><div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><label className="flex items-center gap-2 text-[11px] font-medium text-[#765a49]"><input type="checkbox" checked={draft.minimumTransitEnabled} onChange={event => setDraft({ minimumTransitEnabled: event.target.checked })} />最短时间{draft.minimumTransitEnabled ? " · 硬拦截" : " · 仅提示"}<Input className="h-9" type="number" min="1" max="1440" value={draft.minimumTransitMinutes} onChange={event => setDraft({ minimumTransitMinutes: event.target.value })} /></label><label className="flex items-center gap-2 text-[11px] font-medium text-[#765a49]"><input type="checkbox" checked={draft.unloadGeofenceEnabled} onChange={event => setDraft({ unloadGeofenceEnabled: event.target.checked })} />定位范围{draft.unloadGeofenceEnabled ? " · 硬拦截" : " · 仅提示"}<Input className="h-9" type="number" min="30" max="5000" value={draft.unloadGeofenceMeters} onChange={event => setDraft({ unloadGeofenceMeters: event.target.value })} /></label><Button size="sm" className="h-9 self-end bg-[#8a591f] text-white hover:bg-[#724610]" disabled={save.isPending} onClick={persist}>保存</Button></div></div>;
+            return <div key={route.id} className="rounded-xl bg-white p-3"><p className="text-xs font-semibold text-[#5f4328]">路线 #{route.id} · {route.presetDistanceKm} km</p><label className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] font-medium leading-5 text-[#765a49]"><input className="mt-1" type="checkbox" checked={draft.unloadOnlyCloseEnabled} onChange={event => setDraft({ unloadOnlyCloseEnabled: event.target.checked })} /><span><b className="text-[#6d4217]">卸土点补刷卡完成闭环</b><br />装土点未刷卡时，允许本路线在卸土点刷卡后完成闭环。下方最短运输时间与定位范围仍分别生效；均启用“硬拦截”时须同时通过，关闭项仅留待核验。首次或无装土刷卡趟次的时间仅核验同车连续刷卡间隔，不伪造实际装土时间。</span></label><div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_auto]"><label className="flex items-center gap-2 text-[11px] font-medium text-[#765a49]"><input type="checkbox" checked={draft.minimumTransitEnabled} onChange={event => setDraft({ minimumTransitEnabled: event.target.checked })} />最短时间{draft.minimumTransitEnabled ? " · 硬拦截" : " · 仅提示"}<Input className="h-9" type="number" min="1" max="1440" value={draft.minimumTransitMinutes} onChange={event => setDraft({ minimumTransitMinutes: event.target.value })} /></label><label className="flex items-center gap-2 text-[11px] font-medium text-[#765a49]"><input type="checkbox" checked={draft.unloadGeofenceEnabled} onChange={event => setDraft({ unloadGeofenceEnabled: event.target.checked })} />定位范围{draft.unloadGeofenceEnabled ? " · 硬拦截" : " · 仅提示"}<Input className="h-9" type="number" min="30" max="5000" value={draft.unloadGeofenceMeters} onChange={event => setDraft({ unloadGeofenceMeters: event.target.value })} /></label><Button size="sm" className="h-9 self-end bg-[#8a591f] text-white hover:bg-[#724610]" disabled={save.isPending} onClick={persist}>保存</Button></div></div>;
           })}</div> : <div className="rounded-xl border border-dashed border-[#d8bf91] bg-[#fffaf0] p-3 text-xs leading-5 text-[#805d38]"><p className="font-semibold text-[#6d4217]">尚未配置启用运输路线</p><p className="mt-1">请先在上方“路线配置”新增装土点、卸土点和运输路线；新增后即可在此分别维护最短运输时间、卸土定位范围及“硬拦截 / 仅提示”开关。</p></div>}
         </div>
       </DialogContent>

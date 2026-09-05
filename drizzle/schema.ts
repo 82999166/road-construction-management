@@ -1520,6 +1520,8 @@ export const transportRoutePresets = mysqlTable(
     unloadGeofenceMeters: int("unloadGeofenceMeters").default(300).notNull(),
     /** 是否将卸土点定位范围作为卸土硬拦截；关闭后仅留待核验提示。 */
     unloadGeofenceEnabled: boolean("unloadGeofenceEnabled").default(true).notNull(),
+    /** 装土点未刷卡时，是否允许本路线仅由卸土点读卡在安全阈值通过后补齐运输闭环；默认关闭。 */
+    unloadOnlyCloseEnabled: boolean("unloadOnlyCloseEnabled").default(false).notNull(),
     isDefault: boolean("isDefault").default(false).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     createdBy: int("createdBy").notNull(),

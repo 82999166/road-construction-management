@@ -28,6 +28,7 @@ type RouteDraft = {
   unloadSiteId: string;
   freightRuleId: string;
   distanceKm: string;
+  unloadOnlyCloseEnabled: boolean;
   isDefault: boolean;
   status: "active" | "disabled";
 };
@@ -102,6 +103,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
       unloadSiteId: String(activeUnloadSites[0].id),
       freightRuleId: String(activeFreightRules[0].id),
       distanceKm: "",
+      unloadOnlyCloseEnabled: false,
       isDefault: !(routes.data ?? []).some(route => route.isDefault),
       status: "active",
     });
@@ -113,6 +115,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
     unloadSiteId: String(route.unloadSiteId),
     freightRuleId: String(route.freightRuleId),
     distanceKm: String(route.presetDistanceKm),
+    unloadOnlyCloseEnabled: route.unloadOnlyCloseEnabled,
     isDefault: route.isDefault,
     status: route.status,
   });
@@ -163,6 +166,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
       minimumTransitEnabled: unloadSite.minimumTransitEnabled,
       unloadGeofenceMeters: unloadSite.unloadGeofenceMeters,
       unloadGeofenceEnabled: unloadSite.unloadGeofenceEnabled,
+      unloadOnlyCloseEnabled: routeDraft.unloadOnlyCloseEnabled,
       isDefault: routeDraft.isDefault,
       status: routeDraft.status,
     });

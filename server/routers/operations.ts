@@ -55,6 +55,7 @@ import { storageGetSignedUrl } from "../storage";
 import {
   assertNoOpenTransportTrip,
   assertVehicleMinimumNfcInvoiceInterval,
+  assertVehicleMinimumUnloadOnlyScanInterval,
   calculateCoordinateDistanceMeters,
   completeNfcTripBySingleScan,
   createActiveVehicleTransitKey,
@@ -367,6 +368,7 @@ const transportRoutePresetInput = z.object({
   minimumTransitEnabled: z.boolean().default(true),
   unloadGeofenceMeters: z.number().int().min(30, "卸土点定位容差至少 30 米").max(5000, "卸土点定位容差不能超过 5000 米").default(300),
   unloadGeofenceEnabled: z.boolean().default(true),
+  unloadOnlyCloseEnabled: z.boolean().default(false),
   isDefault: z.boolean().default(false),
   status: z.enum(["active", "disabled"]),
 }).refine(value => value.loadSiteId !== value.unloadSiteId, { message: "装土点和卸土点不能相同", path: ["unloadSiteId"] });
@@ -615,7 +617,7 @@ function maskPaymentAccount(account: string | null) {
  * 这避免司机通过修改浏览器状态规避核验提示。
  */
 type TransportAnomaly = {
-  code: "MISSING_EVIDENCE" | "MISSING_GPS" | "MISSING_END_TIME" | "ABNORMAL_DISTANCE" | "ABNORMAL_VOLUME" | "ABNORMAL_DURATION" | "CARD_EVENT_EXCEPTION";
+  code: "MISSING_EVIDENCE" | "MISSING_GPS" | "MISSING_END_TIME" | "MISSING_LOAD_CARD" | "ABNORMAL_DISTANCE" | "ABNORMAL_VOLUME" | "ABNORMAL_DURATION" | "CARD_EVENT_EXCEPTION";
   severity: "warning" | "notice";
   label: string;
 };
@@ -633,6 +635,7 @@ function calculateTransportAnomalies(trip: {
   const hasStartGps = typeof snapshot.startLatitude === "number" && typeof snapshot.startLongitude === "number";
   const hasEndGps = typeof snapshot.endLatitude === "number" && typeof snapshot.endLongitude === "number";
   const anomalies: TransportAnomaly[] = [];
+  if (snapshot.unloadOnlyCardClose) anomalies.push({ code: "MISSING_LOAD_CARD", severity: "notice", label: "未记录装土刷卡，实际运输起点待核验" });
   if (!trip.evidenceId) anomalies.push({ code: "MISSING_EVIDENCE", severity: "notice", label: "未关联现场影像" });
   if (!hasStartGps || !hasEndGps) anomalies.push({ code: "MISSING_GPS", severity: "notice", label: "GPS 定位信息不完整" });
   if (!trip.endAt) anomalies.push({ code: "MISSING_END_TIME", severity: "notice", label: "未填写收工时间" });
@@ -641,7 +644,7 @@ function calculateTransportAnomalies(trip: {
   if (theoreticalVolume > 0 && Number(trip.volumeCubicMeters ?? 0) > theoreticalVolume * 1.1) {
     anomalies.push({ code: "ABNORMAL_VOLUME", severity: "warning", label: "申报方量高于理论方量 10%" });
   }
-  if (trip.endAt && trip.endAt.getTime() - trip.startAt.getTime() < 2 * 60 * 1000) {
+  if (!snapshot.unloadOnlyCardClose && trip.endAt && trip.endAt.getTime() - trip.startAt.getTime() < 2 * 60 * 1000) {
     anomalies.push({ code: "ABNORMAL_DURATION", severity: "warning", label: "运输时长不足 2 分钟，请核验" });
   }
   if (trip.exceptionStatus === "open") anomalies.push({ code: "CARD_EVENT_EXCEPTION", severity: "warning", label: "刷卡事件存在待复核异常" });
@@ -761,7 +764,7 @@ async function assertCanIssueMobileNfcCards(ctx: Parameters<typeof requireAuthen
   throw new TRPCError({ code: "FORBIDDEN", message: "当前账号仅有运输查看权限，未获车辆卡签发或维护授权" });
 }
 
-async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload", options: { singleScanClose?: boolean } = {}) {
+async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthenticatedUser>[0], input: z.infer<typeof transportCardEventInput>, eventType: "load" | "unload", options: { singleScanClose?: boolean; unloadOnlyClose?: boolean; initialSafetyNotice?: string } = {}) {
   const user = requireAuthenticatedUser(ctx);
   const roleCodes = await assertTransportAccess(ctx);
   await assertProjectInCurrentScope(ctx, input.projectId);
@@ -847,7 +850,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   if (trip.status === "void" || trip.status === "settled") return markNeedsReview("趟次已关闭，不能再确认刷卡事件");
   if (eventType === "load" && trip.unloadConfirmedAt) return markNeedsReview("检测到卸土已确认后的装土刷卡，疑似乱序事件");
   if (eventType === "load" && trip.loadConfirmedAt) return markNeedsReview("该趟次已存在装土确认，疑似重复刷卡事件");
-  if (eventType === "unload" && !trip.loadConfirmedAt) return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
+  if (eventType === "unload" && !trip.loadConfirmedAt && !options.unloadOnlyClose) return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
   if (eventType === "unload" && trip.unloadConfirmedAt) return markNeedsReview("该趟次已存在卸土确认，疑似重复刷卡事件");
   if (eventType === "unload") {
     const routePresetId = Number((trip.routeSnapshot as { routePresetId?: number } | null)?.routePresetId || 0);
@@ -856,26 +859,28 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, routePresetId)).limit(1),
       expectedSiteId ? db.select().from(transportSites).where(eq(transportSites.id, expectedSiteId)).limit(1) : Promise.resolve([]),
     ]);
-    if (!route || !unloadSite) return markNeedsReview("当前卸土路线或地点配置已失效，不能直接确认卸土，请人工核验");
-    const safetyNotices: string[] = [];
-    const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
-    const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(transitStartAt).getTime()) / 60_000));
-    if (elapsedMinutes < unloadSite.minimumTransitMinutes) {
-      const reason = `卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本卸土点最短运输时间为 ${unloadSite.minimumTransitMinutes} 分钟`;
-      if (unloadSite.minimumTransitEnabled) return markNeedsReview(`${reason}；未达到时间不能完成卸土`);
-      safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
+    if (!route || route.projectId !== input.projectId || !unloadSite) return markNeedsReview("当前卸土路线或地点配置已失效，不能直接确认卸土，请人工核验");
+    const safetyNotices: string[] = options.initialSafetyNotice ? [options.initialSafetyNotice] : [];
+    if (!(options.unloadOnlyClose && !trip.loadConfirmedAt)) {
+      const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
+      const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(transitStartAt).getTime()) / 60_000));
+      if (elapsedMinutes < route.minimumTransitMinutes) {
+        const reason = `卸土异常：运途时间不符合。当前已运输 ${elapsedMinutes} 分钟，本路线最短运输时间为 ${route.minimumTransitMinutes} 分钟`;
+        if (route.minimumTransitEnabled) return markNeedsReview(`${reason}；未达到时间不能完成卸土`);
+        safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
+      }
     }
     const hasMobileCoordinates = input.latitude !== null && input.latitude !== undefined && input.longitude !== null && input.longitude !== undefined;
     const hasUnloadSiteCoordinates = unloadSite.latitude !== null && unloadSite.latitude !== undefined && unloadSite.longitude !== null && unloadSite.longitude !== undefined;
     if (!hasMobileCoordinates || !hasUnloadSiteCoordinates) {
       const reason = !hasMobileCoordinates ? "卸土异常：未取得现场定位" : "卸土点中文详细地址尚未完成地图定位校验";
-      if (unloadSite.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
+      if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能直接确认卸土`);
       safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
     } else {
       const distanceMeters = Math.round(calculateCoordinateDistanceMeters(Number(input.latitude), Number(input.longitude), Number(unloadSite.latitude), Number(unloadSite.longitude)));
-      if (distanceMeters > unloadSite.unloadGeofenceMeters) {
-        const reason = `卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${unloadSite.unloadGeofenceMeters} 米`;
-        if (unloadSite.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能完成卸土`);
+      if (distanceMeters > route.unloadGeofenceMeters) {
+        const reason = `卸土异常：未达到卸土点，当前定位距卸土点约 ${distanceMeters} 米，允许偏差 ${route.unloadGeofenceMeters} 米`;
+        if (route.unloadGeofenceEnabled) return markNeedsReview(`${reason}，不能完成卸土`);
         safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
       }
     }
@@ -901,8 +906,8 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       eventCode: "transport_unload_completed",
       idempotencyKey: `inapp:transport-unload:${event.id}:${recipientUserId}`,
       recipientUserId,
-      title: "运输卸土成功",
-      content: `车辆 ${vehicle.plateNo} 已完成卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
+      title: options.unloadOnlyClose ? "卸土点补刷卡闭环完成" : "运输卸土成功",
+      content: options.unloadOnlyClose ? `车辆 ${vehicle.plateNo} 未记录装土刷卡，已按路线补刷卡规则在卸土点完成运单 ${trip.tripNo} 的受控闭环，仍请进入系统核验。` : `车辆 ${vehicle.plateNo} 已完成卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
       deepLink: "/mobile/transport",
       status: "sent",
       sentAt: notificationTime,
@@ -911,7 +916,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   }
   const nextActionText = eventType === "load"
     ? options.singleScanClose ? "本项目已启用刷卡发票即完成闭环，本次运输已直接进入待核验。" : "请按调度前往卸土点。"
-    : "运输闭环已记录，等待后续核验。";
+    : options.unloadOnlyClose ? "运输闭环已按卸土点补刷卡规则记录，实际装土起点仍待核验。" : "运输闭环已记录，等待后续核验。";
   const driverNotificationQueued = eventType === "load"
     ? await notifyBoundDriverInApp(db, {
       driverUserId: vehicle.driverUserId,
@@ -1013,7 +1018,68 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     return { ...event, stage: singleScanClosed ? "completed" as const : "in_transit" as const, singleScanClosed, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: site.name, unloadSiteName: unloadSite.name };
 	  }
 
-  if (!activeTrip) throw new TRPCError({ code: "BAD_REQUEST", message: `车辆 ${vehicle.plateNo} 当前没有可在本卸土点闭环的在途票据，请先在装土点完成首次刷卡` });
+  if (!activeTrip) {
+    const unloadOnlyRoutes = await db.select().from(transportRoutePresets).where(and(
+      eq(transportRoutePresets.projectId, input.projectId),
+      eq(transportRoutePresets.unloadSiteId, site.id),
+      eq(transportRoutePresets.status, "active"),
+      eq(transportRoutePresets.unloadOnlyCloseEnabled, true),
+    )).orderBy(desc(transportRoutePresets.isDefault), desc(transportRoutePresets.updatedAt));
+    if (!unloadOnlyRoutes.length) throw new TRPCError({ code: "BAD_REQUEST", message: `车辆 ${vehicle.plateNo} 当前没有可在本卸土点闭环的在途票据；本路线未开启“卸土点补刷卡完成闭环”，请先在装土点刷卡或由超级管理员开启该路线规则` });
+    if (unloadOnlyRoutes.length > 1) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卸土点存在多条开启补刷卡的路线，无法安全判断装土路线；请仅保留一条启用规则后再刷卡" });
+    const route = unloadOnlyRoutes[0];
+    const [[loadSite], [rule]] = await Promise.all([
+      db.select().from(transportSites).where(eq(transportSites.id, route.loadSiteId)).limit(1),
+      db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
+    ]);
+    if (!loadSite || loadSite.projectId !== input.projectId || loadSite.siteType !== "load" || loadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "补刷卡路线的装土点不存在或已停用，不能自动完成闭环" });
+    if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "补刷卡路线的运价不存在或未生效，不能自动完成闭环" });
+    if (rule.settlementUnit === "ton") throw new TRPCError({ code: "BAD_REQUEST", message: "按吨结算路线须录入实际过磅重量，不能通过卸土补刷卡自动完成" });
+    await assertNoOpenTransportTrip(db, input.projectId, vehicle.id, vehicle.plateNo);
+    let initialSafetyNotice: string | undefined;
+    try {
+      await assertVehicleMinimumUnloadOnlyScanInterval(db, { projectId: input.projectId, vehicleId: vehicle.id, plateNo: vehicle.plateNo, occurredAt, minimumTransitMinutes: route.minimumTransitMinutes });
+    } catch (error) {
+      if (route.minimumTransitEnabled || !(error instanceof TRPCError) || error.code !== "BAD_REQUEST") throw error;
+      initialSafetyNotice = "卸土点补刷卡的同车连续间隔未达到路线最短时间（时间硬拦截已关闭，已留待核验）";
+    }
+    let theoreticalVolume: number;
+    try { theoreticalVolume = calculateTheoreticalVolume(Number(vehicle.boxLengthMeters), Number(vehicle.boxWidthMeters), Number(vehicle.boxHeightMeters), Number(vehicle.loadFactor)); } catch (error) { throwDomainAsBadRequest(error); }
+    let price;
+    try { price = calculateTieredFreightAmount({ actualDistanceKm: Number(route.presetDistanceKm), startDistanceKm: Number(rule.startDistanceKm), basePricePerUnit: Number(rule.basePricePerUnit), stepMeters: rule.stepMeters, stepIncreasePerUnit: Number(rule.stepIncreasePerUnit), settlementQuantity: theoreticalVolume }); } catch (error) { throwDomainAsBadRequest(error); }
+    const tripNo = createTransportTripNo(input.projectId, occurredAt);
+    const routeSnapshot = {
+      source: "nfc_unload_only_reader",
+      routePresetId: route.id,
+      invoiceMode: "nfc_card",
+      settlementUnit: rule.settlementUnit,
+      theoreticalVolumeCubicMeters: theoreticalVolume,
+      billableSteps: price.billableSteps,
+      unloadOnlyCardClose: true,
+      unloadOnlyCardClosedAt: occurredAt.toISOString(),
+      loadCardRecorded: false,
+      loadSite: { id: loadSite.id, name: loadSite.name, administratorUserId: loadSite.administratorUserId },
+      unloadSite: { id: site.id, name: site.name, administratorUserId: site.administratorUserId, readerDeviceCode: reader.deviceCode },
+      endLatitude: input.latitude ?? null,
+      endLongitude: input.longitude ?? null,
+    };
+    const transitKeyForNewTrip = `nfc:${input.projectId}:${card.id}`;
+    try {
+      await db.insert(transportTrips).values({ tripNo, vehicleId: vehicle.id, projectId: input.projectId, freightRuleId: rule.id, invoiceMode: "nfc_card", loadSiteId: loadSite.id, unloadSiteId: site.id, startAt: occurredAt, actualDistanceKm: String(route.presetDistanceKm), volumeCubicMeters: String(theoreticalVolume), calculatedUnitPrice: String(price.unitPrice), calculatedAmount: String(price.totalAmount), routeSnapshot, status: "draft", nfcTransitKey: transitKeyForNewTrip, activeVehicleTransitKey: createActiveVehicleTransitKey(input.projectId, vehicle.id) });
+    } catch (error) {
+      throwIfDuplicateActiveVehicleTransit(error, vehicle.plateNo);
+    }
+    const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
+    if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "卸土补刷卡运输票据创建失败" });
+    const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "unload", { unloadOnlyClose: true, initialSafetyNotice });
+    if (event.success && !event.needsReview) {
+      const updateResult = await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, createdTrip.id), eq(transportTrips.nfcTransitKey, transitKeyForNewTrip), isNull(transportTrips.unloadConfirmedAt)));
+      if (!didConditionalWriteApply(updateResult)) throw new TRPCError({ code: "CONFLICT", message: "卸土补刷卡状态未能最终写入，请刷新后核验" });
+      await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_unload_only_create_and_close_trip", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 按补刷卡规则创建并闭环票据 ${tripNo}；未记录装土刷卡` });
+      triggerTransportRiskScan(input.projectId);
+    }
+    return { ...event, stage: "completed" as const, singleScanClosed: false, unloadOnlyClosed: event.success && !event.needsReview, tripId: createdTrip.id, tripNo, vehiclePlateNo: vehicle.plateNo, loadSiteName: loadSite.name, unloadSiteName: site.name };
+  }
   if (activeTrip.unloadSiteId !== site.id) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卸土设备与在途票据的路线卸土点不一致，已拒绝闭环" });
   const event = await recordTransportCardEvent(ctx, { tripId: activeTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "unload");
   if (event.success && !event.needsReview) {
@@ -2704,14 +2770,14 @@ export const transportRouter = router({
     if (!rule || rule.projectId !== input.projectId || rule.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "路线必须选择项目内生效的阶梯运价" });
     const [existingRoute] = input.id ? await db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, input.id)).limit(1) : [null];
     if (input.id && (!existingRoute || existingRoute.projectId !== input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "运输路线不存在或不属于当前项目" });
-    const isDefaultSafety = input.minimumTransitMinutes === 10 && input.minimumTransitEnabled && input.unloadGeofenceMeters === 300 && input.unloadGeofenceEnabled;
-    const changesSafety = Boolean(existingRoute && (existingRoute.minimumTransitMinutes !== input.minimumTransitMinutes || existingRoute.minimumTransitEnabled !== input.minimumTransitEnabled || existingRoute.unloadGeofenceMeters !== input.unloadGeofenceMeters || existingRoute.unloadGeofenceEnabled !== input.unloadGeofenceEnabled));
+    const isDefaultSafety = input.minimumTransitMinutes === 10 && input.minimumTransitEnabled && input.unloadGeofenceMeters === 300 && input.unloadGeofenceEnabled && !input.unloadOnlyCloseEnabled;
+    const changesSafety = Boolean(existingRoute && (existingRoute.minimumTransitMinutes !== input.minimumTransitMinutes || existingRoute.minimumTransitEnabled !== input.minimumTransitEnabled || existingRoute.unloadGeofenceMeters !== input.unloadGeofenceMeters || existingRoute.unloadGeofenceEnabled !== input.unloadGeofenceEnabled || existingRoute.unloadOnlyCloseEnabled !== input.unloadOnlyCloseEnabled));
     if (!isSuperAdmin && (changesSafety || (!existingRoute && !isDefaultSafety))) throw new TRPCError({ code: "FORBIDDEN", message: "运输安全阈值仅超级管理员可在后台维护" });
-    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, minimumTransitEnabled: input.minimumTransitEnabled, unloadGeofenceMeters: input.unloadGeofenceMeters, unloadGeofenceEnabled: input.unloadGeofenceEnabled, isDefault: input.isDefault, status: input.status };
+    const values = { projectId: input.projectId, loadSiteId: input.loadSiteId, unloadSiteId: input.unloadSiteId, freightRuleId: input.freightRuleId, presetDistanceKm: String(input.presetDistanceKm), minimumTransitMinutes: input.minimumTransitMinutes, minimumTransitEnabled: input.minimumTransitEnabled, unloadGeofenceMeters: input.unloadGeofenceMeters, unloadGeofenceEnabled: input.unloadGeofenceEnabled, unloadOnlyCloseEnabled: input.unloadOnlyCloseEnabled, isDefault: input.isDefault, status: input.status };
     if (input.isDefault) await db.update(transportRoutePresets).set({ isDefault: false }).where(eq(transportRoutePresets.projectId, input.projectId));
     if (input.id) await db.update(transportRoutePresets).set(values).where(eq(transportRoutePresets.id, input.id));
     else await db.insert(transportRoutePresets).values({ ...values, createdBy: user.id });
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "拦截" : "提示"}），卸土容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "拦截" : "提示"}）` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_route_preset" : "create_route_preset", targetType: "transport_route_preset", targetId: String(input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`), summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "拦截" : "提示"}），卸土容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "拦截" : "提示"}），卸土补刷卡闭环${input.unloadOnlyCloseEnabled ? "开启" : "关闭"}` });
     return { success: true };
   }),
 

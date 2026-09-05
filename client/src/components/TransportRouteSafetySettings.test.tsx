@@ -30,6 +30,14 @@ describe("运输路线安全开关", () => {
     expect(source).toContain("默认关闭");
   });
 
+  it("提供默认关闭的路线级卸土补刷卡开关，并明确复用最短时间和定位范围的组合规则", () => {
+    const source = readFileSync(new URL("./TransportRouteSafetySettings.tsx", import.meta.url), "utf8");
+    expect(source).toContain("unloadOnlyCloseEnabled");
+    expect(source).toContain("卸土点补刷卡完成闭环");
+    expect(source).toContain("均启用“硬拦截”时须同时通过");
+    expect(source).toContain("不伪造实际装土时间");
+  });
+
   it("将超级管理员配置入口固定放在 PC 路线配置卡片内，而非运输台账区域之后", () => {
     const routeEditor = readFileSync(new URL("./TransportRouteConfigurationEditor.tsx", import.meta.url), "utf8");
     const adminPage = readFileSync(new URL("../pages/AdminPage.tsx", import.meta.url), "utf8");

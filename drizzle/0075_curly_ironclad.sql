@@ -1,0 +1,1 @@
+ALTER TABLE `transport_route_presets` ADD `unloadOnlyCloseEnabled` boolean DEFAULT false NOT NULL;

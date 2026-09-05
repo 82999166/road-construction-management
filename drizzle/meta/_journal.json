@@ -526,6 +526,13 @@
       "when": 1788181302982,
       "tag": "0074_overconfident_black_widow",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "5",
+      "when": 1788615945376,
+      "tag": "0075_curly_ironclad",
+      "breakpoints": true
     }
   ]
 }

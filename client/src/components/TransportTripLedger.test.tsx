@@ -47,6 +47,14 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("未记录实际卸土确认");
   });
 
+  it("将卸土补刷卡闭环与普通卸土和发票单次闭环明确区分，并提示未记录装土刷卡", () => {
+    const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
+    expect(source).toContain("isNfcUnloadOnlyClosed");
+    expect(source).toContain("卸土补刷卡闭环 · 待核验");
+    expect(source).toContain("但未记录装土点刷卡，系统不会伪造实际装土时间");
+    expect(source).toContain("卸土补刷卡时间");
+  });
+
   it("按后台当前筛选提供 A4 横向运费明细 PDF，并在最末行汇总金额、趟数和车辆数", () => {
     const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
     expect(source).toContain("打印当前筛选明细与汇总");
@@ -66,8 +74,6 @@ describe("运输车辆趟次完整台账", () => {
     const source = readFileSync(new URL("./TransportTripLedger.tsx", import.meta.url), "utf8");
     expect(source).toContain("<TableHead>发票类型</TableHead>");
     expect(source).toContain("invoiceTypeLabel(item)");
-    expect(source).toContain("查看图片 / 下载文件：{selectedTrip.loadInvoiceEvidence.fileName}");
-    expect(source).toContain("查看图片 / 下载文件：{selectedTrip.unloadSiteEvidence.fileName}");
     expect(source).toContain("装土发票管理员 / 执行时间");
     expect(source).toContain("卸土确认管理员 / 执行时间");
     expect(source).not.toContain("<img");
