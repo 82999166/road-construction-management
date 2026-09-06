@@ -64,10 +64,31 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  /** 带内容哈希的 Vite 分包可长期缓存；版本切换后不会再被 HTML 文档缓存阻塞。 */
+  app.use("/assets", express.static(path.resolve(distPath, "assets"), {
+    fallthrough: false,
+    immutable: true,
+    maxAge: "1y",
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    },
+  }));
 
-  // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
+  /** 入口 HTML 和非哈希静态文件每次都需重新校验，避免引用已删除的旧动态分包。 */
+  app.use(express.static(distPath, {
+    index: false,
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "no-cache");
+    },
+  }));
+
+  // SPA 路由回退仅用于页面路径；缺失分包必须保持 404，不能回退为 HTML 200。
+  app.use("*", (req, res) => {
+    if (req.path.startsWith("/assets/")) {
+      res.status(404).setHeader("Cache-Control", "no-store").end();
+      return;
+    }
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

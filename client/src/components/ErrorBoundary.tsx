@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Component, ReactNode } from "react";
+import { recoverDynamicImportLoadError } from "@/lib/dynamicImportRecovery";
 
 interface Props {
   children: ReactNode;
@@ -19,6 +20,12 @@ class ErrorBoundary extends Component<Props, State> {
 
   static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error) {
+    // React.lazy 的模块下载失败会被错误边界捕获，不一定冒泡到 window.error。
+    // 这里复用同一把 60 秒节流锁，自动刷新一次以取得当前版本的哈希分包。
+    recoverDynamicImportLoadError(error);
   }
 
   render() {

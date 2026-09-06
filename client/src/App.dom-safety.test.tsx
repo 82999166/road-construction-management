@@ -8,4 +8,10 @@ describe("全局 DOM 安全边界", () => {
     expect(app).toContain('className="notranslate" translate="no"');
     expect(boundary).toContain('translate="no"');
   });
+
+  it("React 懒加载分包失败会由错误边界执行一次受控版本恢复", () => {
+    const boundary = readFileSync(new URL("./components/ErrorBoundary.tsx", import.meta.url), "utf8");
+    expect(boundary).toContain("componentDidCatch(error: Error)");
+    expect(boundary).toContain("recoverDynamicImportLoadError(error)");
+  });
 });
