@@ -193,7 +193,15 @@ export default function MobileTransportPage() {
     }
   });
   const [nfcLinkToken] = useState(() => new URLSearchParams(window.location.search).get("nfc")?.trim() || "");
-  const [nfcReaderDeviceCode, setNfcReaderDeviceCode] = useState("");
+  /**
+   * 只有受控读卡器桥接入口才允许携带设备编码并直接执行扫描状态机。
+   * 车辆卡本身的签名链接不包含设备位置；若把任意启用设备当作默认值，
+   * 手机触卡会既不弹出开票页，也可能被错误地解释为其它现场地点的扫描。
+   */
+  const [nfcLinkReaderDeviceCode] = useState(() => {
+    const search = new URLSearchParams(window.location.search);
+    return search.get("readerDeviceCode")?.trim() || search.get("reader")?.trim() || "";
+  });
   const [nfcInvoiceResult, setNfcInvoiceResult] = useState<{ stage: "in_transit" | "completed"; singleScanClosed: boolean; duplicate: boolean; needsReview: boolean; reason: string | null } | null>(null);
   const [fieldCardUid, setFieldCardUid] = useState("");
   const [editingVehicleId, setEditingVehicleId] = useState<number | null>(null);
@@ -225,7 +233,6 @@ export default function MobileTransportPage() {
   const freightRules = trpc.transport.listFreightRules.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const transportSites = trpc.transport.listSites.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const transportSiteManagementAccess = trpc.transport.siteManagementAccess.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const readerDevices = trpc.transport.listReaderDevices.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const routePresets = trpc.transport.listRoutePresets.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const trips = trpc.transport.listTrips.useQuery(tripsInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.transport.dailySummary.useQuery(tripsInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
@@ -246,11 +253,6 @@ export default function MobileTransportPage() {
   }, [vehicleId, vehicles.data]);
 
   useEffect(() => {
-    const firstActiveReader = readerDevices.data?.find(device => device.status === "active");
-    if (!nfcReaderDeviceCode && firstActiveReader) setNfcReaderDeviceCode(firstActiveReader.deviceCode);
-  }, [nfcReaderDeviceCode, readerDevices.data]);
-
-  useEffect(() => {
     try {
       window.localStorage.setItem("yx.transport.fieldReaderDeviceId", fieldReaderDeviceId.trim() || "FIELD-READER-01");
     } catch {
@@ -259,12 +261,19 @@ export default function MobileTransportPage() {
   }, [fieldReaderDeviceId]);
 
   const nfcLinkScanStartedRef = useRef(false);
+  const nfcLinkDialogOpenedRef = useRef(false);
 
   useEffect(() => {
-    if (!nfcLinkToken || !nfcReaderDeviceCode || nfcLinkScanStartedRef.current) return;
+    if (!nfcLinkToken || nfcLinkReaderDeviceCode || nfcLinkDialogOpenedRef.current) return;
+    nfcLinkDialogOpenedRef.current = true;
+    setMobileNfcInvoiceOpen(true);
+  }, [nfcLinkReaderDeviceCode, nfcLinkToken]);
+
+  useEffect(() => {
+    if (!nfcLinkToken || !nfcLinkReaderDeviceCode || nfcLinkScanStartedRef.current) return;
     nfcLinkScanStartedRef.current = true;
     submitNfcLinkScan();
-  }, [nfcLinkToken, nfcReaderDeviceCode]);
+  }, [nfcLinkReaderDeviceCode, nfcLinkToken]);
 
   /** 定位仅在用户主动打开趟次录入后发起；初次坐标作为起点，持续更新作为终点。 */
   useEffect(() => {
@@ -503,8 +512,8 @@ export default function MobileTransportPage() {
 
   function submitNfcLinkScan() {
     if (!nfcLinkToken) return;
-    if (!nfcReaderDeviceCode) return toast.error("请先选择当前装土点或卸土点的已登记读卡设备");
-    scanNfcLink.mutate({ token: nfcLinkToken, readerDeviceCode: nfcReaderDeviceCode, idempotencyKey: `nfc-link-${crypto.randomUUID()}`, latitude: null, longitude: null, occurredAt: new Date().toISOString() });
+    if (!nfcLinkReaderDeviceCode) return toast.error("读卡器入口未提供已登记设备编码，已改为打开刷卡发票页面");
+    scanNfcLink.mutate({ token: nfcLinkToken, readerDeviceCode: nfcLinkReaderDeviceCode, idempotencyKey: `nfc-link-${crypto.randomUUID()}`, latitude: null, longitude: null, occurredAt: new Date().toISOString() });
   }
 
   function openPlatePhotoUnloadDialog(tripId: number) {
@@ -544,7 +553,7 @@ export default function MobileTransportPage() {
   return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]"><div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
     <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-6 pt-5 text-[#fff7ea] print:hidden"><div className="pointer-events-none absolute inset-0 opacity-[0.12] [background-image:linear-gradient(rgba(255,238,215,.32)_1px,transparent_1px),linear-gradient(90deg,rgba(255,238,215,.32)_1px,transparent_1px)] [background-size:24px_24px]" /><div className="relative flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 active:scale-95" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">运输调度</p><p className="mt-0.5 text-[11px] text-[#e8cfb2]">刷卡票据 · GPS 趟次 · 阶梯运价</p></div><button aria-label="查看运输计价说明" className="grid h-10 w-10 place-items-center rounded-full bg-white/10 active:scale-95" onClick={() => toast.info("装土、卸土刷卡均以车辆卡、GPS 与运价快照留痕；运费由服务端自动计算。") }><CircleHelp className="h-5 w-5" /></button></div><div className="relative mt-5 flex items-end justify-between"><div><p className="text-xs text-[#e8cfb2]">当前项目</p><p className="mt-1 text-lg font-semibold">{selectedProject?.name ?? "请选择项目"}</p></div><MobileTransportSiteManager projectId={selectedProjectId} canManage={isSuperAdmin || Boolean(transportSiteManagementAccess.data?.canManage)} onConfigureRoutes={() => setRouteDialogOpen(true)} triggerVariant="icon" /></div></header>
     <main className="space-y-5 px-5 py-5">
-      {nfcLinkToken ? <Card aria-live="assertive" className={nfcInvoiceResult?.needsReview ? "border-[#e5b66d] bg-[#fff7e8]" : nfcInvoiceResult?.stage === "completed" ? "border-2 border-[#4f875a] bg-[#eef9ee]" : "border-[#b8d5df] bg-[#f1fbff]"}><CardContent className="p-5 text-center"><p className="text-xs font-semibold text-[#527487]">NFC 现场刷卡回执</p>{scanNfcLink.isPending ? <p className="mt-2 text-lg font-bold text-[#24546b]">正在核验现场位置与运输规则…</p> : nfcInvoiceResult?.needsReview ? <p className="mt-2 text-lg font-bold text-[#9c6425]">刷卡已提交，待人工核验</p> : nfcInvoiceResult?.stage === "completed" ? <p className="mt-2 text-3xl font-black tracking-wide text-[#1f5f30]">卸土成功</p> : nfcInvoiceResult ? <p className="mt-2 text-lg font-bold text-[#24546b]">装土刷卡成功，车辆已进入运输中</p> : <p className="mt-2 text-lg font-bold text-[#24546b]">正在读取车辆卡…</p>}{nfcInvoiceResult?.reason ? <p className="mt-2 text-xs leading-5 text-[#80543d]">{nfcInvoiceResult.reason}</p> : null}</CardContent></Card> : null}
+      {nfcLinkToken && nfcLinkReaderDeviceCode ? <Card aria-live="assertive" className={nfcInvoiceResult?.needsReview ? "border-[#e5b66d] bg-[#fff7e8]" : nfcInvoiceResult?.stage === "completed" ? "border-2 border-[#4f875a] bg-[#eef9ee]" : "border-[#b8d5df] bg-[#f1fbff]"}><CardContent className="p-5 text-center"><p className="text-xs font-semibold text-[#527487]">NFC 现场刷卡回执</p>{scanNfcLink.isPending ? <p className="mt-2 text-lg font-bold text-[#24546b]">正在核验现场位置与运输规则…</p> : nfcInvoiceResult?.needsReview ? <p className="mt-2 text-lg font-bold text-[#9c6425]">刷卡已提交，待人工核验</p> : nfcInvoiceResult?.stage === "completed" ? <p className="mt-2 text-3xl font-black tracking-wide text-[#1f5f30]">卸土成功</p> : nfcInvoiceResult ? <p className="mt-2 text-lg font-bold text-[#24546b]">装土刷卡成功，车辆已进入运输中</p> : <p className="mt-2 text-lg font-bold text-[#24546b]">正在读取车辆卡…</p>}{nfcInvoiceResult?.reason ? <p className="mt-2 text-xs leading-5 text-[#80543d]">{nfcInvoiceResult.reason}</p> : null}</CardContent></Card> : null}
       {projectOptions.isError ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-8 text-center"><HardHat className="mx-auto h-8 w-8 text-[#ad6335]" /><h2 className="mt-3 font-semibold">项目授权加载失败</h2><p className="mt-2 text-xs leading-5 text-[#765544]">未能取得运输项目范围，请检查网络后重新获取；这不等同于没有项目权限。</p><Button className="mt-4 gap-1 bg-[#9a5128] text-white hover:bg-[#7e3d1c]" onClick={() => void projectOptions.refetch()}><RefreshCw className="h-4 w-4" />重新获取授权项目</Button></CardContent></Card> : !projectOptions.data?.length ? <Card className="border-0 bg-white"><CardContent className="p-8 text-center"><HardHat className="mx-auto h-8 w-8 text-[#ad6335]" /><h2 className="mt-3 font-semibold">暂无授权项目</h2><p className="mt-2 text-xs leading-5 text-[#765544]">请联系超级管理员为运输岗位配置项目或组织数据范围。</p><Button variant="outline" className="mt-4 gap-1 border-[#d6ae8e] text-[#7e4329]" onClick={() => void projectOptions.refetch()}><RefreshCw className="h-4 w-4" />重新获取授权项目</Button></CardContent></Card> : <>
         <section className="grid w-full max-w-full grid-cols-[minmax(0,1fr)_132px] gap-2 overflow-hidden print:hidden"><div className="min-w-0 overflow-hidden"><Label className="sr-only" htmlFor="transport-project-select">当前项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => { setProjectId(Number(value)); setVehicleId(undefined); }}><SelectTrigger id="transport-project-select" className="h-11 min-w-0 max-w-full border-[#e9d8c6] bg-white text-[#4d2e22]"><SelectValue className="block truncate" placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div><div className="min-w-0"><Label className="mb-1 block px-1 text-[11px] font-medium text-[#765544]" htmlFor="transport-work-date">统计日期</Label><Input id="transport-work-date" aria-label="运输统计日期" className="h-8 w-[132px] min-w-[132px] border-[#e9d8c6] bg-white px-1 text-[12px]" type="date" value={workDate} onChange={event => setWorkDate(event.target.value)} /></div></section>
         <section aria-label="运输发票主操作" className="rounded-2xl border border-[#e7c9a8] bg-[#f0dfc7] px-4 py-3 shadow-[0_6px_18px_rgba(71,42,30,.06)] print:hidden"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">发票快捷操作</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">车辆卡随车优先刷 NFC；车辆卡未随车时使用后置相机直拍车牌。</p></div><span className="shrink-0 rounded-full bg-white/70 px-2 py-1 text-[10px] font-medium text-[#8b3f20]">{workDate}</span></div><div className="mt-3 grid grid-cols-2 gap-3"><button type="button" aria-label="新建 NFC 刷卡发票" className="min-h-28 rounded-2xl bg-[#9a5128] p-4 text-left text-white shadow-[0_8px_18px_rgba(128,66,31,.2)] active:scale-[.98]" onClick={() => setMobileNfcInvoiceOpen(true)}><FileText className="h-6 w-6" /><p className="mt-3 text-base font-semibold">刷 NFC 发票</p><p className="mt-1 text-[11px] text-[#ffe5cd]">打开后直接贴卡 · 自动读取车辆</p></button><button type="button" aria-label="新建拍照车牌发票" className="min-h-28 rounded-2xl bg-[#47754d] p-4 text-left text-white shadow-[0_8px_18px_rgba(49,94,57,.18)] active:scale-[.98]" onClick={() => openTripDialog(false, "plate_photo")}><Camera className="h-6 w-6" /><p className="mt-3 text-base font-semibold">拍照车牌发票</p><p className="mt-1 text-[11px] text-[#dff1dc]">车辆卡未随车 · 直拍后待核验</p></button></div><div className="mt-3 grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-9 gap-1 border-[#d9b88d] bg-white/70 px-2 text-[#8b3f20] hover:bg-[#fff8ed]" onClick={openTicketDialog}><FileText className="h-4 w-4" />处理待刷 NFC 票据{pendingCardTrips.length ? `（${pendingCardTrips.length}）` : ""}</Button><Button size="sm" variant="outline" className="h-9 gap-1 border-[#d9b88d] bg-white/70 px-2 text-[#8b3f20] hover:bg-[#fff8ed]" onClick={() => setFreightPrintOpen(true)}><Printer className="h-4 w-4" />打印运费明细</Button></div></section>
