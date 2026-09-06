@@ -61,6 +61,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
+import { formatChinaSmsTime, notifyAliyunSmsSafely } from "../services/smsNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion, testAliyunOssPhotoStorageConnection } from "../services/aliyunOssPhotoStorage";
 import { chinaBusinessDate, chinaBusinessMonth } from "../services/chinaBusinessTime";
@@ -289,6 +290,12 @@ const officialAccountMessagePushConfigurationInput = z.object({
 });
 
 const notificationModuleCode = z.enum(["purchasing", "measurement", "finance", "machinery", "transport", "security", "labor", "construction", "diesel", "contract"]);
+const smsEventCode = z.enum(["transport_load_completed", "transport_unload_completed", "transport_scan_exception", "diesel_refuel_completed"]);
+const smsEventTemplateInput = z.object({
+  eventCode: smsEventCode,
+  templateCode: z.string().trim().max(128),
+  enabled: z.boolean(),
+});
 
 /** 短信凭据和模块路由由超级管理员统一维护；密钥留空表示保留已有加密值。 */
 const notificationChannelConfigurationInput = z.object({
@@ -299,6 +306,7 @@ const notificationChannelConfigurationInput = z.object({
   aliyunAccessKeySecret: z.string().max(2048),
   aliyunSignName: z.string().trim().max(128),
   aliyunTemplateCode: z.string().trim().max(128),
+  smsEventTemplates: z.array(smsEventTemplateInput).max(4),
   tencentSecretId: z.string().max(256),
   tencentSecretKey: z.string().max(2048),
   tencentSdkAppId: z.string().trim().max(64),
@@ -375,7 +383,7 @@ const OFFICIAL_ACCOUNT_PUBLIC_SETTING_KEYS = new Set([
 const RETIRED_NOTIFICATION_SETTING_KEYS = new Set(["WECHAT_WORK_WEBHOOK"]);
 const NOTIFICATION_CHANNEL_SETTING_KEYS = [
   "SMS_NOTIFICATION_ENABLED", "SMS_NOTIFICATION_PROVIDER", "SMS_NOTIFICATION_MODULES",
-  "SMS_ALIYUN_ACCESS_KEY_ID", "SMS_ALIYUN_ACCESS_KEY_SECRET", "SMS_ALIYUN_SIGN_NAME", "SMS_ALIYUN_TEMPLATE_CODE",
+  "SMS_ALIYUN_ACCESS_KEY_ID", "SMS_ALIYUN_ACCESS_KEY_SECRET", "SMS_ALIYUN_SIGN_NAME", "SMS_ALIYUN_TEMPLATE_CODE", "SMS_EVENT_TEMPLATE_CONFIGS",
   "SMS_TENCENT_SECRET_ID", "SMS_TENCENT_SECRET_KEY", "SMS_TENCENT_SDK_APP_ID", "SMS_TENCENT_SIGN_NAME", "SMS_TENCENT_TEMPLATE_ID",
   "WECHAT_OFFICIAL_NOTIFICATION_ENABLED", "WECHAT_OFFICIAL_NOTIFICATION_MODULES",
 ] as const;
@@ -1055,6 +1063,10 @@ export const adminRouter = router({
       void notifyOfficialAccountBusinessEventSafely({ userId: admin.id, projectId: input.projectId, module: "diesel", eventCode: effectiveStatus === "void" ? "diesel_refuel_voided" : input.id ? "diesel_refuel_updated" : "diesel_refuel_recorded", targetType: "diesel_refuel", targetId: String(recordId), title: effectiveStatus === "void" ? "柴油领用已作废" : input.id ? "柴油领用已更新" : "柴油领用已直接记账", content: "一笔柴油领用记录已处理，请进入系统查看受控台账与原始凭证。", deepLink: "/admin/diesel" }).catch(() => undefined);
       if (input.assetType === "vehicle" && input.vehicleId && input.deductFromFreight) {
         void sendOfficialAccountDriverNotification({ vehicleId: input.vehicleId, projectId: input.projectId, module: "diesel", eventCode: effectiveStatus === "void" ? "diesel_refuel_voided" : input.id ? "diesel_refuel_updated" : "diesel_refuel_recorded", idempotencyKey: `driver:diesel:${effectiveStatus}:${recordId}:${input.vehicleId}`, title: effectiveStatus === "void" ? "车辆柴油扣款已作废" : "车辆柴油扣款已登记", content: `本车柴油 ${Number(input.liters).toFixed(3)}L，金额 ¥${amount.toFixed(2)}${effectiveStatus === "void" ? "已作废" : "将按规则进入运费扣款或结算核对"}。`, deepLink: "/api/official-account/driver-portal/start" }).catch(() => undefined);
+      }
+      if (!input.id && effectiveStatus === "approved" && input.assetType === "vehicle" && input.vehicleId) {
+        const [vehicle] = await db.select({ plateNo: transportVehicles.plateNo, driverPhoneEncrypted: transportVehicles.driverPhoneEncrypted }).from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+        void notifyAliyunSmsSafely({ actorUserId: admin.id, projectId: input.projectId, module: "diesel", eventCode: "diesel_refuel_completed", recipientPhone: vehicle?.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "diesel_refuel", targetId: String(recordId), templateParams: { vehicle: vehicle?.plateNo ?? "车辆", quantity: Number(input.liters).toFixed(3), amount: amount.toFixed(2), time: formatChinaSmsTime(new Date(input.refueledAt)) } });
       }
       if (priceAlert.isAlert) {
         await db.insert(auditLogs).values({ userId: admin.id, module: "diesel", action: "price_alert", targetType: "diesel_refuel", targetId: String(recordId), summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）` });
@@ -1920,6 +1932,20 @@ export const adminRouter = router({
           return Array.isArray(value) ? value.filter(item => typeof item === "string" && notificationModuleCode.options.includes(item as never)) : [];
         } catch { return []; }
       };
+      const parseSmsEventTemplates = () => {
+        try {
+          const value = JSON.parse(byKey.get("SMS_EVENT_TEMPLATE_CONFIGS")?.valueJson ?? "[]") as unknown;
+          if (!Array.isArray(value)) return [];
+          const seen = new Set<string>();
+          return value.flatMap(item => {
+            if (!item || typeof item !== "object") return [];
+            const candidate = item as { eventCode?: unknown; templateCode?: unknown; enabled?: unknown };
+            if (typeof candidate.eventCode !== "string" || !smsEventCode.options.includes(candidate.eventCode as never) || seen.has(candidate.eventCode)) return [];
+            seen.add(candidate.eventCode);
+            return [{ eventCode: candidate.eventCode, templateCode: typeof candidate.templateCode === "string" ? candidate.templateCode.slice(0, 128) : "", enabled: candidate.enabled === true }];
+          });
+        } catch { return []; }
+      };
       const provider = byKey.get("SMS_NOTIFICATION_PROVIDER")?.valueJson;
       return {
         smsEnabled: byKey.get("SMS_NOTIFICATION_ENABLED")?.valueJson === "true",
@@ -1928,6 +1954,7 @@ export const adminRouter = router({
         aliyunAccessKeyConfigured: Boolean(byKey.get("SMS_ALIYUN_ACCESS_KEY_ID")?.secretEncrypted && byKey.get("SMS_ALIYUN_ACCESS_KEY_SECRET")?.secretEncrypted),
         aliyunSignName: byKey.get("SMS_ALIYUN_SIGN_NAME")?.valueJson ?? "",
         aliyunTemplateCode: byKey.get("SMS_ALIYUN_TEMPLATE_CODE")?.valueJson ?? "",
+        smsEventTemplates: parseSmsEventTemplates(),
         tencentSecretConfigured: Boolean(byKey.get("SMS_TENCENT_SECRET_ID")?.secretEncrypted && byKey.get("SMS_TENCENT_SECRET_KEY")?.secretEncrypted),
         tencentSdkAppId: byKey.get("SMS_TENCENT_SDK_APP_ID")?.valueJson ?? "",
         tencentSignName: byKey.get("SMS_TENCENT_SIGN_NAME")?.valueJson ?? "",
@@ -1941,6 +1968,9 @@ export const adminRouter = router({
       const db = await getDb();
       if (!db) throw new Error("数据库连接暂不可用");
       if (input.smsEnabled && input.smsProvider === "none") throw new TRPCError({ code: "BAD_REQUEST", message: "启用短信通知前请选择阿里云短信或腾讯云短信" });
+      const uniqueEventCodes = new Set(input.smsEventTemplates.map(item => item.eventCode));
+      if (uniqueEventCodes.size !== input.smsEventTemplates.length) throw new TRPCError({ code: "BAD_REQUEST", message: "同一业务事件只能配置一个短信模板" });
+      if (input.smsEventTemplates.some(item => item.enabled && !item.templateCode)) throw new TRPCError({ code: "BAD_REQUEST", message: "启用短信模板前请填写已审核的模板编码" });
       const unique = (items: string[]) => Array.from(new Set(items));
       const definitions = [
         { key: "SMS_NOTIFICATION_ENABLED", name: "短信通知总开关", value: String(input.smsEnabled), sensitive: false },
@@ -1950,6 +1980,7 @@ export const adminRouter = router({
         { key: "SMS_ALIYUN_ACCESS_KEY_SECRET", name: "阿里云短信 AccessKey Secret", value: input.aliyunAccessKeySecret.trim(), sensitive: true },
         { key: "SMS_ALIYUN_SIGN_NAME", name: "阿里云短信签名", value: input.aliyunSignName, sensitive: false },
         { key: "SMS_ALIYUN_TEMPLATE_CODE", name: "阿里云短信模板 Code", value: input.aliyunTemplateCode, sensitive: false },
+        { key: "SMS_EVENT_TEMPLATE_CONFIGS", name: "短信业务事件模板配置", value: JSON.stringify(input.smsEventTemplates), sensitive: false },
         { key: "SMS_TENCENT_SECRET_ID", name: "腾讯云短信 SecretId", value: input.tencentSecretId.trim(), sensitive: true },
         { key: "SMS_TENCENT_SECRET_KEY", name: "腾讯云短信 SecretKey", value: input.tencentSecretKey.trim(), sensitive: true },
         { key: "SMS_TENCENT_SDK_APP_ID", name: "腾讯云短信 SdkAppId", value: input.tencentSdkAppId, sensitive: false },

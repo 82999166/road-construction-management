@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { BellRing, MessageSquareText, ShieldCheck } from "lucide-react";
+import { BellRing, MessageSquareText, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -14,34 +14,69 @@ const MODULES = [
   ["purchasing", "采购"], ["measurement", "计量/分包"], ["finance", "财务"], ["machinery", "机械"], ["transport", "运输"],
   ["security", "安全/系统"], ["labor", "劳务"], ["construction", "施工"], ["diesel", "柴油"], ["contract", "合同"],
 ] as const;
+const SMS_EVENTS = [
+  ["transport_load_completed", "运输 · 装土刷卡成功"],
+  ["transport_unload_completed", "运输 · 卸土完成"],
+  ["transport_scan_exception", "运输 · 刷卡异常"],
+  ["diesel_refuel_completed", "柴油 · 加油完成"],
+] as const;
+const SMS_EVENT_VARIABLE_HINTS: Record<(typeof SMS_EVENTS)[number][0], string> = {
+  transport_load_completed: "变量：vehicle（车牌号）、place（地址）、time（时间）",
+  transport_unload_completed: "变量：vehicle（车牌号）、place（地址）、time（时间）",
+  transport_scan_exception: "变量：vehicle（车牌号）、time（时间）",
+  diesel_refuel_completed: "变量：vehicle（车牌号）、quantity（数量）、amount（金额）、time（时间）",
+};
+
 type ModuleCode = (typeof MODULES)[number][0];
+type SmsEventCode = (typeof SMS_EVENTS)[number][0];
+type SmsEventTemplate = { eventCode: SmsEventCode; templateCode: string; enabled: boolean };
 
 function ModuleChecks({ selected, onChange, disabled = false }: { selected: ModuleCode[]; onChange: (next: ModuleCode[]) => void; disabled?: boolean }) {
   return <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{MODULES.map(([code, label]) => <Label key={code} className="flex cursor-pointer items-center gap-2 rounded-md border bg-white px-2.5 py-2 text-xs font-normal text-slate-700"><Checkbox disabled={disabled} checked={selected.includes(code)} onCheckedChange={checked => onChange(checked ? [...selected, code] : selected.filter(item => item !== code))} />{label}</Label>)}</div>;
+}
+
+function eventLabel(code: SmsEventCode) {
+  return SMS_EVENTS.find(([value]) => value === code)?.[1] ?? code;
 }
 
 export default function NotificationChannelSettings() {
   const configuration = trpc.admin.settings.getNotificationChannelConfiguration.useQuery();
   const [form, setForm] = useState({
     smsEnabled: false, smsProvider: "none" as "none" | "aliyun" | "tencent", smsModules: [] as ModuleCode[],
-    aliyunAccessKeyId: "", aliyunAccessKeySecret: "", aliyunSignName: "", aliyunTemplateCode: "",
+    aliyunAccessKeyId: "", aliyunAccessKeySecret: "", aliyunSignName: "", aliyunTemplateCode: "", smsEventTemplates: [] as SmsEventTemplate[],
     tencentSecretId: "", tencentSecretKey: "", tencentSdkAppId: "", tencentSignName: "", tencentTemplateId: "",
     officialEnabled: false, officialModules: [] as ModuleCode[],
   });
   useEffect(() => {
     const data = configuration.data;
     if (!data) return;
-    setForm(current => ({ ...current, smsEnabled: data.smsEnabled, smsProvider: data.smsProvider as "none" | "aliyun" | "tencent", smsModules: data.smsModules as ModuleCode[], aliyunSignName: data.aliyunSignName, aliyunTemplateCode: data.aliyunTemplateCode, tencentSdkAppId: data.tencentSdkAppId, tencentSignName: data.tencentSignName, tencentTemplateId: data.tencentTemplateId, officialEnabled: data.officialEnabled, officialModules: data.officialModules as ModuleCode[] }));
+    const templates = (data.smsEventTemplates ?? []).flatMap(template => {
+      if (!SMS_EVENTS.some(([code]) => code === template.eventCode)) return [];
+      return [{ eventCode: template.eventCode as SmsEventCode, templateCode: template.templateCode, enabled: template.enabled }];
+    });
+    setForm(current => ({ ...current, smsEnabled: data.smsEnabled, smsProvider: data.smsProvider as "none" | "aliyun" | "tencent", smsModules: data.smsModules as ModuleCode[], aliyunSignName: data.aliyunSignName, aliyunTemplateCode: data.aliyunTemplateCode, smsEventTemplates: templates, tencentSdkAppId: data.tencentSdkAppId, tencentSignName: data.tencentSignName, tencentTemplateId: data.tencentTemplateId, officialEnabled: data.officialEnabled, officialModules: data.officialModules as ModuleCode[] }));
   }, [configuration.data]);
   const save = trpc.admin.settings.saveNotificationChannelConfiguration.useMutation({ onSuccess: result => { toast.success(result.message); configuration.refetch(); }, onError: error => toast.error(error.message) });
   const providerReady = form.smsProvider === "aliyun" ? configuration.data?.aliyunAccessKeyConfigured : form.smsProvider === "tencent" ? configuration.data?.tencentSecretConfigured : false;
+  const usedEvents = new Set(form.smsEventTemplates.map(item => item.eventCode));
+  const addTemplate = () => {
+    const nextEvent = SMS_EVENTS.find(([eventCode]) => !usedEvents.has(eventCode));
+    if (!nextEvent) return;
+    setForm(current => ({ ...current, smsEventTemplates: [...current.smsEventTemplates, { eventCode: nextEvent[0], templateCode: "", enabled: false }] }));
+  };
+  const patchTemplate = (index: number, patch: Partial<SmsEventTemplate>) => setForm(current => ({ ...current, smsEventTemplates: current.smsEventTemplates.map((template, templateIndex) => templateIndex === index ? { ...template, ...patch } : template) }));
+  const removeTemplate = (index: number) => setForm(current => ({ ...current, smsEventTemplates: current.smsEventTemplates.filter((_, templateIndex) => templateIndex !== index) }));
+
   return <Card className="border-[#cfe0dc] bg-[#f7fbfa]">
     <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2 text-base"><MessageSquareText className="h-4 w-4 text-[#1f6b60]" />短信与服务号通知通道</CardTitle><CardDescription className="mt-1">站内消息始终保留。短信和服务号均为可选补充通道，失败只记录审计，不回滚业务办理。</CardDescription></div><Badge variant="outline" className="border-slate-300 bg-white text-slate-700">密钥仅加密托管</Badge></div></CardHeader>
     <CardContent className="space-y-5">
       <section className="rounded-xl border border-[#d7e8e3] bg-white p-3"><div className="flex items-center justify-between gap-3"><div><p className="font-medium text-slate-800">短信通知</p><p className="mt-1 text-xs leading-5 text-slate-600">内置阿里云短信和腾讯云短信。仅向系统内有有效手机号的已授权收件人发送。</p></div><Checkbox checked={form.smsEnabled} onCheckedChange={checked => setForm(current => ({ ...current, smsEnabled: checked === true }))} aria-label="启用短信通知" /></div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2"><div><Label className="text-xs">短信服务商</Label><Select value={form.smsProvider} onValueChange={value => setForm(current => ({ ...current, smsProvider: value as typeof current.smsProvider }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">暂不启用</SelectItem><SelectItem value="aliyun">阿里云短信</SelectItem><SelectItem value="tencent">腾讯云短信</SelectItem></SelectContent></Select></div><div className="rounded-lg bg-[#f2f7f5] px-3 py-2 text-xs leading-5 text-slate-600">{form.smsProvider === "none" ? "选择服务商后填写已审核的签名和模板；未配置密钥时不会发短信。" : providerReady ? "该服务商密钥已加密托管；留空保存会保留原密钥。" : "该服务商尚未配置完整密钥，保存后仍保持不可投递状态。"}</div></div>
-        {form.smsProvider === "aliyun" ? <div className="mt-3 grid gap-3 sm:grid-cols-2"><Input aria-label="阿里云访问密钥标识" type="password" placeholder="阿里云访问密钥标识（留空保持）" value={form.aliyunAccessKeyId} onChange={event => setForm(current => ({ ...current, aliyunAccessKeyId: event.target.value }))} /><Input aria-label="阿里云访问密钥" type="password" placeholder="阿里云访问密钥（留空保持）" value={form.aliyunAccessKeySecret} onChange={event => setForm(current => ({ ...current, aliyunAccessKeySecret: event.target.value }))} /><Input aria-label="阿里云已审核短信签名" placeholder="已审核短信签名" value={form.aliyunSignName} onChange={event => setForm(current => ({ ...current, aliyunSignName: event.target.value }))} /><Input aria-label="阿里云短信模板编码" placeholder="短信模板编码，例如 SMS_…" value={form.aliyunTemplateCode} onChange={event => setForm(current => ({ ...current, aliyunTemplateCode: event.target.value }))} /></div> : null}
+        {form.smsProvider === "aliyun" ? <div className="mt-3 grid gap-3 sm:grid-cols-2"><Input aria-label="阿里云访问密钥标识" type="password" placeholder="阿里云访问密钥标识（留空保持）" value={form.aliyunAccessKeyId} onChange={event => setForm(current => ({ ...current, aliyunAccessKeyId: event.target.value }))} /><Input aria-label="阿里云访问密钥" type="password" placeholder="阿里云访问密钥（留空保持）" value={form.aliyunAccessKeySecret} onChange={event => setForm(current => ({ ...current, aliyunAccessKeySecret: event.target.value }))} /><Input aria-label="阿里云已审核短信签名" placeholder="已审核短信签名" value={form.aliyunSignName} onChange={event => setForm(current => ({ ...current, aliyunSignName: event.target.value }))} /></div> : null}
         {form.smsProvider === "tencent" ? <div className="mt-3 grid gap-3 sm:grid-cols-2"><Input aria-label="腾讯云密钥标识" type="password" placeholder="腾讯云密钥标识（留空保持）" value={form.tencentSecretId} onChange={event => setForm(current => ({ ...current, tencentSecretId: event.target.value }))} /><Input aria-label="腾讯云访问密钥" type="password" placeholder="腾讯云访问密钥（留空保持）" value={form.tencentSecretKey} onChange={event => setForm(current => ({ ...current, tencentSecretKey: event.target.value }))} /><Input aria-label="腾讯云短信应用标识" placeholder="腾讯云短信应用标识" value={form.tencentSdkAppId} onChange={event => setForm(current => ({ ...current, tencentSdkAppId: event.target.value }))} /><Input aria-label="腾讯云已审核短信签名" placeholder="已审核短信签名" value={form.tencentSignName} onChange={event => setForm(current => ({ ...current, tencentSignName: event.target.value }))} /><Input aria-label="腾讯云已审核模板编号" placeholder="已审核模板编号" value={form.tencentTemplateId} onChange={event => setForm(current => ({ ...current, tencentTemplateId: event.target.value }))} /></div> : null}
+        <div className="mt-4 rounded-lg border border-[#d7e8e3] bg-[#fbfefc] p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-sm font-medium text-slate-800">业务事件模板编码</p><p className="mt-1 text-xs leading-5 text-slate-600">可先新增事件卡片，阿里云审核通过后再填对应模板 CODE。每个事件只能配置一个 CODE；留空或关闭时绝不发送。</p></div><Button type="button" size="sm" variant="outline" disabled={form.smsEventTemplates.length >= SMS_EVENTS.length} onClick={addTemplate}><Plus className="mr-1 h-3.5 w-3.5" />新增模板</Button></div>
+          <div className="mt-3 space-y-3">{form.smsEventTemplates.length === 0 ? <p className="rounded-md border border-dashed px-3 py-3 text-xs text-slate-500">尚未添加业务模板。可先新增“运输 · 装土刷卡成功”，审核通过后再补填模板编码。</p> : form.smsEventTemplates.map((template, index) => <div key={template.eventCode} className="rounded-lg border bg-white p-3"><div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_auto_auto]"><Select value={template.eventCode} onValueChange={value => patchTemplate(index, { eventCode: value as SmsEventCode })}><SelectTrigger aria-label={`短信业务事件-${index}`}><SelectValue>{eventLabel(template.eventCode)}</SelectValue></SelectTrigger><SelectContent>{SMS_EVENTS.map(([code, label]) => <SelectItem key={code} value={code} disabled={code !== template.eventCode && usedEvents.has(code)}>{label}</SelectItem>)}</SelectContent></Select><Input aria-label={`${eventLabel(template.eventCode)}模板编码`} placeholder="审核通过后填写，例如 SMS_…" value={template.templateCode} onChange={event => patchTemplate(index, { templateCode: event.target.value, enabled: event.target.value.trim() ? template.enabled : false })} /><Label className="flex items-center gap-2 whitespace-nowrap px-1 text-xs font-normal"><Checkbox checked={template.enabled} disabled={!template.templateCode.trim() || !form.smsEnabled} onCheckedChange={checked => patchTemplate(index, { enabled: checked === true })} />启用</Label><Button type="button" size="icon" variant="ghost" className="text-slate-500 hover:text-red-600" onClick={() => removeTemplate(index)} aria-label={`删除${eventLabel(template.eventCode)}模板`}><Trash2 className="h-4 w-4" /></Button></div><p className="mt-2 text-xs text-slate-500">{template.enabled ? "已启用：对应业务成功后将按该事件投递短信。" : template.templateCode.trim() ? "编码已保存但未启用：暂不发送。" : "待审核：可先保存，审核通过后补填 CODE 并启用。"} {SMS_EVENT_VARIABLE_HINTS[template.eventCode]}</p></div>)}</div>
+        </div>
         <p className="mt-3 text-xs font-medium text-slate-700">短信通知模块</p><div className="mt-2"><ModuleChecks selected={form.smsModules} onChange={smsModules => setForm(current => ({ ...current, smsModules }))} disabled={!form.smsEnabled} /></div>
       </section>
       <section className="rounded-xl border border-[#eadfc6] bg-[#fffdf8] p-3"><div className="flex items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium text-slate-800"><BellRing className="h-4 w-4 text-[#a86b20]" />服务号即时通知</p><p className="mt-1 text-xs leading-5 text-slate-600">仅用户即时操作后即时返回结果时可用；持续状态、日结、绑定后推送与范围提醒会自动降级至站内通知或短信。</p></div><Checkbox checked={form.officialEnabled} onCheckedChange={checked => setForm(current => ({ ...current, officialEnabled: checked === true }))} aria-label="启用服务号即时通知" /></div><p className="mt-3 text-xs font-medium text-slate-700">允许服务号即时通知的模块</p><div className="mt-2"><ModuleChecks selected={form.officialModules} onChange={officialModules => setForm(current => ({ ...current, officialModules }))} disabled={!form.officialEnabled} /></div><p className="mt-3 flex items-start gap-2 rounded-lg bg-[#fff4df] px-3 py-2 text-xs leading-5 text-[#865514]"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />模块勾选不是持续群发许可。服务端会继续按事件和收件人关系校验微信运营规范。</p></section>

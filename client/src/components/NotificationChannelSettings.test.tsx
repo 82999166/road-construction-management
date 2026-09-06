@@ -8,6 +8,11 @@ describe("短信与服务号通知通道设置", () => {
     expect(source).toContain("腾讯云短信");
     expect(source).toContain("密钥仅加密托管");
     expect(source).toContain("短信通知模块");
+    expect(source).toContain("业务事件模板编码");
+    expect(source).toContain("新增模板");
+    expect(source).toContain("审核通过后再填对应模板 CODE");
+    expect(source).toContain("transport_load_completed");
+    expect(source).toContain("diesel_refuel_completed");
     expect(source).toContain("服务号即时通知");
     expect(source).toContain("持续状态、日结、绑定后推送与范围提醒会自动降级");
   });

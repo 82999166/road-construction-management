@@ -47,6 +47,7 @@ import { makeRequest, type GeocodingResult } from "../_core/map";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
+import { formatChinaSmsTime, notifyAliyunSmsSafely } from "../services/smsNotifier";
 import { buildTransportNfcCardPayload, buildTransportNfcDeepLink, createTransportNfcCardPayloadContract, verifyTransportNfcDeepLinkToken } from "../services/rfidCardPayload";
 import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } from "../services/rfidBridge";
 import { isRfidConfirmationRecoveryEligible, RFID_CONFIRMATION_RECEIPT_FAILURE } from "../services/rfidConfirmationRecovery";
@@ -838,6 +839,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       content: `车辆 ${vehicle.plateNo} 的${eventType === "load" ? "装土" : "卸土"}刷卡需要人工复核：${reason}`,
       deepLink: "/mobile/transport",
     });
+    void notifyAliyunSmsSafely({ actorUserId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_scan_exception", recipientPhone: vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "transport_card_event", targetId: String(event.id), templateParams: { vehicle: vehicle.plateNo, time: formatChinaSmsTime(occurredAt) } });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_card_event_exception", targetType: "transport_card_event", targetId: String(event.id), title: "运输刷卡异常待复核", content: `一笔运输${eventType === "load" ? "装土" : "卸土"}刷卡事件需要人工复核。`, deepLink: "/mobile/transport" }).catch(() => undefined);
     return { success: false, duplicate: false, needsReview: true, eventId: event.id, validationStatus: "needs_review" as const, reason, driverNotificationQueued };
   };
@@ -927,6 +929,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       deepLink: "/mobile/transport",
     })
     : Boolean(vehicle.driverUserId);
+  void notifyAliyunSmsSafely({ actorUserId: user.id, projectId: input.projectId, module: "transport", eventCode: eventType === "load" ? "transport_load_completed" : "transport_unload_completed", recipientPhone: vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "transport_card_event", targetId: String(event.id), templateParams: { vehicle: vehicle.plateNo, place: siteName ?? "运输现场", time: formatChinaSmsTime(occurredAt) } });
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${nextActionText}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, driverNotificationQueued };
 }
