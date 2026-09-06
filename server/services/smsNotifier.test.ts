@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
+import { getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
 
 describe("业务事件短信模板配置", () => {
   it("仅保留受支持事件、去除重复项，并允许先保存未填写编码的待审核条目", () => {
@@ -24,5 +24,12 @@ describe("业务事件短信模板配置", () => {
     expect(selectSmsEventTemplate(templates, "transport_load_completed")?.templateCode).toBe("SMS_LOAD");
     expect(selectSmsEventTemplate(templates, "transport_unload_completed")).toBeNull();
     expect(selectSmsEventTemplate(templates, "diesel_refuel_completed")?.templateCode).toBe("SMS_DIESEL");
+  });
+
+  it("测试发送和正式发送按事件固定映射到运输或柴油模块", () => {
+    expect(getSmsEventModule("transport_load_completed")).toBe("transport");
+    expect(getSmsEventModule("transport_unload_completed")).toBe("transport");
+    expect(getSmsEventModule("transport_scan_exception")).toBe("transport");
+    expect(getSmsEventModule("diesel_refuel_completed")).toBe("diesel");
   });
 });

@@ -11,5 +11,8 @@ describe("运输与柴油短信模板接线", () => {
     expect(admin).toContain("diesel_refuel_completed");
     expect(admin).toContain("SMS_EVENT_TEMPLATE_CONFIGS");
     expect(admin).toContain("同一业务事件只能配置一个短信模板");
+    expect(admin).toContain("inspectAliyunSmsNotificationReadiness");
+    expect(admin).toContain("sendAliyunSmsNotificationTest");
+    expect(admin).toContain("请输入合法的中国大陆测试手机号");
   });
 });

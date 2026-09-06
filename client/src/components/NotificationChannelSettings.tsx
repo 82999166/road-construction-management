@@ -1,3 +1,4 @@
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { BellRing, MessageSquareText, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { BellRing, CircleAlert, CircleCheck, MessageSquareText, Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -47,6 +48,9 @@ export default function NotificationChannelSettings() {
     tencentSecretId: "", tencentSecretKey: "", tencentSdkAppId: "", tencentSignName: "", tencentTemplateId: "",
     officialEnabled: false, officialModules: [] as ModuleCode[],
   });
+  const [smsTestEventCode, setSmsTestEventCode] = useState<SmsEventCode>("transport_load_completed");
+  const [smsTestPhone, setSmsTestPhone] = useState("");
+  const [smsTestConfirmationOpen, setSmsTestConfirmationOpen] = useState(false);
   useEffect(() => {
     const data = configuration.data;
     if (!data) return;
@@ -57,8 +61,18 @@ export default function NotificationChannelSettings() {
     setForm(current => ({ ...current, smsEnabled: data.smsEnabled, smsProvider: data.smsProvider as "none" | "aliyun" | "tencent", smsModules: data.smsModules as ModuleCode[], aliyunSignName: data.aliyunSignName, aliyunTemplateCode: data.aliyunTemplateCode, smsEventTemplates: templates, tencentSdkAppId: data.tencentSdkAppId, tencentSignName: data.tencentSignName, tencentTemplateId: data.tencentTemplateId, officialEnabled: data.officialEnabled, officialModules: data.officialModules as ModuleCode[] }));
   }, [configuration.data]);
   const save = trpc.admin.settings.saveNotificationChannelConfiguration.useMutation({ onSuccess: result => { toast.success(result.message); configuration.refetch(); }, onError: error => toast.error(error.message) });
+  const smsTestReadiness = trpc.admin.settings.inspectAliyunSmsNotificationReadiness.useQuery({ eventCode: smsTestEventCode }, { enabled: form.smsProvider === "aliyun" && form.smsEnabled });
+  const sendSmsTest = trpc.admin.settings.sendAliyunSmsNotificationTest.useMutation({
+    onSuccess: result => {
+      if (result.success) toast.success(`${result.message}${result.auditLogId ? ` 审计编号：${result.auditLogId}` : ""}`);
+      else toast.error(`${result.message}${result.providerCode ? `（${result.providerCode}）` : ""}${result.auditLogId ? ` 审计编号：${result.auditLogId}` : ""}`);
+      smsTestReadiness.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
   const providerReady = form.smsProvider === "aliyun" ? configuration.data?.aliyunAccessKeyConfigured : form.smsProvider === "tencent" ? configuration.data?.tencentSecretConfigured : false;
   const usedEvents = new Set(form.smsEventTemplates.map(item => item.eventCode));
+  const enabledSmsTemplates = form.smsEventTemplates.filter(template => template.enabled && template.templateCode.trim());
   const addTemplate = () => {
     const nextEvent = SMS_EVENTS.find(([eventCode]) => !usedEvents.has(eventCode));
     if (!nextEvent) return;
@@ -77,10 +91,12 @@ export default function NotificationChannelSettings() {
         <div className="mt-4 rounded-lg border border-[#d7e8e3] bg-[#fbfefc] p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-sm font-medium text-slate-800">业务事件模板编码</p><p className="mt-1 text-xs leading-5 text-slate-600">可先新增事件卡片，阿里云审核通过后再填对应模板 CODE。每个事件只能配置一个 CODE；留空或关闭时绝不发送。</p></div><Button type="button" size="sm" variant="outline" disabled={form.smsEventTemplates.length >= SMS_EVENTS.length} onClick={addTemplate}><Plus className="mr-1 h-3.5 w-3.5" />新增模板</Button></div>
           <div className="mt-3 space-y-3">{form.smsEventTemplates.length === 0 ? <p className="rounded-md border border-dashed px-3 py-3 text-xs text-slate-500">尚未添加业务模板。可先新增“运输 · 装土刷卡成功”，审核通过后再补填模板编码。</p> : form.smsEventTemplates.map((template, index) => <div key={template.eventCode} className="rounded-lg border bg-white p-3"><div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_auto_auto]"><Select value={template.eventCode} onValueChange={value => patchTemplate(index, { eventCode: value as SmsEventCode })}><SelectTrigger aria-label={`短信业务事件-${index}`}><SelectValue>{eventLabel(template.eventCode)}</SelectValue></SelectTrigger><SelectContent>{SMS_EVENTS.map(([code, label]) => <SelectItem key={code} value={code} disabled={code !== template.eventCode && usedEvents.has(code)}>{label}</SelectItem>)}</SelectContent></Select><Input aria-label={`${eventLabel(template.eventCode)}模板编码`} placeholder="审核通过后填写，例如 SMS_…" value={template.templateCode} onChange={event => patchTemplate(index, { templateCode: event.target.value, enabled: event.target.value.trim() ? template.enabled : false })} /><Label className="flex items-center gap-2 whitespace-nowrap px-1 text-xs font-normal"><Checkbox checked={template.enabled} disabled={!template.templateCode.trim() || !form.smsEnabled} onCheckedChange={checked => patchTemplate(index, { enabled: checked === true })} />启用</Label><Button type="button" size="icon" variant="ghost" className="text-slate-500 hover:text-red-600" onClick={() => removeTemplate(index)} aria-label={`删除${eventLabel(template.eventCode)}模板`}><Trash2 className="h-4 w-4" /></Button></div><p className="mt-2 text-xs text-slate-500">{template.enabled ? "已启用：对应业务成功后将按该事件投递短信。" : template.templateCode.trim() ? "编码已保存但未启用：暂不发送。" : "待审核：可先保存，审核通过后补填 CODE 并启用。"} {SMS_EVENT_VARIABLE_HINTS[template.eventCode]}</p></div>)}</div>
         </div>
+        <div className="mt-4 rounded-lg border border-[#bfd8d2] bg-[#f4faf8] p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="flex items-center gap-2 text-sm font-medium text-slate-800"><Send className="h-4 w-4 text-[#1f6b60]" />阿里云短信测试</p><p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">选择一个已启用模板，填写本人或已获授权的测试手机号。测试使用固定示例变量发送一次，结果仅返回服务商状态和审计编号，不回显手机号、密钥或模板编码。</p></div><Badge variant="outline" className="border-[#b8d4ce] bg-white text-[#1f6b60]">每 60 秒限发一次</Badge></div><div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"><Select value={smsTestEventCode} onValueChange={value => setSmsTestEventCode(value as SmsEventCode)} disabled={form.smsProvider !== "aliyun" || !form.smsEnabled || enabledSmsTemplates.length === 0}><SelectTrigger aria-label="选择短信测试事件"><SelectValue /></SelectTrigger><SelectContent>{SMS_EVENTS.map(([code, label]) => <SelectItem key={code} value={code} disabled={!enabledSmsTemplates.some(template => template.eventCode === code)}>{label}</SelectItem>)}</SelectContent></Select><Input aria-label="短信测试手机号" inputMode="numeric" placeholder="填写测试手机号，仅用于本次发送" maxLength={11} value={smsTestPhone} onChange={event => setSmsTestPhone(event.target.value.replace(/\D/g, "").slice(0, 11))} disabled={form.smsProvider !== "aliyun" || !form.smsEnabled || enabledSmsTemplates.length === 0} /><Button type="button" variant="outline" disabled={form.smsProvider !== "aliyun" || !form.smsEnabled || !smsTestReadiness.data?.ready || !/^1[3-9]\d{9}$/.test(smsTestPhone) || sendSmsTest.isPending} onClick={() => setSmsTestConfirmationOpen(true)}><Send className="mr-1.5 h-3.5 w-3.5" />{sendSmsTest.isPending ? "正在提交…" : "发送测试短信"}</Button></div><div className={`mt-2 flex items-start gap-2 rounded-md px-2.5 py-2 text-xs leading-5 ${smsTestReadiness.data?.ready ? "bg-[#e9f6f1] text-[#1d6559]" : "bg-[#fff5e6] text-[#895719]"}`}>{smsTestReadiness.data?.ready ? <CircleCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />}<span>{smsTestReadiness.isLoading ? "正在核对当前事件的短信配置…" : smsTestReadiness.data?.message ?? (form.smsProvider !== "aliyun" ? "仅阿里云短信支持当前测试入口。" : !form.smsEnabled ? "请先启用短信总开关并保存发布。" : enabledSmsTemplates.length === 0 ? "请先为至少一个业务事件填写已审核的模板 CODE、启用并保存发布。" : "当前事件尚未完成可发送配置。")}</span></div></div>
         <p className="mt-3 text-xs font-medium text-slate-700">短信通知模块</p><div className="mt-2"><ModuleChecks selected={form.smsModules} onChange={smsModules => setForm(current => ({ ...current, smsModules }))} disabled={!form.smsEnabled} /></div>
       </section>
       <section className="rounded-xl border border-[#eadfc6] bg-[#fffdf8] p-3"><div className="flex items-center justify-between gap-3"><div><p className="flex items-center gap-2 font-medium text-slate-800"><BellRing className="h-4 w-4 text-[#a86b20]" />服务号即时通知</p><p className="mt-1 text-xs leading-5 text-slate-600">仅用户即时操作后即时返回结果时可用；持续状态、日结、绑定后推送与范围提醒会自动降级至站内通知或短信。</p></div><Checkbox checked={form.officialEnabled} onCheckedChange={checked => setForm(current => ({ ...current, officialEnabled: checked === true }))} aria-label="启用服务号即时通知" /></div><p className="mt-3 text-xs font-medium text-slate-700">允许服务号即时通知的模块</p><div className="mt-2"><ModuleChecks selected={form.officialModules} onChange={officialModules => setForm(current => ({ ...current, officialModules }))} disabled={!form.officialEnabled} /></div><p className="mt-3 flex items-start gap-2 rounded-lg bg-[#fff4df] px-3 py-2 text-xs leading-5 text-[#865514]"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />模块勾选不是持续群发许可。服务端会继续按事件和收件人关系校验微信运营规范。</p></section>
       <Button className="w-full bg-[#1f6b60] hover:bg-[#18564e]" disabled={save.isPending || configuration.isLoading} onClick={() => save.mutate(form)}>{save.isPending ? "正在发布通知通道配置…" : "保存并发布通知通道配置"}</Button>
     </CardContent>
+    <AlertDialog open={smsTestConfirmationOpen} onOpenChange={setSmsTestConfirmationOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认发送测试短信</AlertDialogTitle><AlertDialogDescription>系统将向本次填写的测试手机号发送一条“{eventLabel(smsTestEventCode)}”测试短信。短信会消耗服务商条数，且测试变量为固定示例值；请确认该号码的使用已获得授权。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={sendSmsTest.isPending}>取消</AlertDialogCancel><AlertDialogAction disabled={sendSmsTest.isPending} onClick={() => { setSmsTestConfirmationOpen(false); sendSmsTest.mutate({ eventCode: smsTestEventCode, recipientPhone: smsTestPhone }); }}>确认发送</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </Card>;
 }

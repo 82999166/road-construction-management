@@ -61,7 +61,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { ensureFoundationData } from "../services/foundationData";
 import { revokeOfficialAccountDriverVehicleBinding, sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import { getOfficialAccountNotificationTemplateCoverage, getOfficialAccountTemplateSemanticMismatch, getPersistentBusinessTemplateEligibilityMessage, inspectPublishedOfficialAccountTemplateCapability, isPersistentBusinessTemplateEligible, listPublishedOfficialAccountPrivateTemplates, loadPublishedOfficialAccountEventConfig, OFFICIAL_ACCOUNT_NOTIFICATION_TEMPLATE_MATRIX, testPublishedOfficialAccountConfiguration } from "../services/officialAccountNotifier";
-import { formatChinaSmsTime, notifyAliyunSmsSafely } from "../services/smsNotifier";
+import { formatChinaSmsTime, inspectAliyunSmsReadiness, notifyAliyunSmsSafely, sendAliyunSmsTest } from "../services/smsNotifier";
 import { EXTERNAL_AI_SETTING_KEYS, getExternalAiConfigurationStatus, getPublishedExternalAiConfiguration, normalizeExternalAiBaseUrl, normalizeExternalAiModel, testExternalAiConnection } from "../services/externalAiApi";
 import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normalizeAliyunOssEndpoint, normalizeAliyunOssObjectPrefix, normalizeAliyunOssRegion, testAliyunOssPhotoStorageConnection } from "../services/aliyunOssPhotoStorage";
 import { chinaBusinessDate, chinaBusinessMonth } from "../services/chinaBusinessTime";
@@ -295,6 +295,10 @@ const smsEventTemplateInput = z.object({
   eventCode: smsEventCode,
   templateCode: z.string().trim().max(128),
   enabled: z.boolean(),
+});
+const smsNotificationTestInput = z.object({
+  eventCode: smsEventCode,
+  recipientPhone: z.string().trim().regex(/^1[3-9]\d{9}$/, "请输入合法的中国大陆测试手机号"),
 });
 
 /** 短信凭据和模块路由由超级管理员统一维护；密钥留空表示保留已有加密值。 */
@@ -2022,6 +2026,40 @@ export const adminRouter = router({
         await tx.insert(auditLogs).values({ userId: admin.id, module: "settings", action: "save_notification_channel_configuration", targetType: "notification_channel", targetId: "sms_and_official", summary: `发布通知通道配置：短信 ${input.smsEnabled ? input.smsProvider : "关闭"}，服务号即时通知 ${input.officialEnabled ? "开启" : "关闭"}` });
       });
       return { success: true, message: "通知通道配置已发布。短信需在服务商签名、模板和密钥审核齐备后才可发送；服务号仅可用于用户即时操作后的合规结果通知。" };
+    }),
+    inspectAliyunSmsNotificationReadiness: protectedProcedure.input(z.object({ eventCode: smsEventCode })).query(async ({ ctx, input }) => {
+      await assertSuperAdmin(ctx);
+      const result = await inspectAliyunSmsReadiness(input.eventCode);
+      const messageByReason: Record<typeof result.reason, string> = {
+        ready: "阿里云短信配置完整，当前事件模板可进行测试发送。",
+        database_unavailable: "数据库暂不可用，无法读取短信配置。",
+        disabled: "短信总开关未启用。",
+        provider_not_aliyun: "当前短信服务商不是阿里云短信。",
+        module_disabled: "当前事件所属业务模块尚未启用短信通知。",
+        template_unavailable: "当前事件尚未启用已审核的短信模板编码。",
+        credentials_incomplete: "阿里云 AccessKey ID、AccessKey Secret 或短信签名尚未完整发布。",
+        configuration_invalid: "短信配置格式无效，请重新保存通知通道配置。",
+      };
+      return { ready: result.ready, reason: result.reason, message: messageByReason[result.reason] };
+    }),
+    sendAliyunSmsNotificationTest: protectedProcedure.input(smsNotificationTestInput).mutation(async ({ ctx, input }) => {
+      const admin = await assertSuperAdmin(ctx);
+      const result = await sendAliyunSmsTest({ actorUserId: admin.id, eventCode: input.eventCode, recipientPhone: input.recipientPhone });
+      const messageByReason: Record<typeof result.reason, string> = {
+        accepted: "阿里云已受理测试短信，请留意测试手机是否收到。",
+        recipient_phone_invalid: "测试手机号格式无效，未发送短信。",
+        test_rate_limited: "为避免重复计费，同一管理员每 60 秒只能发送一次测试短信。",
+        database_unavailable: "数据库暂不可用，未发送短信。",
+        disabled: "短信总开关未启用，未发送短信。",
+        provider_not_aliyun: "当前短信服务商不是阿里云短信，未发送短信。",
+        module_disabled: "当前事件所属业务模块未启用短信通知，未发送短信。",
+        template_unavailable: "当前事件未配置并启用审核通过的模板编码，未发送短信。",
+        credentials_incomplete: "阿里云 AccessKey 或短信签名不完整，未发送短信。",
+        configuration_invalid: "短信配置格式无效，未发送短信。",
+        provider_rejected: "阿里云未受理本次测试短信，请根据服务商状态码检查模板、签名和权限。",
+        delivery_failed: "测试短信请求失败，请检查阿里云密钥权限、网络和服务商状态。",
+      };
+      return { success: result.accepted, reason: result.reason, message: messageByReason[result.reason], providerCode: result.providerCode, auditLogId: result.auditLogId };
     }),
     testOfficialAccountMessagePushConfiguration: protectedProcedure.mutation(async ({ ctx }) => {
       const admin = await assertSuperAdmin(ctx);

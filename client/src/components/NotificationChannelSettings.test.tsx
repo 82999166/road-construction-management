@@ -11,6 +11,12 @@ describe("短信与服务号通知通道设置", () => {
     expect(source).toContain("业务事件模板编码");
     expect(source).toContain("新增模板");
     expect(source).toContain("审核通过后再填对应模板 CODE");
+    expect(source).toContain("阿里云短信测试");
+    expect(source).toContain("发送测试短信");
+    expect(source).toContain("确认发送测试短信");
+    expect(source).toContain("每 60 秒限发一次");
+    expect(source).toContain("inspectAliyunSmsNotificationReadiness");
+    expect(source).toContain("sendAliyunSmsNotificationTest");
     expect(source).toContain("transport_load_completed");
     expect(source).toContain("diesel_refuel_completed");
     expect(source).toContain("服务号即时通知");
