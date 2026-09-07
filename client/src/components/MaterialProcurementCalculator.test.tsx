@@ -21,7 +21,18 @@ describe("材料采购多维度计算器界面", () => {
     expect(source).toContain("当期票据支付比例");
     expect(source).toContain("预计上游付款滞后");
     expect(source).toContain("逐月结算、回款与垫资明细");
-    expect(source).toContain("未结滚入下月");
+    expect(source).toContain("月末应收/预收");
+    expect(source).toContain("本月需垫");
     expect(source).toContain("累计现金流");
+  });
+
+  it("明确数量口径、运量跟随和实时勾稽，避免使用旧默认数据", () => {
+    const source = readFileSync(new URL("./MaterialProcurementCalculator.tsx", import.meta.url), "utf8");
+    expect(source).toContain("整个合同总量");
+    expect(source).toContain("每月供货量（连续重复）");
+    expect(source).toContain("运输数量跟随采购数量");
+    expect(source).toContain("所有结果由当前页面输入实时生成");
+    expect(source).toContain("回款与现金流已勾稽");
+    expect(source).toContain("扣资金成本后净利");
   });
 });
