@@ -3,7 +3,6 @@ import { lazy, Suspense } from "react";
 
 const SettlementTemplateCalculator = lazy(() => import("@/components/SettlementTemplateCalculator"));
 const ConstructionToolbox = lazy(() => import("@/components/ConstructionToolbox"));
-const RoadRailKnowledgeBase = lazy(() => import("@/components/RoadRailKnowledgeBase"));
 
 /**
  * 独立承载仅在“工具知识”菜单访问时使用的测算和知识内容，
@@ -22,12 +21,11 @@ export default function AdminMeasurementToolsPanel() {
           <div><p className="font-medium text-[#203c48]">一、土石方结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按桩号录入天然方土石方，结合土石系数计算运输、填方和分包双价。</p></div>
           <div><p className="font-medium text-[#203c48]">二、附属工程结算</p><p className="mt-1 text-xs leading-5 text-slate-500">按里程、涵洞、边沟、挡墙等构件录入图纸参数并自动计算方量。</p></div>
           <div><p className="font-medium text-[#203c48]">三、施工辅助测算</p><p className="mt-1 text-xs leading-5 text-slate-500">混凝土材料、机械台班和运输运价按输入参数即时测算，结果须由现场和商务人员复核。</p></div>
-          <div><p className="font-medium text-[#203c48]">四、公铁知识库</p><p className="mt-1 text-xs leading-5 text-slate-500">按通用、公路、铁路、计量造价和试验检测分类查询术语、应用及公式。</p></div>
+          <div><p className="font-medium text-[#203c48]">四、工程知识库</p><p className="mt-1 text-xs leading-5 text-slate-500">按八个专业 Tab 查询355项术语、公式、示例、标准和风险边界。</p></div>
         </CardContent>
       </Card>
       <ConstructionToolbox />
       <SettlementTemplateCalculator />
-      <RoadRailKnowledgeBase />
     </div>
   </Suspense>;
 }

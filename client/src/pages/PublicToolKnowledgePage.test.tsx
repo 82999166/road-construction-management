@@ -5,8 +5,10 @@ describe("公开工具知识页面", () => {
   it("提供无需登录的公开路由和同一套工程计算器", () => {
     const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
     const pageSource = readFileSync(new URL("./PublicToolKnowledgePage.tsx", import.meta.url), "utf8");
+    const toolboxSource = readFileSync(new URL("../components/ConstructionToolbox.tsx", import.meta.url), "utf8");
     expect(appSource).toContain('path={"/public-tools"}');
     expect(pageSource).toContain("ConstructionToolbox");
+    expect(toolboxSource).toContain("EngineeringKnowledgeLibrary");
     expect(pageSource).toContain("无需登录");
     expect(pageSource).not.toContain("useAuth");
     expect(pageSource).not.toContain("trpc.");
