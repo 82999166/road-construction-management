@@ -8,6 +8,7 @@ import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
+import { PaymentAccountBillPrintDialog } from "@/components/PaymentAccountBillPrintDialog";
 import { FinancialLedgerPrintPreviewDialogs } from "@/components/FinancialLedgerPrintPreviewDialogs";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
@@ -645,6 +646,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [financePeriod, setFinancePeriod] = useState(() => toChinaMonthInput());
   const [financeLedgerFilter, setFinanceLedgerFilter] = useState({ direction: "all", category: "all", settlementStatus: "all", sourceType: "all", keyword: "" });
   const [financePrintPreview, setFinancePrintPreview] = useState<"ledger" | "invoices" | "categories" | "subcategories" | null>(null);
+  const [paymentBillPrintOpen, setPaymentBillPrintOpen] = useState(false);
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
   const [riskAlertStatus, setRiskAlertStatus] = useState<"all" | "open" | "acknowledged" | "in_rectification" | "resolved" | "ignored">("all");
   const [riskRuleForm, setRiskRuleForm] = useState<RiskRuleForm>(EMPTY_RISK_RULE_FORM);
@@ -3561,12 +3563,13 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       event.stopPropagation();
       printDailyAccountingSnapshot();
     }}>
+      {!isDiesel ? <PaymentAccountBillPrintDialog open={paymentBillPrintOpen} onOpenChange={setPaymentBillPrintOpen} projectName={selectedWorkspaceProject?.name ?? "当前项目"} /> : null}
       <Card className="border-[#d8e3e0] shadow-sm">
         <CardHeader><CardTitle className="text-base">{isDiesel ? "柴油管理与加油台账" : "审计级财务管理"}</CardTitle><CardDescription>{isDiesel ? "管理员按每次加油的日期、升数和当天单价登记；系统在服务端固化金额快照并自动归集到机械、车辆、运输扣款和项目成本。" : "按项目和会计期间读取真实费用、成本、应收应付及发票状态。发票台账不重复计入成本；每日日结生成不可变快照，供会计审核与凭证装订打印。"}</CardDescription></CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
           <Select value={financeProjectId} onValueChange={setFinanceProjectId}><SelectTrigger><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent>{projects.data?.filter(project => project.status !== "archived").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select>
           <Input type="month" value={financePeriod} onChange={event => setFinancePeriod(event.target.value)} aria-label="会计期间" />
-          <Button variant="outline" onClick={() => { void financeSummary.refetch(); void financeInvoices.refetch(); }}>刷新统计</Button>
+          <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => { void financeSummary.refetch(); void financeInvoices.refetch(); }}>刷新统计</Button>{!isDiesel ? <Button variant="outline" onClick={() => setPaymentBillPrintOpen(true)}>支付账号账单打印</Button> : null}</div>
         </CardContent>
       </Card>
       {!financeProjectId ? <EmptyState text={isDiesel ? "请选择项目后读取真实柴油指导价、每次加油金额和资源成本归集台账。" : "请选择项目后读取真实费用、成本和发票审计台账。"} /> : <>
