@@ -34,7 +34,7 @@ export function PaymentAccountBillPrintDialog({
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [records, setRecords] = useState<BillImage[]>([]);
-  const [itemsPerRow, setItemsPerRow] = useState(2);
+  const [itemsPerRow, setItemsPerRow] = useState(3);
   const [maxHeight, setMaxHeight] = useState(100);
   const [accountType, setAccountType] = useState("微信支付");
   const [accountLabel, setAccountLabel] = useState("");

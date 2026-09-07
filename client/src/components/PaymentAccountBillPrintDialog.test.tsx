@@ -16,6 +16,12 @@ describe("支付账号账单批量打印", () => {
     ]);
   });
 
+  it("默认每排账单数为3张，但保留手动调整能力", () => {
+    const source = readFileSync(new URL("./PaymentAccountBillPrintDialog.tsx", import.meta.url), "utf8");
+    expect(source).toContain("useState(3)");
+    expect(source).toContain("每排账单数");
+  });
+
   it("沿用参考文件的图片导入、A4纵向批量排版和本地隐私边界", () => {
     const source = readFileSync(new URL("./PaymentAccountBillPrintDialog.tsx", import.meta.url), "utf8");
     expect(source).toContain("FIXED_ROWS = 3");
