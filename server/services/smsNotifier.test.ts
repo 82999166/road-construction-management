@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
+import { createAliyunSmsClient, extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
 
 describe("业务事件短信模板配置", () => {
   it("仅保留受支持事件、去除重复项，并允许先保存未填写编码的待审核条目", () => {
@@ -38,5 +38,10 @@ describe("业务事件短信模板配置", () => {
     expect(extractSafeAliyunSmsErrorCode({ data: { code: "InvalidAccessKeyId.NotFound" } })).toBe("InvalidAccessKeyId.NotFound");
     expect(extractSafeAliyunSmsErrorCode({ code: "包含手机号 13800138000" })).toBe("SDK_REQUEST_FAILED");
     expect(extractSafeAliyunSmsErrorCode(new Error("request contains secret"))).toBe("Error");
+  });
+
+  it("在生产 CommonJS 兼容路径中能构造短信客户端，不会因默认导出对象触发 TypeError", () => {
+    const client = createAliyunSmsClient("local-test-access-key", "local-test-access-secret");
+    expect(typeof client.sendSms).toBe("function");
   });
 });

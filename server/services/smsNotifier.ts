@@ -1,4 +1,4 @@
-import DysmsapiClient, { SendSmsRequest } from "@alicloud/dysmsapi20170525";
+import * as DysmsapiSdk from "@alicloud/dysmsapi20170525";
 import * as OpenApi from "@alicloud/openapi-client";
 import { inArray } from "drizzle-orm";
 import { auditLogs, systemSettings } from "../../drizzle/schema";
@@ -84,6 +84,32 @@ type AliyunSmsDispatchResolution =
   | { ready: true; configuration: AliyunSmsDispatchConfiguration }
   | { ready: false; reason: Exclude<SmsReadinessReason, "ready">; db: NonNullable<Awaited<ReturnType<typeof getDb>>> | null };
 
+/**
+ * 阿里云 SDK 的包入口为 CommonJS：默认导入在生产打包后会变成模块对象，
+ * 必须从命名空间的 default 导出取得 Client 构造器，避免 `is not a constructor`。
+ */
+export function createAliyunSmsClient(accessKeyId: string, accessKeySecret: string) {
+  const clientConfig = new OpenApi.Config({ accessKeyId, accessKeySecret });
+  clientConfig.endpoint = "dysmsapi.aliyuncs.com";
+  const directDefault = DysmsapiSdk.default as unknown;
+  const clientConstructor: typeof DysmsapiSdk.default | null = typeof directDefault === "function"
+    ? directDefault as typeof DysmsapiSdk.default
+    : directDefault && typeof (directDefault as { default?: unknown }).default === "function"
+      ? (directDefault as { default: typeof DysmsapiSdk.default }).default
+      : null;
+  if (!clientConstructor) throw Object.assign(new Error("Aliyun SMS SDK client constructor is unavailable"), { code: "SMS_SDK_CLIENT_CONSTRUCTOR_UNAVAILABLE" });
+  return new clientConstructor(clientConfig);
+}
+
+function createAliyunSmsRequest(input: { phone: string; signName: string; templateCode: string; templateParams: Record<string, string | number> }) {
+  return new DysmsapiSdk.SendSmsRequest({
+    phoneNumbers: input.phone,
+    signName: input.signName,
+    templateCode: input.templateCode,
+    templateParam: JSON.stringify(input.templateParams),
+  });
+}
+
 /** 仅保留 SDK/服务商的短错误码，绝不记录异常消息、请求对象、手机号、密钥、签名或模板内容。 */
 export function extractSafeAliyunSmsErrorCode(error: unknown) {
   if (!error || typeof error !== "object") return "SDK_REQUEST_FAILED";
@@ -124,7 +150,7 @@ export async function inspectAliyunSmsReadiness(eventCode: SmsEventCode) {
   return { ready: resolution.ready, reason: resolution.ready ? "ready" as const : resolution.reason };
 }
 
-function buildTestTemplateParams(eventCode: SmsEventCode) {
+function buildTestTemplateParams(eventCode: SmsEventCode): Record<string, string> {
   const time = formatChinaSmsTime(new Date());
   if (eventCode === "diesel_refuel_completed") return { vehicle: "湘A12345", quantity: "100", amount: "100.00", time };
   if (eventCode === "transport_scan_exception") return { vehicle: "湘A12345", time };
@@ -153,10 +179,8 @@ export async function sendAliyunSmsTest(input: { actorUserId: number; eventCode:
   }
   smsTestRateLimitByUser.set(input.actorUserId, now);
   try {
-    const clientConfig = new OpenApi.Config({ accessKeyId: resolution.configuration.accessKeyId, accessKeySecret: resolution.configuration.accessKeySecret });
-    clientConfig.endpoint = "dysmsapi.aliyuncs.com";
-    const client = new DysmsapiClient(clientConfig);
-    const request = new SendSmsRequest({ phoneNumbers: phone, signName: resolution.configuration.signName, templateCode: resolution.configuration.templateCode, templateParam: JSON.stringify(buildTestTemplateParams(input.eventCode)) });
+    const client = createAliyunSmsClient(resolution.configuration.accessKeyId, resolution.configuration.accessKeySecret);
+    const request = createAliyunSmsRequest({ phone, signName: resolution.configuration.signName, templateCode: resolution.configuration.templateCode, templateParams: buildTestTemplateParams(input.eventCode) });
     const response = await client.sendSms(request);
     const providerCode = response.body?.code ?? "UNKNOWN";
     const accepted = providerCode === "OK";
@@ -188,10 +212,8 @@ export async function notifyAliyunSmsSafely(input: {
   const resolution = await resolveAliyunSmsDispatch(input.eventCode, input.module);
   if (!resolution.ready) return { sent: false, reason: resolution.reason };
   try {
-    const clientConfig = new OpenApi.Config({ accessKeyId: resolution.configuration.accessKeyId, accessKeySecret: resolution.configuration.accessKeySecret });
-    clientConfig.endpoint = "dysmsapi.aliyuncs.com";
-    const client = new DysmsapiClient(clientConfig);
-    const request = new SendSmsRequest({ phoneNumbers: phone, signName: resolution.configuration.signName, templateCode: resolution.configuration.templateCode, templateParam: JSON.stringify(input.templateParams) });
+    const client = createAliyunSmsClient(resolution.configuration.accessKeyId, resolution.configuration.accessKeySecret);
+    const request = createAliyunSmsRequest({ phone, signName: resolution.configuration.signName, templateCode: resolution.configuration.templateCode, templateParams: input.templateParams });
     const response = await client.sendSms(request);
     const accepted = response.body?.code === "OK";
     await resolution.configuration.db.insert(auditLogs).values({
