@@ -15,6 +15,12 @@ type NdefReaderLike = {
 };
 type NdefReaderWindow = Window & typeof globalThis & { NDEFReader?: new () => NdefReaderLike };
 
+function formatVehicleStageReceipt(plateNo: string | null | undefined, dailyVehicleTripOrdinal: number | null | undefined, eventType: "load" | "unload") {
+  const ordinal = dailyVehicleTripOrdinal ?? 0;
+  if (!plateNo || !Number.isInteger(ordinal) || ordinal < 1) return null;
+  return `车牌 ${plateNo}，今日第 ${ordinal} 车${eventType === "load" ? "装土" : "卸土"}成功`;
+}
+
 function getNfcToken(record: NdefRecord) {
   const raw = typeof record.data === "string"
     ? record.data
@@ -36,7 +42,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const [token, setToken] = useState(initialToken?.trim() || "");
   const [routePresetId, setRoutePresetId] = useState("");
   const [scanStatus, setScanStatus] = useState(initialToken ? "已从车辆卡安全链接读取车辆信息。" : "正在等待车辆卡靠近手机…");
-  const [successResult, setSuccessResult] = useState<{ stage: "in_transit" | "completed"; tripNo: string; singleScanClosed: boolean } | null>(null);
+  const [successResult, setSuccessResult] = useState<{ stage: "in_transit" | "completed"; tripNo: string; singleScanClosed: boolean; vehiclePlateNo: string | null; dailyVehicleTripOrdinal: number | null } | null>(null);
   const [operationError, setOperationError] = useState("");
   const [readerState, setReaderState] = useState<"checking" | "ready" | "unsupported" | "blocked" | "waiting">("checking");
   const [scanAttempt, setScanAttempt] = useState(0);
@@ -93,12 +99,16 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const issue = trpc.transport.confirmMobileNfcInvoice.useMutation({
     onSuccess: async result => {
       const singleScanClosed = Boolean(result.singleScanClosed);
+      const eventType = result.stage === "in_transit" || singleScanClosed ? "load" : "unload";
+      const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null;
+      const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null;
+      const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, eventType) ?? (eventType === "load" ? "装土成功" : "卸土成功");
       const successMessage = result.stage === "in_transit"
-        ? "发票成功，车辆已发车，请前往卸土点。"
+        ? `${receiptText}，车辆已发车，请前往卸土点。`
         : singleScanClosed
-          ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。"
-          : "卸土成功，本趟运输已完成。";
-      setSuccessResult({ stage: result.stage, tripNo: result.tripNo, singleScanClosed });
+          ? `${receiptText}，本趟已按单次刷卡完成闭环，等待核验。`
+          : `${receiptText}，本趟运输已完成。`;
+      setSuccessResult({ stage: result.stage, tripNo: result.tripNo, singleScanClosed, vehiclePlateNo, dailyVehicleTripOrdinal });
       toast.success(successMessage);
       announce(successMessage);
       await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
@@ -236,11 +246,13 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     void autoConfirmUnload();
   }, [open, token, unloadOnlyAutoClose, issue.isPending, successResult]);
 
+  const successEventType = successResult?.stage === "in_transit" || successResult?.singleScanClosed ? "load" : "unload";
+  const successReceiptText = successResult ? formatVehicleStageReceipt(successResult.vehiclePlateNo, successResult.dailyVehicleTripOrdinal, successEventType) : null;
   const successMessage = successResult?.stage === "in_transit"
-    ? "发票成功，车辆已发车，请前往卸土点。"
+    ? `${successReceiptText ?? "装土成功"}，车辆已发车，请前往卸土点。`
     : successResult?.singleScanClosed
-      ? "发票成功，本趟已按单次刷卡完成闭环，等待核验。"
-      : "卸土成功，本趟运输已完成闭环。";
+      ? `${successReceiptText ?? "装土成功"}，本趟已按单次刷卡完成闭环，等待核验。`
+      : `${successReceiptText ?? "卸土成功"}，本趟运输已完成闭环。`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -255,7 +267,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
 
           {successResult ? (
             <div aria-live="assertive" className="rounded-2xl border-2 border-[#4f875a] bg-[#eef9ee] px-4 py-5 text-center text-[#1f5f30]">
-              <p className="text-3xl font-black tracking-wide">{successResult.stage === "in_transit" ? "发票成功" : successResult.singleScanClosed ? "单次刷卡闭环完成" : "卸土成功"}</p>
+              <p className="text-2xl font-black tracking-wide">{successReceiptText ?? (successResult.stage === "in_transit" ? "装土成功" : successResult.singleScanClosed ? "单次刷卡闭环完成" : "卸土成功")}</p>
               <p className="mt-3 text-lg font-bold">{successResult.stage === "in_transit" ? "车辆已发车，请前往卸土点" : successResult.singleScanClosed ? "本趟运输已进入待核验状态" : "本趟运输已完成闭环"}</p>
               <p className="mt-2 text-sm font-semibold">运单号：{successResult.tripNo}</p>
               <Button variant="outline" className="mt-4 border-[#4f875a] bg-white text-[#1f5f30]" onClick={() => announce(successMessage)}>播放成功语音</Button>

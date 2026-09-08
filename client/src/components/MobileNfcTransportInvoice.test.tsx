@@ -26,7 +26,9 @@ describe("手机刷 NFC 卡发票", () => {
     expect(previewStart).toBeGreaterThan(testSpeechStart);
     expect(testSpeechBlock).not.toContain("issue.mutate");
     expect(testSpeechBlock).not.toContain("confirmMobileNfcInvoice");
-    expect(source).toContain("text-3xl font-black");
+    expect(source).toContain("text-2xl font-black");
+    expect(source).toContain("今日第 ${ordinal} 车");
+    expect(source).toContain("dailyVehicleTripOrdinal");
     expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
     expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");
     expect(source).not.toContain("if (!open || initialToken) return");

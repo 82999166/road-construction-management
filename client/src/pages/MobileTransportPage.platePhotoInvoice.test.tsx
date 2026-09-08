@@ -14,7 +14,8 @@ describe("移动端拍照车牌发票", () => {
 
   it("禁止相册选择并在直拍开票后显示成功反馈", () => {
     expect(source).toContain("不提供相册选择");
-    expect(source).toContain("发票成功！");
+    expect(source).toContain('formatVehicleStageReceipt(data.vehiclePlateNo, data.dailyVehicleTripOrdinal, "load")');
+    expect(source).toContain("发票成功");
     expect(source).toContain(': "发票"}</Button>');
   });
 

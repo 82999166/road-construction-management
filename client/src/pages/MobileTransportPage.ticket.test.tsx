@@ -10,8 +10,9 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("新建装土票据");
     expect(source).toContain("开始装土刷卡");
     expect(source).toContain("开始卸土刷卡");
-    expect(source).toContain("装土刷卡已确认，请向司机展示现场回执");
-    expect(source).toContain("卸土刷卡已确认，请向司机展示现场回执");
+    expect(source).toContain("formatVehicleStageReceipt");
+    expect(source).toContain("车${eventType === \"load\" ? \"装土\" : \"卸土\"}成功");
+    expect(source).toContain("请向司机展示现场回执");
     expect(source).toContain("服务号不会对运输持续状态自动外发");
     expect(source).toContain("recordLoadEvent.mutate");
     expect(source).toContain("recordUnloadEvent.mutate");

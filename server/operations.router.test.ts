@@ -423,12 +423,15 @@ describe("机械与运输 tRPC 路由", () => {
         [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1 }],
         [{ id: 301, projectId: 10, sourceType: "transport" }],
         [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+        [],
+        [{ id: 82, projectId: 10, vehicleId: 11, tripNo: "TR-PLATE-001" }],
+        [{ id: 81, projectId: 10, status: "submitted", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: null }],
       ),
       insert: vi.fn(() => ({ values: vi.fn(async (value: unknown) => { inserted.push(value); }) })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-PLATE-001", vehicleId: 11, projectId: 10, freightRuleId: 12, invoiceMode: "plate_photo", loadSiteId: 71, unloadSiteId: 72, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: 301, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null })).resolves.toMatchObject({ success: true, tripNo: "TR-PLATE-001" });
+    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-PLATE-001", vehicleId: 11, projectId: 10, freightRuleId: 12, invoiceMode: "plate_photo", loadSiteId: 71, unloadSiteId: 72, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: 301, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null })).resolves.toMatchObject({ success: true, tripNo: "TR-PLATE-001", vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2 });
 
     expect(inserted).toEqual(expect.arrayContaining([expect.objectContaining({ tripNo: "TR-PLATE-001", invoiceMode: "plate_photo", evidenceId: 301, status: "submitted", routeSnapshot: expect.objectContaining({ invoiceMode: "plate_photo", platePhotoEvidenceId: 301 }) })]));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_plate_photo_ticket_submitted", targetId: "TR-PLATE-001" }));
@@ -515,9 +518,10 @@ describe("机械与运输 tRPC 路由", () => {
     const db = {
       ...createSelectDbSequence(
         [{ id: 50, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
-        [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
+        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", driverUserId: 7 }],
         [],
         [{ id: 100, tripId: 50, eventType: "load", validationStatus: "accepted", validationReason: null }],
+        [{ id: 49, status: "submitted", loadConfirmedAt: new Date("2026-07-25T07:00:00.000Z"), unloadConfirmedAt: null }],
       ),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
@@ -526,13 +530,39 @@ describe("机械与运输 tRPC 路由", () => {
 
     const result = await transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 50, projectId: 10, idempotencyKey: "reader-load-0001", occurredAt: "2026-07-25T08:00:00.000Z" });
 
-    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 100, driverNotificationQueued: true });
+    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 100, vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2, driverNotificationQueued: true });
     expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({ tripId: 50, vehicleId: 11, eventType: "load", validationStatus: "accepted" }));
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(insertValues).toHaveBeenNthCalledWith(2, expect.objectContaining({ module: "transport", action: "record_load_card_event", targetId: "100" }));
     expect(insertValues).toHaveBeenNthCalledWith(3, expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserId: 7, idempotencyKey: "inapp:transport-load:100:7", channel: "in_app", deepLink: "/mobile/transport" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_card_confirmed", targetId: "100" }));
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice" }));
+  });
+
+  it("卸土刷卡成功按同项目同车辆当日已完成卸土次数返回序号，不与装土次数混算", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
+    const insertValues = vi.fn(() => ({ onDuplicateKeyUpdate: vi.fn(async () => undefined) }));
+    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
+    const db = {
+      ...createSelectDbSequence(
+        [{ id: 51, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: null, unloadSiteId: 72, routeSnapshot: { routePresetId: 91 }, actualDistanceKm: "8", calculatedAmount: "80" }],
+        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", driverUserId: 7 }],
+        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1, latitude: null, longitude: null }],
+        [],
+        [{ id: 102, tripId: 51, eventType: "unload", validationStatus: "accepted", validationReason: null }],
+        [{ id: 91, projectId: 10, minimumTransitMinutes: 10, minimumTransitEnabled: true, unloadGeofenceEnabled: false, unloadGeofenceMeters: 300 }],
+        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1, latitude: null, longitude: null }],
+        [{ id: 49, status: "submitted", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: new Date("2026-07-25T00:05:00.000Z") }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    const result = await transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, siteId: 72, idempotencyKey: "reader-unload-count-0001", occurredAt: "2026-07-25T00:10:00.000Z" });
+
+    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 102, vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2 });
+    expect(updateWhere).toHaveBeenCalled();
   });
 
   it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {

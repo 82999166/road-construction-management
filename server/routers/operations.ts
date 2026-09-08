@@ -518,6 +518,38 @@ function formatChinaBusinessDate(value: Date) {
   return `${fields.year}-${fields.month}-${fields.day}`;
 }
 
+/**
+ * 现场人员看到的“第 N 车”按项目、车辆和中国业务日分别计算，且装土、卸土各自独立排序。
+ * 当前成功事件使用本次确认时间直接并入排序，避免读取到更新前快照而把第一车误报为第二车。
+ */
+async function getDailyVehicleStageOrdinal(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: {
+  projectId: number;
+  vehicleId: number;
+  tripId: number;
+  eventType: "load" | "unload";
+  occurredAt: Date;
+}) {
+  const sameVehicleTrips = await db.select({
+    id: transportTrips.id,
+    status: transportTrips.status,
+    loadConfirmedAt: transportTrips.loadConfirmedAt,
+    unloadConfirmedAt: transportTrips.unloadConfirmedAt,
+  }).from(transportTrips).where(and(
+    eq(transportTrips.projectId, input.projectId),
+    eq(transportTrips.vehicleId, input.vehicleId),
+    ne(transportTrips.status, "void"),
+  ));
+  const businessDate = formatChinaBusinessDate(input.occurredAt);
+  const stageTimestamp = input.eventType === "load" ? "loadConfirmedAt" : "unloadConfirmedAt";
+  const completedStages = sameVehicleTrips
+    .filter(row => row.id !== input.tripId && row.status !== "void" && row[stageTimestamp])
+    .map(row => ({ id: row.id, occurredAt: new Date(row[stageTimestamp] as Date) }))
+    .filter(row => formatChinaBusinessDate(row.occurredAt) === businessDate);
+  completedStages.push({ id: input.tripId, occurredAt: input.occurredAt });
+  completedStages.sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime() || left.id - right.id);
+  return completedStages.findIndex(row => row.id === input.tripId) + 1;
+}
+
 /** 机械油料费用与柴油领用共用同一项目指导价口径，避免前端手填单价绕开有效期控制。 */
 async function getEffectiveDieselGuidelinePrice(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, occurredAt: Date) {
   const businessDate = formatChinaBusinessDate(occurredAt);
@@ -896,6 +928,13 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id, loadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
     : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id, unloadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
   if (!didConditionalWriteApply(updateResult)) return markNeedsReview("趟次已被其他刷卡事件更新，请人工核验事件顺序");
+  const dailyVehicleTripOrdinal = await getDailyVehicleStageOrdinal(db, {
+    projectId: input.projectId,
+    vehicleId: trip.vehicleId,
+    tripId: trip.id,
+    eventType,
+    occurredAt,
+  });
 
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功${siteName ? `：${siteName}` : ""}` });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
@@ -931,7 +970,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     : Boolean(vehicle.driverUserId);
   void notifyAliyunSmsSafely({ actorUserId: user.id, projectId: input.projectId, module: "transport", eventCode: eventType === "load" ? "transport_load_completed" : "transport_unload_completed", recipientPhone: vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "transport_card_event", targetId: String(event.id), templateParams: { vehicle: vehicle.plateNo, place: siteName ?? "运输现场", time: formatChinaSmsTime(occurredAt) } });
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${nextActionText}`, deepLink: "/mobile/transport" }).catch(() => undefined);
-  return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, driverNotificationQueued };
+  return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal, driverNotificationQueued };
 }
 
 /**
@@ -2986,13 +3025,26 @@ export const transportRouter = router({
     if (input.evidenceId) {
       await db.update(evidenceRecords).set({ sourceId: `transport-trip-${tripNo}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
     }
+    let dailyVehicleTripOrdinal: number | null = null;
+    if (input.invoiceMode === "plate_photo") {
+      const [createdTrip] = await db.select({ id: transportTrips.id }).from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), eq(transportTrips.tripNo, tripNo))).limit(1);
+      if (createdTrip) {
+        dailyVehicleTripOrdinal = await getDailyVehicleStageOrdinal(db, {
+          projectId: input.projectId,
+          vehicleId: vehicle.id,
+          tripId: createdTrip.id,
+          eventType: "load",
+          occurredAt: tripStart,
+        });
+      }
+    }
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_trip", targetType: "transport_trip", targetId: tripNo, summary: `录入${input.invoiceMode === "plate_photo" ? "拍照车牌" : "NFC 刷卡"}运输票据，运费由合同规则快照计算${input.invoiceMode === "plate_photo" ? "并进入人工核验" : ""}` });
     if (input.invoiceMode === "plate_photo") {
       void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: "transport_plate_photo_ticket_submitted", targetType: "transport_trip", targetId: tripNo, title: "拍照车牌运输票据待核验", content: `车辆 ${vehicle.plateNo} 的车牌直拍运输票据已提交，待核验后进入结算流程。`, deepLink: "/mobile/transport" }).catch(() => undefined);
       notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: input.projectId, eventCode: "transport_plate_photo_ticket_submitted", targetType: "transport_trip", targetId: tripNo, title: "拍照车牌运输票据待核验", content: `车辆 ${vehicle.plateNo} 的车牌直拍运输票据已提交，待核验后进入结算流程。`, deepLink: "/mobile/transport" });
     }
     const anomalies = calculateTransportAnomalies({ evidenceId: input.evidenceId ?? null, startAt: tripStart, endAt: input.endAt ? new Date(input.endAt) : null, actualDistanceKm: String(actualDistanceKm), volumeCubicMeters: String(volume), routeSnapshot });
-    return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, anomalies };
+    return { success: true, tripNo, unitPrice: price.unitPrice, amount: price.totalAmount, theoreticalVolumeCubicMeters: theoreticalVolume, vehiclePlateNo: input.invoiceMode === "plate_photo" ? vehicle.plateNo : null, dailyVehicleTripOrdinal, anomalies };
   }),
 
   /** 装土读卡成功后确认趟次起始环节；重复上报按幂等键安全返回，乱序事件留痕进入人工复核。 */
@@ -3004,13 +3056,14 @@ export const transportRouter = router({
   /** 车牌直拍在装土时已开票并进入在途；卸土现场通过定位确认，不允许补写 NFC 事件。 */
   confirmPlatePhotoUnload: protectedProcedure.input(platePhotoUnloadConfirmationInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertTransportAccess(ctx);
+    const roleCodes = await assertTransportAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.tripId)).limit(1);
     if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "直拍运输票据不存在或不属于当前项目" });
     if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });
+    const { vehicle } = await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
     if (trip.status === "void" || trip.status === "settled") throw new TRPCError({ code: "BAD_REQUEST", message: "已关闭运单不能再确认卸土" });
     if (!trip.loadConfirmedAt) throw new TRPCError({ code: "BAD_REQUEST", message: "直拍装土开票尚未完成，不能确认卸土" });
     const [unloadEvidence] = await db.select().from(evidenceRecords).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
@@ -3040,12 +3093,19 @@ export const transportRouter = router({
     const routeSnapshot = { ...((trip.routeSnapshot as Record<string, unknown> | null) ?? {}), unloadPhotoEvidenceId: input.unloadEvidenceId, unloadPhotoConfirmedAt: occurredAt.toISOString(), unloadPhotoConfirmedBy: user.id };
     const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, activeVehicleTransitKey: null, routeSnapshot }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
     if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运单已被其他卸土确认更新，请刷新后查看" });
+    const dailyVehicleTripOrdinal = await getDailyVehicleStageOrdinal(db, {
+      projectId: input.projectId,
+      vehicleId: trip.vehicleId,
+      tripId: trip.id,
+      eventType: "unload",
+      occurredAt,
+    });
     await db.update(evidenceRecords).set({ sourceId: `transport-unload-${trip.tripNo}` }).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId)));
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}` });
     const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, unloadSite.administratorUserId].filter((value): value is number => typeof value === "number" && value > 0)));
-    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
-    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: "transport_plate_photo_unload_confirmed", targetType: "transport_card_event", targetId: String(event.id), title: "运输卸土成功", content: `车辆已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环。`, deepLink: "/mobile/transport" });
-    return { success: true, duplicate: false, needsReview: false };
+    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
+    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: "transport_plate_photo_unload_confirmed", targetType: "transport_card_event", targetId: String(event.id), title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环。`, deepLink: "/mobile/transport" });
+    return { success: true, duplicate: false, needsReview: false, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal };
   }),
 
   /** 装土/卸土现场注册设备统一入口：首次刷卡创建在途票据，第二次刷同卡按路线卸土点闭环。 */
