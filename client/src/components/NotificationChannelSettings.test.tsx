@@ -20,6 +20,8 @@ describe("短信与服务号通知通道设置", () => {
     expect(source).toContain("transport_load_completed");
     expect(source).toContain("tripOrdinal（该车当日第几车）");
     expect(source).toContain("包含 ${\"${tripOrdinal}\"} 的模板");
+    expect(source).toContain("短信显示车数需要更换新模板");
+    expect(source).toContain("已审核旧模板正文不会被系统自动增加“第几车”");
     expect(source).toContain("diesel_refuel_completed");
     expect(source).toContain("服务号即时通知");
     expect(source).toContain("持续状态、日结、绑定后推送与范围提醒会自动降级");
