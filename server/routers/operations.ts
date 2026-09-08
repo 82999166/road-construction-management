@@ -938,7 +938,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
 
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `record_${eventType}_card_event`, targetType: "transport_card_event", targetId: String(event.id), summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功${siteName ? `：${siteName}` : ""}` });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
-  const tripFinancialSummary = `车辆 ${vehicle.plateNo}${siteName ? `，${siteName}` : ""}，${eventLabel}刷卡已确认；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
+  const tripFinancialSummary = `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车${eventLabel}成功${siteName ? `，地点 ${siteName}` : ""}；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
   if (eventType === "unload") {
     // 站内通知只记录必要的闭环结果，不暴露定位坐标、司机电话或结算账户等敏感字段。
     const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, siteAdministratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
@@ -964,7 +964,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       eventCode: "transport_load_driver_notice",
       idempotencyKey: `inapp:transport-load:${event.id}:${vehicle.driverUserId ?? 0}`,
       title: "装土刷卡成功",
-      content: `车辆 ${vehicle.plateNo}${siteName ? ` 已在${siteName}` : ""}完成装土刷卡确认，运单 ${trip.tripNo}。${nextActionText}`,
+      content: `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车装土成功${siteName ? `，地点 ${siteName}` : ""}，运单 ${trip.tripNo}。${nextActionText}`,
       deepLink: "/mobile/transport",
     })
     : Boolean(vehicle.driverUserId);
@@ -1248,9 +1248,15 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "运输开票保存失败" });
   const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: resolved.projectId, siteId: loadSite.id, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, occurredAt: input.occurredAt }, "load", { singleScanClose: singleScanCloseEnabled });
   const singleScanClosed = singleScanCloseEnabled && event.success && !event.needsReview;
+  const mobileNfcTripOrdinal = event.success && !event.needsReview && "dailyVehicleTripOrdinal" in event
+    ? event.dailyVehicleTripOrdinal
+    : null;
+  const mobileNfcTripText = mobileNfcTripOrdinal
+    ? `车辆 ${vehicle.plateNo} 今日第 ${mobileNfcTripOrdinal} 车装土成功，`
+    : `车辆 ${vehicle.plateNo} `;
   if (singleScanClosed) await completeNfcTripBySingleScan(db, { tripId: createdTrip.id, userId: user.id, occurredAt, routeSnapshot: createdTrip.routeSnapshot });
-  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: Array.from(new Set([loadSite.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0))), projectId: resolved.projectId, module: "transport", eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
-  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: resolved.projectId, eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `车辆 ${vehicle.plateNo} 已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" });
+  void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: Array.from(new Set([loadSite.administratorUserId, unloadSite.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0))), projectId: resolved.projectId, module: "transport", eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `${mobileNfcTripText}已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `${mobileNfcTripText}已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" }).catch(() => undefined);
+  notifyExternalDriverWechat({ vehicleId: vehicle.id, projectId: resolved.projectId, eventCode: singleScanClosed ? "transport_mobile_nfc_invoice_completed" : "transport_mobile_nfc_invoice_departed", targetType: "transport_trip", targetId: String(createdTrip.id), title: singleScanClosed ? "运输 NFC 发票已完成闭环" : "运输 NFC 发票已开具", content: singleScanClosed ? `${mobileNfcTripText}已开具运单 ${tripNo}，系统已按管理员设置直接完成整车运输闭环。` : `${mobileNfcTripText}已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`, deepLink: "/mobile/transport" });
   if (event.success && !event.needsReview) triggerTransportRiskScan(resolved.projectId);
   await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "mobile_nfc_invoice_created", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `手机刷 NFC 卡开具运输发票 ${tripNo}：${vehicle.plateNo}，${loadSite.name} → ${unloadSite.name}` });
   return { ...event, stage: singleScanClosed ? "completed" as const : "in_transit" as const, singleScanClosed, tripNo, vehiclePlateNo: vehicle.plateNo };
@@ -3104,7 +3110,7 @@ export const transportRouter = router({
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}` });
     const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, unloadSite.administratorUserId].filter((value): value is number => typeof value === "number" && value > 0)));
     await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，直拍票据卸土确认后运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
-    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: "transport_plate_photo_unload_confirmed", targetType: "transport_card_event", targetId: String(event.id), title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环。`, deepLink: "/mobile/transport" });
+    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: "transport_plate_photo_unload_confirmed", targetType: "transport_card_event", targetId: String(event.id), title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，直拍票据卸土确认后运单 ${trip.tripNo} 已形成运输闭环。`, deepLink: "/mobile/transport" });
     return { success: true, duplicate: false, needsReview: false, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal };
   }),
 

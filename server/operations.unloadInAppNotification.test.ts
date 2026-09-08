@@ -22,6 +22,14 @@ describe("运输卸土成功站内通知", () => {
     expect(source).not.toContain('eventCode: `transport_${eventType}_driver_notice`');
   });
 
+  it("所有装土、卸土成功通知均携带服务端计算的车辆当日阶段车次", () => {
+    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车${eventLabel}成功');
+    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车装土成功');
+    expect(source).toContain('const mobileNfcTripOrdinal = event.success && !event.needsReview');
+    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${mobileNfcTripOrdinal} 车装土成功');
+    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，直拍票据卸土确认后');
+  });
+
   it("列表投影返回两端实际确认管理员及时间", () => {
     expect(source).toContain('loadConfirmation: { administratorName: trip.loadConfirmedBy');
     expect(source).toContain('unloadConfirmation: { administratorName: trip.unloadConfirmedBy');
