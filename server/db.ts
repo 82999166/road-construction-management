@@ -5,11 +5,23 @@ import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+/**
+ * MySQL DATETIME/TIMESTAMP 本身不携带时区。生产库历史记录按北京时间写入，
+ * 因此连接层必须固定按 +08:00 解析与写回，不能依赖 Node 进程或浏览器所在时区。
+ */
+export const CHINA_DATABASE_TIMEZONE = "+08:00";
+
+export function withChinaDatabaseTimezone(databaseUrl: string) {
+  const url = new URL(databaseUrl);
+  url.searchParams.set("timezone", CHINA_DATABASE_TIMEZONE);
+  return url.toString();
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      _db = drizzle(withChinaDatabaseTimezone(process.env.DATABASE_URL));
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;

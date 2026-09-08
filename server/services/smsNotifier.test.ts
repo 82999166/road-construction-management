@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAliyunSmsClient, extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
+import { buildTestTemplateParams, createAliyunSmsClient, extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
 
 describe("业务事件短信模板配置", () => {
   it("仅保留受支持事件、去除重复项，并允许先保存未填写编码的待审核条目", () => {
@@ -31,6 +31,11 @@ describe("业务事件短信模板配置", () => {
     expect(getSmsEventModule("transport_unload_completed")).toBe("transport");
     expect(getSmsEventModule("transport_scan_exception")).toBe("transport");
     expect(getSmsEventModule("diesel_refuel_completed")).toBe("diesel");
+  });
+
+  it("运输装土和卸土测试样例包含车辆当日阶段车次，供审核后的模板显示第几车", () => {
+    expect(buildTestTemplateParams("transport_load_completed")).toMatchObject({ vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1" });
+    expect(buildTestTemplateParams("transport_unload_completed")).toMatchObject({ vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1" });
   });
 
   it("仅保留阿里云 SDK 的短错误码，不回显异常消息或敏感请求字段", () => {

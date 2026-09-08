@@ -948,7 +948,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       idempotencyKey: `inapp:transport-unload:${event.id}:${recipientUserId}`,
       recipientUserId,
       title: options.unloadOnlyClose ? "卸土点补刷卡闭环完成" : "运输卸土成功",
-      content: options.unloadOnlyClose ? `车辆 ${vehicle.plateNo} 未记录装土刷卡，已按路线补刷卡规则在卸土点完成运单 ${trip.tripNo} 的受控闭环，仍请进入系统核验。` : `车辆 ${vehicle.plateNo} 已完成卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
+      content: options.unloadOnlyClose ? `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功；未记录装土刷卡，已按路线补刷卡规则在卸土点完成运单 ${trip.tripNo} 的受控闭环，仍请进入系统核验。` : `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
       deepLink: "/mobile/transport",
       status: "sent",
       sentAt: notificationTime,
@@ -968,7 +968,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
       deepLink: "/mobile/transport",
     })
     : Boolean(vehicle.driverUserId);
-  void notifyAliyunSmsSafely({ actorUserId: user.id, projectId: input.projectId, module: "transport", eventCode: eventType === "load" ? "transport_load_completed" : "transport_unload_completed", recipientPhone: vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "transport_card_event", targetId: String(event.id), templateParams: { vehicle: vehicle.plateNo, place: siteName ?? "运输现场", time: formatChinaSmsTime(occurredAt) } });
+  void notifyAliyunSmsSafely({ actorUserId: user.id, projectId: input.projectId, module: "transport", eventCode: eventType === "load" ? "transport_load_completed" : "transport_unload_completed", recipientPhone: vehicle.driverPhoneEncrypted ? decryptSecret(vehicle.driverPhoneEncrypted) : null, targetType: "transport_card_event", targetId: String(event.id), templateParams: { vehicle: vehicle.plateNo, place: siteName ?? "运输现场", tripOrdinal: dailyVehicleTripOrdinal, time: formatChinaSmsTime(occurredAt) } });
   void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_${eventType}_card_confirmed`, targetType: "transport_card_event", targetId: String(event.id), title: `运输${eventLabel}刷卡已确认`, content: `${tripFinancialSummary} ${nextActionText}`, deepLink: "/mobile/transport" }).catch(() => undefined);
   return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal, driverNotificationQueued };
 }
@@ -3103,7 +3103,7 @@ export const transportRouter = router({
     await db.update(evidenceRecords).set({ sourceId: `transport-unload-${trip.tripNo}` }).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId)));
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "confirm_plate_photo_unload", targetType: "transport_trip", targetId: trip.tripNo, summary: `车牌直拍票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}` });
     const recipientUserIds = Array.from(new Set([trip.loadConfirmedBy, user.id, unloadSite.administratorUserId].filter((value): value is number => typeof value === "number" && value > 0)));
-    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
+    await Promise.all(recipientUserIds.map(recipientUserId => db.insert(notificationRecords).values({ eventCode: "transport_unload_completed", idempotencyKey: `inapp:transport-plate-unload:${event.id}:${recipientUserId}`, recipientUserId, title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，直拍票据卸土确认后运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`, deepLink: "/mobile/transport", status: "sent", sentAt: occurredAt, channel: "in_app" }).onDuplicateKeyUpdate({ set: { status: "sent", sentAt: occurredAt } })));
     notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: "transport_plate_photo_unload_confirmed", targetType: "transport_card_event", targetId: String(event.id), title: "运输卸土成功", content: `车辆 ${vehicle.plateNo} 已完成直拍票据卸土确认，运单 ${trip.tripNo} 已形成运输闭环。`, deepLink: "/mobile/transport" });
     return { success: true, duplicate: false, needsReview: false, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal };
   }),

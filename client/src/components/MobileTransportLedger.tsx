@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { CalendarDays, ChevronRight, CircleAlert, ExternalLink, FileText, Fuel, LoaderCircle, Truck } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -14,7 +15,7 @@ type MobileTransportLedgerProps = {
 };
 
 function formatMoney(value: string | number | null | undefined) { return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
-function formatDateTime(value: Date | string | null | undefined) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "未记录"; }
+function formatDateTime(value: Date | string | null | undefined) { return formatChinaDateTime(value, "未记录"); }
 function tripProgress(trip: { status: "draft" | "submitted" | "verified" | "settled" | "void"; loadConfirmedAt?: Date | string | null; unloadConfirmedAt?: Date | string | null }) {
   if (trip.status === "void") return { label: "已作废", tone: "bg-[#eee8e2] text-[#77685e]", action: "可重新开票" };
   if (trip.status === "settled") return { label: "已结算", tone: "bg-[#e2f0ed] text-[#39736a]", action: "结算已归档" };

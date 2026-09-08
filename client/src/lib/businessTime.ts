@@ -37,6 +37,13 @@ export function formatChinaDate(value: TimeValue, fallback = "—") {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+/** 仅展示时分的业务时间也固定为北京时间，避免移动设备时区改变导致考勤、现场回执出现偏差。 */
+export function formatChinaTime(value: TimeValue, fallback = "—") {
+  const parts = chinaParts(value);
+  if (!parts) return fallback;
+  return `${parts.hour}:${parts.minute}`;
+}
+
 export function toChinaDateInput(value: TimeValue = new Date()) {
   return formatChinaDate(value, "");
 }

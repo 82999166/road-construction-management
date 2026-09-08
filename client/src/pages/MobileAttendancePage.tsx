@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { formatChinaTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Clock3, MapPin, Smartphone } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -36,9 +37,7 @@ function getDeviceLabel() {
 }
 
 function displayTime(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return formatChinaTime(value);
 }
 
 /** 保留独立地址供旧链接访问；主入口固定在移动首页，任何打卡都必须上传实时定位。 */

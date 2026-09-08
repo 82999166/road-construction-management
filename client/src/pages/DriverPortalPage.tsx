@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { Banknote, Bell, CalendarDays, ChevronRight, CircleHelp, Fuel, Loader2, RefreshCw, Route, Truck, WalletCards, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -18,9 +19,7 @@ function formatMoney(value: unknown) {
 }
 
 function formatDateTime(value: unknown) {
-  if (!value) return "未记录";
-  const date = new Date(value as string | number | Date);
-  return Number.isNaN(date.getTime()) ? "未记录" : date.toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return formatChinaDateTime(value as Date | string | number | null | undefined, "未记录");
 }
 
 function settlementStatusLabel(status: string) {

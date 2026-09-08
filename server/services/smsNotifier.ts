@@ -150,11 +150,11 @@ export async function inspectAliyunSmsReadiness(eventCode: SmsEventCode) {
   return { ready: resolution.ready, reason: resolution.ready ? "ready" as const : resolution.reason };
 }
 
-function buildTestTemplateParams(eventCode: SmsEventCode): Record<string, string> {
+export function buildTestTemplateParams(eventCode: SmsEventCode): Record<string, string> {
   const time = formatChinaSmsTime(new Date());
   if (eventCode === "diesel_refuel_completed") return { vehicle: "湘A12345", quantity: "100", amount: "100.00", time };
   if (eventCode === "transport_scan_exception") return { vehicle: "湘A12345", time };
-  return { vehicle: "湘A12345", place: "测试运输现场", time };
+  return { vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1", time };
 }
 
 async function writeSmsTestAudit(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { userId: number; action: string; eventCode: SmsEventCode; summary: string }) {
