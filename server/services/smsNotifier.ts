@@ -84,6 +84,16 @@ type AliyunSmsDispatchResolution =
   | { ready: true; configuration: AliyunSmsDispatchConfiguration }
   | { ready: false; reason: Exclude<SmsReadinessReason, "ready">; db: NonNullable<Awaited<ReturnType<typeof getDb>>> | null };
 
+/** 仅保留 SDK/服务商的短错误码，绝不记录异常消息、请求对象、手机号、密钥、签名或模板内容。 */
+export function extractSafeAliyunSmsErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") return "SDK_REQUEST_FAILED";
+  const candidate = error as { code?: unknown; Code?: unknown; name?: unknown; data?: { code?: unknown; Code?: unknown } };
+  const code = candidate.code ?? candidate.Code ?? candidate.data?.code ?? candidate.data?.Code ?? candidate.name;
+  if (typeof code !== "string") return "SDK_REQUEST_FAILED";
+  const normalized = code.trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/.test(normalized) ? normalized : "SDK_REQUEST_FAILED";
+}
+
 /** 仅解析已发布配置；返回值绝不包含 AccessKey、签名、模板编码或收件人。 */
 async function resolveAliyunSmsDispatch(eventCode: SmsEventCode, module: SmsNotificationModule): Promise<AliyunSmsDispatchResolution> {
   const db = await getDb();
@@ -152,9 +162,10 @@ export async function sendAliyunSmsTest(input: { actorUserId: number; eventCode:
     const accepted = providerCode === "OK";
     const auditLogId = await writeSmsTestAudit(resolution.configuration.db, { userId: input.actorUserId, action: accepted ? "aliyun_sms_test_accepted" : "aliyun_sms_test_rejected", eventCode: input.eventCode, summary: accepted ? `阿里云短信测试已受理：${input.eventCode}` : `阿里云短信测试未受理：${input.eventCode}（服务商返回 ${providerCode}）` });
     return { accepted, reason: accepted ? "accepted" as const : "provider_rejected" as const, providerCode, auditLogId };
-  } catch {
-    const auditLogId = await writeSmsTestAudit(resolution.configuration.db, { userId: input.actorUserId, action: "aliyun_sms_test_failed", eventCode: input.eventCode, summary: `阿里云短信测试投递失败：${input.eventCode}` }).catch(() => null);
-    return { accepted: false, reason: "delivery_failed" as const, providerCode: null, auditLogId };
+  } catch (error) {
+    const providerCode = extractSafeAliyunSmsErrorCode(error);
+    const auditLogId = await writeSmsTestAudit(resolution.configuration.db, { userId: input.actorUserId, action: "aliyun_sms_test_failed", eventCode: input.eventCode, summary: `阿里云短信测试投递失败：${input.eventCode}（服务商异常 ${providerCode}）` }).catch(() => null);
+    return { accepted: false, reason: "delivery_failed" as const, providerCode, auditLogId };
   }
 }
 
@@ -192,14 +203,15 @@ export async function notifyAliyunSmsSafely(input: {
       summary: accepted ? `阿里云短信已受理：${input.eventCode}` : `阿里云短信未受理：${input.eventCode}（服务商返回 ${response.body?.code ?? "未知状态"}）`,
     });
     return { sent: accepted, reason: accepted ? "accepted" as const : "provider_rejected" as const };
-  } catch {
+  } catch (error) {
+    const providerCode = extractSafeAliyunSmsErrorCode(error);
     await resolution.configuration.db.insert(auditLogs).values({
       userId: input.actorUserId,
       module: input.module,
       action: "aliyun_sms_failed",
       targetType: input.targetType,
       targetId: input.targetId,
-      summary: `阿里云短信投递失败：${input.eventCode}，已保留站内通知和业务审计`,
+      summary: `阿里云短信投递失败：${input.eventCode}（服务商异常 ${providerCode}），已保留站内通知和业务审计`,
     }).catch(() => undefined);
     return { sent: false, reason: "delivery_failed" as const };
   }
