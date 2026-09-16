@@ -710,6 +710,21 @@ describe("采购订单详情与附件收敛", () => {
   });
 });
 
+describe("采购费用票据报销详单打印", () => {
+  it("使用正式报销单表格、顶部居中标题、人员字段、备注和较小票据图片", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("采购费用票据报销详单");
+    expect(source).toContain("提交上传管理员");
+    expect(source).toContain("现场管理员");
+    expect(source).toContain("报销人");
+    expect(source).toContain("备注");
+    expect(source).toContain("receipt-title");
+    expect(source).toContain("width:68mm;height:100mm");
+    expect(source).toContain("expense-table");
+  });
+});
+
 describe("运输台账展示收敛", () => {
   it("运输页面仅保留完整全台账作为运单筛选、导出与操作入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
