@@ -72,3 +72,15 @@ describe("采购仓储当前筛选导出与打印", () => {
     expect(source).toContain("settledAt: toDeviceDateTimeInput()");
   });
 });
+
+describe("采购订单上传人筛选与半A4票据打印", () => {
+  it("按上传人筛选，并提供左侧信息右侧票据图片的半A4打印", () => {
+    const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
+    expect(source).toContain("orderUploaderId");
+    expect(source).toContain("按上传人筛选");
+    expect(source).toContain("打印半A4票据");
+    expect(source).toContain("grid-template-columns:1fr 1fr");
+    expect(source).toContain("width:92mm;height:128mm");
+    expect(source).toContain("上传人：");
+  });
+});

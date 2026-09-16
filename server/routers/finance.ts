@@ -32,6 +32,7 @@ import {
   taxEntityProfiles,
   taxHandoffBatches,
   temporaryDailyWageSettlements,
+  users,
 } from "../../drizzle/schema";
 import {
   assertApprovalTransition,
@@ -922,12 +923,15 @@ export const purchasingRouter = router({
     if (!db) return [];
     const orders = await db.select().from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)).orderBy(desc(purchaseOrders.updatedAt));
     const evidenceIds = Array.from(new Set(orders.flatMap(order => [order.evidenceId, order.invoiceEvidenceId]).filter((id): id is number => id !== null)));
-    const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
+    const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType, uploadedBy: evidenceRecords.uploadedBy }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
+    const userIds = Array.from(new Set(orders.flatMap(order => [order.createdBy, ...evidenceRows.map(evidence => evidence.uploadedBy)]).filter((id): id is number => Number.isInteger(id))));
+    const userRows = userIds.length ? await db.select({ id: users.id, name: users.name, localUsername: users.localUsername }).from(users).where(inArray(users.id, userIds)) : [];
+    const userNameById = new Map(userRows.map(user => [user.id, user.name || user.localUsername || `管理员 #${user.id}`]));
     const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
       const url = await storageGetSignedUrl(evidence.fileKey);
-      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url }] as const;
+      return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url, uploadedBy: evidence.uploadedBy, uploadedByName: userNameById.get(evidence.uploadedBy) ?? `管理员 #${evidence.uploadedBy}` }] as const;
     })));
-    return orders.map(order => ({ ...order, documentAttachment: order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null, invoiceAttachment: order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null }));
+    return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
   }),
 
   /** 仅返回当前项目的采购取证影像，供小额物资在 OCR 后人工补全并关联，URL 使用短时签名。 */
