@@ -720,12 +720,12 @@ describe("采购费用票据报销详单打印", () => {
     expect(source).toContain("报销人");
     expect(source).toContain("备注");
     expect(source).toContain("receipt-title");
-    expect(source).toContain("height:76mm");
+    expect(source).toContain("height:62mm");
     expect(source).toContain("expense-table");
     expect(source).toContain("报销凭证图片");
     expect(source).toContain("原始票据");
     expect(source).toContain("voucher-panel");
-    expect(source).toContain("height:76mm");
+    expect(source).toContain("height:62mm");
   });
 });
 
