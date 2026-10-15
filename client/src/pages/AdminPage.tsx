@@ -1086,6 +1086,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [dailyDigestPreviewDate, setDailyDigestPreviewDate] = useState(() => toLocalDateInput());
   const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
   const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
+  const [attendanceDeviceLimitDraft, setAttendanceDeviceLimitDraft] = useState("3");
 
   // 首次加载后默认选中第一个角色；角色切换后以服务端真实权限回显编辑矩阵。
   useEffect(() => {
@@ -1105,6 +1106,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const templateSettingKeys = new Set(["WECHAT_OFFICIAL_TEMPLATE_ID", "WECHAT_OFFICIAL_TEMPLATE_FIELDS"]);
   const managedOssSettingKeys = new Set(["ALIYUN_OSS_PHOTO_STORAGE_ENABLED", "ALIYUN_OSS_PHOTO_STORAGE_REGION", "ALIYUN_OSS_PHOTO_STORAGE_ENDPOINT", "ALIYUN_OSS_PHOTO_STORAGE_BUCKET", "ALIYUN_OSS_PHOTO_STORAGE_PREFIX", "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_ID", "ALIYUN_OSS_PHOTO_STORAGE_ACCESS_KEY_SECRET"]);
   const visibleSettings = allSettings.filter(item => item.status !== "disabled" && !templateSettingKeys.has(item.settingKey) && !OFFICIAL_ACCOUNT_BASE_SETTING_KEYS.has(item.settingKey) && !managedOssSettingKeys.has(item.settingKey));
+  const attendanceDeviceLimitSetting = visibleSettings.find(item => item.settingKey === "ATTENDANCE_DEVICE_BINDING_LIMIT");
   const publishedOfficialSettingKeys = new Set(allSettings.filter(item => item.status === "published").map(item => item.settingKey));
   const officialCredentialsReady = publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_ID") && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_SECRET");
   const officialBindingReady = officialCredentialsReady && publishedOfficialSettingKeys.has("WECHAT_OFFICIAL_APP_URL");
@@ -1116,6 +1118,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     }
     if (!visibleSettings.some(item => item.id === selectedSettingId)) setSelectedSettingId(visibleSettings[0].id);
   }, [selectedSettingId, visibleSettings]);
+  useEffect(() => {
+    if (attendanceDeviceLimitSetting?.valueJson) setAttendanceDeviceLimitDraft(attendanceDeviceLimitSetting.valueJson);
+  }, [attendanceDeviceLimitSetting?.valueJson]);
   useEffect(() => {
     if (!dailyDigestSettings.data) return;
     setDailyDigestForm({
@@ -1823,6 +1828,13 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
     },
     onError: refreshAfterSettingConflict,
+  });
+  const saveAttendanceDeviceLimit = trpc.admin.settings.saveDraft.useMutation({
+    onSuccess: async () => {
+      toast.success("考勤设备绑定上限草稿已保存，请点击发布后生效");
+      await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
+    },
+    onError: error => toast.error(error.message),
   });
   const saveOfficialAccountConfiguration = trpc.admin.settings.saveOfficialAccountConfiguration.useMutation({
     onSuccess: async result => {
@@ -2743,6 +2755,13 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
       <section className="space-y-6">
         <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">站内通知为基础通道；短信和服务号即时通知可在下方按模块配置。地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        <Card className="border-amber-200 bg-amber-50/60">
+          <CardHeader className="pb-3"><CardTitle className="text-base text-[#203c48]">考勤设备绑定上限</CardTitle><CardDescription>控制每个账号同时启用的手机考勤设备数量。默认3台，支持1至50台；修改后需发布才会影响新设备绑定，已有设备不会自动停用。</CardDescription></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-end gap-3"><div className="w-40"><Label>允许设备台数</Label><Input className="mt-1 bg-white" type="number" min={1} max={50} step={1} value={attendanceDeviceLimitDraft} onChange={event => setAttendanceDeviceLimitDraft(event.target.value)} /></div><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!/^([1-9]|[1-4][0-9]|50)$/.test(attendanceDeviceLimitDraft) || saveAttendanceDeviceLimit.isPending} onClick={() => saveAttendanceDeviceLimit.mutate({ ...(attendanceDeviceLimitSetting ? { id: attendanceDeviceLimitSetting.id, expectedVersion: attendanceDeviceLimitSetting.version } : {}), category: "业务参数", settingKey: "ATTENDANCE_DEVICE_BINDING_LIMIT", displayName: "考勤设备绑定上限", value: attendanceDeviceLimitDraft, isSensitive: false, remarks: "每个账号允许同时保持启用状态的考勤设备数量；取值范围1至50台。修改并发布后仅影响后续新设备绑定，已有设备不自动停用。" })}>{saveAttendanceDeviceLimit.isPending ? "保存中…" : "保存草稿"}</Button><Button variant="outline" disabled={!attendanceDeviceLimitSetting || attendanceDeviceLimitSetting.status !== "draft" || publishSetting.isPending} onClick={() => attendanceDeviceLimitSetting && publishSetting.mutate({ id: attendanceDeviceLimitSetting.id, expectedVersion: attendanceDeviceLimitSetting.version })}>{publishSetting.isPending ? "发布中…" : "发布生效"}</Button></div>
+            <p className="text-xs text-amber-900">当前状态：{attendanceDeviceLimitSetting?.status === "published" ? "已发布生效" : attendanceDeviceLimitSetting?.status === "draft" ? "有未发布草稿" : "尚未创建，保存后可发布"} · 配置键：ATTENDANCE_DEVICE_BINDING_LIMIT</p>
+          </CardContent>
+        </Card>
         <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
           <NotificationChannelSettings />
         </Suspense>
