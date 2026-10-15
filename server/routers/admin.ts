@@ -67,6 +67,7 @@ import { ALIYUN_OSS_PHOTO_STORAGE_SETTING_KEYS, normalizeAliyunOssBucket, normal
 import { chinaBusinessDate, chinaBusinessMonth } from "../services/chinaBusinessTime";
 import { decryptSecret, encryptSecret, maskSecret } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
+import { ATTENDANCE_DEVICE_LIMIT_SETTING_KEY, MAX_ATTENDANCE_DEVICE_LIMIT, normalizeAttendanceDeviceLimit } from "../services/attendanceDevicePolicy";
 import { IDENTITY_PROVIDER_RECOVERY_URL_KEY, normalizeIdentityRecoveryUrl } from "../identityRecovery";
 import { createLocalManagerOpenId, createLocalManagerPasswordHash, isValidLocalManagerUsername, normalizeLocalManagerUsername } from "../localAuth";
 import { storageGetSignedUrl } from "../storage";
@@ -2278,6 +2279,12 @@ export const adminRouter = router({
         const db = await getDb();
         if (!db) throw new Error("数据库连接暂不可用");
         assertSupportedSettingKey(input.settingKey);
+        if (input.settingKey === ATTENDANCE_DEVICE_LIMIT_SETTING_KEY) {
+          const normalized = Number.parseInt(input.value.trim(), 10);
+          if (!/^\d+$/.test(input.value.trim()) || normalized < 1 || normalized > MAX_ATTENDANCE_DEVICE_LIMIT || normalizeAttendanceDeviceLimit(input.value.trim()) !== normalized) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `考勤设备绑定上限必须是1至${MAX_ATTENDANCE_DEVICE_LIMIT}之间的整数` });
+          }
+        }
         if (requiresSecretStorage(input.settingKey) && !input.isSensitive) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "API 密钥、令牌和密码类配置必须勾选“加密托管”" });
         }

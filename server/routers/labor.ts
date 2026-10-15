@@ -13,6 +13,7 @@ import { storageGet, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
 import { appendIntegrityProtectedAudit, recordSensitiveDataAccess } from "../services/auditIntegrity";
+import { getPublishedAttendanceDeviceLimit } from "../services/attendanceDevicePolicy";
 
 /** 工资结算期间统一使用 YYYY-MM，避免将时区信息混入按月结算的业务口径。 */
 const payrollPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "工资期间格式应为 YYYY-MM");
@@ -481,7 +482,8 @@ export const laborRouter = router({
           if (binding?.status === "disabled") throw new TRPCError({ code: "FORBIDDEN", message: "当前考勤设备已被禁用，请联系管理员核验后重新绑定" });
           if (!binding) {
             const activeDevices = await tx.select({ id: attendanceDeviceBindings.id }).from(attendanceDeviceBindings).where(and(eq(attendanceDeviceBindings.userId, user.id), eq(attendanceDeviceBindings.status, "active")));
-            if (activeDevices.length >= 3) throw new TRPCError({ code: "CONFLICT", message: "当前账号已绑定 3 台考勤设备，请联系管理员停用旧设备后再绑定" });
+            const deviceLimit = await getPublishedAttendanceDeviceLimit(tx);
+            if (activeDevices.length >= deviceLimit) throw new TRPCError({ code: "CONFLICT", message: `当前账号已绑定 ${deviceLimit} 台考勤设备，请联系管理员停用旧设备或调整“考勤设备绑定上限”后再绑定` });
             try {
               await tx.insert(attendanceDeviceBindings).values({ userId: user.id, deviceFingerprintHash: input.deviceFingerprintHash.toLowerCase(), deviceLabel: input.deviceLabel, status: "active", firstBoundAt: now, lastUsedAt: now });
               newlyBound = true;
