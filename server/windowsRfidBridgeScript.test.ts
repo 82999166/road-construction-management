@@ -213,7 +213,9 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(packer).toContain('import { fileURLToPath } from "node:url"');
     expect(packer).toContain("dirname(fileURLToPath(import.meta.url))");
     expect(packer).not.toContain("dirname(new URL(import.meta.url).pathname)");
-    expect(packer).toContain('const archiveFiles = [...files, "manifest.json", "README-首次安装.txt"]');
+    expect(packer).toContain('sourceName === "安装写卡桥接.cmd" ? "Install-Yuexin-RFID-Bridge.cmd"');
+    expect(packer).toContain('const readmeFileName = "README-First-Install.txt"');
+    expect(packer).toContain('const archiveFiles = [...packagedFiles.map(({ archiveName }) => archiveName), "manifest.json", readmeFileName]');
     expect(packer).toContain('["-a", "-c", "-f", outputFile, ...archiveFiles]');
     expect(packer).not.toContain('["-a", "-c", "-f", outputFile, "."]');
   });

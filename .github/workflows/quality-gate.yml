@@ -102,7 +102,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $firstInstallZip)) { throw "first_install_package_not_created" }
           $firstInstallExtract = Join-Path $env:RUNNER_TEMP "utrust-first-install"
           # 不用 Expand-Archive 解压：PowerShell 5.1 的 Archive 模块会将部分 zip 根目录条目误判为非法路径。
-          # 直接使用 .NET ZIP API，既验证真实压缩包，也能准确保留中文文件名。
+          # 直接使用 .NET ZIP API 验证真实压缩包；分发包使用 ASCII 文件名以兼容旧版 Windows 解压实现。
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $firstInstallArchive = [System.IO.Compression.ZipFile]::OpenRead($firstInstallZip)
           try {
@@ -129,7 +129,7 @@ jobs:
             if ($parseErrors -and $parseErrors.Count -gt 0) { throw ("first_install_script_parse_failed=" + $script.Name) }
             Write-Output ("first_install_distribution_ok=" + $script.Name)
           }
-          $doubleClickInstaller = Join-Path $firstInstallExtract "安装写卡桥接.cmd"
+          $doubleClickInstaller = Join-Path $firstInstallExtract "Install-Yuexin-RFID-Bridge.cmd"
           if (-not (Test-Path -LiteralPath $doubleClickInstaller)) { throw "first_install_double_click_launcher_missing" }
           $launcherText = [System.IO.File]::ReadAllText($doubleClickInstaller, [System.Text.Encoding]::Default)
           if ($launcherText -notmatch "install-utrust-bridge\.ps1" -or $launcherText -notmatch "RunAs") { throw "first_install_double_click_launcher_invalid" }
