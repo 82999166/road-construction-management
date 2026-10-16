@@ -14,6 +14,7 @@ import {
   getAttendanceSourceLabel,
   getBusinessStatusLabel,
   getCardValidationStatusLabel,
+  getInvoiceTypeLabel,
   getSafeCardValidationReason,
   summarizePayrollStatements,
   ConstructionDomainError,
@@ -40,6 +41,14 @@ describe("施工承包核心业务计算", () => {
     expect(getAttendanceSourceLabel("device")).toBe("考勤设备");
     expect(getAttendanceSourceLabel("import")).toBe("导入记录");
     expect(getAttendanceSourceLabel("unexpected_internal_source")).toBe("来源待核对");
+  });
+
+  it("发票类型统一映射为中文，未知内部码不直接回显", () => {
+    expect(getInvoiceTypeLabel("vat_special")).toBe("增值税专票");
+    expect(getInvoiceTypeLabel("vat_normal")).toBe("增值税普票");
+    expect(getInvoiceTypeLabel("electronic")).toBe("电子发票");
+    expect(getInvoiceTypeLabel("receipt")).toBe("收据");
+    expect(getInvoiceTypeLabel("unexpected_internal_type")).toBe("票据类型待核对");
   });
 
   it("读卡校验状态和原因仅输出受控中文说明", () => {

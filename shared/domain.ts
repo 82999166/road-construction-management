@@ -113,6 +113,21 @@ export function getAttendanceSourceLabel(source: unknown): string {
   return ATTENDANCE_SOURCE_LABELS[source.trim().toLowerCase()] ?? "来源待核对";
 }
 
+/** 发票类型只在用户界面、导出和打印中映射为中文；财税接口枚举保持稳定。 */
+export const INVOICE_TYPE_LABELS: Record<string, string> = {
+  vat_special: "增值税专票",
+  vat_normal: "增值税普票",
+  electronic: "电子发票",
+  receipt: "收据",
+  other: "其他票据",
+};
+
+/** 未登记的票据枚举不得直接显示给业务人员。 */
+export function getInvoiceTypeLabel(invoiceType: unknown): string {
+  if (typeof invoiceType !== "string" || !invoiceType.trim()) return "票据类型待核对";
+  return INVOICE_TYPE_LABELS[invoiceType.trim().toLowerCase()] ?? "票据类型待核对";
+}
+
 /** 读卡校验状态与普通单据状态分离，禁止把 accepted 等内部枚举直接展示给现场人员。 */
 export const CARD_VALIDATION_STATUS_LABELS: Record<string, string> = {
   accepted: "校验通过",

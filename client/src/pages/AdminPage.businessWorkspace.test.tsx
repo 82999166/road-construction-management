@@ -792,12 +792,23 @@ describe("劳务与机械导出中文化", () => {
   it("不直接回显考勤来源、状态或租赁计费枚举", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('import { getAttendanceSourceLabel } from "@shared/domain";');
+    expect(source).toContain('import { getAttendanceSourceLabel, getInvoiceTypeLabel } from "@shared/domain";');
     expect(source).toContain("getAttendanceSourceLabel(item.source), getBusinessStatusLabel(item.status)");
     expect(source).toContain("getMachineLeaseBillingTypeLabel(machine.leaseTerms?.billingType)");
     expect(source).toContain("getBusinessStatusLabel(machine.status)");
     expect(source).not.toContain("item.workHours, item.overtimeHours, item.source, item.status");
     expect(source).not.toContain("machine.status, machine.supplierName || \"\", machine.leaseTerms?.billingType");
+  });
+});
+
+describe("财务发票类型中文化", () => {
+  it("台账、详情和打印均使用受控中文标签", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('import { getAttendanceSourceLabel, getInvoiceTypeLabel } from "@shared/domain";');
+    expect(source).toContain("getInvoiceTypeLabel(invoice.invoiceType)");
+    expect(source).not.toContain('>{invoice.invoiceType}</TableCell>');
+    expect(source).not.toContain('{ label: "发票类型", value: invoice.invoiceType }');
   });
 });
 
