@@ -213,5 +213,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(packer).toContain('import { fileURLToPath } from "node:url"');
     expect(packer).toContain("dirname(fileURLToPath(import.meta.url))");
     expect(packer).not.toContain("dirname(new URL(import.meta.url).pathname)");
+    expect(packer).toContain('const archiveFiles = [...files, "manifest.json", "README-首次安装.txt"]');
+    expect(packer).toContain('["-a", "-c", "-f", outputFile, ...archiveFiles]');
+    expect(packer).not.toContain('["-a", "-c", "-f", outputFile, "."]');
   });
 });

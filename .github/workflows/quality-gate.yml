@@ -101,7 +101,23 @@ jobs:
           $firstInstallZip = Join-Path $env:RUNNER_TEMP "utrust-bridge-first-install-v13-20261016.zip"
           if (-not (Test-Path -LiteralPath $firstInstallZip)) { throw "first_install_package_not_created" }
           $firstInstallExtract = Join-Path $env:RUNNER_TEMP "utrust-first-install"
-          Expand-Archive -LiteralPath $firstInstallZip -DestinationPath $firstInstallExtract -Force
+          # 不用 Expand-Archive 解压：PowerShell 5.1 的 Archive 模块会将部分 zip 根目录条目误判为非法路径。
+          # 直接使用 .NET ZIP API，既验证真实压缩包，也能准确保留中文文件名。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $firstInstallArchive = [System.IO.Compression.ZipFile]::OpenRead($firstInstallZip)
+          try {
+            foreach ($entry in $firstInstallArchive.Entries) {
+              if ([string]::IsNullOrWhiteSpace($entry.Name)) { continue }
+              if ($entry.Name -match '[\\/:*?"<>|]') { throw ("first_install_archive_entry_invalid=" + $entry.FullName) }
+              $destination = Join-Path $firstInstallExtract $entry.Name
+              [System.IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
+              $entryStream = $entry.Open()
+              $fileStream = [System.IO.File]::Create($destination)
+              try { $entryStream.CopyTo($fileStream) } finally { $fileStream.Dispose(); $entryStream.Dispose() }
+            }
+          } finally {
+            $firstInstallArchive.Dispose()
+          }
           $firstInstallScripts = @(Get-ChildItem -LiteralPath $firstInstallExtract -Filter "*.ps1" -File | Sort-Object Name)
           if ($firstInstallScripts.Count -lt 8) { throw "first_install_package_incomplete" }
           foreach ($script in $firstInstallScripts) {
