@@ -122,6 +122,9 @@
     "lodash": "4.18.1",
     "exceljs>uuid": "11.1.1",
     "proxy-addr": "2.0.8",
-    "basic-ftp": "6.2.1"
+    "basic-ftp": "6.2.1",
+    "qs": "6.16.0",
+    "ip-address": "10.7.1",
+    "moment": "2.31.0"
   }
 }
