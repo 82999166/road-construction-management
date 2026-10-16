@@ -740,6 +740,8 @@ describe("采购费用票据报销详单打印", () => {
     expect(source).toContain("原始票据");
     expect(source).toContain("voucher-panel");
     expect(source).toContain("height:62mm");
+    expect(source).toContain("toChinaDateInput(item.orderedAt)");
+    expect(source).not.toContain('new Date(item.orderedAt).toLocaleDateString("zh-CN")');
   });
 });
 
