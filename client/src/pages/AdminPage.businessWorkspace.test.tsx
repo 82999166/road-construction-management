@@ -36,7 +36,7 @@ describe("统一后台业务工作区范围保护", () => {
 
     expect(source).not.toMatch(/setLocation\(["'`]\/mobile/);
     expect(source).toContain("施工日报查看与编辑");
-    expect(source).toContain("劳务人员档案");
+    expect(source).toContain("<LaborWorkerRoster");
     expect(source).toContain("<TransportTripLedger");
   });
 
@@ -729,6 +729,9 @@ describe("后台劳务台账独立懒加载", () => {
     expect(source).toContain("<LaborAttendanceLedger");
     expect(source).toContain('module: "劳务考勤高级筛选导出"');
     expect(source).toContain("setDesktopRecordDetail");
+    expect(source).not.toContain("旧版内联台账保留为本次拆分的受控回退参照");
+    expect(source).not.toContain("{false && <>");
+    expect(source).not.toContain("· {item.source} ·");
   });
 });
 
