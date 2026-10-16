@@ -7,6 +7,8 @@ describe("全局 DOM 安全边界", () => {
     const boundary = readFileSync(new URL("./components/ErrorBoundary.tsx", import.meta.url), "utf8");
     expect(app).toContain('className="notranslate" translate="no"');
     expect(boundary).toContain('translate="no"');
+    expect(app).not.toContain("ComponentShowcase");
+    expect(app).not.toContain('path={"/components"}');
   });
 
   it("React 懒加载分包失败会由错误边界执行一次受控版本恢复", () => {
