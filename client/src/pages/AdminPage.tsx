@@ -3504,6 +3504,23 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     );
   };
 
+  const printBusinessGovernanceReport = () => {
+    const dashboard = operatingDashboard.data;
+    if (!dashboard) {
+      toast.error("当前筛选范围的经营数据尚未就绪，请刷新统计后再打印");
+      return;
+    }
+    const projectName = selectedBusinessProject?.name ?? "全部项目";
+    const periodLabel = businessFilter.period || "全部期间";
+    const categoryRows = dashboard.finance.categories.map(item => `<tr><td>${escapePrintHtml(item.category)}</td><td class="right">¥${escapePrintHtml(displayMoney(item.amount))}</td><td class="right">¥${escapePrintHtml(displayMoney(item.unpaid))}</td><td class="right">¥${escapePrintHtml(displayMoney(item.paid))}</td></tr>`).join("") || '<tr><td colspan="4" class="center">当前范围暂无有效支出分类记录</td></tr>';
+    const moduleRows = (businessStatistics.data ?? []).map(module => `<tr><td>${escapePrintHtml(module.name)}</td><td class="center">${escapePrintHtml(module.recordCount)}</td><td>${escapePrintHtml(module.code)}</td></tr>`).join("") || '<tr><td colspan="3" class="center">当前范围暂无业务模块统计</td></tr>';
+    const percentage = (value: number | null) => value === null ? "—" : `${Number(value).toFixed(1)}%`;
+    openA4LandscapePrintDocument({
+      title: `经营数据汇总-${businessFilter.period || "全部期间"}`,
+      bodyHtml: `<h1>经营数据汇总与业务统计</h1><p class="sub">统计范围：${escapePrintHtml(projectName)} · ${escapePrintHtml(periodLabel)}　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><h2>资金、计量与资源汇总</h2><table><thead><tr><th>总收入</th><th>已开发票</th><th>应收余额</th><th>应付余额</th><th>有效支出</th><th>已付金额</th></tr></thead><tbody><tr><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.totalIncome))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.invoiceAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.receivable))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.payable))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.totalExpense))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.paidAmount))}</td></tr></tbody></table><table class="section-table"><thead><tr><th>申报计量</th><th>核定计量</th><th>已结算产值</th><th>结算比</th><th>付款比</th><th>运输趟次</th><th>施工日报</th><th>待处理计量</th></tr></thead><tbody><tr><td class="right">¥${escapePrintHtml(displayMoney(dashboard.measurement.declaredAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.measurement.approvedAmount))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.measurement.settledAmount))}</td><td class="right">${escapePrintHtml(percentage(dashboard.finance.settlementRatio))}</td><td class="right">${escapePrintHtml(percentage(dashboard.finance.paymentRatio))}</td><td class="right">${escapePrintHtml(dashboard.resources.transportTripCount)} 趟</td><td class="right">${escapePrintHtml(dashboard.progress.reportCount)} 条</td><td class="right">${escapePrintHtml(dashboard.measurement.pendingCount)} 笔</td></tr></tbody></table><h2>支出分类、待付与已付明细</h2><table><thead><tr><th>支出类别</th><th class="right">有效支出</th><th class="right">待付</th><th class="right">已付</th></tr></thead><tbody>${categoryRows}<tr class="summary"><td>分类合计</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.categories.reduce((sum, item) => sum + Number(item.amount), 0)))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.categories.reduce((sum, item) => sum + Number(item.unpaid), 0)))}</td><td class="right">¥${escapePrintHtml(displayMoney(dashboard.finance.categories.reduce((sum, item) => sum + Number(item.paid), 0)))}</td></tr></tbody></table><h2>业务模块记录统计</h2><table><thead><tr><th>业务模块</th><th>当前真实记录</th><th>模块编号</th></tr></thead><tbody>${moduleRows}</tbody></table><p class="footer-note">说明：本打印件仅反映以上项目与期间筛选内、由服务端实时聚合的真实台账；备份文件、权限配置、密钥、账号信息及其他系统设置不纳入打印。</p><div class="footer"><span>制表：系统按当前筛选生成</span><span>复核：________________</span></div>`,
+    });
+  };
+
   const renderBusiness = () => (
     <div className="space-y-6" id="business-governance-report">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -3514,7 +3531,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         </div>
         <div className="flex gap-2 print:hidden">
           <Button size="sm" variant="outline" onClick={() => { void businessStatistics.refetch(); void operatingDashboard.refetch(); }} disabled={businessStatistics.isFetching || operatingDashboard.isFetching}>刷新统计</Button>
-          <Button size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-1.5 h-4 w-4" />打印当前页</Button>
+          <Button size="sm" variant="outline" onClick={printBusinessGovernanceReport} disabled={!operatingDashboard.data || operatingDashboard.isFetching}><Printer className="mr-1.5 h-4 w-4" />打印当前筛选明细与汇总</Button>
         </div>
       </div>
 
