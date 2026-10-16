@@ -228,7 +228,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
     </CardContent>
 
     <Dialog open={Boolean(siteDraft)} onOpenChange={open => !open && setSiteDraft(null)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl xl:max-w-4xl">
         <DialogHeader>
           <DialogTitle>{siteDraft?.id ? (siteDraft.siteType === "load" ? "编辑装土点" : "编辑卸土点") : (siteDraft?.siteType === "load" ? "新增装土点" : "新增卸土点")}</DialogTitle>
           <DialogDescription>{siteDraft?.siteType === "unload" ? "卸土点的安全阈值在此统一维护，所有驶向本点的路线自动使用。" : "请填写可定位的中文详细地址；坐标仅在后台用于围栏计算，业务页面不显示经纬度。"}</DialogDescription>
@@ -254,7 +254,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
     </Dialog>
 
     <Dialog open={Boolean(routeDraft)} onOpenChange={open => !open && setRouteDraft(null)}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl xl:max-w-5xl">
         <DialogHeader><DialogTitle>{routeDraft?.id ? "编辑运输路线" : "新建运输路线"}</DialogTitle><DialogDescription>路线只配置装卸点、公里数、运价和默认状态。卸土最短时间与定位范围统一由所选卸土点维护。</DialogDescription></DialogHeader>
         {routeDraft ? <div className="grid gap-3 py-2">
           <div className="grid gap-3 sm:grid-cols-2">
