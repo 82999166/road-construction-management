@@ -50,7 +50,8 @@ describe("移动端机械会计月度明细", () => {
     expect(source).not.toContain('id="machine-cost-camera"');
     expect(source).not.toContain('capture="environment"');
     expect(source).toContain("操作员（责任人）");
-    expect(source).toContain("费用说明");
+    expect(source).toContain("费用名称（必填）");
+    expect(source).toContain("<Label>备注</Label>");
     expect(source).toContain("evidenceId, remarks:");
     expect(source).toContain("operatorName");
     expect(source).toContain("驾驶员手机");

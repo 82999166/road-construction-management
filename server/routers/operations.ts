@@ -168,6 +168,7 @@ const machineCostInput = z.object({
   machineId: z.number().int().positive(),
   projectId: z.number().int().positive(),
   costType: z.enum(["fuel", "repair", "overtime", "mobilization", "other"]),
+  costName: z.string().trim().min(1, "请填写费用名称").max(128),
   quantity: z.number().min(0).max(999999999.999),
   unitPrice: z.number().min(0).max(999999999999.99),
   occurredAt: isoDateTimeSchema,
@@ -1536,6 +1537,7 @@ export const machineryRouter = router({
       machineId: row.machineId,
       machineLabel: labels.get(row.machineId) ?? "机械已停用/删除",
       costType: row.costType,
+      costName: row.costName,
       quantity: Number(row.quantity),
       unitPrice: Number(row.unitPrice),
       amount: Number(row.amount),
@@ -1863,6 +1865,7 @@ export const machineryRouter = router({
       machineId: input.machineId,
       projectId: input.projectId,
       costType: input.costType,
+      costName: input.costName.trim(),
       quantity: String(input.quantity),
       unitPrice: String(roundMoney(appliedUnitPrice)),
       amount: String(amount),
@@ -1874,7 +1877,7 @@ export const machineryRouter = router({
     const costId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
     if (input.evidenceId && costId) await db.update(evidenceRecords).set({ sourceId: `machine-cost-${costId}` }).where(and(eq(evidenceRecords.id, input.evidenceId), eq(evidenceRecords.projectId, input.projectId)));
     const priceSource = guideline?.price ? `，引用柴油指导价 ¥${guideline.price.pricePerLiter}/L（${guideline.businessDate}，规则 #${guideline.price.id}）` : "";
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: String(costId || `${input.machineId}:${input.occurredAt}`), summary: `录入机械${input.costType}成本，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "create_cost", targetType: "machine_cost", targetId: String(costId || `${input.machineId}:${input.occurredAt}`), summary: `录入机械${input.costType}成本：${input.costName.trim()}，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}` });
     return { success: true, id: costId || null, amount, unitPrice: appliedUnitPrice, guidelinePriceId: guideline?.price?.id ?? null };
   }),
 

@@ -966,6 +966,8 @@ export const machineCostRecords = mysqlTable(
     quantity: decimal("quantity", { precision: 12, scale: 3 }).default("0").notNull(),
     unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    /** 现场录入的费用名称，例如：液压油、发动机维修、进场拖运。历史记录允许为空。 */
+    costName: varchar("costName", { length: 128 }),
     /** 项目部或加油站柴油领用生成的机械油料成本关联；手工成本保持为空。 */
     dieselRefuelRecordId: bigint("dieselRefuelRecordId", { mode: "number" }),
     occurredAt: datetime("occurredAt").notNull(),

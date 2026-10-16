@@ -12,6 +12,8 @@ describe("机械 A4 汇总打印模板", () => {
     expect(source).toContain("const getCostTypeLabel");
     expect(source).toContain('getBusinessStatusLabel(record.status)');
     expect(source).toContain('getCostTypeLabel(record.costType)');
+    expect(source).toContain('record.costName || "未命名费用"');
+    expect(source).toContain("费用名称 / 类别");
     expect(source).not.toContain('statusLabel[record.status] ?? record.status');
     expect(source).not.toContain('costTypeLabel[record.costType] ?? record.costType');
     expect(source).toContain("openA4LandscapePrintDocument");

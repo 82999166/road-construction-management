@@ -547,6 +547,13 @@
       "when": 1792114473355,
       "tag": "0077_mysterious_zombie",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "5",
+      "when": 1792121217603,
+      "tag": "0078_friendly_vance_astro",
+      "breakpoints": true
     }
   ]
 }

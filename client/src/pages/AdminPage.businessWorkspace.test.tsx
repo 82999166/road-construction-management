@@ -81,6 +81,9 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("driverPhone: machineForm.driverPhone.trim() || null");
     expect(source).toContain("saveMachine.mutate");
     expect(source).toContain("saveMachineCost.mutate");
+    expect(source).toContain('Field label="费用名称（必填）"');
+    expect(source).toContain('Field label="备注"');
+    expect(source).toContain("costName: machineCostForm.costName.trim()");
   });
 
   it("单车收益支出分析使用宽屏分区弹窗，完整承载统计卡和月度、按日明细", () => {

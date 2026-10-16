@@ -6,3 +6,5 @@ patchedDependencies:
 
 overrides:
   tailwindcss>nanoid: 3.3.7
+  proxy-addr: 2.0.8
+  basic-ftp: 6.2.1
