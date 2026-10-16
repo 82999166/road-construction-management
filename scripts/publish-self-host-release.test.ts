@@ -7,6 +7,9 @@ describe("自建正式服务器原子发布脚本", () => {
     expect(source).toContain("upload_via_ssh");
     expect(source).toContain("base64 -w 0");
     expect(source).toContain("base64 -d");
+    expect(source).toContain('ssh_key_path="${SSH_KEY_PATH:-}"');
+    expect(source).toContain("PreferredAuthentications=publickey");
+    expect(source).toContain("PasswordAuthentication=no");
     expect(source).toContain("trap rollback ERR");
     expect(source).toContain("sha256sum");
     expect(source).toContain('mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"');

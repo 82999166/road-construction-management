@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 用法：REMOTE_HOST=... SSHPASS=... scripts/publish-self-host-release.sh <发布包> <摘要文件> <发布标签>
+# 用法：REMOTE_HOST=... SSH_KEY_PATH=... scripts/publish-self-host-release.sh <发布包> <摘要文件> <发布标签>
+# 兼容旧路径：未提供 SSH_KEY_PATH 时，可通过 SSHPASS 以密码认证。
 # 凭据仅经进程环境传递；本脚本不打印、写入或提交任何凭据。
 
 package_path="${1:?缺少发布包路径}"
 checksum_path="${2:?缺少摘要文件路径}"
 release_tag="${3:?缺少发布标签}"
 remote_host="${REMOTE_HOST:?缺少正式服务器地址}"
+ssh_key_path="${SSH_KEY_PATH:-}"
 app_root="${APP_ROOT:-/opt/yx-cloud-management/app}"
 service_name="${SERVICE_NAME:-yx-cloud-management.service}"
 health_url="${HEALTH_URL:-http://127.0.0.1:18080/}"
@@ -18,13 +20,34 @@ package_name="$(basename "$package_path")"
 
 ssh_options=(
   -tt
-  -o PreferredAuthentications=password,keyboard-interactive
-  -o PubkeyAuthentication=no
   -o ConnectTimeout=12
   -o StrictHostKeyChecking=accept-new
 )
 
-SSHPASS="${SSHPASS:?缺少受控 SSH 凭据}" sshpass -e ssh "${ssh_options[@]}" "$remote_host" "mkdir -p '$app_root/incoming' '$app_root/releases'"
+if [[ -n "$ssh_key_path" ]]; then
+  [[ -f "$ssh_key_path" && -r "$ssh_key_path" ]] || { printf '部署 SSH 私钥不可读\n' >&2; exit 2; }
+else
+  : "${SSHPASS:?缺少受控 SSH 凭据或 SSH_KEY_PATH}"
+fi
+
+run_remote_ssh() {
+  if [[ -n "$ssh_key_path" ]]; then
+    ssh "${ssh_options[@]}" \
+      -i "$ssh_key_path" \
+      -o BatchMode=yes \
+      -o PreferredAuthentications=publickey \
+      -o PasswordAuthentication=no \
+      -o KbdInteractiveAuthentication=no \
+      "$remote_host" "$@"
+  else
+    SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" \
+      -o PreferredAuthentications=password,keyboard-interactive \
+      -o PubkeyAuthentication=no \
+      "$remote_host" "$@"
+  fi
+}
+
+run_remote_ssh "mkdir -p '$app_root/incoming' '$app_root/releases'"
 
 # 正式服务器仅接受分配交互终端的 SSH 命令，且关闭 SFTP/legacy SCP。
 # 伪终端不直接传输二进制文件：本地无换行 Base64 编码，远端解码至 incoming，
@@ -36,13 +59,13 @@ upload_via_ssh() {
   base64 -w 0 "$source_path" | {
     cat
     printf '\n%s\n' "$upload_sentinel"
-  } | SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" "$remote_host" "stty -echo; temp_upload=\$(mktemp); cleanup_upload() { stty echo; rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
+  } | run_remote_ssh "stty -echo; temp_upload=\$(mktemp); cleanup_upload() { stty echo; rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
 }
 
 upload_via_ssh "$package_path" "$app_root/incoming/$package_name"
 upload_via_ssh "$checksum_path" "$app_root/incoming/${package_name}.sha256"
 
-SSHPASS="$SSHPASS" sshpass -e ssh "${ssh_options[@]}" "$remote_host" \
+run_remote_ssh \
   "APP_ROOT='$app_root' SERVICE_NAME='$service_name' HEALTH_URL='$health_url' RELEASE_TAG='$release_tag' EXPECTED_CHECKSUM='$expected_checksum' PACKAGE_NAME='$package_name' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
