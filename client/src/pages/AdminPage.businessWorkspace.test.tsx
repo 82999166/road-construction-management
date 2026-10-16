@@ -608,7 +608,10 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("trpc.projectRisk.financeCategoryDetails.useQuery");
     expect(source).toContain("项目支出分类明细");
     expect(source).toContain("查看全部明细");
-    expect(source).toContain("开始日期（留空为当前会计期间）");
+    expect(source).toContain('dateFrom: toLocalDateInput(), dateTo: toLocalDateInput()');
+    expect(source).toContain("开始日期（默认当天）");
+    expect(source).toContain("结束日期（默认当天）");
+    expect(source).not.toContain("开始日期（留空为当前会计期间）");
     expect(source).toContain("导出当前明细");
   });
 
