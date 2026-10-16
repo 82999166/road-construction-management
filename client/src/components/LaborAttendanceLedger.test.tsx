@@ -7,6 +7,8 @@ describe("LaborAttendanceLedger", () => {
     expect(source).toContain("全部人员类型");
     expect(source).toContain("全部状态");
     expect(source).toContain("categoryLabel");
+    expect(source).toContain("getAttendanceSourceLabel(item.source)");
+    expect(source).not.toContain("· {item.source} ·");
     expect(source).toContain("onExport");
   });
 });

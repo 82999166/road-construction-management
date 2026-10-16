@@ -788,6 +788,19 @@ describe("柴油台账状态中文化", () => {
   });
 });
 
+describe("劳务与机械导出中文化", () => {
+  it("不直接回显考勤来源、状态或租赁计费枚举", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('import { getAttendanceSourceLabel } from "@shared/domain";');
+    expect(source).toContain("getAttendanceSourceLabel(item.source), getBusinessStatusLabel(item.status)");
+    expect(source).toContain("getMachineLeaseBillingTypeLabel(machine.leaseTerms?.billingType)");
+    expect(source).toContain("getBusinessStatusLabel(machine.status)");
+    expect(source).not.toContain("item.workHours, item.overtimeHours, item.source, item.status");
+    expect(source).not.toContain("machine.status, machine.supplierName || \"\", machine.leaseTerms?.billingType");
+  });
+});
+
 describe("风险预警标签中文化", () => {
   it("表格与导出对未知类别、等级和状态采用中文安全回退", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");

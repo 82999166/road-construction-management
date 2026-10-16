@@ -99,6 +99,20 @@ export function getBusinessStatusLabel(status: string): string {
   return BUSINESS_STATUS_LABELS[status] ?? "状态待核对";
 }
 
+/** 考勤来源只在表格、导出和打印中转换为中文；接口参数与数据库枚举保持稳定。 */
+export const ATTENDANCE_SOURCE_LABELS: Record<string, string> = {
+  manual: "手工登记",
+  mobile: "移动端登记",
+  device: "考勤设备",
+  import: "导入记录",
+};
+
+/** 未登记的来源不得将内部枚举直接回显给业务人员。 */
+export function getAttendanceSourceLabel(source: unknown): string {
+  if (typeof source !== "string" || !source.trim()) return "来源待核对";
+  return ATTENDANCE_SOURCE_LABELS[source.trim().toLowerCase()] ?? "来源待核对";
+}
+
 /** 读卡校验状态与普通单据状态分离，禁止把 accepted 等内部枚举直接展示给现场人员。 */
 export const CARD_VALIDATION_STATUS_LABELS: Record<string, string> = {
   accepted: "校验通过",

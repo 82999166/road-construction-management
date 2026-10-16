@@ -11,6 +11,7 @@ import {
   calculateTheoreticalVolume,
   calculateTieredFreightAmount,
   canApprovePayroll,
+  getAttendanceSourceLabel,
   getBusinessStatusLabel,
   getCardValidationStatusLabel,
   getSafeCardValidationReason,
@@ -31,6 +32,14 @@ describe("施工承包核心业务计算", () => {
     expect(getBusinessStatusLabel("verified")).toBe("已核验");
     expect(getBusinessStatusLabel("settled")).toBe("已结算");
     expect(getBusinessStatusLabel("unexpected_internal_status")).toBe("状态待核对");
+  });
+
+  it("考勤来源统一映射为中文，未知内部码不直接回显", () => {
+    expect(getAttendanceSourceLabel("manual")).toBe("手工登记");
+    expect(getAttendanceSourceLabel("mobile")).toBe("移动端登记");
+    expect(getAttendanceSourceLabel("device")).toBe("考勤设备");
+    expect(getAttendanceSourceLabel("import")).toBe("导入记录");
+    expect(getAttendanceSourceLabel("unexpected_internal_source")).toBe("来源待核对");
   });
 
   it("读卡校验状态和原因仅输出受控中文说明", () => {
