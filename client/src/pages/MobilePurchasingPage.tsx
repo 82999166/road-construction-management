@@ -11,6 +11,7 @@ import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { downloadCurrentFilteredCsv, escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { Archive, ArrowLeft, Camera, CircleHelp, HardHat, PackagePlus, Printer, ReceiptText, RefreshCw, ShoppingCart, Warehouse } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -186,28 +187,28 @@ export default function MobilePurchasingPage() {
   };
   const saveRequest = trpc.purchasing.saveRequest.useMutation({
     onSuccess: async () => { toast.success("采购申请草稿已保存"); setRequestOpen(false); setRequestDraft({ categoryId: "", amount: "", description: "" }); await refreshData(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")),
   });
-  const transitionRequest = trpc.purchasing.transitionRequest.useMutation({ onSuccess: async () => { toast.success("采购申请状态已更新"); await refreshData(); }, onError: error => toast.error(error.message) });
+  const transitionRequest = trpc.purchasing.transitionRequest.useMutation({ onSuccess: async () => { toast.success("采购申请状态已更新"); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")) });
   const createOrder = trpc.purchasing.createOrder.useMutation({
     onSuccess: async () => { toast.success("采购订单已创建"); setOrderOpen(false); setOrderDraft(createOrderDraft()); await refreshData(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")),
   });
-  const transitionOrder = trpc.purchasing.transitionOrder.useMutation({ onSuccess: async () => { toast.success("采购订单状态已更新"); await refreshData(); }, onError: error => toast.error(error.message) });
-  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" }); await refreshData(); }, onError: error => toast.error(error.message) });
+  const transitionOrder = trpc.purchasing.transitionOrder.useMutation({ onSuccess: async () => { toast.success("采购订单状态已更新"); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")) });
+  const recordSettlement = trpc.purchasing.recordSettlement.useMutation({ onSuccess: async data => { toast.success(`结算已登记，订单待结算 ${formatMoney(data.remainingAmount)}`); setSettlementOpen(false); setSettlementDraft({ orderId: "", amount: "", settledAt: toDeviceDateTimeInput(), remarks: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")) });
   const saveInventory = trpc.purchasing.saveInventoryTransaction.useMutation({
     onSuccess: async () => { toast.success("库存收发流水已登记"); setInventoryOpen(false); setInventoryDraft(createInventoryDraft()); await refreshData(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")),
   });
   const saveSupplier = trpc.purchasing.saveSupplier.useMutation({
     onSuccess: async () => { toast.success("供应商资料已保存"); setSupplierOpen(false); setSupplierDraft({ name: "", contactName: "", contactPhoneMasked: "" }); await refreshData(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")),
   });
   const createSmallDirectOrder = trpc.purchasing.createSmallDirectOrder.useMutation({
     onSuccess: async result => { toast.success(result.requiresSupervisorApproval ? `清单采购已上报主管确认（金额 ¥${result.amount.toFixed(2)}）` : `清单采购已直接入账（金额 ¥${result.amount.toFixed(2)}）`); setSmallDirectOpen(false); setSmallDirectDraft(createSmallDirectDraft()); await refreshData(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")),
   });
-  const uploadPurchaseDocument = trpc.purchasing.uploadPurchaseDocument.useMutation({ onError: error => toast.error(error.message) });
+  const uploadPurchaseDocument = trpc.purchasing.uploadPurchaseDocument.useMutation({ onError: error => toast.error(getUserFacingErrorMessage(error, "采购操作未完成，请稍后重试")) });
 
   function submitRequest() {
     if (!selectedProjectId || !requestDraft.categoryId || !requestDraft.amount || !requestDraft.description.trim()) return toast.error("请填写采购类别、申请金额和说明");
@@ -283,7 +284,7 @@ export default function MobilePurchasingPage() {
       await refreshData();
       toast.success(attachmentKind === "invoice" ? "采购发票附件已归档" : "采购单据照片已归档");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "单据照片上传失败");
+      toast.error(getUserFacingErrorMessage(error, "单据照片上传失败，请稍后重试"));
     }
   }
 

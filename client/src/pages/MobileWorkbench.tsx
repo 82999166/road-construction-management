@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { formatChinaDateTime, formatChinaTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import {
   Bell,
   BookOpen,
@@ -153,7 +154,7 @@ export default function MobileWorkbench() {
       checkedOutAt: result.punchType === "out" ? result.checkedOutAt : null,
     });
     toast.success(result.duplicate ? `今日${result.punchType === "out" ? "下班" : "上班"}打卡已完成` : `${result.punchType === "out" ? "下班" : "上班"}打卡成功，定位已上传`);
-  }, onError: error => toast.error(error.message) });
+  }, onError: error => toast.error(getUserFacingErrorMessage(error, "上下班打卡未完成，请稍后重试")) });
 
   /** 离线缓存仅可阅读，不允许通过重试按钮主动发起业务接口调用。 */
   const retryWorkbench = () => {

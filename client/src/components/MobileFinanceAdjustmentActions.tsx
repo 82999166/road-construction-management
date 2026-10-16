@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { Ban, RotateCcw } from "lucide-react";
 import React, { useState } from "react";
 import { toast } from "sonner";
@@ -62,7 +63,7 @@ export function MobileFinanceAdjustmentActions({ projectId, roleCodes, record }:
       setReason("");
       await refreshFinancialData();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "财务调整未完成，请稍后重试")),
   });
   const reverseRecord = trpc.finance.reverseRecord.useMutation({
     onSuccess: async () => {
@@ -71,7 +72,7 @@ export function MobileFinanceAdjustmentActions({ projectId, roleCodes, record }:
       setReason("");
       await refreshFinancialData();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "财务调整未完成，请稍后重试")),
   });
 
   if (!action) return null;

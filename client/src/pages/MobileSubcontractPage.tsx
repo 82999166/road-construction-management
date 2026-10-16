@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowLeft, Calculator, CheckCircle2, CircleHelp, FilePlus2, HardHat, UsersRound, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -93,7 +94,7 @@ export default function MobileSubcontractPage() {
       setTeamDraft({ teamName: "", contactName: "", contactPhone: "", remarks: "" });
       await refreshData();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "分包操作未完成，请稍后重试")),
   });
 
   const savePackage = trpc.subcontract.savePackage.useMutation({
@@ -103,7 +104,7 @@ export default function MobileSubcontractPage() {
       setPackageDraft({ subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", priceExceptionReason: "", remarks: "" });
       await refreshData();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "分包操作未完成，请稍后重试")),
   });
 
   const transition = trpc.subcontract.transitionPackage.useMutation({
@@ -111,7 +112,7 @@ export default function MobileSubcontractPage() {
       toast.success("分包批次状态已更新");
       await refreshData();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "分包操作未完成，请稍后重试")),
   });
 
   const chooseTakeoff = (value: string) => {

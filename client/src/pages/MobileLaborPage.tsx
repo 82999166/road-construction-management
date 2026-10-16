@@ -12,6 +12,7 @@ import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, formatChinaTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import {
   ArrowLeft,
   Ban,
@@ -263,7 +264,7 @@ export default function MobileLaborPage() {
       setWorkerDialogOpen(false);
       await Promise.all([utils.labor.listWorkers.invalidate(), utils.labor.summary.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   /** 考勤幂等保存成功后刷新考勤和工资统计。 */
   const saveAttendance = trpc.labor.attendance.save.useMutation({
@@ -272,14 +273,14 @@ export default function MobileLaborPage() {
       setAttendanceDialogOpen(false);
       await Promise.all([utils.labor.attendance.list.invalidate(), utils.labor.summary.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const mobileCheckIn = trpc.labor.attendance.checkIn.useMutation({
     onSuccess: async result => {
       toast.success(result.duplicate ? "今日已完成打卡，已返回服务端记录" : result.newlyBound ? "设备已绑定并完成打卡" : "打卡成功，已记录服务端时间与定位");
       await checkInStatus.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   /** 工资草稿由服务端计算实发金额，客户端只负责提交可审计的应发和扣款金额。 */
   const savePayroll = trpc.labor.payroll.save.useMutation({
@@ -288,21 +289,21 @@ export default function MobileLaborPage() {
       setPayrollDialogOpen(false);
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const submitPayroll = trpc.labor.payroll.submit.useMutation({
     onSuccess: async () => {
       toast.success("工资条已提交至会计审核");
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const approvePayroll = trpc.labor.payroll.approve.useMutation({
     onSuccess: async data => {
       toast.success(data.status === "approved" ? "工资条已审核通过" : "工资条已退回草稿");
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   /** 发放确认只记录外部资金系统的凭证引用，不会从页面或服务器直接发起银行转账。 */
   const payPayroll = trpc.labor.payroll.pay.useMutation({
@@ -312,7 +313,7 @@ export default function MobileLaborPage() {
       setPayrollPaymentDraft({ id: 0, paymentReference: "" });
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   /** 作废必须说明原因；页面只负责采集，服务端负责终态和权限拦截。 */
   const voidPayroll = trpc.labor.payroll.void.useMutation({
@@ -322,7 +323,7 @@ export default function MobileLaborPage() {
       setPayrollVoidDraft({ id: 0, reason: "" });
       await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const saveDailyWage = trpc.labor.dailyWage.save.useMutation({
     onSuccess: async () => {
@@ -331,21 +332,21 @@ export default function MobileLaborPage() {
       setDailyWageDraft({ workerId: "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" });
       await utils.labor.dailyWage.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
     onSuccess: async () => {
       toast.success("临时日结已提交会计/财务审核");
       await utils.labor.dailyWage.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const reviewDailyWage = trpc.labor.dailyWage.review.useMutation({
     onSuccess: async result => {
       toast.success(result.status === "approved" ? "临时日结已审核通过，待登记实际付款" : "临时日结已退回草稿，可修改后重新提交");
       await utils.labor.dailyWage.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   const payDailyWage = trpc.labor.dailyWage.pay.useMutation({
     onSuccess: async () => {
@@ -354,7 +355,7 @@ export default function MobileLaborPage() {
       setDailyWagePaymentDraft({ id: 0, paidAt: getTodayText(), paymentReference: "" });
       await Promise.all([utils.labor.dailyWage.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
   /** 证照本体仅上传至对象存储，台账只保留受权限控制的元数据与安全访问地址。 */
   const uploadCertificate = trpc.labor.certificates.upload.useMutation({
@@ -364,7 +365,7 @@ export default function MobileLaborPage() {
       setCertificateFile(null);
       await utils.labor.certificates.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
 
   /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管页面渲染。 */
@@ -506,13 +507,13 @@ export default function MobileLaborPage() {
       const base64Data = await readFileAsBase64(certificateFile);
       uploadCertificate.mutate({ projectId: selectedProjectId, workerId: certificateWorker.id, certificateName: certificateName.trim(), fileName: certificateFile.name, mimeType: certificateFile.type as "image/jpeg" | "image/png" | "application/pdf", base64Data });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "证照文件读取失败");
+      toast.error(getUserFacingErrorMessage(error, "证照文件读取失败，请稍后重试"));
     }
   }
 
   if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载劳务工资台账…" title="劳务工资" description="请使用企业统一身份进入已授权的项目数据范围。" Icon={ContactRound} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
   if (projectOptions.error) {
-    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-sm text-[#f8ead7]">劳务工资模块加载失败：{projectOptions.error.message}</div>;
+    return <div className="grid min-h-screen place-items-center bg-[#2c1712] p-6 text-center text-sm text-[#f8ead7]">劳务工资模块加载失败：{getUserFacingErrorMessage(projectOptions.error, "暂无法读取劳务工资项目范围，请稍后重试")}</div>;
   }
 
   return (

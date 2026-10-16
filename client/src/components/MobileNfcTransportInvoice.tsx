@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { CircleCheck, Radio, RotateCw, SmartphoneNfc, Truck, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -121,7 +122,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     onError: error => {
       const guidance = error.message.includes("卸土点中文详细地址尚未完成地图定位校验")
         ? "该卸土点的中文详细地址尚未完成地图定位校验，当前不能安全确认卸土。请由 PC 超级管理员进入“运输管理 → 装卸土点与运输路线配置”，点击对应卸土点的“补录详细地址”，补全省、市、区县、道路/桩号或地标后保存，再重新刷卡确认。"
-        : error.message;
+        : getUserFacingErrorMessage(error, "刷卡确认未完成，请稍后重试");
       setOperationError(guidance);
       toast.error(guidance);
     },
@@ -290,7 +291,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
                 </Button>
               ) : null}
               {preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}
-              {preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{preview.error.message}</p> : null}
+              {preview.error ? <p className="mt-2 text-xs text-[#9c4d27]">车辆卡不能开票：{getUserFacingErrorMessage(preview.error, "暂无法核验车辆卡，请稍后重试")}</p> : null}
               {operationError ? <div role="alert" className="mt-3 rounded-xl border border-[#c56632] bg-[#fff6ed] px-3 py-3 text-sm leading-6 text-[#824b2a]"><p className="font-bold">本次操作未完成</p><p className="mt-1">{operationError}</p></div> : null}
 
               {preview.data ? (

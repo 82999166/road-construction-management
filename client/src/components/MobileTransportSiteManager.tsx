@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { LocateFixed, MapPin, Pencil, Plus, Route, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -29,14 +30,14 @@ export function MobileTransportSiteManager({ projectId, canManage, onConfigureRo
   const [draft, setDraft] = useState<SiteDraft | null>(null);
   const [siteSettingsOpen, setSiteSettingsOpen] = useState(false);
   const [locationStatus, setLocationStatus] = useState("");
-  const reverseGeocode = trpc.location.reverseGeocode.useMutation({ onError: error => setLocationStatus(error.message) });
+  const reverseGeocode = trpc.location.reverseGeocode.useMutation({ onError: error => setLocationStatus(getUserFacingErrorMessage(error, "定位地址解析失败，请稍后重试")) });
   const saveSite = trpc.transport.saveSite.useMutation({
     onSuccess: async (_, variables) => {
       toast.success(variables.id ? "现场地点已更新，路线候选已刷新" : "新现场地点已添加，可立即用于设置路线");
       setDraft(null);
       await Promise.all([utils.transport.listSites.invalidate(), utils.transport.listRoutePresets.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "装卸土点保存失败，请稍后重试")),
   });
 
   if (!canManage || !projectId) return null;

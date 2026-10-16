@@ -9,6 +9,7 @@ import { MobileFinanceAdjustmentPanel } from "@/components/MobileFinanceAdjustme
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, CircleHelp, FilePlus2, HardHat, Printer, ReceiptText, WalletCards } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -55,9 +56,9 @@ export default function MobileFinancePage() {
   const activeProjectName = projects.data?.find(project => project.id === selectedProjectId)?.name ?? "—";
   /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管渲染。 */
   const roleCodes = workbench.data?.user?.roleCodes ?? [];
-  const save = trpc.finance.saveRecord.useMutation({ onSuccess: async () => { toast.success("资金流水已登记"); setRecordOpen(false); await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]); }, onError: error => toast.error(error.message) });
-  const saveInvoice = trpc.finance.saveInvoice.useMutation({ onSuccess: async () => { toast.success("发票原件与项目分摊已登记，待会计认证"); setInvoiceOpen(false); setInvoiceDraft({ invoiceNo: "", invoiceCode: "", counterpartyName: "", invoiceType: "vat_special", direction: "expense", amount: "", allocatedAmount: "", taxAmount: "", taxRate: "0.09", issuedAt: currentDate(), allocationPurpose: "expense_deduction", verificationReference: "", evidenceId: null, evidenceFileName: "" }); await utils.finance.listInvoices.invalidate(); }, onError: error => toast.error(error.message) });
-  const uploadInvoiceEvidence = trpc.finance.uploadInvoiceEvidence.useMutation({ onSuccess: result => { setInvoiceDraft(current => ({ ...current, evidenceId: result.evidenceId, evidenceFileName: result.fileName })); toast.success("发票原件已归档，可继续登记项目分摊"); }, onError: error => toast.error(error.message) });
+  const save = trpc.finance.saveRecord.useMutation({ onSuccess: async () => { toast.success("资金流水已登记"); setRecordOpen(false); await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
+  const saveInvoice = trpc.finance.saveInvoice.useMutation({ onSuccess: async () => { toast.success("发票原件与项目分摊已登记，待会计认证"); setInvoiceOpen(false); setInvoiceDraft({ invoiceNo: "", invoiceCode: "", counterpartyName: "", invoiceType: "vat_special", direction: "expense", amount: "", allocatedAmount: "", taxAmount: "", taxRate: "0.09", issuedAt: currentDate(), allocationPurpose: "expense_deduction", verificationReference: "", evidenceId: null, evidenceFileName: "" }); await utils.finance.listInvoices.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
+  const uploadInvoiceEvidence = trpc.finance.uploadInvoiceEvidence.useMutation({ onSuccess: result => { setInvoiceDraft(current => ({ ...current, evidenceId: result.evidenceId, evidenceFileName: result.fileName })); toast.success("发票原件已归档，可继续登记项目分摊"); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
   function submit() {
     if (!selectedProjectId || !draft.category.trim() || !draft.amount) return toast.error("请填写收支分类和金额");
     save.mutate({ projectId: selectedProjectId, direction: draft.direction, category: draft.category.trim(), amount: Number(draft.amount), occurredAt: new Date(draft.occurredAt).toISOString(), settlementStatus: invoiceCapabilities.data?.canExecutePayment ? draft.settlementStatus : "unpaid", sourceType: null, sourceId: null, evidenceId: null, remarks: draft.remarks.trim() || null });

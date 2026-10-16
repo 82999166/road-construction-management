@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { formatChinaTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowLeft, Clock3, MapPin, Smartphone } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -68,7 +69,7 @@ export default function MobileAttendancePage() {
       const label = result.punchType === "out" ? "下班" : "上班";
       toast.success(result.duplicate ? `今日${label}打卡已完成` : `${label}打卡成功，定位已上传`);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "考勤提交未完成，请稍后重试")),
   });
 
   useEffect(() => {
