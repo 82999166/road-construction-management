@@ -120,7 +120,7 @@ function Carousel({
         onKeyDownCapture={handleKeyDown}
         className={cn("relative", className)}
         role="region"
-        aria-roledescription="carousel"
+        aria-roledescription="轮播区域"
         data-slot="carousel"
         {...props}
       >
@@ -157,7 +157,7 @@ function CarouselItem({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       role="group"
-      aria-roledescription="slide"
+      aria-roledescription="轮播项"
       data-slot="carousel-item"
       className={cn(
         "min-w-0 shrink-0 grow-0 basis-full",
@@ -194,7 +194,7 @@ function CarouselPrevious({
       {...props}
     >
       <ArrowLeft />
-      <span className="sr-only">Previous slide</span>
+      <span className="sr-only">上一项</span>
     </Button>
   );
 }
@@ -224,7 +224,7 @@ function CarouselNext({
       {...props}
     >
       <ArrowRight />
-      <span className="sr-only">Next slide</span>
+      <span className="sr-only">下一项</span>
     </Button>
   );
 }
