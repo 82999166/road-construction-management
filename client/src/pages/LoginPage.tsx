@@ -8,6 +8,7 @@ import {
   rememberPostLoginReturnPath,
 } from "@/lib/authNavigation";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowRight, HardHat, KeyRound, MessageCircle, ShieldCheck } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -127,7 +128,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
                   <div className="grid gap-1.5"><Label htmlFor="local-current-password">当前密码</Label><Input id="local-current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} disabled={changeLocalPassword.isPending} required /></div>
                   <div className="grid gap-1.5"><Label htmlFor="local-new-password">新密码</Label><Input id="local-new-password" type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} disabled={changeLocalPassword.isPending} required /></div>
                 </div>
-                {changeLocalPassword.error ? <p className="mt-3 text-xs font-medium text-red-700">{changeLocalPassword.error.message}</p> : null}
+                {changeLocalPassword.error ? <p className="mt-3 text-xs font-medium text-red-700">{getUserFacingErrorMessage(changeLocalPassword.error, "密码更新未完成，请稍后重试")}</p> : null}
                 <Button type="submit" className="mt-4 h-10 w-full bg-[#245344] hover:bg-[#1c4336]" disabled={changeLocalPassword.isPending}>{changeLocalPassword.isPending ? "正在更新密码…" : "更新密码并进入工作台"}</Button>
               </form>
             ) : <>
@@ -138,7 +139,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-username">手机号</Label><Input id="local-manager-username" type="tel" inputMode="numeric" autoComplete="tel" placeholder="请输入 11 位手机号" value={managerUsername} onChange={event => setManagerUsername(event.target.value)} disabled={managerLogin.isPending} required /></div>
                 <div className="grid gap-1.5"><Label htmlFor="local-manager-password">密码</Label><Input id="local-manager-password" type="password" autoComplete="current-password" value={managerPassword} onChange={event => setManagerPassword(event.target.value)} disabled={managerLogin.isPending} required /></div>
               </div>
-              {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{managerLogin.error.message}</p> : null}
+              {managerLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{getUserFacingErrorMessage(managerLogin.error, "账号或密码不正确，请核对后重试")}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#82a5af] text-[#294d5a] hover:bg-[#e8f3f5]" disabled={managerLogin.isPending}>{managerLogin.isPending ? "正在安全登录…" : "登录并进入我的工作台"}</Button>
             </form> : null}
             {localAdminOnly ? <form className="mt-6 rounded-2xl border border-[#ead9c9] bg-[#fff7ed] p-4" onSubmit={handlePermanentAdminLogin}>
@@ -154,7 +155,7 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
                   <Input id="permanent-admin-password" type="password" autoComplete="current-password" value={permanentAdminPassword} onChange={event => setPermanentAdminPassword(event.target.value)} disabled={permanentAdminLogin.isPending} required />
                 </div>
               </div>
-              {permanentAdminLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{permanentAdminLogin.error.message}</p> : null}
+              {permanentAdminLogin.error ? <p className="mt-3 text-xs font-medium text-red-700">{getUserFacingErrorMessage(permanentAdminLogin.error, "账号或密码不正确，请核对后重试")}</p> : null}
               <Button type="submit" variant="outline" className="mt-4 h-10 w-full border-[#bd8a66] text-[#653b26] hover:bg-[#f2e0cf]" disabled={permanentAdminLogin.isPending}>
                 {permanentAdminLogin.isPending ? "正在安全登录…" : "登录全局管理后台"}
               </Button>
