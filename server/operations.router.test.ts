@@ -147,6 +147,44 @@ describe("机械与运输 tRPC 路由", () => {
     expect(result.daily[0]).toMatchObject({ outputAmount: 1200, driverWageAmount: 300, repairAmount: 200, fuelLiters: 90, fuelAmount: 720, netIncome: -20 });
   });
 
+  it("保存机械台班时由服务端核算台班金额、加班金额并快照驾驶员", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
+    const insertValues = vi.fn(async () => undefined);
+    vi.mocked(getDb).mockResolvedValue({
+      ...createSelectDbSequence(
+        [{ id: 7, projectId: 10, name: "挖掘机", code: "EX-007", operatorUserId: 2, driverName: "档案驾驶员" }],
+        [],
+        [{ id: 2, name: "张师傅" }],
+      ),
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await machineryRouter.createCaller(createAuthContext()).saveDailyOperation({
+      projectId: 10,
+      machineId: 7,
+      occurredOn: "2026-10-17",
+      operatorUserId: 2,
+      shiftCount: 1.5,
+      workHours: 15,
+      overtimeHours: 2,
+      shiftRate: 800,
+      overtimeHourlyRate: 120,
+      outputAmount: 3000,
+      driverWageAmount: 500,
+      remarks: "夜间加班两小时",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      shiftCount: "1.5",
+      shiftRate: "800",
+      overtimeHours: "2",
+      overtimeHourlyRate: "120",
+      shiftAmount: "1200",
+      overtimeAmount: "240",
+      driverNameSnapshot: "张师傅",
+    }));
+  });
+
   it("已结算机械日作业不可回退，且状态流转仍校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue({

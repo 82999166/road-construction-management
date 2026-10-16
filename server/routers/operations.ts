@@ -203,15 +203,18 @@ const machineMonthlyStatementTransitionInput = z.object({
   nextStatus: z.enum(["submitted", "approved", "settled", "void"]),
 });
 
-/** 单台机械日作业只保存原始产值、司机工资与工时，费用仍引用独立原始台账。 */
+/** 单台机械日作业保存台班、加班和司机快照；金额统一由服务端核算。 */
 const machineDailyOperationInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   machineId: z.number().int().positive(),
   occurredOn: businessDateSchema,
   operatorUserId: z.number().int().positive().nullable().optional(),
+  shiftCount: z.number().min(0).max(31),
+  shiftRate: z.number().min(0).max(999999999999.99),
   workHours: z.number().min(0).max(24),
   overtimeHours: z.number().min(0).max(24),
+  overtimeHourlyRate: z.number().min(0).max(999999999999.99),
   outputAmount: z.number().min(0).max(999999999999.99),
   driverWageAmount: z.number().min(0).max(999999999999.99),
   remarks: z.string().trim().max(500).nullable().optional(),
@@ -1645,7 +1648,7 @@ export const machineryRouter = router({
       const outputAmount = activeOperation ? Number(activeOperation.outputAmount) : 0;
       const driverWageAmount = activeOperation ? Number(activeOperation.driverWageAmount) : 0;
       const totalExpense = roundMoney(driverWageAmount + item.repairAmount + item.maintenanceAmount + item.partsAmount + item.fuelAmount + item.otherExpenseAmount);
-      return { ...item, outputAmount, driverWageAmount, totalExpense, netIncome: roundMoney(outputAmount - totalExpense), workHours: activeOperation ? Number(activeOperation.workHours) : 0, overtimeHours: activeOperation ? Number(activeOperation.overtimeHours) : 0, operationStatus: item.operation?.status ?? null, remarks: item.operation?.remarks ?? null };
+      return { ...item, outputAmount, driverWageAmount, totalExpense, netIncome: roundMoney(outputAmount - totalExpense), shiftCount: activeOperation ? Number(activeOperation.shiftCount) : 0, shiftRate: activeOperation ? Number(activeOperation.shiftRate) : 0, shiftAmount: activeOperation ? Number(activeOperation.shiftAmount) : 0, workHours: activeOperation ? Number(activeOperation.workHours) : 0, overtimeHours: activeOperation ? Number(activeOperation.overtimeHours) : 0, overtimeHourlyRate: activeOperation ? Number(activeOperation.overtimeHourlyRate) : 0, overtimeAmount: activeOperation ? Number(activeOperation.overtimeAmount) : 0, driverName: activeOperation?.driverNameSnapshot ?? null, operationStatus: item.operation?.status ?? null, remarks: item.operation?.remarks ?? null };
     }).sort((left, right) => right.date.localeCompare(left.date));
     return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), daily, partsPurchases: partsPurchaseRows.map(item => ({ id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status })) };
   }),
@@ -1660,7 +1663,14 @@ export const machineryRouter = router({
       : await db.select().from(machineDailyOperations).where(and(eq(machineDailyOperations.machineId, input.machineId), eq(machineDailyOperations.projectId, input.projectId), eq(machineDailyOperations.occurredOn, toBusinessDate(input.occurredOn)))).limit(1);
     if (existing && (existing.machineId !== input.machineId || existing.projectId !== input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "机械日作业记录不存在或不属于当前项目" });
     if (existing && existing.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "已提交、审核或结算的机械日作业不得直接修改" });
-    const values = { projectId: input.projectId, machineId: input.machineId, occurredOn: toBusinessDate(input.occurredOn), operatorUserId: input.operatorUserId ?? machine.operatorUserId ?? null, workHours: String(roundMoney(input.workHours)), overtimeHours: String(roundMoney(input.overtimeHours)), outputAmount: String(roundMoney(input.outputAmount)), driverWageAmount: String(roundMoney(input.driverWageAmount)), remarks: input.remarks?.trim() || null };
+    const operatorUserId = input.operatorUserId ?? machine.operatorUserId ?? null;
+    const [operator] = operatorUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, operatorUserId)).limit(1) : [];
+    const shiftCount = roundMoney(input.shiftCount);
+    const shiftRate = roundMoney(input.shiftRate);
+    const overtimeHourlyRate = roundMoney(input.overtimeHourlyRate);
+    const shiftAmount = roundMoney(shiftCount * shiftRate);
+    const overtimeAmount = roundMoney(input.overtimeHours * overtimeHourlyRate);
+    const values = { projectId: input.projectId, machineId: input.machineId, occurredOn: toBusinessDate(input.occurredOn), operatorUserId, shiftCount: String(shiftCount), shiftRate: String(shiftRate), workHours: String(roundMoney(input.workHours)), overtimeHours: String(roundMoney(input.overtimeHours)), overtimeHourlyRate: String(overtimeHourlyRate), shiftAmount: String(shiftAmount), overtimeAmount: String(overtimeAmount), outputAmount: String(roundMoney(input.outputAmount)), driverWageAmount: String(roundMoney(input.driverWageAmount)), driverNameSnapshot: operator?.name ?? machine.driverName ?? null, remarks: input.remarks?.trim() || null };
     if (existing) await db.update(machineDailyOperations).set(values).where(eq(machineDailyOperations.id, existing.id));
     else await db.insert(machineDailyOperations).values({ ...values, status: "draft", createdBy: user.id });
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "update_daily_operation" : "create_daily_operation", targetType: "machine_daily_operation", targetId: `${input.machineId}:${input.occurredOn}`, summary: `${existing ? "更新" : "录入"}机械日作业：${machine.name} ${input.occurredOn}，产值 ¥${roundMoney(input.outputAmount)}` });
