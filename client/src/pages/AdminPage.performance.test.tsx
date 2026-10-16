@@ -21,4 +21,15 @@ describe("超级管理后台首屏依赖", () => {
     expect(adminPage).not.toContain('import NotificationChannelSettings from "@/components/NotificationChannelSettings"');
     expect(adminPage).toContain("正在加载短信与通知通道配置…");
   });
+
+  it("低频财务与柴油打印预览不进入后台首屏静态依赖", () => {
+    const adminPage = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(adminPage).toContain('lazy(() => import("@/components/DieselRefuelPrintDialog"))');
+    expect(adminPage).toContain('lazy(() => import("@/components/PaymentAccountBillPrintDialog")');
+    expect(adminPage).toContain('lazy(() => import("@/components/FinancialLedgerPrintPreviewDialogs")');
+    expect(adminPage).not.toContain('import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog"');
+    expect(adminPage).not.toContain('import { PaymentAccountBillPrintDialog } from "@/components/PaymentAccountBillPrintDialog"');
+    expect(adminPage).not.toContain('import { FinancialLedgerPrintPreviewDialogs } from "@/components/FinancialLedgerPrintPreviewDialogs"');
+  });
 });

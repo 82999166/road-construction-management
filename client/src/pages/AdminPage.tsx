@@ -7,9 +7,7 @@ import { getBusinessWorkspaceProjectState, getDepartmentScopePickerState, isInli
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
-import DieselRefuelPrintDialog, { type DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
-import { PaymentAccountBillPrintDialog } from "@/components/PaymentAccountBillPrintDialog";
-import { FinancialLedgerPrintPreviewDialogs } from "@/components/FinancialLedgerPrintPreviewDialogs";
+import type { DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -75,6 +73,10 @@ const MachinePaymentSettlementManager = lazy(() => import("@/components/MachineP
 const SubcontractPaymentSettlementManager = lazy(() => import("@/components/SubcontractPaymentSettlementManager"));
 const TaxAccountingHandoffManager = lazy(() => import("@/components/TaxAccountingHandoffManager"));
 const AdminAuditWorkspace = lazy(() => import("@/components/AdminAuditWorkspace"));
+/** 打印预览仅在财务或柴油管理中主动打开，避免计入后台常驻初始包。 */
+const DieselRefuelPrintDialog = lazy(() => import("@/components/DieselRefuelPrintDialog"));
+const PaymentAccountBillPrintDialog = lazy(() => import("@/components/PaymentAccountBillPrintDialog").then(module => ({ default: module.PaymentAccountBillPrintDialog })));
+const FinancialLedgerPrintPreviewDialogs = lazy(() => import("@/components/FinancialLedgerPrintPreviewDialogs").then(module => ({ default: module.FinancialLedgerPrintPreviewDialogs })));
 const LaborWorkspaceShell = lazy(() => import("@/components/LaborWorkspaceShell"));
 const LaborWorkspaceLoader = lazy(() => import("@/components/LaborWorkspaceLoader"));
 const LaborCheckInLedger = lazy(() => import("@/components/LaborCheckInLedger"));
