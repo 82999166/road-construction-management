@@ -15,4 +15,11 @@ describe("生产静态资源缓存与单页应用回退", () => {
     expect(source).toContain('if (req.path.startsWith("/assets/"))');
     expect(source).toContain('res.status(404).setHeader("Cache-Control", "no-store").end()');
   });
+
+  it("自托管 CJS 包使用明确的运行时目录，不依赖会被 CJS 清空的 import.meta", () => {
+    const source = readFileSync(new URL("./_core/vite.ts", import.meta.url), "utf8");
+    expect(source).toContain('const runtimeDir = typeof __dirname === "string" ? __dirname : process.cwd()');
+    expect(source).toContain('path.resolve(process.cwd(), "client", "index.html")');
+    expect(source).not.toContain("import.meta.dirname");
+  });
 });

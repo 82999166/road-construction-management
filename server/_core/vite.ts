@@ -29,12 +29,9 @@ export async function setupVite(app: Express, server: Server) {
     const url = req.originalUrl;
 
     try {
-      const clientTemplate = path.resolve(
-        import.meta.dirname,
-        "../..",
-        "client",
-        "index.html"
-      );
+      // 开发命令始终以项目根目录运行。避免 ESM 目录元信息在 CJS 自托管构建中被清空，
+      // 从而让开发和生产路径解析采用明确、可预测的边界。
+      const clientTemplate = path.resolve(process.cwd(), "client", "index.html");
 
       // always reload the index.html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
@@ -52,7 +49,9 @@ export async function setupVite(app: Express, server: Server) {
 }
 
 export function serveStatic(app: Express) {
-  const runtimeDir = typeof import.meta.dirname === "string" ? import.meta.dirname : process.cwd();
+  // 自托管 CJS 包的入口位于 dist/index.cjs，__dirname 即 dist 目录；
+  // 原生 ESM/测试环境没有 __dirname 时再回退当前工作目录。
+  const runtimeDir = typeof __dirname === "string" ? __dirname : process.cwd();
   const distPath = process.env.STATIC_PUBLIC_DIR
     ? path.resolve(process.env.STATIC_PUBLIC_DIR)
     : process.env.NODE_ENV === "development"
