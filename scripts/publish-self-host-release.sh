@@ -55,13 +55,11 @@ upload_via_ssh() {
   local source_path="$1"
   local remote_path="$2"
   local upload_sentinel="__YX_RELEASE_UPLOAD_END__"
-  local upload_command="temp_upload=\$(mktemp); cleanup_upload() { rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
   if [[ -n "$ssh_key_path" ]]; then
-    base64 -w 0 "$source_path" | {
-      cat
-      printf '\n%s\n' "$upload_sentinel"
-    } | run_remote_ssh "$upload_command"
+    # 无终端密钥通道以 SSH EOF 表示上传结束，避免大包被 read 单行缓冲截断。
+    base64 -w 0 "$source_path" | run_remote_ssh "base64 -d > '$remote_path'"
   else
+    local upload_command="temp_upload=\$(mktemp); cleanup_upload() { rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
     base64 -w 0 "$source_path" | {
       cat
       printf '\n%s\n' "$upload_sentinel"
