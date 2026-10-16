@@ -5,10 +5,11 @@ import { execFileSync } from "node:child_process";
 
 const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const sourceRoot = join(projectRoot, "desktop-bridge");
-const stagingRoot = join("/tmp", "utrust-first-install-v12");
+const stagingRoot = join("/tmp", "utrust-first-install-v13");
 const outputRoot = process.env.UTRUST_PACKAGE_OUTPUT_DIR || "/home/ubuntu/webdev-static-assets";
-const outputFile = join(outputRoot, "utrust-bridge-first-install-v12-20260904.zip");
+const outputFile = join(outputRoot, "utrust-bridge-first-install-v13-20261016.zip");
 const files = [
+  "安装写卡桥接.cmd",
   "install-utrust-bridge.ps1",
   "upgrade_utrust_bridge.ps1",
   "utrust_local_bridge.ps1",
@@ -40,8 +41,8 @@ for (const name of files) {
   writeFileSync(destinationPath, bytes);
 }
 const manifest = Object.fromEntries(files.map(name => [name, sha256(readFileSync(join(stagingRoot, name)))]));
-writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v12", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
-writeFileSync(join(stagingRoot, "README-首次安装.txt"), "请以管理员权限运行 install-utrust-bridge.ps1。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
+writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v13", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
+writeFileSync(join(stagingRoot, "README-首次安装.txt"), "推荐：双击“安装写卡桥接.cmd”，并在系统权限窗口选择“是”。如需使用 PowerShell，请以管理员身份打开后运行：.\\install-utrust-bridge.ps1。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
 mkdirSync(outputRoot, { recursive: true });
 rmSync(outputFile, { force: true });
 if (process.platform === "win32") {

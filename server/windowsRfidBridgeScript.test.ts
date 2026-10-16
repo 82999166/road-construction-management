@@ -191,6 +191,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
 
   it("首次安装脚本必须仅保存非敏感本机配置、检查 Windows 环境并注册当前用户登录自启动", () => {
     const installer = readFileSync(new URL("../desktop-bridge/install-utrust-bridge.ps1", import.meta.url), "utf8");
+    const doubleClickLauncher = readFileSync(new URL("../desktop-bridge/安装写卡桥接.cmd", import.meta.url), "utf8");
     const packer = readFileSync(new URL("../scripts/package-utrust-first-install.mjs", import.meta.url), "utf8");
     expect(installer).toContain('$PSVersionTable.PSVersion.Major -lt 5');
     expect(installer).toContain('System32\\winscard.dll');
@@ -200,9 +201,14 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(installer).toContain("server_issued_short_lived_not_persisted");
     expect(installer).toContain("tokenPersisted = $false");
     expect(installer).not.toContain("bridgeToken =");
-    for (const requiredFile of ["install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
+    expect(doubleClickLauncher).toContain("install-utrust-bridge.ps1");
+    expect(doubleClickLauncher).toContain("-Verb RunAs");
+    expect(doubleClickLauncher).toContain("-ExecutionPolicy Bypass");
+    expect(doubleClickLauncher).not.toContain("bridgeToken");
+    for (const requiredFile of ["安装写卡桥接.cmd", "install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
       expect(packer).toContain(`"${requiredFile}"`);
     }
+    expect(packer).toContain("utrust-first-install-v13");
     expect(packer).toContain("utf8Bom");
   });
 });

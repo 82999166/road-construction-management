@@ -29,8 +29,9 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain('fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"');
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
-    expect(source).toContain('const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v12-20260904_c9a2c597.zip"');
-    expect(source).toContain("安装写卡依赖");
+    expect(source).toContain('const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v13-20261016_47c0eab8.zip"');
+    expect(source).toContain("安装写卡桥接.cmd");
+    expect(source).toContain("下载一键安装包");
     expect(source).toContain('window.open(RFID_FIRST_INSTALL_PACKAGE_URL, "_blank", "noopener,noreferrer")');
   });
 });
