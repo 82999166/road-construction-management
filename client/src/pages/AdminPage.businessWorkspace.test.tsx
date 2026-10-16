@@ -569,7 +569,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("风险预警台账与管理提醒");
     expect(source).toContain("生成 AI 管理摘要");
     expect(source).toContain("按成本类别分析汇总");
-    expect(source).toContain("生活开支、柴油、月度/临时工资、机械、车辆运输、采购及其他开支");
+    expect(source).toContain("完整展示生活开支、柴油油料、工资劳务、机械成本、车辆与运输、采购材料及其他开支");
     expect(source).toContain("核定油箱容量（L）");
     expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
   });
@@ -596,6 +596,17 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("导出小类目汇总");
     expect(source).toContain("riskFinanceAnalysis.data?.subcategories");
     expect(source).toContain("采购订单应付与实际现金结算继续分开处理");
+  });
+
+  it("完整展示支出分类，并支持点击分类后按来源、状态、日期和关键词下钻真实明细", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("完整展示生活开支、柴油油料、工资劳务、机械成本、车辆与运输、采购材料及其他开支");
+    expect(source).toContain("trpc.projectRisk.financeCategoryDetails.useQuery");
+    expect(source).toContain("项目支出分类明细");
+    expect(source).toContain("查看全部明细");
+    expect(source).toContain("开始日期（留空为当前会计期间）");
+    expect(source).toContain("导出当前明细");
   });
 
   it("在财务工作区提供封存日期锁定、授权反结账原因与版本快照显示", () => {

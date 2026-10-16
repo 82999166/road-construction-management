@@ -406,7 +406,82 @@ async function getFinanceCategoryAnalysis(projectId: number, period: string) {
   const categories = Array.from(buckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
   const subcategories = Array.from(subcategoryBuckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
   const expenseAmount = round(categories.reduce((total, item) => total + item.amount, 0));
-  return { period, projectId, expenseAmount, categories: categories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })), subcategories: subcategories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })) };
+  return { period, projectId, expenseAmount, categories: Array.from(buckets.values()).map(item => ({ ...item, amount: round(item.amount), sources: Array.from(item.sources), percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })).sort((a, b) => b.amount - a.amount), subcategories: subcategories.map(item => ({ ...item, percentage: expenseAmount ? round(item.amount / expenseAmount * 100, 2) : 0 })) };
+}
+
+const FINANCE_DETAIL_SOURCES = ["finance_record", "diesel_refuel", "payroll_statement", "daily_wage", "purchase_order", "machine_cost", "machine_payment_settlement", "asset_maintenance", "transport_settlement"] as const;
+const FINANCE_DETAIL_SOURCE_LABELS: Record<(typeof FINANCE_DETAIL_SOURCES)[number], string> = {
+  finance_record: "财务流水",
+  diesel_refuel: "柴油领用",
+  payroll_statement: "月度工资",
+  daily_wage: "临时日结工资",
+  purchase_order: "采购订单",
+  machine_cost: "机械成本",
+  machine_payment_settlement: "机械付款结算",
+  asset_maintenance: "车辆/机械维修保养",
+  transport_settlement: "运输结算单",
+};
+const FINANCE_DETAIL_STATUSES = ["draft", "reviewing", "submitted", "approved", "confirmed", "received", "closed", "settled", "unpaid", "partial", "paid"] as const;
+const financeCategoryDetailInput = z.object({
+  projectId: z.number().int().positive(),
+  period: periodSchema,
+  category: z.enum(["living", "diesel", "payroll", "machinery", "vehicle_transport", "purchasing", "other"]).optional(),
+  source: z.enum(FINANCE_DETAIL_SOURCES).optional(),
+  status: z.enum(FINANCE_DETAIL_STATUSES).optional(),
+  dateFrom: businessDateSchema.optional(),
+  dateTo: businessDateSchema.optional(),
+  keyword: z.string().trim().max(100).optional(),
+});
+
+/**
+ * 成本分类明细严格沿用分类汇总的权威业务来源与排重规则，供后台按分类下钻。
+ * 只返回单据号、业务时间、金额、状态和必要说明，不返回付款账户、手机号或影像字节。
+ */
+async function getFinanceCategoryDetails(input: z.infer<typeof financeCategoryDetailInput>) {
+  const { db } = await getProjectOrThrow(input.projectId);
+  const range = monthRange(input.period);
+  const [financeRows, dieselRows, payrollRows, dailyWageRows, purchaseRows, machineCosts, machinePaymentSettlementRows, maintenanceRows, transportSettlementRows] = await Promise.all([
+    db.select({ id: financialRecords.id, recordNo: financialRecords.recordNo, category: financialRecords.category, sourceType: financialRecords.sourceType, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus, occurredAt: financialRecords.occurredAt, remarks: financialRecords.remarks }).from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.direction, "expense"), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))),
+    db.select({ id: dieselRefuelRecords.id, recordNo: dieselRefuelRecords.recordNo, amount: dieselRefuelRecords.amount, refueledAt: dieselRefuelRecords.refueledAt, status: dieselRefuelRecords.status, supplyMethod: dieselRefuelRecords.supplyMethod, stationOrSupplierName: dieselRefuelRecords.stationOrSupplierName, remarks: dieselRefuelRecords.remarks }).from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
+    db.select({ id: payrollStatements.id, period: payrollStatements.period, actualAmount: payrollStatements.actualAmount, status: payrollStatements.status, paymentReference: payrollStatements.paymentReference, paidAt: payrollStatements.paidAt, reviewedAt: payrollStatements.reviewedAt, createdAt: payrollStatements.createdAt }).from(payrollStatements).where(and(eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period))),
+    db.select({ id: temporaryDailyWageSettlements.id, settlementDate: temporaryDailyWageSettlements.settlementDate, actualAmount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status, paymentReference: temporaryDailyWageSettlements.paymentReference, remarks: temporaryDailyWageSettlements.remarks }).from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.projectId, input.projectId), gte(temporaryDailyWageSettlements.settlementDate, range.start), lt(temporaryDailyWageSettlements.settlementDate, range.endExclusive))),
+    db.select({ id: purchaseOrders.id, orderNo: purchaseOrders.orderNo, amount: purchaseOrders.amount, orderedAt: purchaseOrders.orderedAt, status: purchaseOrders.status, itemDescription: purchaseOrders.itemDescription, hasInvoice: purchaseOrders.invoiceEvidenceId }).from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
+    db.select({ id: machineCostRecords.id, costType: machineCostRecords.costType, amount: machineCostRecords.amount, occurredAt: machineCostRecords.occurredAt, dieselRefuelRecordId: machineCostRecords.dieselRefuelRecordId, remarks: machineCostRecords.remarks, status: machineCostRecords.status }).from(machineCostRecords).where(and(eq(machineCostRecords.projectId, input.projectId), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+    db.select({ id: machinePaymentSettlements.id, settlementNo: machinePaymentSettlements.settlementNo, netPayableAmount: machinePaymentSettlements.netPayableAmount, paymentDate: machinePaymentSettlements.paymentDate, createdAt: machinePaymentSettlements.createdAt, status: machinePaymentSettlements.status, remarks: machinePaymentSettlements.remarks }).from(machinePaymentSettlements).where(and(eq(machinePaymentSettlements.projectId, input.projectId), eq(machinePaymentSettlements.period, input.period))),
+    db.select({ id: assetMaintenanceRecords.id, assetType: assetMaintenanceRecords.assetType, costCategory: assetMaintenanceRecords.costCategory, amount: assetMaintenanceRecords.amount, occurredAt: assetMaintenanceRecords.occurredAt, serviceProvider: assetMaintenanceRecords.serviceProvider, remarks: assetMaintenanceRecords.remarks, status: assetMaintenanceRecords.status }).from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.projectId, input.projectId), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+    db.select({ id: transportVehicleSettlements.id, settlementNo: transportVehicleSettlements.settlementNo, netPayableAmount: transportVehicleSettlements.netPayableAmount, periodEnd: transportVehicleSettlements.periodEnd, paymentDate: transportVehicleSettlements.paymentDate, status: transportVehicleSettlements.status, remarks: transportVehicleSettlements.remarks }).from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, input.projectId), gte(transportVehicleSettlements.periodEnd, range.start), lt(transportVehicleSettlements.periodEnd, range.endExclusive))),
+  ]);
+  type DetailRow = { id: string; category: string; source: (typeof FINANCE_DETAIL_SOURCES)[number]; documentNo: string; occurredAt: Date; subcategory: string; amount: number; status: string; details: string };
+  const rows: DetailRow[] = [
+    ...financeRows.filter(row => row.settlementStatus !== "void" && !["purchase_order_settlement", "machine_payment_settlement", "transport_vehicle_settlement"].includes(row.sourceType ?? "")).map(row => ({ id: `finance-${row.id}`, category: classifyFinanceCategory(row), source: "finance_record" as const, documentNo: row.recordNo, occurredAt: row.occurredAt, subcategory: row.category || "人工财务流水", amount: round(Number(row.amount)), status: row.settlementStatus, details: row.remarks || (row.sourceType ? `业务来源：${row.sourceType}` : "人工财务流水") })),
+    ...dieselRows.filter(row => row.status !== "void").map(row => ({ id: `diesel-${row.id}`, category: "diesel", source: "diesel_refuel" as const, documentNo: row.recordNo, occurredAt: row.refueledAt, subcategory: "柴油领用", amount: round(Number(row.amount)), status: row.status, details: `${row.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}${row.stationOrSupplierName ? ` · ${row.stationOrSupplierName}` : ""}${row.remarks ? ` · ${row.remarks}` : ""}` })),
+    ...payrollRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `payroll-${row.id}`, category: "payroll", source: "payroll_statement" as const, documentNo: `工资条 #${row.id}`, occurredAt: row.paidAt ?? row.reviewedAt ?? row.createdAt, subcategory: "已审核工资条", amount: round(Number(row.actualAmount)), status: row.status, details: `工资期间：${row.period}${row.paymentReference ? ` · 付款参考号：${row.paymentReference}` : ""}` })),
+    ...dailyWageRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `daily-wage-${row.id}`, category: "payroll", source: "daily_wage" as const, documentNo: `日结工资 #${row.id}`, occurredAt: row.settlementDate, subcategory: "已审核临时日结", amount: round(Number(row.actualAmount)), status: row.status, details: `${row.remarks || "临时日结工资"}${row.paymentReference ? ` · 付款参考号：${row.paymentReference}` : ""}` })),
+    ...purchaseRows.filter(row => ["confirmed", "received", "closed"].includes(row.status)).map(row => ({ id: `purchase-${row.id}`, category: "purchasing", source: "purchase_order" as const, documentNo: row.orderNo, occurredAt: row.orderedAt, subcategory: "已确认采购订单", amount: round(Number(row.amount)), status: row.status, details: `${row.itemDescription}${row.hasInvoice ? " · 已归档发票" : " · 未归档发票"}` })),
+    ...machineCosts.filter(row => row.status !== "void" && !row.dieselRefuelRecordId).map(row => ({ id: `machine-cost-${row.id}`, category: "machinery", source: "machine_cost" as const, documentNo: `机械成本 #${row.id}`, occurredAt: row.occurredAt, subcategory: row.costType === "repair" ? "机械维修" : row.costType === "overtime" ? "机械加班" : row.costType === "mobilization" ? "机械进退场" : "机械其他成本", amount: round(Number(row.amount)), status: row.status, details: row.remarks || "机械成本台账" })),
+    ...machinePaymentSettlementRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `machine-settlement-${row.id}`, category: "machinery", source: "machine_payment_settlement" as const, documentNo: row.settlementNo, occurredAt: row.paymentDate ?? row.createdAt, subcategory: "已审核机械付款结算", amount: round(Number(row.netPayableAmount)), status: row.status, details: row.remarks || "机械付款结算" })),
+    ...maintenanceRows.filter(row => row.status !== "void").map(row => ({ id: `maintenance-${row.id}`, category: row.assetType === "machine" ? "machinery" : "vehicle_transport", source: "asset_maintenance" as const, documentNo: `${row.assetType === "machine" ? "机械" : "车辆"}${row.costCategory === "repair" ? "维修" : "保养"} #${row.id}`, occurredAt: row.occurredAt, subcategory: row.assetType === "machine" ? "机械维修保养" : "车辆维修保养", amount: round(Number(row.amount)), status: row.status, details: `${row.serviceProvider || "未登记服务单位"}${row.remarks ? ` · ${row.remarks}` : ""}` })),
+    ...transportSettlementRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `transport-settlement-${row.id}`, category: "vehicle_transport", source: "transport_settlement" as const, documentNo: row.settlementNo, occurredAt: row.paymentDate ?? row.periodEnd, subcategory: "已审核运输结算", amount: round(Number(row.netPayableAmount)), status: row.status, details: row.remarks || "运输车辆结算" })),
+  ];
+  const dateFrom = input.dateFrom ? businessDateValue(input.dateFrom) : null;
+  const dateToExclusive = input.dateTo ? new Date(businessDateValue(input.dateTo).getTime() + 86_400_000) : null;
+  const keyword = input.keyword?.trim().toLowerCase() ?? "";
+  const filteredRows = rows.filter(row => {
+    if (input.category && row.category !== input.category) return false;
+    if (input.source && row.source !== input.source) return false;
+    if (input.status && row.status !== input.status) return false;
+    if (dateFrom && row.occurredAt < dateFrom) return false;
+    if (dateToExclusive && row.occurredAt >= dateToExclusive) return false;
+    return !keyword || `${row.documentNo} ${row.subcategory} ${row.details} ${FINANCE_DETAIL_SOURCE_LABELS[row.source]}`.toLowerCase().includes(keyword);
+  }).sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return {
+    period: input.period,
+    categories: Object.entries(FINANCE_CATEGORY_LABELS).map(([code, label]) => ({ code, label })),
+    sources: FINANCE_DETAIL_SOURCES.map(code => ({ code, label: FINANCE_DETAIL_SOURCE_LABELS[code] })),
+    statuses: Array.from(new Set(rows.map(row => row.status))).sort(),
+    records: filteredRows,
+    summary: { count: filteredRows.length, amount: round(filteredRows.reduce((sum, row) => sum + row.amount, 0)) },
+  };
 }
 
 export function safeParseBriefing(value: string | null | undefined) {
@@ -579,6 +654,12 @@ export const projectRiskRouter = router({
   financeCategoryAnalysis: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema })).query(async ({ ctx, input }) => {
     await assertSuperAdmin(ctx);
     return getFinanceCategoryAnalysis(input.projectId, input.period);
+  }),
+
+  /** 财务成本类别支持按来源、状态、日期与关键词受控下钻到真实业务单据。 */
+  financeCategoryDetails: protectedProcedure.input(financeCategoryDetailInput).query(async ({ ctx, input }) => {
+    await assertSuperAdmin(ctx);
+    return getFinanceCategoryDetails(input);
   }),
 
   generateBriefing: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema })).mutation(async ({ ctx, input }) => {
