@@ -5,10 +5,12 @@ import { inArray, lte } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
+  assetMaintenanceRecords,
   contractTaxRegistrations,
   crossRegionConstructionTaxLedgers,
   dailyAccountingClosureEvents,
   dailyAccountingClosures,
+  dieselRefuelRecords,
   financialInvoiceOriginals,
   financialInvoices,
   financialRecords,
@@ -18,6 +20,7 @@ import {
   measurementTakeoffEvidences,
   measurementTakeoffRecords,
   laborWorkers,
+  machineCostRecords,
   outsourceContracts,
   payrollStatements,
   payrollTaxWithholdingEntries,
@@ -32,6 +35,8 @@ import {
   taxEntityProfiles,
   taxHandoffBatches,
   temporaryDailyWageSettlements,
+  transportTrips,
+  transportVehicleSettlements,
   users,
 } from "../../drizzle/schema";
 import {
@@ -2055,5 +2060,46 @@ export const financeRouter = router({
     const cashInflowAmount = roundMoney(records.filter(item => item.direction === "income" && item.settlementStatus !== "void" && (item.sourceType === "measurement_payment" || (item.sourceType !== "measurement_claim" && item.settlementStatus === "paid"))).reduce((sum, item) => sum + Number(item.amount), 0));
     const cashOutflowAmount = roundMoney(records.filter(item => item.direction === "expense" && (item.settlementStatus === "paid" || item.sourceType === "purchase_order_settlement")).reduce((sum, item) => sum + Number(item.amount), 0));
     return { incomeAmount, expenseAmount, profitAmount: roundMoney(incomeAmount - expenseAmount), receivableAmount, payableAmount, cashInflowAmount, cashOutflowAmount, netCashFlowAmount: roundMoney(cashInflowAmount - cashOutflowAmount), records };
+  }),
+
+  /**
+   * 财务页面的真实业务数据覆盖清单。资金总账、柴油、工资、机械、维修、采购与运输的
+   * 业务事实分层展示，绝不把没有共享来源编号的跨模块记录强行相加，避免产生虚假的“合计”。
+   */
+  businessSummary: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: periodSchema })).query(async ({ ctx, input }) => {
+    await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { period: input.period, sources: [], pendingTransport: { count: 0, amount: 0 }, settledTransport: { count: 0, amount: 0 } };
+    const range = getMonthRange(input.period);
+    const [ledgerRows, purchaseRows, dieselRows, payrollRows, dailyWageRows, machineRows, maintenanceRows, tripRows, settlementRows] = await Promise.all([
+      db.select({ id: financialRecords.id, direction: financialRecords.direction, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus }).from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))),
+      db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount, status: purchaseOrders.status }).from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
+      db.select({ id: dieselRefuelRecords.id, amount: dieselRefuelRecords.amount, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
+      db.select({ id: payrollStatements.id, amount: payrollStatements.actualAmount, status: payrollStatements.status }).from(payrollStatements).where(and(eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period))),
+      db.select({ id: temporaryDailyWageSettlements.id, amount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status }).from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.projectId, input.projectId), gte(temporaryDailyWageSettlements.settlementDate, range.start), lt(temporaryDailyWageSettlements.settlementDate, range.endExclusive))),
+      db.select({ id: machineCostRecords.id, amount: machineCostRecords.amount, status: machineCostRecords.status, dieselRefuelRecordId: machineCostRecords.dieselRefuelRecordId }).from(machineCostRecords).where(and(eq(machineCostRecords.projectId, input.projectId), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+      db.select({ id: assetMaintenanceRecords.id, amount: assetMaintenanceRecords.amount, status: assetMaintenanceRecords.status }).from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.projectId, input.projectId), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+      db.select({ id: transportTrips.id, amount: transportTrips.calculatedAmount, status: transportTrips.status }).from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), gte(transportTrips.startAt, range.start), lt(transportTrips.startAt, range.endExclusive))),
+      db.select({ id: transportVehicleSettlements.id, amount: transportVehicleSettlements.netPayableAmount, status: transportVehicleSettlements.status }).from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, input.projectId), gte(transportVehicleSettlements.periodEnd, range.start), lt(transportVehicleSettlements.periodEnd, range.endExclusive))),
+    ]);
+    const amountOf = (rows: Array<{ amount: string | number | null }>) => roundMoney(rows.reduce((sum, row) => sum + Number(row.amount ?? 0), 0));
+    const statusText = (rows: Array<{ status: string }>) => Array.from(rows.reduce((counts, row) => counts.set(row.status, (counts.get(row.status) ?? 0) + 1), new Map<string, number>()).entries()).map(([status, count]) => `${status}:${count}`).join("、") || "无";
+    const valid = <T extends { status: string }>(rows: T[]) => rows.filter(row => row.status !== "void");
+    const nonDieselMachineRows = machineRows.filter(row => !row.dieselRefuelRecordId);
+    const sources = [
+      { code: "financial_ledger", label: "资金总账流水", recordCount: ledgerRows.length, effectiveCount: ledgerRows.filter(row => row.settlementStatus !== "void").length, amount: amountOf(ledgerRows.filter(row => row.direction === "expense" && row.settlementStatus !== "void")), accountingLink: "已进入资金总账", statusSummary: statusText(ledgerRows.map(row => ({ status: row.settlementStatus }))) },
+      { code: "purchase", label: "采购订单", recordCount: purchaseRows.length, effectiveCount: valid(purchaseRows).length, amount: amountOf(valid(purchaseRows)), accountingLink: "付款后进入资金总账；未付款作为应付管理", statusSummary: statusText(purchaseRows) },
+      { code: "diesel", label: "柴油领用", recordCount: dieselRows.length, effectiveCount: valid(dieselRows).length, amount: amountOf(valid(dieselRows)), accountingLink: "独立油料台账；关联机械油料不重复计入", statusSummary: statusText(dieselRows) },
+      { code: "payroll", label: "月度工资", recordCount: payrollRows.length, effectiveCount: payrollRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(payrollRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "工资台账；付款凭证由劳资流程管理", statusSummary: statusText(payrollRows) },
+      { code: "daily_wage", label: "临时日结工资", recordCount: dailyWageRows.length, effectiveCount: dailyWageRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(dailyWageRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "工资台账；付款凭证由劳资流程管理", statusSummary: statusText(dailyWageRows) },
+      { code: "machine", label: "机械成本", recordCount: nonDieselMachineRows.length, effectiveCount: valid(nonDieselMachineRows).length, amount: amountOf(valid(nonDieselMachineRows)), accountingLink: "独立机械成本；已关联柴油不重复计入", statusSummary: statusText(nonDieselMachineRows) },
+      { code: "maintenance", label: "车辆/机械维修保养", recordCount: maintenanceRows.length, effectiveCount: valid(maintenanceRows).length, amount: amountOf(valid(maintenanceRows)), accountingLink: "独立维修保养台账", statusSummary: statusText(maintenanceRows) },
+      { code: "transport_settlement", label: "运输结算单", recordCount: settlementRows.length, effectiveCount: settlementRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(settlementRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "审核/付款按运输结算流程办理", statusSummary: statusText(settlementRows) },
+    ];
+    const activeTrips = tripRows.filter(row => row.status !== "void");
+    const pendingTransport = activeTrips.filter(row => row.status !== "settled");
+    const settledTransport = activeTrips.filter(row => row.status === "settled");
+    return { period: input.period, sources, pendingTransport: { count: pendingTransport.length, amount: amountOf(pendingTransport) }, settledTransport: { count: settledTransport.length, amount: amountOf(settledTransport) } };
   }),
 });

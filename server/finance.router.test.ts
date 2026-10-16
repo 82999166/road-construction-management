@@ -609,4 +609,30 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     const result = await financeRouter.createCaller(createAuthContext()).summary({ projectId: 10, period: "2026-07" });
     expect(result).toMatchObject({ incomeAmount: 1000, expenseAmount: 100, profitAmount: 900, receivableAmount: 600, cashInflowAmount: 400, cashOutflowAmount: 100, netCashFlowAmount: 300 });
   });
+
+  it("真实业务台账分层展示采购、油料、工资、机械和运输，关联机械油料不重复计入", async () => {
+    vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
+    const responses = [
+      [{ id: 1, direction: "expense", amount: "120.00", settlementStatus: "paid" }],
+      [{ id: 2, amount: "500.00", status: "confirmed" }],
+      [{ id: 3, amount: "80.00", status: "approved" }],
+      [{ id: 4, amount: "1000.00", status: "paid" }],
+      [{ id: 5, amount: "180.00", status: "approved" }],
+      [{ id: 6, amount: "80.00", status: "approved", dieselRefuelRecordId: 3 }, { id: 7, amount: "90.00", status: "approved", dieselRefuelRecordId: null }],
+      [{ id: 8, amount: "60.00", status: "approved" }],
+      [{ id: 9, amount: "47.59", status: "verified" }],
+      [{ id: 10, amount: "47.59", status: "approved" }],
+    ];
+    let index = 0;
+    vi.mocked(getDb).mockResolvedValue({
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => responses[index++] ?? []) })) })),
+    } as never);
+    const result = await financeRouter.createCaller(createAuthContext()).businessSummary({ projectId: 10, period: "2026-10" });
+    expect(result.pendingTransport).toEqual({ count: 1, amount: 47.59 });
+    expect(result.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "diesel", recordCount: 1, amount: 80 }),
+      expect.objectContaining({ code: "machine", recordCount: 1, amount: 90 }),
+      expect.objectContaining({ code: "transport_settlement", recordCount: 1, amount: 47.59 }),
+    ]));
+  });
 });

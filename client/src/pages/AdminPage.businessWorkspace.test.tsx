@@ -569,7 +569,7 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("风险预警台账与管理提醒");
     expect(source).toContain("生成 AI 管理摘要");
     expect(source).toContain("按成本类别分析汇总");
-    expect(source).toContain("生活开支、柴油、工资、机械、车辆运输、采购及其他开支");
+    expect(source).toContain("生活开支、柴油、月度/临时工资、机械、车辆运输、采购及其他开支");
     expect(source).toContain("核定油箱容量（L）");
     expect(source).toContain("trpc.projectRisk.financeCategoryAnalysis.useQuery");
   });

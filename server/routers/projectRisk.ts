@@ -12,13 +12,16 @@ import {
   machines,
   notificationRecords,
   payrollStatements,
+  purchaseOrders,
   projectRiskAlerts,
   projectRiskBriefings,
   projectRiskRules,
   projects,
   systemRoles,
   transportTrips,
+  transportVehicleSettlements,
   transportVehicles,
+  temporaryDailyWageSettlements,
   userRoleAssignments,
   users,
 } from "../../drizzle/schema";
@@ -362,12 +365,15 @@ export async function runOverdueRiskEscalationForHeartbeatTask(taskUid: string) 
 async function getFinanceCategoryAnalysis(projectId: number, period: string) {
   const { db } = await getProjectOrThrow(projectId);
   const range = monthRange(period);
-  const [financeRows, dieselRows, payrollRows, machineCosts, maintenanceRows] = await Promise.all([
+  const [financeRows, dieselRows, payrollRows, dailyWageRows, purchaseRows, machineCosts, maintenanceRows, transportSettlements] = await Promise.all([
     db.select({ id: financialRecords.id, category: financialRecords.category, sourceType: financialRecords.sourceType, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus, occurredAt: financialRecords.occurredAt }).from(financialRecords).where(and(eq(financialRecords.projectId, projectId), eq(financialRecords.direction, "expense"), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))),
     db.select({ id: dieselRefuelRecords.id, amount: dieselRefuelRecords.amount, refueledAt: dieselRefuelRecords.refueledAt, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, projectId), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
     db.select({ id: payrollStatements.id, amount: payrollStatements.actualAmount, status: payrollStatements.status }).from(payrollStatements).where(and(eq(payrollStatements.projectId, projectId), eq(payrollStatements.period, period))),
+    db.select({ id: temporaryDailyWageSettlements.id, amount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status }).from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.projectId, projectId), gte(temporaryDailyWageSettlements.settlementDate, range.start), lt(temporaryDailyWageSettlements.settlementDate, range.endExclusive))),
+    db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount, status: purchaseOrders.status }).from(purchaseOrders).where(and(eq(purchaseOrders.projectId, projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
     db.select({ id: machineCostRecords.id, costType: machineCostRecords.costType, amount: machineCostRecords.amount, occurredAt: machineCostRecords.occurredAt, dieselRefuelRecordId: machineCostRecords.dieselRefuelRecordId, status: machineCostRecords.status }).from(machineCostRecords).where(and(eq(machineCostRecords.projectId, projectId), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
     db.select({ id: assetMaintenanceRecords.id, assetType: assetMaintenanceRecords.assetType, amount: assetMaintenanceRecords.amount, occurredAt: assetMaintenanceRecords.occurredAt, status: assetMaintenanceRecords.status }).from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.projectId, projectId), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
+    db.select({ id: transportVehicleSettlements.id, amount: transportVehicleSettlements.netPayableAmount, status: transportVehicleSettlements.status }).from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, projectId), gte(transportVehicleSettlements.periodEnd, range.start), lt(transportVehicleSettlements.periodEnd, range.endExclusive))),
   ]);
   const buckets = new Map(Object.keys(FINANCE_CATEGORY_LABELS).map(code => [code, { code, label: FINANCE_CATEGORY_LABELS[code], amount: 0, recordCount: 0, sources: new Set<string>() }]));
   const subcategoryBuckets = new Map<string, { code: string; parentCode: string; label: string; amount: number; recordCount: number; sources: Set<string> }>();
@@ -386,11 +392,14 @@ async function getFinanceCategoryAnalysis(projectId: number, period: string) {
     bucket.sources.add(source);
     subcategoryBuckets.set(key, bucket);
   };
-  for (const row of financeRows.filter(row => row.settlementStatus !== "void")) { const code = classifyFinanceCategory(row); add(code, Number(row.amount), "财务流水"); addSubcategory(code, row.category || "人工财务流水", Number(row.amount), "财务流水"); }
+  for (const row of financeRows.filter(row => row.settlementStatus !== "void" && row.sourceType !== "purchase_order_settlement")) { const code = classifyFinanceCategory(row); add(code, Number(row.amount), "财务流水"); addSubcategory(code, row.category || "人工财务流水", Number(row.amount), "财务流水"); }
   for (const row of dieselRows.filter(row => row.status !== "void")) { add("diesel", Number(row.amount), "柴油领用"); addSubcategory("diesel", "柴油领用", Number(row.amount), "柴油领用"); }
   for (const row of payrollRows.filter(row => ["approved", "paid"].includes(row.status))) { add("payroll", Number(row.amount), "工资条"); addSubcategory("payroll", "已审核工资条", Number(row.amount), "工资条"); }
-  for (const row of machineCosts.filter(row => row.status !== "void")) { const code = row.costType === "fuel" ? "diesel" : "machinery"; const label = row.costType === "fuel" ? "机械油料" : row.costType === "repair" ? "机械维修" : row.costType === "overtime" ? "机械加班" : row.costType === "mobilization" ? "机械进退场" : "机械其他成本"; add(code, Number(row.amount), "机械成本"); addSubcategory(code, label, Number(row.amount), "机械成本"); }
+  for (const row of dailyWageRows.filter(row => ["approved", "paid"].includes(row.status))) { add("payroll", Number(row.amount), "临时日结"); addSubcategory("payroll", "已审核临时日结", Number(row.amount), "临时日结"); }
+  for (const row of purchaseRows.filter(row => ["confirmed", "received", "closed"].includes(row.status))) { add("purchasing", Number(row.amount), "采购订单"); addSubcategory("purchasing", "已确认采购订单", Number(row.amount), "采购订单"); }
+  for (const row of machineCosts.filter(row => row.status !== "void" && !row.dieselRefuelRecordId)) { const label = row.costType === "repair" ? "机械维修" : row.costType === "overtime" ? "机械加班" : row.costType === "mobilization" ? "机械进退场" : "机械其他成本"; add("machinery", Number(row.amount), "机械成本"); addSubcategory("machinery", label, Number(row.amount), "机械成本"); }
   for (const row of maintenanceRows.filter(row => row.status !== "void")) { const code = row.assetType === "machine" ? "machinery" : "vehicle_transport"; const label = row.assetType === "machine" ? "机械维修保养" : "车辆维修保养"; add(code, Number(row.amount), "维修保养"); addSubcategory(code, label, Number(row.amount), "维修保养"); }
+  for (const row of transportSettlements.filter(row => ["approved", "paid"].includes(row.status))) { add("vehicle_transport", Number(row.amount), "运输结算"); addSubcategory("vehicle_transport", "已审核运输结算", Number(row.amount), "运输结算"); }
   const categories = Array.from(buckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
   const subcategories = Array.from(subcategoryBuckets.values()).map(bucket => ({ ...bucket, amount: round(bucket.amount), sources: Array.from(bucket.sources) })).filter(bucket => bucket.amount > 0).sort((a, b) => b.amount - a.amount);
   const expenseAmount = round(categories.reduce((total, item) => total + item.amount, 0));
