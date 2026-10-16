@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { BellRing, CircleAlert, CircleCheck, MessageSquareText, Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -60,7 +61,7 @@ export default function NotificationChannelSettings() {
     });
     setForm(current => ({ ...current, smsEnabled: data.smsEnabled, smsProvider: data.smsProvider as "none" | "aliyun" | "tencent", smsModules: data.smsModules as ModuleCode[], aliyunSignName: data.aliyunSignName, aliyunTemplateCode: data.aliyunTemplateCode, smsEventTemplates: templates, tencentSdkAppId: data.tencentSdkAppId, tencentSignName: data.tencentSignName, tencentTemplateId: data.tencentTemplateId, officialEnabled: data.officialEnabled, officialModules: data.officialModules as ModuleCode[] }));
   }, [configuration.data]);
-  const save = trpc.admin.settings.saveNotificationChannelConfiguration.useMutation({ onSuccess: result => { toast.success(result.message); configuration.refetch(); }, onError: error => toast.error(error.message) });
+  const save = trpc.admin.settings.saveNotificationChannelConfiguration.useMutation({ onSuccess: result => { toast.success(result.message); configuration.refetch(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "通知渠道配置未完成，请稍后重试")) });
   const smsTestReadiness = trpc.admin.settings.inspectAliyunSmsNotificationReadiness.useQuery({ eventCode: smsTestEventCode }, { enabled: form.smsProvider === "aliyun" && form.smsEnabled });
   const sendSmsTest = trpc.admin.settings.sendAliyunSmsNotificationTest.useMutation({
     onSuccess: result => {
@@ -68,7 +69,7 @@ export default function NotificationChannelSettings() {
       else toast.error(`${result.message}${result.providerCode ? `（${result.providerCode}）` : ""}${result.auditLogId ? ` 审计编号：${result.auditLogId}` : ""}`);
       smsTestReadiness.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "通知渠道配置未完成，请稍后重试")),
   });
   const providerReady = form.smsProvider === "aliyun" ? configuration.data?.aliyunAccessKeyConfigured : form.smsProvider === "tencent" ? configuration.data?.tencentSecretConfigured : false;
   const usedEvents = new Set(form.smsEventTemplates.map(item => item.eventCode));

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime, toChinaDateInput } from "@/lib/businessTime";
 import { Printer } from "lucide-react";
@@ -39,7 +40,7 @@ export function DieselSummaryPrintDialog({ open, onOpenChange, projectId, projec
     const rows = result.records.map((record, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(formatChinaDateTime(record.refueledAt))}</td><td>${escapePrintHtml(record.recordNo)}</td><td>${escapePrintHtml(record.assetLabel)}</td><td>${record.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}</td><td>${escapePrintHtml(record.stationOrSupplierName || "—")}</td><td class="right">${record.liters.toFixed(3)} L</td><td class="right">${escapePrintHtml(money(record.appliedUnitPrice))}</td><td class="right">${escapePrintHtml(money(record.amount))}</td><td class="right">${record.meterReading === null ? "未记录" : record.meterReading}</td><td class="center">${record.deductFromFreight ? "是" : "否"}</td><td class="center">${escapePrintHtml(statusDisplay(record.status))}</td></tr>`).join("");
     try {
       openA4LandscapePrintDocument({ title: "柴油领用汇总表", bodyHtml: `<h1>柴油领用汇总表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　${escapePrintHtml(filterText)}</p><p class="sub">生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:11%">加油时间</th><th style="width:10%">单据号</th><th style="width:9%">资源</th><th style="width:9%">供油方式</th><th style="width:12%">加油站/供应商</th><th style="width:7%">油量</th><th style="width:8%">单价</th><th style="width:9%">金额</th><th style="width:8%">表数</th><th style="width:8%">运费扣油</th><th style="width:6%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="6">合计：记录 ${result.summary.recordCount} 笔，车辆 ${result.summary.vehicleCount} 台，机械 ${result.summary.machineCount} 台</td><td class="right">${result.summary.liters.toFixed(3)} L</td><td>—</td><td class="right">${escapePrintHtml(money(result.summary.amount))}</td><td>—</td><td class="right">${escapePrintHtml(money(result.summary.deductibleAmount))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
-    } catch (error) { alert(error instanceof Error ? error.message : "无法打开打印页"); }
+    } catch (error) { alert(getUserFacingErrorMessage(error, "无法打开柴油汇总打印页，请稍后重试")); }
   }
 
   return <Dialog open={open} onOpenChange={onOpenChange}>

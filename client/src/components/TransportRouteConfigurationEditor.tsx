@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TransportRouteSafetySettings } from "@/components/TransportRouteSafetySettings";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { AlertTriangle, MapPin, Pencil, Plus, Route, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -57,7 +58,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
       setSiteDraft(null);
       await Promise.all([utils.transport.listSites.invalidate(), utils.transport.listRoutePresets.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "运输路线配置未完成，请稍后重试")),
   });
   const saveRoute = trpc.transport.saveRoutePreset.useMutation({
     onSuccess: async () => {
@@ -65,7 +66,7 @@ export function TransportRouteConfigurationEditor({ projectId }: { projectId?: n
       setRouteDraft(null);
       await utils.transport.listRoutePresets.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "运输路线配置未完成，请稍后重试")),
   });
 
   if (!projectId) return null;

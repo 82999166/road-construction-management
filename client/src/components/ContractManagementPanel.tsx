@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { FileText, Plus, RefreshCw, FilePenLine } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,8 +42,8 @@ export default function ContractManagementPanel({ projects }: { projects: Projec
   const contracts = trpc.contract.list.useQuery(input, { enabled: Boolean(projectId), retry: false });
   const capabilities = trpc.contract.capabilities.useQuery(undefined, { retry: false });
   const utils = trpc.useUtils();
-  const save = trpc.contract.save.useMutation({ onSuccess: async () => { toast.success(form.id ? "合同台账已更新" : "外包合同已建立"); setDialogOpen(false); setForm(blank(projectId)); await utils.contract.list.invalidate(); }, onError: error => toast.error(error.message) });
-  const transition = trpc.contract.transition.useMutation({ onSuccess: async () => { toast.success("合同状态已更新"); await utils.contract.list.invalidate(); }, onError: error => toast.error(error.message) });
+  const save = trpc.contract.save.useMutation({ onSuccess: async () => { toast.success(form.id ? "合同台账已更新" : "外包合同已建立"); setDialogOpen(false); setForm(blank(projectId)); await utils.contract.list.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "合同操作未完成，请稍后重试")) });
+  const transition = trpc.contract.transition.useMutation({ onSuccess: async () => { toast.success("合同状态已更新"); await utils.contract.list.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "合同操作未完成，请稍后重试")) });
   const rows = contracts.data ?? [];
   const activeAmount = rows.filter(row => row.status === "active").reduce((sum, row) => sum + Number(row.contractAmount), 0);
   const openCreate = () => {

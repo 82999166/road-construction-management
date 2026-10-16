@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -20,14 +21,14 @@ export function TransportRouteSafetySettings({ projectId, compact = false, canCo
       toast.success("路线卸土安全阈值已保存");
       await utils.transport.listRoutePresets.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "运输安全规则保存未完成，请稍后重试")),
   });
   const saveSingleScanClose = trpc.transport.setNfcSingleScanCloseSetting.useMutation({
     onSuccess: async result => {
       toast.success(result.enabled ? "已开启刷卡发票单次闭环模式" : "已恢复刷卡装土、卸土确认的双刷闭环模式");
       await utils.transport.getNfcSingleScanCloseSetting.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "运输安全规则保存未完成，请稍后重试")),
   });
 
   useEffect(() => {

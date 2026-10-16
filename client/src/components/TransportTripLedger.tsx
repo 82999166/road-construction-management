@@ -10,6 +10,7 @@ import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { BarChart3, MapPinned, Printer, ReceiptText, Truck } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { getCardValidationStatusLabel, getSafeCardValidationReason } from "../../../shared/domain";
@@ -129,7 +130,7 @@ export default function TransportTripLedger({ filter, onFilterChange, trips, veh
         bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　期间：${escapePrintHtml(periodDescription)}　|　车牌：${escapePrintHtml(selectedVehicleLabel)}</p><p class="sub">路线：${escapePrintHtml(selectedRouteLabel)}　|　状态：${escapePrintHtml(selectedStatusLabel)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:10%">业务时间</th><th style="width:7%">车牌</th><th style="width:10%">运单号</th><th style="width:18%">运输路线</th><th style="width:6%">方量</th><th style="width:6%">里程</th><th style="width:8%">运价</th><th style="width:8%">应付运费</th><th style="width:8%">柴油扣款</th><th style="width:8%">净额</th><th style="width:8%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${printableTrips.length} 趟，去重车辆数 ${printOverview.vehicleIds.size} 辆</td><td class="right">${escapePrintHtml(decimal(printOverview.volume))}</td><td>—</td><td>—</td><td class="right">¥${escapePrintHtml(money(printOverview.gross))}</td><td class="right">¥${escapePrintHtml(money(printOverview.fuel))}</td><td class="right">¥${escapePrintHtml(money(printOverview.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
     } catch (error) {
-      alert(error instanceof Error ? error.message : "无法打开打印页");
+      alert(getUserFacingErrorMessage(error, "无法打开运输打印页，请稍后重试"));
     }
   };
 

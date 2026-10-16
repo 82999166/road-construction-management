@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { BadgeCheck, Calculator, FileText, MapPinned, Plus, Printer, Send, Stamp } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -33,12 +34,12 @@ export default function TaxComplianceControlPanel({ projectId, period }: { proje
   const [contractDraft, setContractDraft] = useState({ contractId: "", taxItem: "", taxBaseAmount: "", referenceTaxRate: "", professionallyConfirmedTaxAmount: "", paymentReference: "", reviewNote: "" });
   const [crossDraft, setCrossDraft] = useState({ projectRegistrationReference: "", revenueIncludingTaxAmount: "", subcontractDeductionAmount: "", subcontractDeductionReference: "", prepaidVatAmount: "", taxPaymentReference: "", reviewNote: "" });
   const invalidate = async () => { await utils.finance.taxWorkspace.invalidate({ projectId, period }); };
-  const payrollSave = trpc.finance.savePayrollTaxWithholdingEntry.useMutation({ onSuccess: async result => { toast.success(result.calculation.isResidentWageCalculation ? `已生成辅助测算，本期预计预扣 ${money(result.calculation.calculatedCurrentWithholding)}` : "已按真实工资来源保存待专业复核资料"); setPayrollOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const payrollTransition = trpc.finance.transitionPayrollTaxWithholdingEntry.useMutation({ onSuccess: async () => { toast.success("薪税资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(error.message) });
-  const contractSave = trpc.finance.saveContractTaxRegistration.useMutation({ onSuccess: async () => { toast.success("合同印花税资料已建立"); setContractOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const contractTransition = trpc.finance.transitionContractTaxRegistration.useMutation({ onSuccess: async () => { toast.success("合同税费资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(error.message) });
-  const crossSave = trpc.finance.saveCrossRegionConstructionTaxLedger.useMutation({ onSuccess: async () => { toast.success("跨地区预缴资料已保存"); setCrossOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const crossTransition = trpc.finance.transitionCrossRegionConstructionTaxLedger.useMutation({ onSuccess: async () => { toast.success("跨地区预缴资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(error.message) });
+  const payrollSave = trpc.finance.savePayrollTaxWithholdingEntry.useMutation({ onSuccess: async result => { toast.success(result.calculation.isResidentWageCalculation ? `已生成辅助测算，本期预计预扣 ${money(result.calculation.calculatedCurrentWithholding)}` : "已按真实工资来源保存待专业复核资料"); setPayrollOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
+  const payrollTransition = trpc.finance.transitionPayrollTaxWithholdingEntry.useMutation({ onSuccess: async () => { toast.success("薪税资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
+  const contractSave = trpc.finance.saveContractTaxRegistration.useMutation({ onSuccess: async () => { toast.success("合同印花税资料已建立"); setContractOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
+  const contractTransition = trpc.finance.transitionContractTaxRegistration.useMutation({ onSuccess: async () => { toast.success("合同税费资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
+  const crossSave = trpc.finance.saveCrossRegionConstructionTaxLedger.useMutation({ onSuccess: async () => { toast.success("跨地区预缴资料已保存"); setCrossOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
+  const crossTransition = trpc.finance.transitionCrossRegionConstructionTaxLedger.useMutation({ onSuccess: async () => { toast.success("跨地区预缴资料状态已更新"); setReceipt(null); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "税务辅助操作未完成，请稍后重试")) });
   const profile = workspace.data?.projectProfile;
   const pendingContracts = (workspace.data?.contracts ?? []).filter(contract => !(workspace.data?.contractTaxEntries ?? []).some(entry => entry.contractId === contract.id));
   const payrollRows = (workspace.data?.payrollTaxEntries ?? []).map(entry => { const worker = workspace.data?.workers?.find(item => item.id === entry.workerId); return { id: String(entry.id), cells: [worker?.realName ?? `人员#${entry.workerId}`, label[entry.incomeType], money(entry.sourceGrossIncome), money(entry.cumulativeTaxableIncome), entry.calculatedCurrentWithholding === null ? "不自动测算" : money(entry.calculatedCurrentWithholding), entry.externallyWithheldThisPeriod === null ? "未录入" : money(entry.externallyWithheldThisPeriod), label[entry.status]] }; });

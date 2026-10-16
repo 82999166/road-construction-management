@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import { summarizeLaborPayrollCategories, summarizePayrollAmounts } from "@/lib/laborPayrollMetrics";
@@ -943,7 +944,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(`日结已封存：${result.closingNo}`);
       await Promise.all([financeSummary.refetch(), financeInvoices.refetch(), dailyAccountingReport.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const reopenDailyAccount = trpc.finance.reopenDailyAccount.useMutation({
     onSuccess: async result => {
@@ -951,7 +952,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setFinanceReopenReason("");
       await Promise.all([financeSummary.refetch(), financeInvoices.refetch(), dailyAccountingReport.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const refreshDieselLedger = async () => {
     await Promise.all([dieselGuidelinePrices.refetch(), dieselRefuelRecords.refetch(), dieselPriceAlertRule.refetch(), dieselSupplierReconciliation.refetch(), financeSummary.refetch(), audits.refetch()]);
@@ -975,7 +976,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setDieselCameraStream(stream);
       setDieselCameraOpen(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "后置相机无法打开");
+      toast.error(getUserFacingErrorMessage(error, "后置相机无法打开，请检查浏览器权限后重试"));
     }
   };
   const captureDieselMeterPhoto = () => {
@@ -1003,11 +1004,11 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     void video.play().catch(() => undefined);
     return () => { if (video.srcObject === dieselCameraStream) video.srcObject = null; };
   }, [dieselCameraOpen, dieselCameraStream]);
-  const uploadDieselReceipt = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const uploadDieselReceipt = trpc.evidence.upload.useMutation({ onError: error => toast.error(getUserFacingErrorMessage(error)) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation();
   const saveDieselPriceAlertRule = trpc.admin.diesel.savePriceAlertRule.useMutation({
     onSuccess: async () => { toast.success("柴油油价异常预警阈值已保存"); await refreshDieselLedger(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveDieselGuidelinePrice = trpc.admin.diesel.saveGuidelinePrice.useMutation({
     onSuccess: async () => {
@@ -1016,7 +1017,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setDieselPriceForm(EMPTY_DIESEL_PRICE_FORM);
       await refreshDieselLedger();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveDieselRefuelRecord = trpc.admin.diesel.saveRefuelRecord.useMutation({
     onSuccess: async result => {
@@ -1027,7 +1028,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       resetDieselReceiptCapture();
       await refreshDieselLedger();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const submitDieselRefuel = async () => {
     try {
@@ -1098,7 +1099,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         status: dieselRefuelForm.status,
       });
     } catch (error) {
-      if (error instanceof Error) toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     }
   };
   const refreshBroadcasts = async () => { await Promise.all([broadcasts.refetch(), selectedBroadcastId ? broadcastDeliveries.refetch() : Promise.resolve()]); };
@@ -1110,15 +1111,15 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       publishBroadcast.mutate({ id: result.broadcastId });
       await refreshBroadcasts();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const reviewBroadcast = trpc.broadcast.review.useMutation({
     onSuccess: async result => { toast.success(`范围通知状态已更新为：${getBusinessStatusLabel(result.status)}`); await refreshBroadcasts(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const publishBroadcast = trpc.broadcast.publish.useMutation({
     onSuccess: async result => { toast.success(`群发处理完成：成功 ${result.deliveredCount}，失败 ${result.failedCount}`); await refreshBroadcasts(); },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const revokeWechatBinding = trpc.admin.wechatLogin.revoke.useMutation({
     onSuccess: async () => {
@@ -1126,7 +1127,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setWechatBindingActionTarget(null);
       await wechatLogins.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
 
   const [selectedRoleId, setSelectedRoleId] = useState<number>();
@@ -1403,7 +1404,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setOrganizationForm(EMPTY_ORGANIZATION_FORM);
       await Promise.all([organizations.refetch(), overview.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveProject = trpc.admin.project.save.useMutation({
     onSuccess: async () => {
@@ -1411,7 +1412,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setProjectForm(EMPTY_PROJECT_FORM);
       await Promise.all([projects.refetch(), overview.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const savePosition = trpc.admin.position.save.useMutation({
     onSuccess: async () => {
@@ -1419,7 +1420,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setPositionForm(EMPTY_POSITION_FORM);
       await Promise.all([positions.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveVehicle = trpc.admin.vehicle.save.useMutation({
     onSuccess: async data => {
@@ -1428,17 +1429,17 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setVehicleEditorOpen(false);
       await Promise.all([vehicles.refetch(), overview.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const revokeDriverWechatBinding = trpc.admin.vehicle.revokeDriverWechatBinding.useMutation({
     onSuccess: async () => {
       toast.success("司机微信绑定已解除；司机可在服务号重新发送“绑定”获取新链接");
       await Promise.all([vehicles.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
-  const saveTransportSite = trpc.transport.saveSite.useMutation({ onSuccess: async () => { toast.success("装卸土点已保存"); await Promise.all([transportSites.refetch(), transportRoutePresets.refetch(), audits.refetch()]); }, onError: error => toast.error(error.message) });
-  const saveTransportRoutePreset = trpc.transport.saveRoutePreset.useMutation({ onSuccess: async () => { toast.success("运输路线已保存"); await Promise.all([transportRoutePresets.refetch(), audits.refetch()]); }, onError: error => toast.error(error.message) });
+  const saveTransportSite = trpc.transport.saveSite.useMutation({ onSuccess: async () => { toast.success("装卸土点已保存"); await Promise.all([transportSites.refetch(), transportRoutePresets.refetch(), audits.refetch()]); }, onError: error => toast.error(getUserFacingErrorMessage(error)) });
+  const saveTransportRoutePreset = trpc.transport.saveRoutePreset.useMutation({ onSuccess: async () => { toast.success("运输路线已保存"); await Promise.all([transportRoutePresets.refetch(), audits.refetch()]); }, onError: error => toast.error(getUserFacingErrorMessage(error)) });
   const saveMachine = trpc.machinery.saveMachine.useMutation({
     onSuccess: async () => {
       toast.success(machineForm.id ? "机械档案已在 PC 后台更新" : "机械档案已在 PC 后台建立");
@@ -1446,7 +1447,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setMachineDialogOpen(false);
       await Promise.all([machineryLedger.refetch(), machineCostSummaries.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const refreshSubcontractWorkspace = async () => {
     await Promise.all([subcontractTeams.refetch(), subcontractPackages.refetch(), subcontractSummary.refetch(), subcontractTakeoffs.refetch(), audits.refetch()]);
@@ -1458,7 +1459,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setSubcontractTeamForm(EMPTY_SUBCONTRACT_TEAM_FORM);
       await refreshSubcontractWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveSubcontractPackage = trpc.subcontract.savePackage.useMutation({
     onSuccess: async result => {
@@ -1467,7 +1468,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setSubcontractPackageForm(EMPTY_SUBCONTRACT_PACKAGE_FORM);
       await refreshSubcontractWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveMeasurementTakeoff = trpc.measurement.saveTakeoff.useMutation({
     onSuccess: async result => {
@@ -1476,14 +1477,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setMeasurementTakeoffForm(EMPTY_MEASUREMENT_TAKEOFF_FORM);
       await refreshSubcontractWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionSubcontractPackage = trpc.subcontract.transitionPackage.useMutation({
     onSuccess: async () => {
       toast.success("分包批次状态已更新");
       await refreshSubcontractWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const refreshPurchasingWorkspace = async () => {
     await Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingInventory.refetch(), purchasingSettlements.refetch(), audits.refetch()]);
@@ -1495,7 +1496,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setPurchaseSpreadsheetImportPreview(null);
       await refreshPurchasingWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveInventoryTransaction = trpc.purchasing.saveInventoryTransaction.useMutation({
     onSuccess: async result => {
@@ -1504,14 +1505,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM);
       await refreshPurchasingWorkspace();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveRiskRule = trpc.projectRisk.saveRule.useMutation({
     onSuccess: async () => {
       toast.success("AI 项目风控阈值与逾期升级计划已保存");
       await Promise.all([riskRule.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const scanProjectRisks = trpc.projectRisk.scan.useMutation({
     onSuccess: async result => {
@@ -1519,14 +1520,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(result.enabled ? `真实数据扫描完成：日报 ${scanned.pendingConstructionReports}、考勤 ${scanned.openAttendanceCheckIns}、柴油 ${scanned.dieselRefuelRecords}、运输 ${scanned.transportTrips}；发现 ${result.detectedCount} 条，新增 ${result.createdCount} 条，已投递 ${result.notifiedCount} 条提醒` : "当前项目风险扫描已停用");
       await Promise.all([riskAlerts.refetch(), riskFinanceAnalysis.refetch(), riskCapacityReadiness.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const updateRiskAlertStatus = trpc.projectRisk.updateAlertStatus.useMutation({
     onSuccess: async () => {
       toast.success("风险预警处置状态已更新");
       await Promise.all([riskAlerts.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const assignRiskRectification = trpc.projectRisk.assignRectification.useMutation({
     onSuccess: async () => {
@@ -1534,14 +1535,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setRiskRectificationTarget(null);
       await Promise.all([riskAlerts.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const runOverdueRiskEscalation = trpc.projectRisk.runOverdueEscalation.useMutation({
     onSuccess: async result => {
       toast.success(`逾期升级验收完成：升级 ${result.escalatedCount} 条，投递 ${result.notifiedCount} 条站内提醒`);
       await Promise.all([riskAlerts.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const generateRiskBriefing = trpc.projectRisk.generateBriefing.useMutation({
     onSuccess: result => {
@@ -1549,7 +1550,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (result.externalFallback) toast.warning(`外部 AI 已降级（${result.externalFallback}）；系统已继续生成可用摘要`);
       else toast.success(result.source === "fallback" ? "AI 服务暂不可用，已生成规则汇总摘要" : result.source === "external" ? "外部 AI 管理摘要已生成" : "系统内置 AI 管理摘要已生成");
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveMachineCost = trpc.machinery.saveCost.useMutation({
     onSuccess: async data => {
@@ -1558,7 +1559,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setMachineCostDialogOpen(false);
       await Promise.all([machineCosts.refetch(), machineCostSummaries.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveMachineMonthlyStatement = trpc.machinery.saveMonthlyStatement.useMutation({
     onSuccess: async result => {
@@ -1567,14 +1568,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setMachineStatementForm(EMPTY_MACHINE_MONTHLY_STATEMENT_FORM);
       await Promise.all([machineMonthlyStatements.refetch(), machineCostSummaries.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionMachineMonthlyStatement = trpc.machinery.transitionMonthlyStatement.useMutation({
     onSuccess: async () => {
       toast.success("机械月度明细状态已更新");
       await Promise.all([machineMonthlyStatements.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveEmployeeProfile = trpc.admin.employee.saveProfile.useMutation({
     onSuccess: async () => {
@@ -1583,7 +1584,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setEmployeeProfileDialogOpen(false);
       await Promise.all([employeeProfiles.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveEmployeeInsurance = trpc.admin.employee.saveInsurance.useMutation({
     onSuccess: async () => {
@@ -1592,7 +1593,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setEmployeeInsuranceDialogOpen(false);
       await Promise.all([employeeProfiles.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveAssetMaintenance = trpc.admin.assetMaintenance.save.useMutation({
     onSuccess: async () => {
@@ -1601,7 +1602,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setAssetMaintenanceDialogOpen(false);
       await Promise.all([assetMaintenanceRecords.refetch(), assetMaintenanceSummary.refetch(), machineCosts.refetch(), machineCostSummaries.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveRfidWriterDevice = trpc.transport.saveRfidWriterDevice.useMutation({
     onSuccess: async () => {
@@ -1610,7 +1611,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setRfidWriterDialogOpen(false);
       await Promise.all([rfidWriterDevices.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveVehicleRfidCard = trpc.transport.saveVehicleRfidCard.useMutation({
     onSuccess: async (_data, variables) => {
@@ -1881,7 +1882,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(data.status === "confirmed" ? "写卡结果已确认并留痕" : "写卡失败已记录，请核对设备和卡片后重试");
       window.requestAnimationFrame(() => setRfidWritePreview(null));
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveRole = trpc.admin.role.save.useMutation({
     onSuccess: async () => {
@@ -1897,7 +1898,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setAssignmentForm(EMPTY_ASSIGNMENT_FORM);
       await Promise.all([assignments.refetch(), audits.refetch(), users.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
     onSuccess: async () => {
@@ -1905,14 +1906,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setLocalAccountForm({ username: "", displayName: "", initialPassword: "", status: "active", loginMode: "both" });
       await Promise.all([users.refetch(), audits.refetch(), overview.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const setLocalUserStatus = trpc.admin.personnel.setLocalUserStatus.useMutation({
     onSuccess: async () => {
       toast.success("本地账号状态已更新；已停用账号的后续请求会被服务端拒绝");
       await Promise.all([users.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const updateLocalUser = trpc.admin.personnel.updateLocalUser.useMutation({
     onSuccess: async () => {
@@ -1920,7 +1921,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setLocalAccountEditForm(null);
       await Promise.all([users.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const resetLocalUserPassword = trpc.admin.personnel.resetLocalUserPassword.useMutation({
     onSuccess: async () => {
@@ -1929,7 +1930,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setResetPassword("");
       await audits.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const deleteLocalUser = trpc.admin.personnel.deleteLocalUser.useMutation({
     onSuccess: async data => {
@@ -1937,7 +1938,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setDeleteTarget(null);
       await Promise.all([users.refetch(), assignments.refetch(), audits.refetch(), overview.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const setUserPermissions = trpc.admin.personnel.setUserPermissions.useMutation({
     onSuccess: async () => {
@@ -1946,7 +1947,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setDraftUserPermissionIds([]);
       await Promise.all([users.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveDepartmentScope = trpc.admin.department.saveScope.useMutation({
     onSuccess: async () => {
@@ -1968,7 +1969,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success("考勤设备绑定上限草稿已保存，请点击发布后生效");
       await Promise.all([settings.refetch(), settingHistory.refetch(), overview.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveOfficialAccountConfiguration = trpc.admin.settings.saveOfficialAccountConfiguration.useMutation({
     onSuccess: async result => {
@@ -1979,7 +1980,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setOfficialAccountConfigurationValidation({ success: false, message: error.message });
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const saveOfficialAccountMessagePushConfiguration = trpc.admin.settings.saveOfficialAccountMessagePushConfiguration.useMutation({
@@ -1991,7 +1992,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setOfficialAccountMessagePushValidation({ success: false, message: error.message });
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const testOfficialAccountMessagePushConfiguration = trpc.admin.settings.testOfficialAccountMessagePushConfiguration.useMutation({
@@ -2002,7 +2003,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setOfficialAccountMessagePushValidation({ success: false, message: error.message });
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const saveExternalAiConfiguration = trpc.admin.settings.saveExternalAiConfiguration.useMutation({
@@ -2014,7 +2015,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setExternalAiApiValidation(error.message);
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const saveAliyunOssPhotoStorageConfiguration = trpc.admin.settings.saveAliyunOssPhotoStorageConfiguration.useMutation({
@@ -2024,7 +2025,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setAliyunOssPhotoStorageValidation(null);
       await Promise.all([aliyunOssPhotoStorageConfiguration.refetch(), settings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const testAliyunOssPhotoStorageConnection = trpc.admin.settings.testAliyunOssPhotoStorageConnection.useMutation({
     onSuccess: async result => {
@@ -2035,7 +2036,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setAliyunOssPhotoStorageValidation({ success: false, code: "request_failed", message: error.message });
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const testExternalAiConfiguration = trpc.admin.settings.testExternalAiConfiguration.useMutation({
@@ -2046,7 +2047,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     },
     onError: error => {
       setExternalAiApiValidation(error.message);
-      toast.error(error.message);
+      toast.error(getUserFacingErrorMessage(error));
     },
   });
   const saveEvidenceWatermarkTemplate = trpc.admin.settings.saveEvidenceWatermarkTemplate.useMutation({
@@ -2054,14 +2055,14 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(`工程水印模板已发布为 v${result.version}，后续现场取证将使用新样式`);
       await Promise.all([evidenceWatermarkTemplate.refetch(), settings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const setSupervisorReviewAutoApprove = trpc.admin.settings.setSupervisorReviewAutoApprove.useMutation({
     onSuccess: async result => {
       toast.success(result.enabled ? "已开启：上级主管审核节点将自动通过" : "已关闭：后续上级主管审核需人工办理");
       await Promise.all([settings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const publishSetting = trpc.admin.settings.publish.useMutation({
     onSuccess: async () => {
@@ -2082,7 +2083,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       result.success ? toast.success(result.message) : toast.error(result.message);
       await audits.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const [officialTemplateOptions, setOfficialTemplateOptions] = useState<Array<{ templateId: string; title: string; content: string; fieldMapping: Record<string, string>; persistentBusinessEligible?: boolean; eligibilityMessage?: string }>>([]);
   const listOfficialTemplates = trpc.admin.settings.listOfficialAccountTemplates.useMutation({
@@ -2090,7 +2091,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setOfficialTemplateOptions(result.templates);
       result.success ? toast.success(result.message) : toast.error(result.message);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const createOfficialTemplateDraft = trpc.admin.settings.createOfficialAccountTemplateDraft.useMutation({
     onSuccess: async result => {
@@ -2098,7 +2099,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setOfficialTemplateOptions([]);
       await Promise.all([settings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const [officialTemplateModuleById, setOfficialTemplateModuleById] = useState<Record<string, "purchasing" | "measurement" | "finance" | "machinery" | "transport" | "security" | "labor" | "construction">>({});
   const bindOfficialModuleTemplate = trpc.admin.settings.bindOfficialAccountModuleTemplate.useMutation({
@@ -2106,21 +2107,21 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(result.message);
       await Promise.all([officialTemplateCoverage.refetch(), settings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveDailyDigest = trpc.dailyDigest.saveSettings.useMutation({
     onSuccess: async data => {
       toast.success(data.taskUid ? "每日项目汇总已保存，定时任务已同步" : "每日项目汇总设置已保存");
       await Promise.all([dailyDigestSettings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const runDailyDigestNow = trpc.dailyDigest.runNow.useMutation({
     onSuccess: async result => {
       toast.success(`每日汇总已执行：${result.projectCount} 个项目，成功/幂等投递 ${result.deliveredCount} 次，失败 ${result.failedCount} 次`);
       await Promise.all([dailyDigestSettings.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const disableSetting = trpc.admin.settings.disable.useMutation({
     onSuccess: async result => {
@@ -2154,7 +2155,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       if (target?.resource === "role") setRoleForm(EMPTY_ROLE_FORM);
       await Promise.all([organizations.refetch(), positions.refetch(), projects.refetch(), vehicles.refetch(), roles.refetch(), assignments.refetch(), departmentScopes.refetch(), overview.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   /**
    * 批量删除不使用数据库批量 SQL：逐条调用既有受控删除接口，让每一条均经过关联检查、权限判断与审计。
@@ -2224,7 +2225,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success(`业务数据逻辑备份已归档：${backup.recordCount} 条记录`);
       await Promise.all([backups.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const downloadBackup = trpc.admin.backup.download.useMutation({
     onSuccess: async backup => {
@@ -2237,21 +2238,21 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       toast.success("已生成受控下载链接，下载行为已记录审计");
       await audits.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const createFullDatabaseBackup = trpc.admin.backup.createFull.useMutation({
     onSuccess: async backup => {
       toast.success(`完整数据库备份已完成：${backup.tableCount} 张表已逐表校验`);
       await Promise.all([fullDatabaseBackup.refetch(), audits.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionConstructionReport = trpc.construction.transitionReport.useMutation({
     onSuccess: async () => {
       toast.success("施工日报状态已更新");
       await Promise.all([constructionDailyReports.refetch(), constructionDailySummary.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const saveConstructionReport = trpc.construction.saveReport.useMutation({
     onSuccess: async result => {
@@ -2259,21 +2260,21 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setConstructionReportEditor(null);
       await Promise.all([constructionDailyReports.refetch(), constructionDailySummary.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const submitPayroll = trpc.labor.payroll.submit.useMutation({
     onSuccess: async () => {
       toast.success("工资条已提交会计审核");
       await trpcUtils.labor.payroll.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const approvePayroll = trpc.labor.payroll.approve.useMutation({
     onSuccess: async () => {
       toast.success("工资条审核状态已更新");
       await trpcUtils.labor.payroll.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const payPayroll = trpc.labor.payroll.pay.useMutation({
     onSuccess: async () => {
@@ -2282,21 +2283,21 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setPaymentReference("");
       await trpcUtils.labor.payroll.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
     onSuccess: async () => {
       toast.success("临时日结已提交会计/财务审核");
       await trpcUtils.labor.dailyWage.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const reviewDailyWage = trpc.labor.dailyWage.review.useMutation({
     onSuccess: async result => {
       toast.success(result.status === "approved" ? "临时日结已审核通过，待登记付款" : "临时日结已退回草稿，可修改后重新提交");
       await trpcUtils.labor.dailyWage.list.invalidate();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const payDailyWage = trpc.labor.dailyWage.pay.useMutation({
     onSuccess: async () => {
@@ -2305,21 +2306,21 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       setDailyWagePaymentForm({ paidAt: toLocalDateInput(), paymentReference: "" });
       await Promise.all([trpcUtils.labor.dailyWage.list.invalidate(), trpcUtils.labor.payroll.list.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionMachineCost = trpc.machinery.transitionCost.useMutation({
     onSuccess: async () => {
       toast.success("机械成本状态已更新");
       await Promise.all([machineCosts.refetch(), machineCostSummaries.refetch()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionTransportTrip = trpc.transport.transitionTrip.useMutation({
     onSuccess: async () => {
       toast.success("运输趟次状态已更新");
       await transportTrips.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
 
   const permissionModuleLabels: Record<string, string> = { admin: "后台治理", mobile: "移动工作台", construction: "施工日报", labor: "劳务与工资", machinery: "机械资源", transport: "运输调度", purchase: "采购仓储", measurement: "工程计量", finance: "财务成本", diesel: "柴油管理", evidence: "影像取证", message: "消息中心" };
@@ -3237,9 +3238,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       {!hasBusinessWorkspaceProject ? <EmptyState text="请先选择已授权项目，以读取采购申请、订单、仓储余额和出入库台账。" /> : purchasingRequests.isLoading || purchasingOrders.isLoading || purchasingInventory.isLoading || purchasingSettlements.isLoading ? <EmptyState text="正在读取采购与仓储台账…" /> : purchasingRequests.isError || purchasingOrders.isError || purchasingInventory.isError || purchasingSettlements.isError ? <EmptyState text="暂无法读取采购与仓储数据，请确认当前账号的采购模块、岗位与项目范围授权。" /> : <>
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"><MetricCard title="待审批申请" value={submittedRequests.length} description={`采购申请共 ${requests.length} 单`} icon={ScrollText} /><MetricCard title="在途采购订单" value={activeOrders.length} description={`订单总金额 ¥${displayMoney(activeOrders.reduce((sum, item) => sum + Number(item.amount), 0))}`} icon={ShoppingCart} /><MetricCard title="库存物料品种" value={inventoryBalances.filter(item => Number(item.balanceQuantity) > 0).length} description="按物料名称与单位汇总" icon={DatabaseBackup} /><MetricCard title="库存账面金额" value={`¥${displayMoney(totalInventoryValue)}`} description={`待结算 ¥${displayMoney(pendingSettlementAmount)}`} icon={BarChart3} /></section>
         <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">采购类别汇总</CardTitle><CardDescription>按当前采购者、日期、发票和类别筛选条件汇总；金额为订单金额。</CardDescription></CardHeader><CardContent><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{categorySummary.length ? categorySummary.map(item => <div key={item.name} className="rounded-xl border border-[#e1e8e4] bg-[#f8fbfa] p-3"><p className="text-sm font-semibold text-[#203c48]">{item.name}</p><p className="mt-2 text-lg font-semibold text-slate-900">¥{displayMoney(item.amount)}</p><p className="mt-1 text-xs text-slate-500">{item.orderCount} 单 · 有发票 {item.invoiceCount} 单</p></div>) : <p className="col-span-full py-2 text-sm text-slate-500">当前筛选条件下暂无采购类别汇总。</p>}</div></CardContent></Card>
-        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">采购申请与订单闭环</CardTitle><CardDescription>采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和普通单据影像归档规则；本页用于项目级全流程复核。</CardDescription></div><div className="flex max-w-full flex-wrap gap-2"><Select value={purchasingOrderUploader} onValueChange={setPurchasingOrderUploader}><SelectTrigger className="h-9 w-[170px] bg-white"><SelectValue placeholder="按提交管理员筛选" /></SelectTrigger><SelectContent><SelectItem value="all">全部提交管理员</SelectItem>{uploaderOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={purchasingOrderCategory} onValueChange={setPurchasingOrderCategory}><SelectTrigger className="h-9 w-[155px] bg-white"><SelectValue placeholder="采购类别" /></SelectTrigger><SelectContent><SelectItem value="all">全部采购类别</SelectItem>{categoryOptions.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={purchasingOrderInvoice} onValueChange={setPurchasingOrderInvoice}><SelectTrigger className="h-9 w-[118px] bg-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部发票</SelectItem><SelectItem value="yes">有发票</SelectItem><SelectItem value="no">无发票</SelectItem></SelectContent></Select><Input aria-label="采购下单日期开始" className="h-9 w-[142px] bg-white" type="date" value={purchasingOrderDateFrom} onChange={event => setPurchasingOrderDateFrom(event.target.value)} /><Input aria-label="采购下单日期结束" className="h-9 w-[142px] bg-white" type="date" value={purchasingOrderDateTo} onChange={event => setPurchasingOrderDateTo(event.target.value)} /><Button size="sm" variant="outline" onClick={() => { const today = toChinaDateInput(); setPurchasingOrderUploader("all"); setPurchasingOrderCategory("all"); setPurchasingOrderInvoice("all"); setPurchasingOrderDateFrom(today); setPurchasingOrderDateTo(today); }}>当天</Button><Button size="sm" variant="outline" disabled={purchasingCategories.isLoading} onClick={() => { void downloadPurchaseSpreadsheetTemplate((purchasingCategories.data ?? []).map(category => ({ name: category.name }))).catch(error => toast.error(error instanceof Error ? error.message : "导入模板生成失败")); }}><FileSpreadsheet className="mr-1 h-4 w-4" />下载导入模板</Button><Button size="sm" variant="outline" onClick={() => { setPurchaseSpreadsheetImportPreview(null); setPurchaseSpreadsheetImportOpen(true); }}><FileSpreadsheet className="mr-1 h-4 w-4" />导入 Excel</Button><Button size="sm" variant="outline" disabled={!filteredOrders.length} onClick={() => downloadCsvFile(`采购订单-筛选结果-${new Date().toISOString().slice(0, 10)}.csv`, ["订单号", "采购类别", "是否有发票", "关联车辆/机械", "提交/上传管理员", "物资说明", "下单时间", "数量", "单价", "金额", "状态"], filteredOrders.map(item => [item.orderNo, item.categoryName, item.hasInvoice ? "有发票" : "无发票", item.assetLabel ?? "", item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}`, item.itemDescription || "采购申请关联订单", displayDate(item.orderedAt), item.quantity ?? "", item.unitPrice ?? "", item.amount, statusLabel(item.status)]))}>导出订单</Button><Button size="sm" variant="outline" onClick={() => Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingSettlements.refetch()])}>刷新采购台账</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[980px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购申请</TableHead><TableHead>金额</TableHead><TableHead>说明</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead></TableRow></TableHeader><TableBody>{requests.length ? requests.map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.requestNo}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell className="max-w-[440px] truncate">{item.description}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{displayDate(item.updatedAt)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无采购申请记录。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1260px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购订单</TableHead><TableHead>采购类别 / 发票</TableHead><TableHead>提交/上传管理员</TableHead><TableHead>模式 / 物资 / 关联设备</TableHead><TableHead>订单金额</TableHead><TableHead>已结算 / 待结算</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{filteredOrders.length ? filteredOrders.map(item => { const settlement = settlementTotals[String(item.id)] ?? { settledAmount: 0, remainingAmount: Number(item.amount) }; return <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.orderNo}</TableCell><TableCell><p className="font-medium text-slate-700">{item.categoryName}</p><Badge variant="outline" className={`mt-1 ${item.hasInvoice ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>{item.hasInvoice ? "有发票" : "无发票"}</Badge></TableCell><TableCell>{item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}`}</TableCell><TableCell><p>{item.procurementMode === "small_direct" ? "小额直接采购" : "申请转订单"}</p><p className="mt-1 max-w-[260px] truncate text-slate-500">{item.itemDescription || "采购申请关联订单"}</p>{item.assetLabel ? <p className="mt-1 font-medium text-[#2b6660]">{item.assetLabel}</p> : null}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell><p>¥{displayMoney(settlement.settledAmount)}</p><p className="mt-1 text-slate-500">待 ¥{displayMoney(settlement.remainingAmount)}</p></TableCell><TableCell><Badge variant="outline" className={item.status === "received" || item.status === "closed" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : item.status === "void" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700"}>{statusLabel(item.status)}</Badge></TableCell><TableCell><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => printPurchaseReceipt(item)}><Printer className="mr-1 h-4 w-4" />打印</Button><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `采购订单详情 · ${item.orderNo}`, description: "采购金额、结算余额和状态均来自服务端受控业务记录。", fields: [{ label: "采购模式", value: item.procurementMode === "small_direct" ? "小额直接采购" : item.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单" }, { label: "采购类别", value: item.categoryName }, { label: "物资说明", value: item.itemDescription || "—" }, { label: "关联车辆/机械", value: item.assetLabel ?? "未关联设备" }, { label: "数量", value: item.quantity === null ? "—" : displayMoney(item.quantity) }, { label: "单价", value: item.unitPrice === null ? "—" : `¥ ${displayMoney(item.unitPrice)}` }, { label: "下单时间", value: displayDate(item.orderedAt) }, { label: "订单金额", value: `¥ ${displayMoney(item.amount)}` }, { label: "已结算", value: `¥ ${displayMoney(settlement.settledAmount)}` }, { label: "待结算", value: `¥ ${displayMoney(settlement.remainingAmount)}` }, { label: "当前状态", value: statusLabel(item.status) }, { label: "提交/上传管理员", value: item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}` }, { label: "采购单据", value: item.documentAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.documentAttachment.url} target="_blank" rel="noreferrer">查看采购单据：{item.documentAttachment.fileName}</a> : "未关联采购单据" }, { label: "发票附件", value: item.hasInvoice ? (item.invoiceAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.invoiceAttachment.url} target="_blank" rel="noreferrer">查看发票附件：{item.invoiceAttachment.fileName}</a> : "已登记发票，但未找到归档附件") : "本单未登记发票" }], onPrint: () => printPurchaseReceipt(item) })}>详情</Button></div></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">当前筛选下暂无采购订单记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card><Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">仓储余额与收发流水</CardTitle><CardDescription>入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openInventoryDialog("return")}>登记退库</Button><Button size="sm" variant="outline" onClick={() => purchasingInventory.refetch()}>刷新库存</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[820px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>物料</TableHead><TableHead>单位</TableHead><TableHead>库存余额</TableHead><TableHead>库存账面金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{inventoryBalances.length ? inventoryBalances.map(item => <TableRow key={`${item.itemName}-${item.unit}`}><TableCell className="font-medium text-[#203c48]">{item.itemName}</TableCell><TableCell>{item.unit}</TableCell><TableCell className={Number(item.balanceQuantity) < 0 ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>{displayMoney(item.balanceQuantity)}</TableCell><TableCell>¥{displayMoney(item.totalAmount)}</TableCell><TableCell>{Number(item.balanceQuantity) < 0 ? <Badge variant="outline" className="border-rose-200 text-rose-700">账面负库存待核查</Badge> : Number(item.balanceQuantity) === 0 ? <Badge variant="outline">无库存</Badge> : <Badge variant="outline" className="border-emerald-200 text-emerald-700">可用</Badge>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无库存流水；请从入库、领用出库或退库开始登记。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[920px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>流水单号</TableHead><TableHead>类型</TableHead><TableHead>物料</TableHead><TableHead>数量 / 单位</TableHead><TableHead>金额</TableHead><TableHead>发生时间</TableHead><TableHead>备注</TableHead></TableRow></TableHeader><TableBody>{inventoryTransactions.length ? inventoryTransactions.slice(0, 30).map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.transactionNo}</TableCell><TableCell>{transactionLabel(item.transactionType)}</TableCell><TableCell>{item.itemName}</TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell>{displayDate(item.occurredAt)}</TableCell><TableCell className="max-w-[260px] truncate">{item.remarks || "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">暂无库存收发流水。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
+        <Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">采购申请与订单闭环</CardTitle><CardDescription>采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和普通单据影像归档规则；本页用于项目级全流程复核。</CardDescription></div><div className="flex max-w-full flex-wrap gap-2"><Select value={purchasingOrderUploader} onValueChange={setPurchasingOrderUploader}><SelectTrigger className="h-9 w-[170px] bg-white"><SelectValue placeholder="按提交管理员筛选" /></SelectTrigger><SelectContent><SelectItem value="all">全部提交管理员</SelectItem>{uploaderOptions.map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={purchasingOrderCategory} onValueChange={setPurchasingOrderCategory}><SelectTrigger className="h-9 w-[155px] bg-white"><SelectValue placeholder="采购类别" /></SelectTrigger><SelectContent><SelectItem value="all">全部采购类别</SelectItem>{categoryOptions.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={purchasingOrderInvoice} onValueChange={setPurchasingOrderInvoice}><SelectTrigger className="h-9 w-[118px] bg-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部发票</SelectItem><SelectItem value="yes">有发票</SelectItem><SelectItem value="no">无发票</SelectItem></SelectContent></Select><Input aria-label="采购下单日期开始" className="h-9 w-[142px] bg-white" type="date" value={purchasingOrderDateFrom} onChange={event => setPurchasingOrderDateFrom(event.target.value)} /><Input aria-label="采购下单日期结束" className="h-9 w-[142px] bg-white" type="date" value={purchasingOrderDateTo} onChange={event => setPurchasingOrderDateTo(event.target.value)} /><Button size="sm" variant="outline" onClick={() => { const today = toChinaDateInput(); setPurchasingOrderUploader("all"); setPurchasingOrderCategory("all"); setPurchasingOrderInvoice("all"); setPurchasingOrderDateFrom(today); setPurchasingOrderDateTo(today); }}>当天</Button><Button size="sm" variant="outline" disabled={purchasingCategories.isLoading} onClick={() => { void downloadPurchaseSpreadsheetTemplate((purchasingCategories.data ?? []).map(category => ({ name: category.name }))).catch(error => toast.error(getUserFacingErrorMessage(error, "导入模板生成失败，请稍后重试"))); }}><FileSpreadsheet className="mr-1 h-4 w-4" />下载导入模板</Button><Button size="sm" variant="outline" onClick={() => { setPurchaseSpreadsheetImportPreview(null); setPurchaseSpreadsheetImportOpen(true); }}><FileSpreadsheet className="mr-1 h-4 w-4" />导入 Excel</Button><Button size="sm" variant="outline" disabled={!filteredOrders.length} onClick={() => downloadCsvFile(`采购订单-筛选结果-${new Date().toISOString().slice(0, 10)}.csv`, ["订单号", "采购类别", "是否有发票", "关联车辆/机械", "提交/上传管理员", "物资说明", "下单时间", "数量", "单价", "金额", "状态"], filteredOrders.map(item => [item.orderNo, item.categoryName, item.hasInvoice ? "有发票" : "无发票", item.assetLabel ?? "", item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}`, item.itemDescription || "采购申请关联订单", displayDate(item.orderedAt), item.quantity ?? "", item.unitPrice ?? "", item.amount, statusLabel(item.status)]))}>导出订单</Button><Button size="sm" variant="outline" onClick={() => Promise.all([purchasingRequests.refetch(), purchasingOrders.refetch(), purchasingSettlements.refetch()])}>刷新采购台账</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[980px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购申请</TableHead><TableHead>金额</TableHead><TableHead>说明</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead></TableRow></TableHeader><TableBody>{requests.length ? requests.map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.requestNo}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell className="max-w-[440px] truncate">{item.description}</TableCell><TableCell><BusinessStatusBadge status={item.status} /></TableCell><TableCell>{displayDate(item.updatedAt)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无采购申请记录。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1260px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>采购订单</TableHead><TableHead>采购类别 / 发票</TableHead><TableHead>提交/上传管理员</TableHead><TableHead>模式 / 物资 / 关联设备</TableHead><TableHead>订单金额</TableHead><TableHead>已结算 / 待结算</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{filteredOrders.length ? filteredOrders.map(item => { const settlement = settlementTotals[String(item.id)] ?? { settledAmount: 0, remainingAmount: Number(item.amount) }; return <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.orderNo}</TableCell><TableCell><p className="font-medium text-slate-700">{item.categoryName}</p><Badge variant="outline" className={`mt-1 ${item.hasInvoice ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>{item.hasInvoice ? "有发票" : "无发票"}</Badge></TableCell><TableCell>{item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}`}</TableCell><TableCell><p>{item.procurementMode === "small_direct" ? "小额直接采购" : "申请转订单"}</p><p className="mt-1 max-w-[260px] truncate text-slate-500">{item.itemDescription || "采购申请关联订单"}</p>{item.assetLabel ? <p className="mt-1 font-medium text-[#2b6660]">{item.assetLabel}</p> : null}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell><p>¥{displayMoney(settlement.settledAmount)}</p><p className="mt-1 text-slate-500">待 ¥{displayMoney(settlement.remainingAmount)}</p></TableCell><TableCell><Badge variant="outline" className={item.status === "received" || item.status === "closed" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : item.status === "void" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700"}>{statusLabel(item.status)}</Badge></TableCell><TableCell><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => printPurchaseReceipt(item)}><Printer className="mr-1 h-4 w-4" />打印</Button><Button size="sm" variant="outline" onClick={() => setDesktopRecordDetail({ title: `采购订单详情 · ${item.orderNo}`, description: "采购金额、结算余额和状态均来自服务端受控业务记录。", fields: [{ label: "采购模式", value: item.procurementMode === "small_direct" ? "小额直接采购" : item.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单" }, { label: "采购类别", value: item.categoryName }, { label: "物资说明", value: item.itemDescription || "—" }, { label: "关联车辆/机械", value: item.assetLabel ?? "未关联设备" }, { label: "数量", value: item.quantity === null ? "—" : displayMoney(item.quantity) }, { label: "单价", value: item.unitPrice === null ? "—" : `¥ ${displayMoney(item.unitPrice)}` }, { label: "下单时间", value: displayDate(item.orderedAt) }, { label: "订单金额", value: `¥ ${displayMoney(item.amount)}` }, { label: "已结算", value: `¥ ${displayMoney(settlement.settledAmount)}` }, { label: "待结算", value: `¥ ${displayMoney(settlement.remainingAmount)}` }, { label: "当前状态", value: statusLabel(item.status) }, { label: "提交/上传管理员", value: item.documentUploadedByName ?? item.createdByName ?? `管理员 #${item.documentUploadedBy ?? item.createdBy}` }, { label: "采购单据", value: item.documentAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.documentAttachment.url} target="_blank" rel="noreferrer">查看采购单据：{item.documentAttachment.fileName}</a> : "未关联采购单据" }, { label: "发票附件", value: item.hasInvoice ? (item.invoiceAttachment ? <a className="font-medium text-[#2b6660] underline" href={item.invoiceAttachment.url} target="_blank" rel="noreferrer">查看发票附件：{item.invoiceAttachment.fileName}</a> : "已登记发票，但未找到归档附件") : "本单未登记发票" }], onPrint: () => printPurchaseReceipt(item) })}>详情</Button></div></TableCell></TableRow>; }) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">当前筛选下暂无采购订单记录。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card><Card className="border-[#d8e3e0]"><CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">仓储余额与收发流水</CardTitle><CardDescription>入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。</CardDescription></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => openInventoryDialog("return")}>登记退库</Button><Button size="sm" variant="outline" onClick={() => purchasingInventory.refetch()}>刷新库存</Button></div></CardHeader><CardContent className="space-y-4"><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[820px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>物料</TableHead><TableHead>单位</TableHead><TableHead>库存余额</TableHead><TableHead>库存账面金额</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{inventoryBalances.length ? inventoryBalances.map(item => <TableRow key={`${item.itemName}-${item.unit}`}><TableCell className="font-medium text-[#203c48]">{item.itemName}</TableCell><TableCell>{item.unit}</TableCell><TableCell className={Number(item.balanceQuantity) < 0 ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>{displayMoney(item.balanceQuantity)}</TableCell><TableCell>¥{displayMoney(item.totalAmount)}</TableCell><TableCell>{Number(item.balanceQuantity) < 0 ? <Badge variant="outline" className="border-rose-200 text-rose-700">账面负库存待核查</Badge> : Number(item.balanceQuantity) === 0 ? <Badge variant="outline">无库存</Badge> : <Badge variant="outline" className="border-emerald-200 text-emerald-700">可用</Badge>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-20 text-center text-slate-500">当前项目暂无库存流水；请从入库、领用出库或退库开始登记。</TableCell></TableRow>}</TableBody></Table></div><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[920px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>流水单号</TableHead><TableHead>类型</TableHead><TableHead>物料</TableHead><TableHead>数量 / 单位</TableHead><TableHead>金额</TableHead><TableHead>发生时间</TableHead><TableHead>备注</TableHead></TableRow></TableHeader><TableBody>{inventoryTransactions.length ? inventoryTransactions.slice(0, 30).map(item => <TableRow key={item.id}><TableCell className="font-medium text-[#203c48]">{item.transactionNo}</TableCell><TableCell>{transactionLabel(item.transactionType)}</TableCell><TableCell>{item.itemName}</TableCell><TableCell>{displayMoney(item.quantity)} {item.unit}</TableCell><TableCell>¥{displayMoney(item.amount)}</TableCell><TableCell>{displayDate(item.occurredAt)}</TableCell><TableCell className="max-w-[260px] truncate">{item.remarks || "—"}</TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-20 text-center text-slate-500">暂无库存收发流水。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card>
       </>}
-      <Dialog open={purchaseSpreadsheetImportOpen} onOpenChange={open => { setPurchaseSpreadsheetImportOpen(open); if (!open) setPurchaseSpreadsheetImportPreview(null); }}><DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl overflow-y-auto"><DialogHeader><DialogTitle>导入采购仓储 Excel 数据</DialogTitle><DialogDescription>请先下载系统模板。选择文件后会在本地预检；确认导入时，服务端会再次校验项目范围、标准类别、时间、金额和重复单号。采购订单一律作为“历史 Excel 导入草稿”写入，不自动审核、结算、通知或扣款；库存流水将写入不可变台账。</DialogDescription></DialogHeader><div className="space-y-4"><div className="rounded-xl border border-dashed border-[#b7cfca] bg-[#f7fbf9] p-4"><Label htmlFor="purchase-spreadsheet-import">选择 .xlsx Excel 文件</Label><Input id="purchase-spreadsheet-import" className="mt-2 cursor-pointer bg-white" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (!file) return; void parsePurchaseSpreadsheetImport(file, (purchasingCategories.data ?? []).map(category => category.name)).then(preview => { setPurchaseSpreadsheetImportPreview(preview); toast.success(`文件预检通过：采购订单 ${preview.orders.length} 条、库存流水 ${preview.inventoryTransactions.length} 条`); }).catch(error => { setPurchaseSpreadsheetImportPreview(null); toast.error(error instanceof Error ? error.message : "文件预检失败"); }); }} /><p className="mt-2 text-xs leading-5 text-slate-600">不支持图片/PDF随 Excel 直接上传；有发票的订单导入后，请在订单详情补传附件。单次最多 500 条，导入中任一行不通过校验则整批不写入。</p></div>{purchaseSpreadsheetImportPreview ? <div className="space-y-3 rounded-xl border border-[#d8e3e0] bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium text-[#203c48]">已预检：{purchaseSpreadsheetImportPreview.fileName}</p><p className="mt-1 text-sm text-slate-600">采购订单 <strong>{purchaseSpreadsheetImportPreview.orders.length}</strong> 条（均导入为草稿） · 库存流水 <strong>{purchaseSpreadsheetImportPreview.inventoryTransactions.length}</strong> 条</p></div><Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">确认后整批写入</Badge></div><div className="max-h-52 overflow-auto rounded-lg border border-slate-100"><Table className="min-w-[780px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>类型</TableHead><TableHead>单据号</TableHead><TableHead>内容</TableHead><TableHead>金额 / 数量</TableHead><TableHead>业务时间</TableHead></TableRow></TableHeader><TableBody>{[...purchaseSpreadsheetImportPreview.orders.map(item => ({ type: "采购订单", no: item.orderNo || "系统自动生成", content: `${item.categoryName} · ${item.itemDescription}`, amount: `¥${item.amount.toFixed(2)}`, occurredAt: item.orderedAt })), ...purchaseSpreadsheetImportPreview.inventoryTransactions.map(item => ({ type: item.transactionType === "inbound" ? "库存入库" : item.transactionType === "outbound" ? "库存领用出库" : "库存退库", no: item.transactionNo || "系统自动生成", content: `${item.itemName} · ${item.unit}`, amount: `${item.quantity} × ¥${item.unitCost.toFixed(2)}`, occurredAt: item.occurredAt }))].slice(0, 20).map((item, index) => <TableRow key={`${item.type}-${item.no}-${index}`}><TableCell>{item.type}</TableCell><TableCell className="font-medium text-[#203c48]">{item.no}</TableCell><TableCell>{item.content}</TableCell><TableCell>{item.amount}</TableCell><TableCell>{formatChinaDateTime(item.occurredAt)}</TableCell></TableRow>)}</TableBody></Table></div>{purchaseSpreadsheetImportPreview.orders.length + purchaseSpreadsheetImportPreview.inventoryTransactions.length > 20 ? <p className="text-xs text-slate-500">仅预览前 20 条，确认时将导入全部 {purchaseSpreadsheetImportPreview.orders.length + purchaseSpreadsheetImportPreview.inventoryTransactions.length} 条。</p> : null}</div> : <p className="rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">尚未选择通过预检的 Excel 文件。</p>}</div><DialogFooter><Button type="button" variant="outline" onClick={() => setPurchaseSpreadsheetImportOpen(false)}>取消</Button><Button type="button" disabled={!purchaseSpreadsheetImportPreview || importPurchaseSpreadsheet.isPending} onClick={() => { if (!purchaseSpreadsheetImportPreview || !workspaceProjectId) return; importPurchaseSpreadsheet.mutate({ projectId: workspaceProjectId, orders: purchaseSpreadsheetImportPreview.orders, inventoryTransactions: purchaseSpreadsheetImportPreview.inventoryTransactions }); }}>{importPurchaseSpreadsheet.isPending ? "正在整批导入…" : "确认导入并写入台账"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={purchaseSpreadsheetImportOpen} onOpenChange={open => { setPurchaseSpreadsheetImportOpen(open); if (!open) setPurchaseSpreadsheetImportPreview(null); }}><DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl overflow-y-auto"><DialogHeader><DialogTitle>导入采购仓储 Excel 数据</DialogTitle><DialogDescription>请先下载系统模板。选择文件后会在本地预检；确认导入时，服务端会再次校验项目范围、标准类别、时间、金额和重复单号。采购订单一律作为“历史 Excel 导入草稿”写入，不自动审核、结算、通知或扣款；库存流水将写入不可变台账。</DialogDescription></DialogHeader><div className="space-y-4"><div className="rounded-xl border border-dashed border-[#b7cfca] bg-[#f7fbf9] p-4"><Label htmlFor="purchase-spreadsheet-import">选择 .xlsx Excel 文件</Label><Input id="purchase-spreadsheet-import" className="mt-2 cursor-pointer bg-white" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (!file) return; void parsePurchaseSpreadsheetImport(file, (purchasingCategories.data ?? []).map(category => category.name)).then(preview => { setPurchaseSpreadsheetImportPreview(preview); toast.success(`文件预检通过：采购订单 ${preview.orders.length} 条、库存流水 ${preview.inventoryTransactions.length} 条`); }).catch(error => { setPurchaseSpreadsheetImportPreview(null); toast.error(getUserFacingErrorMessage(error, "文件预检失败，请检查模板内容后重试")); }); }} /><p className="mt-2 text-xs leading-5 text-slate-600">不支持图片/PDF随 Excel 直接上传；有发票的订单导入后，请在订单详情补传附件。单次最多 500 条，导入中任一行不通过校验则整批不写入。</p></div>{purchaseSpreadsheetImportPreview ? <div className="space-y-3 rounded-xl border border-[#d8e3e0] bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium text-[#203c48]">已预检：{purchaseSpreadsheetImportPreview.fileName}</p><p className="mt-1 text-sm text-slate-600">采购订单 <strong>{purchaseSpreadsheetImportPreview.orders.length}</strong> 条（均导入为草稿） · 库存流水 <strong>{purchaseSpreadsheetImportPreview.inventoryTransactions.length}</strong> 条</p></div><Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">确认后整批写入</Badge></div><div className="max-h-52 overflow-auto rounded-lg border border-slate-100"><Table className="min-w-[780px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>类型</TableHead><TableHead>单据号</TableHead><TableHead>内容</TableHead><TableHead>金额 / 数量</TableHead><TableHead>业务时间</TableHead></TableRow></TableHeader><TableBody>{[...purchaseSpreadsheetImportPreview.orders.map(item => ({ type: "采购订单", no: item.orderNo || "系统自动生成", content: `${item.categoryName} · ${item.itemDescription}`, amount: `¥${item.amount.toFixed(2)}`, occurredAt: item.orderedAt })), ...purchaseSpreadsheetImportPreview.inventoryTransactions.map(item => ({ type: item.transactionType === "inbound" ? "库存入库" : item.transactionType === "outbound" ? "库存领用出库" : "库存退库", no: item.transactionNo || "系统自动生成", content: `${item.itemName} · ${item.unit}`, amount: `${item.quantity} × ¥${item.unitCost.toFixed(2)}`, occurredAt: item.occurredAt }))].slice(0, 20).map((item, index) => <TableRow key={`${item.type}-${item.no}-${index}`}><TableCell>{item.type}</TableCell><TableCell className="font-medium text-[#203c48]">{item.no}</TableCell><TableCell>{item.content}</TableCell><TableCell>{item.amount}</TableCell><TableCell>{formatChinaDateTime(item.occurredAt)}</TableCell></TableRow>)}</TableBody></Table></div>{purchaseSpreadsheetImportPreview.orders.length + purchaseSpreadsheetImportPreview.inventoryTransactions.length > 20 ? <p className="text-xs text-slate-500">仅预览前 20 条，确认时将导入全部 {purchaseSpreadsheetImportPreview.orders.length + purchaseSpreadsheetImportPreview.inventoryTransactions.length} 条。</p> : null}</div> : <p className="rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">尚未选择通过预检的 Excel 文件。</p>}</div><DialogFooter><Button type="button" variant="outline" onClick={() => setPurchaseSpreadsheetImportOpen(false)}>取消</Button><Button type="button" disabled={!purchaseSpreadsheetImportPreview || importPurchaseSpreadsheet.isPending} onClick={() => { if (!purchaseSpreadsheetImportPreview || !workspaceProjectId) return; importPurchaseSpreadsheet.mutate({ projectId: workspaceProjectId, orders: purchaseSpreadsheetImportPreview.orders, inventoryTransactions: purchaseSpreadsheetImportPreview.inventoryTransactions }); }}>{importPurchaseSpreadsheet.isPending ? "正在整批导入…" : "确认导入并写入台账"}</Button></DialogFooter></DialogContent></Dialog>
       <Dialog open={inventoryTransactionDialogOpen} onOpenChange={open => { setInventoryTransactionDialogOpen(open); if (!open) setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM); }}><DialogContent className="w-[calc(100vw-3rem)] max-w-3xl xl:max-w-4xl"><DialogHeader><DialogTitle>登记库存{transactionLabel(inventoryTransactionForm.transactionType)}</DialogTitle><DialogDescription>库存金额由数量 × 单价在服务器重新计算并写入不可变流水。请以实际物料、数量和发生时间为准，禁止用负数冲销。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); saveInventoryTransaction.mutate({ projectId: Number(inventoryTransactionForm.projectId), transactionType: inventoryTransactionForm.transactionType, itemName: inventoryTransactionForm.itemName.trim(), unit: inventoryTransactionForm.unit.trim(), quantity: Number(inventoryTransactionForm.quantity), unitCost: Number(inventoryTransactionForm.unitCost), occurredAt: new Date(inventoryTransactionForm.occurredAt).toISOString(), remarks: inventoryTransactionForm.remarks.trim() || null }); }}><div className="grid gap-4 sm:grid-cols-2"><Field label="项目"><Input value={selectedWorkspaceProject?.name ?? ""} disabled /></Field><Field label="收发类型"><Select value={inventoryTransactionForm.transactionType} onValueChange={value => setInventoryTransactionForm(current => ({ ...current, transactionType: value as InventoryTransactionForm["transactionType"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="inbound">入库</SelectItem><SelectItem value="outbound">领用出库</SelectItem><SelectItem value="return">退库</SelectItem></SelectContent></Select></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="物料名称"><Input value={inventoryTransactionForm.itemName} maxLength={200} placeholder="例如：水泥 P.O 42.5" onChange={event => setInventoryTransactionForm(current => ({ ...current, itemName: event.target.value }))} /></Field><Field label="计量单位"><Input value={inventoryTransactionForm.unit} maxLength={32} placeholder="例如：袋、吨、件" onChange={event => setInventoryTransactionForm(current => ({ ...current, unit: event.target.value }))} /></Field></div><div className="grid gap-4 sm:grid-cols-3"><Field label="数量"><Input type="number" min="0.001" step="0.001" value={inventoryTransactionForm.quantity} onChange={event => setInventoryTransactionForm(current => ({ ...current, quantity: event.target.value }))} /></Field><Field label="单价（元）"><Input type="number" min="0" step="0.01" value={inventoryTransactionForm.unitCost} onChange={event => setInventoryTransactionForm(current => ({ ...current, unitCost: event.target.value }))} /></Field><Field label="发生时间"><Input type="datetime-local" value={inventoryTransactionForm.occurredAt} onChange={event => setInventoryTransactionForm(current => ({ ...current, occurredAt: event.target.value }))} /></Field></div><Field label="备注"><Textarea value={inventoryTransactionForm.remarks} maxLength={500} placeholder="可填写领用班组、存放位置、单据号或退库原因" onChange={event => setInventoryTransactionForm(current => ({ ...current, remarks: event.target.value }))} /></Field><DialogFooter><Button type="button" variant="outline" onClick={() => setInventoryTransactionDialogOpen(false)}>取消</Button><Button type="submit" disabled={!inventoryTransactionForm.projectId || !inventoryTransactionForm.itemName.trim() || !inventoryTransactionForm.unit.trim() || !Number.isFinite(Number(inventoryTransactionForm.quantity)) || Number(inventoryTransactionForm.quantity) <= 0 || !Number.isFinite(Number(inventoryTransactionForm.unitCost)) || Number(inventoryTransactionForm.unitCost) < 0 || !inventoryTransactionForm.occurredAt || saveInventoryTransaction.isPending}>{saveInventoryTransaction.isPending ? "正在登记…" : `确认${transactionLabel(inventoryTransactionForm.transactionType)}`}</Button></DialogFooter></form></DialogContent></Dialog>
     </div>;
   };
@@ -3869,7 +3870,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const editBroadcast = (item: NonNullable<typeof broadcasts.data>[number]) => setBroadcastForm({ id: Number(item.id), title: item.title, content: item.content, deepLink: item.deepLink ?? "", audienceType: item.audienceType, scopeValue: item.audienceType === "project" ? String(item.projectId ?? "") : item.audienceType === "organization" ? String(item.organizationId ?? "") : item.roleCode ?? "" });
     return <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">认证服务号通知中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">受控群发设置与发布</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">群发必须限定到单一项目、组织或岗位范围，先预览已绑定收件人数，再经审批发布。投递审计仅展示收件人姓名、职务、授权范围、确认状态和脱敏失败原因，不展示 OpenID 或内部编号。</p></div><Button variant="outline" size="sm" onClick={() => { setBroadcastForm(EMPTY_BROADCAST_FORM); setSelectedBroadcastId(undefined); }}>新建草稿</Button></div>
-      <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">群发草稿与范围预览</CardTitle><CardDescription>所有范围和收件人均在服务端重新核验；未关注或未绑定服务号的人员会被统计但不会被强行投递。</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-4 lg:grid-cols-2"><div><Label>通知标题</Label><Input className="mt-1" value={broadcastForm.title} maxLength={80} placeholder="例如：本周施工计划调整通知" onChange={event => setBroadcastForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>系统跳转地址（可选）</Label><Input className="mt-1" value={broadcastForm.deepLink} placeholder="/mobile/messages" onChange={event => setBroadcastForm(current => ({ ...current, deepLink: event.target.value }))} /></div></div><div><Label>通知内容</Label><textarea className="mt-1 min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={broadcastForm.content} maxLength={1000} placeholder="请填写不含身份证、银行卡、完整电话号码或其他敏感个人信息的业务通知。" onChange={event => setBroadcastForm(current => ({ ...current, content: event.target.value }))} /></div><div className="grid gap-4 lg:grid-cols-2"><div><Label>收件范围类型</Label><Select value={broadcastForm.audienceType} onValueChange={value => setBroadcastForm(current => ({ ...current, audienceType: value as BroadcastAudienceType, scopeValue: "" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project">按项目</SelectItem><SelectItem value="organization">按组织及下级组织</SelectItem><SelectItem value="role">按岗位</SelectItem></SelectContent></Select></div><div><Label>{scopeTitle}</Label><Select value={broadcastForm.scopeValue || undefined} onValueChange={value => setBroadcastForm(current => ({ ...current, scopeValue: value }))} disabled={broadcastOptions.isLoading || !scopeOptions.length}><SelectTrigger className="mt-1"><SelectValue placeholder={broadcastOptions.isLoading ? "正在读取范围选项…" : `选择${scopeTitle}`} /></SelectTrigger><SelectContent>{scopeOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">范围内有效人员</p><p className="mt-1 text-xl font-semibold text-slate-800">{validBroadcastScope ? broadcastAudiencePreview.data?.qualifiedCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">已绑定可投递</p><p className="mt-1 text-xl font-semibold text-emerald-700">{validBroadcastScope ? broadcastAudiencePreview.data?.boundRecipientCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">未绑定/不会投递</p><p className="mt-1 text-xl font-semibold text-amber-700">{validBroadcastScope ? broadcastAudiencePreview.data?.unboundCount ?? "—" : "—"}</p></div></div>{broadcastAudiencePreview.isError ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">范围预览失败：{broadcastAudiencePreview.error.message}</p> : null}<div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setBroadcastForm(EMPTY_BROADCAST_FORM)}>清空</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!broadcastForm.title.trim() || !broadcastForm.content.trim() || !validBroadcastScope || saveBroadcastDraft.isPending} onClick={() => saveBroadcastDraft.mutate({ id: broadcastForm.id, title: broadcastForm.title.trim(), content: broadcastForm.content.trim(), deepLink: broadcastForm.deepLink.trim() || null, ...getBroadcastAudienceInput(broadcastForm) })}>{saveBroadcastDraft.isPending ? "保存中…" : broadcastForm.id ? "更新草稿" : "保存草稿"}</Button></div></CardContent></Card>
+      <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">群发草稿与范围预览</CardTitle><CardDescription>所有范围和收件人均在服务端重新核验；未关注或未绑定服务号的人员会被统计但不会被强行投递。</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-4 lg:grid-cols-2"><div><Label>通知标题</Label><Input className="mt-1" value={broadcastForm.title} maxLength={80} placeholder="例如：本周施工计划调整通知" onChange={event => setBroadcastForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>系统跳转地址（可选）</Label><Input className="mt-1" value={broadcastForm.deepLink} placeholder="/mobile/messages" onChange={event => setBroadcastForm(current => ({ ...current, deepLink: event.target.value }))} /></div></div><div><Label>通知内容</Label><textarea className="mt-1 min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={broadcastForm.content} maxLength={1000} placeholder="请填写不含身份证、银行卡、完整电话号码或其他敏感个人信息的业务通知。" onChange={event => setBroadcastForm(current => ({ ...current, content: event.target.value }))} /></div><div className="grid gap-4 lg:grid-cols-2"><div><Label>收件范围类型</Label><Select value={broadcastForm.audienceType} onValueChange={value => setBroadcastForm(current => ({ ...current, audienceType: value as BroadcastAudienceType, scopeValue: "" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project">按项目</SelectItem><SelectItem value="organization">按组织及下级组织</SelectItem><SelectItem value="role">按岗位</SelectItem></SelectContent></Select></div><div><Label>{scopeTitle}</Label><Select value={broadcastForm.scopeValue || undefined} onValueChange={value => setBroadcastForm(current => ({ ...current, scopeValue: value }))} disabled={broadcastOptions.isLoading || !scopeOptions.length}><SelectTrigger className="mt-1"><SelectValue placeholder={broadcastOptions.isLoading ? "正在读取范围选项…" : `选择${scopeTitle}`} /></SelectTrigger><SelectContent>{scopeOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">范围内有效人员</p><p className="mt-1 text-xl font-semibold text-slate-800">{validBroadcastScope ? broadcastAudiencePreview.data?.qualifiedCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">已绑定可投递</p><p className="mt-1 text-xl font-semibold text-emerald-700">{validBroadcastScope ? broadcastAudiencePreview.data?.boundRecipientCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">未绑定/不会投递</p><p className="mt-1 text-xl font-semibold text-amber-700">{validBroadcastScope ? broadcastAudiencePreview.data?.unboundCount ?? "—" : "—"}</p></div></div>{broadcastAudiencePreview.isError ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">范围预览失败：{getUserFacingErrorMessage(broadcastAudiencePreview.error, "暂无法预览发送范围，请稍后重试")}</p> : null}<div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setBroadcastForm(EMPTY_BROADCAST_FORM)}>清空</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!broadcastForm.title.trim() || !broadcastForm.content.trim() || !validBroadcastScope || saveBroadcastDraft.isPending} onClick={() => saveBroadcastDraft.mutate({ id: broadcastForm.id, title: broadcastForm.title.trim(), content: broadcastForm.content.trim(), deepLink: broadcastForm.deepLink.trim() || null, ...getBroadcastAudienceInput(broadcastForm) })}>{saveBroadcastDraft.isPending ? "保存中…" : broadcastForm.id ? "更新草稿" : "保存草稿"}</Button></div></CardContent></Card>
       <Card><CardHeader><CardTitle className="text-base">发布审批与投递审计</CardTitle><CardDescription>审批通过后才能发布。发布时按当前有效范围重新解析实际绑定收件人，并对每个收件人使用独立幂等键，防止重复投递。</CardDescription></CardHeader><CardContent>{broadcasts.isLoading ? <EmptyState text="正在读取群发台账…" /> : broadcasts.isError ? <EmptyState text="无法读取群发台账，请确认当前账号具有超级管理员权限。" /> : broadcasts.data?.length ? <div className="space-y-3">{broadcasts.data.map(item => <div key={item.id} className={`rounded-xl border p-4 ${selectedBroadcastId === Number(item.id) ? "border-[#203c48] bg-[#f5f9f8]" : "border-slate-200 bg-white"}`}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="font-medium text-slate-900">{item.title}</p><BusinessStatusBadge status={item.status} /></div><p className="mt-1 text-xs text-slate-500">{item.broadcastNo} · 创建于 {displayDate(item.createdAt)} · 范围：{item.audienceType === "project" ? `项目 #${item.projectId}` : item.audienceType === "organization" ? `组织 #${item.organizationId}` : `岗位 ${item.roleCode}`}</p><p className="mt-2 max-w-3xl text-sm text-slate-700">{item.content}</p>{item.reviewNote ? <p className="mt-2 text-xs text-amber-800">审批说明：{item.reviewNote}</p> : null}</div><div className="text-right text-xs text-slate-500"><p>计划收件：{item.recipientCount}</p><p className="mt-1 text-emerald-700">成功：{item.deliveredCount}</p><p className="mt-1 text-rose-700">失败：{item.failedCount}</p><p className="mt-1 text-amber-700">跳过：{item.skippedCount}</p></div></div><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setSelectedBroadcastId(Number(item.id))}>查看投递审计</Button>{["draft", "rejected"].includes(item.status) ? <><Button size="sm" variant="outline" onClick={() => editBroadcast(item)}>编辑</Button><Button size="sm" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "submit", reviewNote: null })} disabled={reviewBroadcast.isPending}>提交审批</Button></> : null}{item.status === "submitted" ? <><Button size="sm" className="bg-[#47754d] hover:bg-[#355c3c]" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "approve", reviewNote: "已核对内容与收件范围" })} disabled={reviewBroadcast.isPending}>审批通过</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "reject", reviewNote: "请补充或修正通知内容与收件范围" })} disabled={reviewBroadcast.isPending}>退回修改</Button></> : null}{item.status === "approved" ? <Button size="sm" className="bg-[#8b3f20] hover:bg-[#6d3421]" onClick={() => publishBroadcast.mutate({ id: Number(item.id) })} disabled={publishBroadcast.isPending}>发布服务号通知</Button> : null}{["draft", "submitted", "approved", "rejected"].includes(item.status) ? <Button size="sm" variant="ghost" className="text-slate-500" onClick={() => reviewBroadcast.mutate({ id: Number(item.id), action: "cancel", reviewNote: null })} disabled={reviewBroadcast.isPending}>取消</Button> : null}</div></div>)}</div> : <EmptyState text="尚无群发记录。请先建立范围明确的群发草稿，再预览、审批和发布。" />}</CardContent></Card>
       {selectedBroadcastId ? <Card><CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0"><div><CardTitle className="text-base">逐收件人投递与确认审计</CardTitle><CardDescription>显示姓名、岗位、授权范围、投递结果和“收到”确认时间；不展示内部用户编号、OpenID、手机号或密钥。</CardDescription></div><Button size="sm" variant="outline" onClick={() => broadcastDeliveries.refetch()} disabled={broadcastDeliveries.isFetching}>刷新</Button></CardHeader><CardContent>{broadcastDeliveries.isLoading ? <EmptyState text="正在读取投递审计…" /> : broadcastDeliveries.data?.length ? <div className="space-y-2">{broadcastDeliveries.data.map(delivery => <div key={delivery.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"><div className="min-w-0"><p className="text-sm font-medium text-slate-800">{delivery.recipientName}</p><p className="mt-1 text-xs text-slate-600">{delivery.recipientRole ?? "岗位信息待同步"} · {delivery.recipientScope ?? "授权范围待同步"}</p><p className="mt-1 text-xs text-slate-500">最近尝试：{displayDate(delivery.attemptedAt)}{delivery.deliveryReason ? ` · 失败原因：${delivery.deliveryReason}${delivery.failureCode ? `（微信码 ${delivery.failureCode}）` : ""}` : ""}</p><p className="mt-1 text-xs text-[#80543d]">确认状态：{delivery.acknowledgementStatus === "acknowledged" ? `已确认收到（${displayDate(delivery.acknowledgedAt)}）` : delivery.acknowledgementStatus === "pending" ? "待确认收到" : "无需确认"}</p></div><BusinessStatusBadge status={delivery.deliveryStatus} /></div>)}</div> : <EmptyState text="该群发单尚未生成逐收件人投递记录。" />}</CardContent></Card> : null}
     </div>;
@@ -3890,7 +3891,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     const directSendable = (status: string) => ["draft", "rejected", "submitted", "approved"].includes(status);
     return <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-[#203c48]">范围通知与确认中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">范围内站内通知</h1><p className="mt-2 max-w-3xl text-sm text-slate-500">获授权管理员选择单一项目、组织或岗位范围后，可直接向系统消息中心发送通知。此功能不发送微信服务号消息；微信服务号仅用于具体业务事件的合规即时提醒。</p></div><Button variant="outline" size="sm" onClick={() => { setBroadcastForm(EMPTY_BROADCAST_FORM); setSelectedBroadcastId(undefined); }}>新建通知</Button></div>
-      <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">站内通知内容与发送范围</CardTitle><CardDescription>保存后即向当前授权范围的系统消息中心投递，并可要求收件人“确认收到”。本页的成功数量不代表微信服务号已送达。</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-4 lg:grid-cols-2"><div><Label>通知标题</Label><Input className="mt-1" value={broadcastForm.title} maxLength={80} placeholder="例如：本周施工计划调整通知" onChange={event => setBroadcastForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>系统跳转地址（可选）</Label><Input className="mt-1" value={broadcastForm.deepLink} placeholder="/mobile/messages" onChange={event => setBroadcastForm(current => ({ ...current, deepLink: event.target.value }))} /></div></div><div><Label>通知内容</Label><textarea className="mt-1 min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={broadcastForm.content} maxLength={1000} placeholder="请填写不含身份证、银行卡、完整电话号码或其他敏感个人信息的业务通知。" onChange={event => setBroadcastForm(current => ({ ...current, content: event.target.value }))} /></div><div className="grid gap-4 lg:grid-cols-2"><div><Label>范围类型</Label><Select value={broadcastForm.audienceType} onValueChange={value => setBroadcastForm(current => ({ ...current, audienceType: value as BroadcastAudienceType, scopeValue: "" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project">按项目</SelectItem><SelectItem value="organization">按组织及下级组织</SelectItem><SelectItem value="role">按岗位</SelectItem></SelectContent></Select></div><div><Label>{scopeTitle}</Label><Select value={broadcastForm.scopeValue || undefined} onValueChange={value => setBroadcastForm(current => ({ ...current, scopeValue: value }))} disabled={broadcastOptions.isLoading || !scopeOptions.length}><SelectTrigger className="mt-1"><SelectValue placeholder={broadcastOptions.isLoading ? "正在读取范围选项…" : `选择${scopeTitle}`} /></SelectTrigger><SelectContent>{scopeOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">范围内有效人员</p><p className="mt-1 text-xl font-semibold text-slate-800">{validBroadcastScope ? broadcastAudiencePreview.data?.qualifiedCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">已绑定服务号</p><p className="mt-1 text-xl font-semibold text-emerald-700">{validBroadcastScope ? broadcastAudiencePreview.data?.boundRecipientCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">未绑定服务号</p><p className="mt-1 text-xl font-semibold text-amber-700">{validBroadcastScope ? broadcastAudiencePreview.data?.unboundCount ?? "—" : "—"}</p></div></div>{broadcastAudiencePreview.isError ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">范围预览失败：{broadcastAudiencePreview.error.message}</p> : null}<div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setBroadcastForm(EMPTY_BROADCAST_FORM)}>清空</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!broadcastForm.title.trim() || !broadcastForm.content.trim() || !validBroadcastScope || saveBroadcastDraft.isPending || publishBroadcast.isPending} onClick={() => saveBroadcastDraft.mutate({ id: broadcastForm.id, title: broadcastForm.title.trim(), content: broadcastForm.content.trim(), deepLink: broadcastForm.deepLink.trim() || null, ...getBroadcastAudienceInput(broadcastForm) })}>{saveBroadcastDraft.isPending || publishBroadcast.isPending ? "正在发送…" : "保存并发送站内通知"}</Button></div></CardContent></Card>
+      <Card className="border-[#d8e3e0]"><CardHeader><CardTitle className="text-base">站内通知内容与发送范围</CardTitle><CardDescription>保存后即向当前授权范围的系统消息中心投递，并可要求收件人“确认收到”。本页的成功数量不代表微信服务号已送达。</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-4 lg:grid-cols-2"><div><Label>通知标题</Label><Input className="mt-1" value={broadcastForm.title} maxLength={80} placeholder="例如：本周施工计划调整通知" onChange={event => setBroadcastForm(current => ({ ...current, title: event.target.value }))} /></div><div><Label>系统跳转地址（可选）</Label><Input className="mt-1" value={broadcastForm.deepLink} placeholder="/mobile/messages" onChange={event => setBroadcastForm(current => ({ ...current, deepLink: event.target.value }))} /></div></div><div><Label>通知内容</Label><textarea className="mt-1 min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" value={broadcastForm.content} maxLength={1000} placeholder="请填写不含身份证、银行卡、完整电话号码或其他敏感个人信息的业务通知。" onChange={event => setBroadcastForm(current => ({ ...current, content: event.target.value }))} /></div><div className="grid gap-4 lg:grid-cols-2"><div><Label>范围类型</Label><Select value={broadcastForm.audienceType} onValueChange={value => setBroadcastForm(current => ({ ...current, audienceType: value as BroadcastAudienceType, scopeValue: "" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project">按项目</SelectItem><SelectItem value="organization">按组织及下级组织</SelectItem><SelectItem value="role">按岗位</SelectItem></SelectContent></Select></div><div><Label>{scopeTitle}</Label><Select value={broadcastForm.scopeValue || undefined} onValueChange={value => setBroadcastForm(current => ({ ...current, scopeValue: value }))} disabled={broadcastOptions.isLoading || !scopeOptions.length}><SelectTrigger className="mt-1"><SelectValue placeholder={broadcastOptions.isLoading ? "正在读取范围选项…" : `选择${scopeTitle}`} /></SelectTrigger><SelectContent>{scopeOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-3"><div><p className="text-xs text-slate-500">范围内有效人员</p><p className="mt-1 text-xl font-semibold text-slate-800">{validBroadcastScope ? broadcastAudiencePreview.data?.qualifiedCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">已绑定服务号</p><p className="mt-1 text-xl font-semibold text-emerald-700">{validBroadcastScope ? broadcastAudiencePreview.data?.boundRecipientCount ?? "—" : "—"}</p></div><div><p className="text-xs text-slate-500">未绑定服务号</p><p className="mt-1 text-xl font-semibold text-amber-700">{validBroadcastScope ? broadcastAudiencePreview.data?.unboundCount ?? "—" : "—"}</p></div></div>{broadcastAudiencePreview.isError ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">范围预览失败：{getUserFacingErrorMessage(broadcastAudiencePreview.error, "暂无法预览发送范围，请稍后重试")}</p> : null}<div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setBroadcastForm(EMPTY_BROADCAST_FORM)}>清空</Button><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!broadcastForm.title.trim() || !broadcastForm.content.trim() || !validBroadcastScope || saveBroadcastDraft.isPending || publishBroadcast.isPending} onClick={() => saveBroadcastDraft.mutate({ id: broadcastForm.id, title: broadcastForm.title.trim(), content: broadcastForm.content.trim(), deepLink: broadcastForm.deepLink.trim() || null, ...getBroadcastAudienceInput(broadcastForm) })}>{saveBroadcastDraft.isPending || publishBroadcast.isPending ? "正在发送…" : "保存并发送站内通知"}</Button></div></CardContent></Card>
       <Card className="w-full border-[#d8e3e0] shadow-sm"><CardHeader><p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">范围通知 · 综合台账</p><CardTitle className="mt-1 text-base">站内通知、投递与确认台账</CardTitle><CardDescription className="mt-1">每条通知行内展示发送范围、计划收件、送达、失败与确认数量；投递明细在同一行下方展开，不再另设重复通知列表。微信服务号业务事件不在本表重复计入。</CardDescription></CardHeader><CardContent>{broadcasts.isLoading ? <EmptyState text="正在读取范围通知台账…" /> : broadcasts.isError ? <EmptyState text="无法读取范围通知台账，请确认当前账号具有超级管理员权限。" /> : <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1280px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow className="border-[#dce3de] hover:bg-[#edf1ed]"><TableHead className="h-11 px-4 font-semibold text-[#46615a]">通知 / 内容</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">发送范围</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">计划收件</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">已送达</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">失败 / 跳过</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">已确认</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">状态</TableHead><TableHead className="h-11 px-4 font-semibold text-[#46615a]">创建时间</TableHead><TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">操作</TableHead></TableRow></TableHeader><TableBody>{broadcasts.data?.length ? broadcasts.data.map(item => { const isExpanded = isInlineBroadcastDeliveryExpanded(selectedBroadcastId, Number(item.id)); return <><TableRow key={item.id} className={isExpanded ? "border-[#c9dbd6] bg-[#f5f9f8]" : "border-[#edf0ee] hover:bg-[#fbfaf1]"}><TableCell className="max-w-[300px] px-4 py-3"><p className="font-semibold text-[#203c48]">{item.title}</p><p className="mt-1 line-clamp-2 text-slate-500">{item.content}</p></TableCell><TableCell className="px-4 py-3 text-slate-700">{describeScope(item)}</TableCell><TableCell className="px-4 py-3 text-slate-700">{item.recipientCount}</TableCell><TableCell className="px-4 py-3 text-emerald-700">{item.deliveredCount}</TableCell><TableCell className="px-4 py-3"><p className="text-rose-700">失败 {item.failedCount}</p><p className="mt-1 text-amber-700">跳过 {item.skippedCount}</p></TableCell><TableCell className="px-4 py-3 text-[#80543d]">{item.acknowledgedCount ?? 0}</TableCell><TableCell className="px-4 py-3"><BusinessStatusBadge status={item.status} /></TableCell><TableCell className="px-4 py-3 text-slate-700">{displayDate(item.createdAt)}</TableCell><TableCell className="px-4 py-3 text-right"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => setSelectedBroadcastId(isExpanded ? undefined : Number(item.id))}>{isExpanded ? "收起明细" : "投递明细"}</Button>{directSendable(item.status) ? <Button size="sm" className="bg-[#8b3f20] hover:bg-[#6d3421]" onClick={() => publishBroadcast.mutate({ id: Number(item.id) })} disabled={publishBroadcast.isPending}>按范围发送</Button> : null}</div></TableCell></TableRow>{isExpanded ? <TableRow key={`${item.id}-deliveries`} className="border-[#c9dbd6] bg-[#f8fbf8]"><TableCell colSpan={9} className="px-4 py-4"><div className="mb-3 flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold text-slate-800">投递明细与确认状态</p><p className="mt-1 text-xs text-slate-500">显示姓名、岗位、授权范围、投递结果、失败原因和“收到”确认时间；不展示内部编号或敏感身份信息。</p></div><Button size="sm" variant="outline" onClick={() => broadcastDeliveries.refetch()} disabled={broadcastDeliveries.isFetching}>{broadcastDeliveries.isFetching ? "正在刷新…" : "刷新明细"}</Button></div>{broadcastDeliveries.isLoading ? <EmptyState text="正在读取投递明细…" /> : broadcastDeliveries.data?.length ? <div className="grid gap-2 lg:grid-cols-2">{broadcastDeliveries.data.map(delivery => <div key={delivery.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2"><div className="min-w-0"><p className="text-sm font-medium text-slate-800">{delivery.recipientName}</p><p className="mt-1 text-xs text-slate-600">{delivery.recipientRole ?? "岗位信息待同步"} · {delivery.recipientScope ?? "授权范围待同步"}</p><p className="mt-1 text-xs text-slate-500">最近尝试：{displayDate(delivery.attemptedAt)}{delivery.deliveryReason ? ` · 原因：${delivery.deliveryReason}` : ""}</p>{delivery.failureGuidance ? <p className="mt-1 text-xs text-amber-800">处理建议：{delivery.failureGuidance}</p> : null}<p className="mt-1 text-xs text-[#80543d]">确认状态：{delivery.acknowledgementStatus === "acknowledged" ? `已确认收到（${displayDate(delivery.acknowledgedAt)}）` : delivery.acknowledgementStatus === "pending" ? "待确认收到" : "无需确认"}</p></div><BusinessStatusBadge status={delivery.deliveryStatus} /></div>)}</div> : <EmptyState text="该通知尚未生成逐收件人投递记录。" />}</TableCell></TableRow> : null}</>; }) : <TableRow><TableCell colSpan={9} className="px-4 py-10 text-center text-slate-500">尚无范围通知记录。填写通知内容并选择范围后可发送站内通知。</TableCell></TableRow>}</TableBody></Table></div>}</CardContent></Card>
     </div>;
   };
@@ -3991,7 +3992,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
               <div className="grid gap-3 sm:grid-cols-3"><Field label="机械"><Input disabled value={machineMonthlyPreview.data?.machine ? `${machineMonthlyPreview.data.machine.name}（${machineMonthlyPreview.data.machine.code}）` : ((machineryLedger.data ?? []).find(item => String(item.id) === machineStatementForm.machineId) ? `${(machineryLedger.data ?? []).find(item => String(item.id) === machineStatementForm.machineId)?.name}（待核算）` : "未选择机械")} /></Field><Field label="结算期间"><Input type="month" value={machineStatementForm.period} onChange={event => setMachineStatementForm(current => ({ ...current, period: event.target.value }))} /></Field><Field label="司机 / 操作员"><Select value={machineStatementForm.driverUserId || "UNASSIGNED"} onValueChange={value => setMachineStatementForm(current => ({ ...current, driverUserId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">按机械绑定操作员 / 未分配</SelectItem>{users.data?.map(user => <SelectItem key={user.id} value={String(user.id)}>{user.name || `用户 #${user.id}`}</SelectItem>)}</SelectContent></Select></Field></div>
               <section className="rounded-xl border border-[#d8e3e0] bg-[#f8fcfb] p-3"><div className="mb-3"><p className="text-sm font-semibold text-[#203c48]">机械产值口径</p><p className="mt-1 text-xs text-slate-500">固定月租按“月租 ÷ 30 × 出勤天数”计算；机械加班默认按“月租 ÷ 30 ÷ 10 × 小时”计算，存在合同加班单价时优先使用合同单价。</p></div><div className="grid gap-3 sm:grid-cols-2"><Field label="机械出勤天数"><Input type="number" min="0" max="31" step="0.5" value={machineStatementForm.machineWorkDays} onChange={event => setMachineStatementForm(current => ({ ...current, machineWorkDays: event.target.value }))} /></Field><Field label="机械加班（小时）"><Input type="number" min="0" max="744" step="0.5" value={machineStatementForm.machineOvertimeHours} onChange={event => setMachineStatementForm(current => ({ ...current, machineOvertimeHours: event.target.value }))} /></Field></div></section>
               <section className="rounded-xl border border-[#d8e3e0] bg-[#f8fcfb] p-3"><div className="mb-3"><p className="text-sm font-semibold text-[#203c48]">司机工资口径</p><p className="mt-1 text-xs text-slate-500">司机总工资按“固定工资 ÷ 30 × 出勤天数 + 固定工资 ÷ 30 ÷ 10 × 加班小时”由服务端计算。</p></div><div className="grid gap-3 sm:grid-cols-3"><Field label="司机固定月工资（元）"><Input type="number" min="0" step="0.01" value={machineStatementForm.driverMonthlyWage} onChange={event => setMachineStatementForm(current => ({ ...current, driverMonthlyWage: event.target.value }))} /></Field><Field label="司机出勤天数"><Input type="number" min="0" max="31" step="0.5" value={machineStatementForm.driverWorkDays} onChange={event => setMachineStatementForm(current => ({ ...current, driverWorkDays: event.target.value }))} /></Field><Field label="司机加班（小时）"><Input type="number" min="0" max="744" step="0.5" value={machineStatementForm.driverOvertimeHours} onChange={event => setMachineStatementForm(current => ({ ...current, driverOvertimeHours: event.target.value }))} /></Field></div></section>
-              {machineMonthlyPreview.isLoading ? <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">正在按当前项目真实成本与计价规则核算会计明细…</div> : machineMonthlyPreview.error ? <div className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800">{machineMonthlyPreview.error.message}。请先在机械档案中维护当前期间的产值计价规则。</div> : machineMonthlyPreview.data ? <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-amber-950">服务端会计核算预览</p><p className="mt-1 text-xs text-amber-800">计价：{machineMonthlyPreview.data.rule.billingType === "monthly" ? "月租" : machineMonthlyPreview.data.rule.billingType === "daily" ? "日租" : machineMonthlyPreview.data.rule.billingType === "hourly" ? "小时租" : "台班"} ¥{displayMoney(machineMonthlyPreview.data.rule.rate)}；来源成本 {machineMonthlyPreview.data.source.costRecordCount} 笔、维修保养 {machineMonthlyPreview.data.source.maintenanceRecordCount} 笔。</p></div><Badge variant="outline">{machineMonthlyPreview.data.machine.ownerName}</Badge></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-amber-800">机械总产值</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.totalOutput)}</p></div><div><p className="text-xs text-amber-800">司机总工资</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.driverTotalWage)}</p></div><div><p className="text-xs text-amber-800">维修 / 油费</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.repairAmount)} / ¥{displayMoney(machineMonthlyPreview.data.statement.fuelAmount)}</p></div><div><p className="text-xs text-amber-800">机械分成</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.machineShareAmount)}</p></div></div></section> : null}
+              {machineMonthlyPreview.isLoading ? <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">正在按当前项目真实成本与计价规则核算会计明细…</div> : machineMonthlyPreview.error ? <div className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800">{getUserFacingErrorMessage(machineMonthlyPreview.error, "暂无法核算机械会计明细，请稍后重试")}。请先在机械档案中维护当前期间的产值计价规则。</div> : machineMonthlyPreview.data ? <section className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-amber-950">服务端会计核算预览</p><p className="mt-1 text-xs text-amber-800">计价：{machineMonthlyPreview.data.rule.billingType === "monthly" ? "月租" : machineMonthlyPreview.data.rule.billingType === "daily" ? "日租" : machineMonthlyPreview.data.rule.billingType === "hourly" ? "小时租" : "台班"} ¥{displayMoney(machineMonthlyPreview.data.rule.rate)}；来源成本 {machineMonthlyPreview.data.source.costRecordCount} 笔、维修保养 {machineMonthlyPreview.data.source.maintenanceRecordCount} 笔。</p></div><Badge variant="outline">{machineMonthlyPreview.data.machine.ownerName}</Badge></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-amber-800">机械总产值</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.totalOutput)}</p></div><div><p className="text-xs text-amber-800">司机总工资</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.driverTotalWage)}</p></div><div><p className="text-xs text-amber-800">维修 / 油费</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.repairAmount)} / ¥{displayMoney(machineMonthlyPreview.data.statement.fuelAmount)}</p></div><div><p className="text-xs text-amber-800">机械分成</p><p className="mt-1 font-semibold text-amber-950">¥{displayMoney(machineMonthlyPreview.data.statement.machineShareAmount)}</p></div></div></section> : null}
               <div className="grid gap-3 sm:grid-cols-2"><Field label="签字 / 经办人"><Input value={machineStatementForm.signatureName} placeholder="例如：车主或经办会计" onChange={event => setMachineStatementForm(current => ({ ...current, signatureName: event.target.value }))} /></Field><Field label="备注"><Input value={machineStatementForm.remarks} placeholder="可填写核对说明或异常原因" onChange={event => setMachineStatementForm(current => ({ ...current, remarks: event.target.value }))} /></Field></div>
               <DialogFooter><Button type="button" variant="outline" onClick={() => setMachineStatementDialogOpen(false)}>取消</Button><Button type="submit" disabled={saveMachineMonthlyStatement.isPending || !machineMonthlyPreview.data || !machineStatementForm.machineId || !machineStatementForm.projectId || !machineStatementForm.period}>{saveMachineMonthlyStatement.isPending ? "正在生成…" : "生成会计明细草稿"}</Button></DialogFooter>
             </form>

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import TaxComplianceControlPanel from "@/components/TaxComplianceControlPanel";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { formatChinaDateTime } from "@/lib/businessTime";
@@ -52,11 +53,11 @@ export default function TaxAccountingHandoffManager({ projectId, period }: { pro
   const [receiptReference, setReceiptReference] = useState("");
   const historyDownload = trpc.finance.downloadTaxHandoffBatch.useQuery({ id: historyBatchId ?? 0, projectId }, { enabled: Boolean(historyBatchId && projectId), retry: false });
   const invalidate = async () => { await utils.finance.taxWorkspace.invalidate({ projectId, period }); };
-  const saveEntity = trpc.finance.saveTaxEntityProfile.useMutation({ onSuccess: async () => { toast.success("纳税主体已保存"); setEntityOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const saveProfile = trpc.finance.saveProjectTaxProfile.useMutation({ onSuccess: async () => { toast.success("项目税务辅助档案已保存"); setProfileOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const saveEntry = trpc.finance.saveTaxAuxiliaryEntry.useMutation({ onSuccess: async () => { toast.success("财税辅助事项已保存"); setEntryOpen(false); await invalidate(); }, onError: error => toast.error(error.message) });
-  const createHandoff = trpc.finance.createTaxHandoffBatch.useMutation({ onSuccess: async (result) => { downloadCsv(`财税资料交接-${result.batchNo}.csv`, result.csv); toast.success(`已生成 ${result.recordCount} 行真实资料并下载CSV`); setHandoffNotes(""); await invalidate(); }, onError: error => toast.error(error.message) });
-  const transitionBatch = trpc.finance.transitionTaxHandoffBatch.useMutation({ onSuccess: async () => { toast.success("交接批次状态已更新"); setReceiptOpen(false); setReceiptBatchId(null); setReceiptReference(""); await invalidate(); }, onError: error => toast.error(error.message) });
+  const saveEntity = trpc.finance.saveTaxEntityProfile.useMutation({ onSuccess: async () => { toast.success("纳税主体已保存"); setEntityOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财税辅助操作未完成，请稍后重试")) });
+  const saveProfile = trpc.finance.saveProjectTaxProfile.useMutation({ onSuccess: async () => { toast.success("项目税务辅助档案已保存"); setProfileOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财税辅助操作未完成，请稍后重试")) });
+  const saveEntry = trpc.finance.saveTaxAuxiliaryEntry.useMutation({ onSuccess: async () => { toast.success("财税辅助事项已保存"); setEntryOpen(false); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财税辅助操作未完成，请稍后重试")) });
+  const createHandoff = trpc.finance.createTaxHandoffBatch.useMutation({ onSuccess: async (result) => { downloadCsv(`财税资料交接-${result.batchNo}.csv`, result.csv); toast.success(`已生成 ${result.recordCount} 行真实资料并下载CSV`); setHandoffNotes(""); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财税辅助操作未完成，请稍后重试")) });
+  const transitionBatch = trpc.finance.transitionTaxHandoffBatch.useMutation({ onSuccess: async () => { toast.success("交接批次状态已更新"); setReceiptOpen(false); setReceiptBatchId(null); setReceiptReference(""); await invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财税辅助操作未完成，请稍后重试")) });
 
   useEffect(() => {
     if (!historyDownload.data || !historyBatchId) return;

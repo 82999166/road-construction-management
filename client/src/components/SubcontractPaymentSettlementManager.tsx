@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { downloadCurrentFilteredCsv, escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { BadgeCheck, Landmark, ReceiptText, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -44,8 +45,8 @@ export default function SubcontractPaymentSettlementManager({ projectId }: { pro
   const packages = trpc.subcontract.listPackages.useQuery({ projectId }, { enabled: Boolean(projectId) });
   const settlements = trpc.subcontract.listPaymentSettlements.useQuery({ projectId }, { enabled: Boolean(projectId) });
   const refresh = () => Promise.all([utils.subcontract.listPackages.invalidate(), utils.subcontract.listPaymentSettlements.invalidate(), utils.subcontract.summary.invalidate()]);
-  const create = trpc.subcontract.createPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成分包应付草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
-  const transition = trpc.subcontract.transitionPaymentSettlement.useMutation({ onSuccess: async () => { toast.success("分包应付结算状态已更新"); setPaymentOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
+  const create = trpc.subcontract.createPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成分包应付草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "分包结算操作未完成，请稍后重试")) });
+  const transition = trpc.subcontract.transitionPaymentSettlement.useMutation({ onSuccess: async () => { toast.success("分包应付结算状态已更新"); setPaymentOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "分包结算操作未完成，请稍后重试")) });
   const settledPackageIds = useMemo(() => new Set((settlements.data ?? []).map(item => Number(item.packageId))), [settlements.data]);
   const candidates = useMemo(() => (packages.data ?? []).filter(item => item.status === "confirmed" && !settledPackageIds.has(Number(item.id))), [packages.data, settledPackageIds]);
   const packageById = useMemo(() => new Map((packages.data ?? []).map(item => [Number(item.id), item])), [packages.data]);

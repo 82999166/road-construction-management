@@ -11,6 +11,7 @@ import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { Landmark, ReceiptText, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -53,8 +54,8 @@ export default function MachinePaymentSettlementManager({ projectId }: { project
   const statements = trpc.machinery.listMonthlyStatements.useQuery({ projectId, period }, { enabled: Boolean(projectId) && /^\d{4}-(0[1-9]|1[0-2])$/.test(period) });
   const settlements = trpc.machinery.listPaymentSettlements.useQuery({ projectId }, { enabled: Boolean(projectId) });
   const refresh = () => Promise.all([utils.machinery.listPaymentSettlements.invalidate(), utils.machinery.listMonthlyStatements.invalidate(), utils.machinery.listMachines.invalidate()]);
-  const create = trpc.machinery.createPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成机械付款结算草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
-  const transition = trpc.machinery.transitionPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`机械结算状态已更新为：${statusLabel[data.status]}`); setPayOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
+  const create = trpc.machinery.createPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成机械付款结算草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "机械付款结算未完成，请稍后重试")) });
+  const transition = trpc.machinery.transitionPaymentSettlement.useMutation({ onSuccess: async data => { toast.success(`机械结算状态已更新为：${statusLabel[data.status]}`); setPayOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "机械付款结算未完成，请稍后重试")) });
   const machineById = useMemo(() => new Map((machines.data ?? []).map(item => [item.id, item])), [machines.data]);
   const candidates = useMemo(() => (statements.data ?? []).filter(item => item.status === "approved" && machineById.get(item.machineId)?.ownership === "leased"), [machineById, statements.data]);
   const openCreate = () => {

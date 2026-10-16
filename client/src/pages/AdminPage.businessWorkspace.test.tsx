@@ -811,3 +811,13 @@ describe("风险预警标签中文化", () => {
     expect(loader).toContain("useLaborWorkspaceFilters(initialAttendanceDate)");
     expect(loader).toContain("useLaborWorkspaceQueries({ enabled");
   });
+
+  it("后台操作与查询异常仅显示中文安全提示，不直接回显技术错误信息", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('import { getUserFacingErrorMessage } from "@/lib/userFacingError";');
+    expect(source).toContain("getUserFacingErrorMessage(broadcastAudiencePreview.error");
+    expect(source).toContain("getUserFacingErrorMessage(machineMonthlyPreview.error");
+    expect(source).not.toContain("toast.error(error.message)");
+    expect(source).not.toContain("error instanceof Error ? error.message");
+  });

@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime";
 import { Bell, Landmark, ReceiptText, Send, WalletCards } from "lucide-react";
@@ -47,9 +48,9 @@ export default function TransportVehicleSettlementManager({ projectId, vehicles 
   const settlements = trpc.transport.listVehicleSettlements.useQuery({ projectId }, { enabled: Boolean(projectId) });
   const utils = trpc.useUtils();
   const refresh = () => Promise.all([utils.transport.dailyVehicleSettlementSummary.invalidate(), utils.transport.listVehicleSettlements.invalidate(), utils.transport.listTrips.invalidate()]);
-  const create = trpc.transport.createVehicleSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成结算草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
-  const transition = trpc.transport.transitionVehicleSettlement.useMutation({ onSuccess: async data => { toast.success(`结算状态已更新为：${settlementStatusLabel[data.status] ?? getBusinessStatusLabel(data.status)}`); setPayOpen(false); await refresh(); }, onError: error => toast.error(error.message) });
-  const notify = trpc.transport.sendDailyVehicleSettlementSummary.useMutation({ onSuccess: data => toast.success(`已发起 ${data.tripCount} 趟运输日结的服务号通知`), onError: error => toast.error(error.message) });
+  const create = trpc.transport.createVehicleSettlement.useMutation({ onSuccess: async data => { toast.success(`已生成结算草稿 ${data.settlementNo}`); setCreateOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "车辆运输结算未完成，请稍后重试")) });
+  const transition = trpc.transport.transitionVehicleSettlement.useMutation({ onSuccess: async data => { toast.success(`结算状态已更新为：${settlementStatusLabel[data.status] ?? getBusinessStatusLabel(data.status)}`); setPayOpen(false); await refresh(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "车辆运输结算未完成，请稍后重试")) });
+  const notify = trpc.transport.sendDailyVehicleSettlementSummary.useMutation({ onSuccess: data => toast.success(`已发起 ${data.tripCount} 趟运输日结的服务号通知`), onError: error => toast.error(getUserFacingErrorMessage(error, "车辆运输结算未完成，请稍后重试")) });
   const eligibleVehicles = useMemo(() => vehicles.filter(item => item.ownership === "trip_settlement"), [vehicles]);
   const dailyRows = daily.data?.vehicleSummaries ?? [];
   const openCreate = (vehicleId?: number) => {
