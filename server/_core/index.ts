@@ -53,6 +53,14 @@ async function startServer() {
   registerDailyProjectDigestHeartbeatRoute(app);
   registerProjectRiskHeartbeatRoute(app);
   registerLocalRfidBridgeRoutes(app);
+  /**
+   * 供本机 systemd 与正式发布脚本使用的无鉴权存活探针。
+   * 必须在 SPA 静态回退之前注册，避免任意路径返回 index.html 被误判为健康。
+   */
+  app.get("/api/health", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).json({ ok: true, service: "yx-cloud-management" });
+  });
   // 微信服务号网页授权域名校验文件必须在 SPA 静态回退之前从根路径返回。
   app.get("/MP_verify_amDyVeLccZJcmzJL.txt", (_req, res) => {
     res.type("text/plain").send("amDyVeLccZJcmzJL");

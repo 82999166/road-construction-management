@@ -12,7 +12,7 @@ remote_host="${REMOTE_HOST:?缺少正式服务器地址}"
 ssh_key_path="${SSH_KEY_PATH:-}"
 app_root="${APP_ROOT:-/opt/yx-cloud-management/app}"
 service_name="${SERVICE_NAME:-yx-cloud-management.service}"
-health_url="${HEALTH_URL:-http://127.0.0.1:18080/}"
+health_url="${HEALTH_URL:-http://127.0.0.1:18080/api/health}"
 
 [[ -f "$package_path" && -f "$checksum_path" ]]
 expected_checksum="$(awk '{print $1}' "$checksum_path")"
@@ -104,7 +104,9 @@ systemctl restart "$SERVICE_NAME"
 
 healthy=0
 for _ in $(seq 1 18); do
-  if systemctl is-active --quiet "$SERVICE_NAME" && curl -fsS --max-time 4 "$HEALTH_URL" >/dev/null; then
+  if systemctl is-active --quiet "$SERVICE_NAME" \
+    && [[ "$(readlink -f "$APP_ROOT/current")" == "$new_release" ]] \
+    && curl -fsS --max-time 4 "$HEALTH_URL" | grep -q '"ok":true'; then
     healthy=$((healthy + 1))
   else
     healthy=0

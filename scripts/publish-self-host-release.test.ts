@@ -13,6 +13,9 @@ describe("自建正式服务器原子发布脚本", () => {
     expect(source).toContain("PasswordAuthentication=no");
     expect(source).toContain("trap rollback ERR");
     expect(source).toContain("sha256sum");
+    expect(source).toContain('health_url="${HEALTH_URL:-http://127.0.0.1:18080/api/health}"');
+    expect(source).toContain('grep -q \'"ok":true\'');
+    expect(source).toContain('[[ "$(readlink -f "$APP_ROOT/current")" == "$new_release" ]]');
     expect(source).toContain('mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"');
     expect(source).not.toContain(" sshpass -e scp ");
   });
