@@ -18,6 +18,7 @@ import {
   machinePaymentSettlements,
   machines,
   notificationRecords,
+  purchaseOrders,
   projects,
   rfidCardWriteJobs,
   rfidWriterDevices,
@@ -1587,20 +1588,21 @@ export const machineryRouter = router({
     await assertMachineryAccess(ctx);
     const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
     const range = getMonthRange(input.period);
-    const [monthlyStatements, dailyOperations, costRows, maintenanceRows, refuelRows] = await Promise.all([
+    const [monthlyStatements, dailyOperations, costRows, maintenanceRows, refuelRows, partsPurchaseRows] = await Promise.all([
       db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.machineId, input.machineId), eq(machineMonthlyStatements.projectId, input.projectId))).orderBy(desc(machineMonthlyStatements.period)),
       db.select().from(machineDailyOperations).where(and(eq(machineDailyOperations.machineId, input.machineId), eq(machineDailyOperations.projectId, input.projectId), gte(machineDailyOperations.occurredOn, range.start), lt(machineDailyOperations.occurredOn, range.endExclusive))).orderBy(desc(machineDailyOperations.occurredOn)),
       db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
       db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "machine"), eq(assetMaintenanceRecords.assetId, input.machineId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
       db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.assetType, "machine"), eq(dieselRefuelRecords.machineId, input.machineId), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
+      db.select().from(purchaseOrders).where(and(eq(purchaseOrders.assetType, "machine"), eq(purchaseOrders.assetId, input.machineId), eq(purchaseOrders.projectId, input.projectId), eq(purchaseOrders.status, "closed"), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
     ]);
     const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
-    type DailyAggregate = { date: string; operation: (typeof dailyOperations)[number] | null; repairAmount: number; maintenanceAmount: number; fuelLiters: number; fuelAmount: number; otherExpenseAmount: number; sourceCounts: { cost: number; maintenance: number; refuel: number } };
+    type DailyAggregate = { date: string; operation: (typeof dailyOperations)[number] | null; repairAmount: number; maintenanceAmount: number; partsAmount: number; fuelLiters: number; fuelAmount: number; otherExpenseAmount: number; sourceCounts: { cost: number; maintenance: number; refuel: number; partsPurchase: number } };
     const days = new Map<string, DailyAggregate>();
     const ensureDay = (date: string) => {
       const existing = days.get(date);
       if (existing) return existing;
-      const created: DailyAggregate = { date, operation: null, repairAmount: 0, maintenanceAmount: 0, fuelLiters: 0, fuelAmount: 0, otherExpenseAmount: 0, sourceCounts: { cost: 0, maintenance: 0, refuel: 0 } };
+      const created: DailyAggregate = { date, operation: null, repairAmount: 0, maintenanceAmount: 0, partsAmount: 0, fuelLiters: 0, fuelAmount: 0, otherExpenseAmount: 0, sourceCounts: { cost: 0, maintenance: 0, refuel: 0, partsPurchase: 0 } };
       days.set(date, created);
       return created;
     };
@@ -1628,14 +1630,19 @@ export const machineryRouter = router({
       target.fuelLiters = Number(row.liters);
       target.fuelAmount = Number(row.amount);
     });
+    partsPurchaseRows.forEach(row => {
+      const target = ensureDay(dayKey(row.orderedAt));
+      target.partsAmount += Number(row.amount);
+      target.sourceCounts.partsPurchase += 1;
+    });
     const daily = Array.from(days.values()).map(item => {
       const activeOperation = item.operation && item.operation.status !== "void" ? item.operation : null;
       const outputAmount = activeOperation ? Number(activeOperation.outputAmount) : 0;
       const driverWageAmount = activeOperation ? Number(activeOperation.driverWageAmount) : 0;
-      const totalExpense = roundMoney(driverWageAmount + item.repairAmount + item.maintenanceAmount + item.fuelAmount + item.otherExpenseAmount);
+      const totalExpense = roundMoney(driverWageAmount + item.repairAmount + item.maintenanceAmount + item.partsAmount + item.fuelAmount + item.otherExpenseAmount);
       return { ...item, outputAmount, driverWageAmount, totalExpense, netIncome: roundMoney(outputAmount - totalExpense), workHours: activeOperation ? Number(activeOperation.workHours) : 0, overtimeHours: activeOperation ? Number(activeOperation.overtimeHours) : 0, operationStatus: item.operation?.status ?? null, remarks: item.operation?.remarks ?? null };
     }).sort((left, right) => right.date.localeCompare(left.date));
-    return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), daily };
+    return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), daily, partsPurchases: partsPurchaseRows.map(item => ({ id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status })) };
   }),
 
   /** 保存单机日作业；已提交、审核或结算记录禁止直接修改。 */
@@ -1775,10 +1782,15 @@ export const machineryRouter = router({
     if (!["approved", "settled"].includes(statement.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "仅已审核的机械月结明细可以创建付款结算单" });
     const { machine } = await getScopedMachine(ctx, statement.machineId, input.projectId);
     if (machine.ownership !== "leased") throw new TRPCError({ code: "BAD_REQUEST", message: "公司自有机械不生成对外付款结算单；其工资和采购费用仍按各自财务流程办理" });
+    const periodRange = getMonthRange(statement.period);
+    const partsPurchaseRows = await db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount }).from(purchaseOrders).where(and(
+      eq(purchaseOrders.projectId, input.projectId), eq(purchaseOrders.assetType, "machine"), eq(purchaseOrders.assetId, machine.id), eq(purchaseOrders.status, "closed"), isNull(purchaseOrders.assetDeductionReference), gte(purchaseOrders.orderedAt, periodRange.start), lt(purchaseOrders.orderedAt, periodRange.endExclusive),
+    ));
+    const partsDeductionAmount = roundMoney(partsPurchaseRows.reduce((sum, item) => sum + Number(item.amount), 0));
     const grossPayableAmount = roundMoney(Number(statement.machineShareAmount));
     const manualDeductionAmount = roundMoney(input.manualDeductionAmount);
-    const netPayableAmount = roundMoney(grossPayableAmount - manualDeductionAmount);
-    if (grossPayableAmount <= 0 || netPayableAmount < 0) throw new TRPCError({ code: "BAD_REQUEST", message: "机械应付金额必须大于等于人工扣款，请核对已审核月结明细和扣款金额" });
+    const netPayableAmount = roundMoney(grossPayableAmount - manualDeductionAmount - partsDeductionAmount);
+    if (grossPayableAmount <= 0 || netPayableAmount < 0) throw new TRPCError({ code: "BAD_REQUEST", message: "机械应付金额不足以扣除人工扣款和关联配件费用，请先核对月结金额或将配件费用分期处理" });
     const [existing] = await db.select().from(machinePaymentSettlements).where(eq(machinePaymentSettlements.monthlyStatementId, statement.id)).limit(1);
     if (existing && existing.status !== "void") throw new TRPCError({ code: "CONFLICT", message: "该机械月结已生成付款结算单，不能重复创建" });
     const settlementNo = existing?.settlementNo ?? createMachinePaymentSettlementNo(input.projectId);
@@ -1787,9 +1799,10 @@ export const machineryRouter = router({
       if (existing) await tx.update(machinePaymentSettlements).set(values).where(and(eq(machinePaymentSettlements.id, existing.id), eq(machinePaymentSettlements.status, "void")));
       else await tx.insert(machinePaymentSettlements).values({ settlementNo, ...values, createdBy: user.id });
       if (statement.status === "approved") await tx.update(machineMonthlyStatements).set({ status: "settled" }).where(and(eq(machineMonthlyStatements.id, statement.id), eq(machineMonthlyStatements.status, "approved")));
+      if (partsPurchaseRows.length) await tx.update(purchaseOrders).set({ assetDeductionReference: settlementNo, assetDeductedAt: new Date() }).where(and(inArray(purchaseOrders.id, partsPurchaseRows.map(item => item.id)), isNull(purchaseOrders.assetDeductionReference)));
     });
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "recreate_payment_settlement" : "create_payment_settlement", targetType: "machine_payment_settlement", targetId: settlementNo, summary: `${existing ? "重新生成" : "创建"}机械付款结算单：${machine.name} ${statement.period}，净应付 ¥${netPayableAmount.toFixed(2)}` });
-    return { success: true, settlementNo, netPayableAmount };
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: existing ? "recreate_payment_settlement" : "create_payment_settlement", targetType: "machine_payment_settlement", targetId: settlementNo, summary: `${existing ? "重新生成" : "创建"}机械付款结算单：${machine.name} ${statement.period}，配件扣款 ¥${partsDeductionAmount.toFixed(2)}，净应付 ¥${netPayableAmount.toFixed(2)}` });
+    return { success: true, settlementNo, partsDeductionAmount, netPayableAmount };
   }),
 
   /** 机械付款结算严格依次提交、会计审核、付款登记；付款完成后禁止作废或回退。 */
@@ -1820,7 +1833,10 @@ export const machineryRouter = router({
       const result = await tx.update(machinePaymentSettlements).set(values).where(and(eq(machinePaymentSettlements.id, settlement.id), eq(machinePaymentSettlements.status, expectedStatus)));
       assertConditionalStatusWrite(result, "机械付款结算单");
       if (input.action === "pay") await tx.insert(financialRecords).values({ recordNo: `F-MPAY-${settlement.settlementNo}`, projectId: input.projectId, direction: "expense", category: "机械付款结算", amount: settlement.netPayableAmount, occurredAt: paymentDate!, settlementStatus: "paid", sourceType: "machine_payment_settlement", sourceId: String(settlement.id), evidenceId: null, remarks: `机械付款结算单 ${settlement.settlementNo}${input.paymentReference?.trim() ? `；付款参考号 ${input.paymentReference.trim()}` : ""}` });
-      if (input.action === "void") await tx.update(machineMonthlyStatements).set({ status: "approved" }).where(and(eq(machineMonthlyStatements.id, settlement.monthlyStatementId), eq(machineMonthlyStatements.status, "settled")));
+      if (input.action === "void") {
+        await tx.update(machineMonthlyStatements).set({ status: "approved" }).where(and(eq(machineMonthlyStatements.id, settlement.monthlyStatementId), eq(machineMonthlyStatements.status, "settled")));
+        await tx.update(purchaseOrders).set({ assetDeductionReference: null, assetDeductedAt: null }).where(eq(purchaseOrders.assetDeductionReference, settlement.settlementNo));
+      }
     });
     const actionLabel = input.action === "submit" ? "提交会计审核" : input.action === "approve" ? "审核通过" : input.action === "pay" ? "完成付款登记" : "作废";
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: `payment_settlement_${input.action}`, targetType: "machine_payment_settlement", targetId: settlement.settlementNo, summary: `机械付款结算单已${actionLabel}：净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}` });
@@ -2028,27 +2044,29 @@ export const transportRouter = router({
     const isDriverOnly = roleCodes.includes("DRIVER") && !roleCodes.some(role => ["ALL", "TRANSPORT_MANAGER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"].includes(role));
     if (isDriverOnly && vehicle.driverUserId !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "司机仅可查看本人车辆分析" });
     const range = getMonthRange(input.period);
-    const [tripRows, refuelRows, maintenanceRows, leaseRules] = await Promise.all([
+    const [tripRows, refuelRows, maintenanceRows, leaseRules, partsPurchaseRows] = await Promise.all([
       db.select().from(transportTrips).where(and(eq(transportTrips.vehicleId, input.vehicleId), eq(transportTrips.projectId, input.projectId))),
       db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.assetType, "vehicle"), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"))),
       db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "vehicle"), eq(assetMaintenanceRecords.assetId, input.vehicleId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"))),
       vehicle.ownership === "leased" ? db.select().from(transportVehicleLeaseRules).where(and(eq(transportVehicleLeaseRules.vehicleId, input.vehicleId), eq(transportVehicleLeaseRules.projectId, input.projectId), eq(transportVehicleLeaseRules.status, "active"))) : Promise.resolve([]),
+      db.select().from(purchaseOrders).where(and(eq(purchaseOrders.assetType, "vehicle"), eq(purchaseOrders.assetId, input.vehicleId), eq(purchaseOrders.projectId, input.projectId), eq(purchaseOrders.status, "closed"))),
     ]);
     const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
-    type Aggregate = { date: string; tripCount: number; tripNos: string[]; distanceKm: number; grossIncome: number; settlementIncome: number; fuelLiters: number; fuelAmount: number; repairAmount: number; maintenanceAmount: number; sourceCounts: { trips: number; refuels: number; maintenance: number } };
+    type Aggregate = { date: string; tripCount: number; tripNos: string[]; distanceKm: number; grossIncome: number; settlementIncome: number; fuelLiters: number; fuelAmount: number; repairAmount: number; maintenanceAmount: number; partsAmount: number; sourceCounts: { trips: number; refuels: number; maintenance: number; partsPurchase: number } };
     const dailyMap = new Map<string, Aggregate>();
     const ensure = (date: string) => {
       const current = dailyMap.get(date);
       if (current) return current;
-      const next: Aggregate = { date, tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } };
+      const next: Aggregate = { date, tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, partsAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0, partsPurchase: 0 } };
       dailyMap.set(date, next);
       return next;
     };
     tripRows.filter(item => item.status !== "void").forEach(item => { const row = ensure(dayKey(item.startAt)); row.tripCount += 1; row.tripNos.push(item.tripNo); row.distanceKm += Number(item.actualDistanceKm ?? 0); row.grossIncome += Number(item.calculatedAmount ?? 0); row.settlementIncome += Number(item.netSettlementAmount ?? item.calculatedAmount ?? 0); row.sourceCounts.trips += 1; });
     refuelRows.forEach(item => { const row = ensure(dayKey(item.refueledAt)); row.fuelLiters += Number(item.liters); row.fuelAmount += Number(item.amount); row.sourceCounts.refuels += 1; });
     maintenanceRows.forEach(item => { const row = ensure(dayKey(item.occurredAt)); if (item.costCategory === "repair") row.repairAmount += Number(item.amount); else row.maintenanceAmount += Number(item.amount); row.sourceCounts.maintenance += 1; });
+    partsPurchaseRows.forEach(item => { const row = ensure(dayKey(item.orderedAt)); row.partsAmount += Number(item.amount); row.sourceCounts.partsPurchase += 1; });
     const decorate = (item: Aggregate) => {
-      const totalExpense = roundMoney(item.fuelAmount + item.repairAmount + item.maintenanceAmount);
+      const totalExpense = roundMoney(item.fuelAmount + item.repairAmount + item.maintenanceAmount + item.partsAmount);
       return {
         ...item,
         distanceKm: roundMoney(item.distanceKm),
@@ -2058,6 +2076,7 @@ export const transportRouter = router({
         fuelAmount: roundMoney(item.fuelAmount),
         repairAmount: roundMoney(item.repairAmount),
         maintenanceAmount: roundMoney(item.maintenanceAmount),
+        partsAmount: roundMoney(item.partsAmount),
         totalExpense,
         netIncome: roundMoney(item.grossIncome - totalExpense),
         fuelCostRatio: item.grossIncome > 0 ? roundMoney(item.fuelAmount / item.grossIncome * 100) : null,
@@ -2071,15 +2090,15 @@ export const transportRouter = router({
     };
     const daily = Array.from(dailyMap.values()).filter(item => item.date >= input.period && item.date < `${input.period}-32`).map(decorate).sort((left, right) => right.date.localeCompare(left.date));
     const monthlyMap = new Map<string, Aggregate>();
-    Array.from(dailyMap.values()).forEach(item => { const period = item.date.slice(0, 7); const current = monthlyMap.get(period) ?? { ...item, date: period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } }; if (!monthlyMap.has(period)) { monthlyMap.set(period, current); return; } current.tripCount += item.tripCount; current.distanceKm += item.distanceKm; current.grossIncome += item.grossIncome; current.settlementIncome += item.settlementIncome; current.fuelLiters += item.fuelLiters; current.fuelAmount += item.fuelAmount; current.repairAmount += item.repairAmount; current.maintenanceAmount += item.maintenanceAmount; current.sourceCounts.trips += item.sourceCounts.trips; current.sourceCounts.refuels += item.sourceCounts.refuels; current.sourceCounts.maintenance += item.sourceCounts.maintenance; });
-    const currentSummary = daily.reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount }), { tripCount: 0, distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0 });
+    Array.from(dailyMap.values()).forEach(item => { const period = item.date.slice(0, 7); const current = monthlyMap.get(period) ?? { ...item, date: period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0, partsPurchase: 0 } }; if (!monthlyMap.has(period)) { monthlyMap.set(period, current); return; } current.tripCount += item.tripCount; current.distanceKm += item.distanceKm; current.grossIncome += item.grossIncome; current.settlementIncome += item.settlementIncome; current.fuelLiters += item.fuelLiters; current.fuelAmount += item.fuelAmount; current.repairAmount += item.repairAmount; current.maintenanceAmount += item.maintenanceAmount; current.partsAmount += item.partsAmount; current.sourceCounts.trips += item.sourceCounts.trips; current.sourceCounts.refuels += item.sourceCounts.refuels; current.sourceCounts.maintenance += item.sourceCounts.maintenance; current.sourceCounts.partsPurchase += item.sourceCounts.partsPurchase; });
+    const currentSummary = daily.reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount, partsAmount: sum.partsAmount + item.partsAmount }), { tripCount: 0, distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, partsAmount: 0 });
     const leaseRule = leaseRules.sort((left, right) => new Date(right.effectiveFrom).getTime() - new Date(left.effectiveFrom).getTime()).find(item => new Date(item.effectiveFrom).getTime() < range.endExclusive.getTime() && (!item.effectiveTo || new Date(item.effectiveTo).getTime() >= range.start.getTime()));
     const daysInPeriod = Math.max(1, Math.round((range.endExclusive.getTime() - range.start.getTime()) / 86_400_000));
     const leaseEstimatedAmount = leaseRule?.billingType === "monthly" ? roundMoney(Number(leaseRule.rate) * daysInPeriod / 30) : leaseRule?.billingType === "daily" ? roundMoney(Number(leaseRule.rate) * daysInPeriod) : 0;
-    const operatingSummary = decorate({ date: input.period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0 }, ...currentSummary });
+    const operatingSummary = decorate({ date: input.period, tripNos: [], sourceCounts: { trips: 0, refuels: 0, maintenance: 0, partsPurchase: 0 }, ...currentSummary });
     const summary = { ...operatingSummary, leaseEstimatedAmount, totalExpense: roundMoney(operatingSummary.totalExpense + leaseEstimatedAmount), netIncome: roundMoney(operatingSummary.grossIncome - operatingSummary.totalExpense - leaseEstimatedAmount) };
-    const cumulative = decorate(Array.from(dailyMap.values()).reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount }), { date: "累计", tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0 } }));
-    return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, ownerName: vehicle.ownerName, status: vehicle.status }, period: input.period, leaseRule: leaseRule ? { billingType: leaseRule.billingType, rate: Number(leaseRule.rate), effectiveFrom: leaseRule.effectiveFrom, effectiveTo: leaseRule.effectiveTo, estimatePending: ["hourly", "shift"].includes(leaseRule.billingType) } : null, summary, cumulative, monthly: Array.from(monthlyMap.values()).map(decorate).sort((left, right) => right.date.localeCompare(left.date)), daily };
+    const cumulative = decorate(Array.from(dailyMap.values()).reduce((sum, item) => ({ ...sum, tripCount: sum.tripCount + item.tripCount, distanceKm: sum.distanceKm + item.distanceKm, grossIncome: sum.grossIncome + item.grossIncome, settlementIncome: sum.settlementIncome + item.settlementIncome, fuelLiters: sum.fuelLiters + item.fuelLiters, fuelAmount: sum.fuelAmount + item.fuelAmount, repairAmount: sum.repairAmount + item.repairAmount, maintenanceAmount: sum.maintenanceAmount + item.maintenanceAmount, partsAmount: sum.partsAmount + item.partsAmount }), { date: "累计", tripCount: 0, tripNos: [], distanceKm: 0, grossIncome: 0, settlementIncome: 0, fuelLiters: 0, fuelAmount: 0, repairAmount: 0, maintenanceAmount: 0, partsAmount: 0, sourceCounts: { trips: 0, refuels: 0, maintenance: 0, partsPurchase: 0 } }));
+    return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership, ownerName: vehicle.ownerName, status: vehicle.status }, period: input.period, leaseRule: leaseRule ? { billingType: leaseRule.billingType, rate: Number(leaseRule.rate), effectiveFrom: leaseRule.effectiveFrom, effectiveTo: leaseRule.effectiveTo, estimatePending: ["hourly", "shift"].includes(leaseRule.billingType) } : null, summary, cumulative, monthly: Array.from(monthlyMap.values()).map(decorate).sort((left, right) => right.date.localeCompare(left.date)), daily, partsPurchases: partsPurchaseRows.filter(item => dayKey(item.orderedAt) >= input.period && dayKey(item.orderedAt) < `${input.period}-32`).map(item => ({ id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status })) };
   }),
 
   /** 新建或维护运输车辆档案；司机角色不得修改车辆主数据。 */
@@ -3357,9 +3376,10 @@ export const transportRouter = router({
     const verifiedTrips = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), eq(transportTrips.vehicleId, input.vehicleId), eq(transportTrips.status, "verified"), gte(transportTrips.startAt, start), lt(transportTrips.startAt, endExclusive)));
     if (!verifiedTrips.length) throw new TRPCError({ code: "BAD_REQUEST", message: "所选期间没有可结算的已核验运输趟次" });
     const tripIds = verifiedTrips.map(item => item.id);
-    const [existingItems, fuelRecords] = await Promise.all([
+    const [existingItems, fuelRecords, partsPurchaseRows] = await Promise.all([
       db.select({ tripId: transportVehicleSettlementItems.tripId }).from(transportVehicleSettlementItems).where(inArray(transportVehicleSettlementItems.tripId, tripIds)),
       db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), eq(dieselRefuelRecords.vehicleId, input.vehicleId), eq(dieselRefuelRecords.status, "approved"), eq(dieselRefuelRecords.deductFromFreight, true), lt(dieselRefuelRecords.refueledAt, endExclusive))),
+      db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount }).from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), eq(purchaseOrders.assetType, "vehicle"), eq(purchaseOrders.assetId, input.vehicleId), eq(purchaseOrders.status, "closed"), isNull(purchaseOrders.assetDeductionReference), gte(purchaseOrders.orderedAt, start), lt(purchaseOrders.orderedAt, endExclusive))),
     ]);
     const existingTripIds = new Set(existingItems.map(item => Number(item.tripId)));
     const candidates = verifiedTrips.filter(trip => !existingTripIds.has(trip.id));
@@ -3371,7 +3391,8 @@ export const transportRouter = router({
     const pooledFuelDeductionAmount = roundMoney(pooledFuelRecords.reduce((sum, record) => sum + Number(record.amount), 0));
     const grossFreightTotal = roundMoney(candidates.reduce((sum, trip) => sum + Number(trip.calculatedAmount ?? 0), 0));
     const linkedFuelDeductionAmount = roundMoney(Array.from(fuelByTrip.values()).reduce((sum, amount) => sum + amount, 0));
-    if (pooledFuelDeductionAmount + linkedFuelDeductionAmount > grossFreightTotal) throw new TRPCError({ code: "BAD_REQUEST", message: `该车辆待扣柴油 ¥${roundMoney(pooledFuelDeductionAmount + linkedFuelDeductionAmount).toFixed(2)} 超过本期可结算运输总额 ¥${grossFreightTotal.toFixed(2)}；请调整结算期间或先核对柴油记录` });
+    const partsDeductionAmount = roundMoney(partsPurchaseRows.reduce((sum, item) => sum + Number(item.amount), 0));
+    if (pooledFuelDeductionAmount + linkedFuelDeductionAmount + partsDeductionAmount > grossFreightTotal) throw new TRPCError({ code: "BAD_REQUEST", message: `该车辆待扣柴油和关联配件共 ¥${roundMoney(pooledFuelDeductionAmount + linkedFuelDeductionAmount + partsDeductionAmount).toFixed(2)} 超过本期可结算运输总额 ¥${grossFreightTotal.toFixed(2)}；请调整结算期间或分期处理配件费用` });
     let remainingPooledFuelDeduction = pooledFuelDeductionAmount;
     const details = candidates.map(trip => {
       const grossFreightAmount = roundMoney(Number(trip.calculatedAmount ?? 0));
@@ -3382,23 +3403,24 @@ export const transportRouter = router({
       return { trip, tripDate: new Date(trip.startAt).toISOString().slice(0, 10), volumeCubicMeters: Number(trip.volumeCubicMeters ?? 0), grossFreightAmount, fuelDeductionAmount, netPayableAmount: roundMoney(grossFreightAmount - fuelDeductionAmount) };
     });
     const settlementNo = createTransportVehicleSettlementNo(input.projectId);
-    const summary = { tripCount: details.length, totalVolumeCubicMeters: Math.round(details.reduce((sum, item) => sum + item.volumeCubicMeters, 0) * 1000) / 1000, grossFreightAmount: roundMoney(details.reduce((sum, item) => sum + item.grossFreightAmount, 0)), fuelDeductionAmount: roundMoney(details.reduce((sum, item) => sum + item.fuelDeductionAmount, 0)), netPayableAmount: roundMoney(details.reduce((sum, item) => sum + item.netPayableAmount, 0)) };
+    const summary = { tripCount: details.length, totalVolumeCubicMeters: Math.round(details.reduce((sum, item) => sum + item.volumeCubicMeters, 0) * 1000) / 1000, grossFreightAmount: roundMoney(details.reduce((sum, item) => sum + item.grossFreightAmount, 0)), fuelDeductionAmount: roundMoney(details.reduce((sum, item) => sum + item.fuelDeductionAmount, 0)), partsDeductionAmount, netPayableAmount: roundMoney(details.reduce((sum, item) => sum + item.netPayableAmount, 0) - partsDeductionAmount) };
     let settlementId = 0;
     try {
       await db.transaction(async tx => {
-        await tx.insert(transportVehicleSettlements).values({ settlementNo, projectId: input.projectId, vehicleId: input.vehicleId, periodStart: start, periodEnd: toBusinessDate(input.periodEnd), tripCount: summary.tripCount, totalVolumeCubicMeters: String(summary.totalVolumeCubicMeters), grossFreightAmount: String(summary.grossFreightAmount), fuelDeductionAmount: String(summary.fuelDeductionAmount), netPayableAmount: String(summary.netPayableAmount), payeeName: input.payeeName.trim(), payeeAccount: input.payeeAccount?.trim() || null, paymentMethod: input.paymentMethod, remarks: input.remarks?.trim() || null, createdBy: user.id });
+        await tx.insert(transportVehicleSettlements).values({ settlementNo, projectId: input.projectId, vehicleId: input.vehicleId, periodStart: start, periodEnd: toBusinessDate(input.periodEnd), tripCount: summary.tripCount, totalVolumeCubicMeters: String(summary.totalVolumeCubicMeters), grossFreightAmount: String(summary.grossFreightAmount), fuelDeductionAmount: String(summary.fuelDeductionAmount), netPayableAmount: String(summary.netPayableAmount), payeeName: input.payeeName.trim(), payeeAccount: input.payeeAccount?.trim() || null, paymentMethod: input.paymentMethod, remarks: `${input.remarks?.trim() || ""}${partsDeductionAmount ? `${input.remarks?.trim() ? "；" : ""}关联配件扣款 ¥${partsDeductionAmount.toFixed(2)}` : ""}` || null, createdBy: user.id });
         const [created] = await tx.select({ id: transportVehicleSettlements.id }).from(transportVehicleSettlements).where(eq(transportVehicleSettlements.settlementNo, settlementNo)).limit(1);
         if (!created) throw new Error("结算单写入后未找到主记录");
         settlementId = created.id;
         await tx.insert(transportVehicleSettlementItems).values(details.map(item => ({ settlementId, tripId: item.trip.id, tripNo: item.trip.tripNo, tripDate: toBusinessDate(item.tripDate), volumeCubicMeters: String(item.volumeCubicMeters), grossFreightAmount: String(item.grossFreightAmount), fuelDeductionAmount: String(item.fuelDeductionAmount), netPayableAmount: String(item.netPayableAmount) })));
         if (pooledFuelRecords.length) await tx.update(dieselRefuelRecords).set({ status: "settled" }).where(inArray(dieselRefuelRecords.id, pooledFuelRecords.map(record => record.id)));
+        if (partsPurchaseRows.length) await tx.update(purchaseOrders).set({ assetDeductionReference: settlementNo, assetDeductedAt: new Date() }).where(and(inArray(purchaseOrders.id, partsPurchaseRows.map(item => item.id)), isNull(purchaseOrders.assetDeductionReference)));
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("transport_vehicle_settlement_items_trip_unique")) throw new TRPCError({ code: "CONFLICT", message: "部分运单已被其他结算单占用，请刷新后重新生成" });
       throw error;
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_vehicle_settlement", targetType: "transport_vehicle_settlement", targetId: settlementNo, summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，车辆归集柴油扣款 ¥${summary.fuelDeductionAmount.toFixed(2)}，净应付 ¥${summary.netPayableAmount.toFixed(2)}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "create_vehicle_settlement", targetType: "transport_vehicle_settlement", targetId: settlementNo, summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，车辆归集柴油扣款 ¥${summary.fuelDeductionAmount.toFixed(2)}，配件扣款 ¥${summary.partsDeductionAmount.toFixed(2)}，净应付 ¥${summary.netPayableAmount.toFixed(2)}` });
     return { success: true, id: settlementId, settlementNo, ...summary };
   }),
 
@@ -3437,6 +3459,7 @@ export const transportRouter = router({
       if (input.action === "void") {
         if (settlement.status === "approved") for (const item of items) await tx.update(transportTrips).set({ status: "verified", fuelDeductionAmount: "0", netSettlementAmount: null }).where(and(eq(transportTrips.id, item.tripId), eq(transportTrips.status, "settled")));
         await tx.delete(transportVehicleSettlementItems).where(eq(transportVehicleSettlementItems.settlementId, settlement.id));
+        await tx.update(purchaseOrders).set({ assetDeductionReference: null, assetDeductedAt: null }).where(eq(purchaseOrders.assetDeductionReference, settlement.settlementNo));
       }
     });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: `vehicle_settlement_${input.action}`, targetType: "transport_vehicle_settlement", targetId: settlement.settlementNo, summary: `渣土车结算单${input.action === "submit" ? "已提交会计审核" : input.action === "approve" ? "已审核通过" : input.action === "pay" ? `已登记付款日期 ${input.paymentDate}` : "已作废"}：净应付 ¥${Number(settlement.netPayableAmount).toFixed(2)}` });

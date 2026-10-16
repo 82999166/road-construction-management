@@ -1749,6 +1749,12 @@ export const purchaseOrders = mysqlTable(
     invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
     ocrSummary: varchar("ocrSummary", { length: 500 }),
     supplierId: int("supplierId"),
+    /** 车辆或机械零配件采购必须关联具体资产，普通采购保持为空。 */
+    assetType: mysqlEnum("assetType", ["vehicle", "machine"]),
+    assetId: int("assetId"),
+    /** 已从关联资产租赁/运费结算中扣减时保存唯一结算单号，防止重复扣款。 */
+    assetDeductionReference: varchar("assetDeductionReference", { length: 64 }),
+    assetDeductedAt: datetime("assetDeductedAt"),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     orderedAt: datetime("orderedAt").notNull(),
     status: mysqlEnum("status", ["draft", "confirmed", "received", "closed", "void"]).default("draft").notNull(),
@@ -1763,6 +1769,8 @@ export const purchaseOrders = mysqlTable(
     requestIndex: index("purchase_orders_request_index").on(table.requestId),
     procurementModeIndex: index("purchase_orders_mode_index").on(table.projectId, table.procurementMode, table.status),
     projectIndex: index("purchase_orders_project_index").on(table.projectId, table.status),
+    assetIndex: index("purchase_orders_asset_index").on(table.projectId, table.assetType, table.assetId, table.status),
+    assetDeductionIndex: index("purchase_orders_asset_deduction_index").on(table.projectId, table.assetType, table.assetId, table.assetDeductionReference),
   }),
 );
 

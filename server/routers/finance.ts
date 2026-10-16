@@ -38,6 +38,8 @@ import {
   temporaryDailyWageSettlements,
   transportTrips,
   transportVehicleSettlements,
+  transportVehicles,
+  machines,
   users,
 } from "../../drizzle/schema";
 import {
@@ -447,9 +449,13 @@ const purchaseOrderInput = z.object({
   requestId: z.number().int().positive(),
   projectId: z.number().int().positive(),
   supplierId: z.number().int().positive().nullable().optional(),
+  assetType: z.enum(["vehicle", "machine"]).nullable().optional(),
+  assetId: z.number().int().positive().nullable().optional(),
   amount: moneySchema,
   orderedAt: isoDateTimeSchema,
   orderNo: z.string().trim().min(4).max(64).optional(),
+}).superRefine((input, context) => {
+  if (Boolean(input.assetType) !== Boolean(input.assetId)) context.addIssue({ code: "custom", path: [input.assetType ? "assetId" : "assetType"], message: "关联车辆或机械时必须同时选择资产类型和具体设备" });
 });
 
 /** 小额物资无需先建申请，但必须关联采购影像，服务端再按阈值和主管审核状态控制。 */
@@ -458,6 +464,8 @@ const smallDirectPurchaseInput = z.object({
   categoryId: z.number().int().positive(),
   itemDescription: z.string().trim().min(2, "请填写小额物资名称或说明").max(500),
   supplierId: z.number().int().positive().nullable().optional(),
+  assetType: z.enum(["vehicle", "machine"]).nullable().optional(),
+  assetId: z.number().int().positive().nullable().optional(),
   quantity: z.number().gt(0, "数量必须大于 0").max(999999999.999).optional(),
   unitPrice: moneySchema.optional(),
   /** 兼容既有客户端；新清单录入优先使用数量乘单价计算金额。 */
@@ -466,8 +474,23 @@ const smallDirectPurchaseInput = z.object({
   evidenceId: z.number().int().positive(),
   hasInvoice: z.boolean().default(false),
   invoiceEvidenceId: z.number().int().positive().nullable().optional(),
+}).superRefine((input, context) => {
+  if (Boolean(input.assetType) !== Boolean(input.assetId)) context.addIssue({ code: "custom", path: [input.assetType ? "assetId" : "assetType"], message: "关联车辆或机械时必须同时选择资产类型和具体设备" });
 });
 
+/** 配件费用只能归集至当前项目实际存在的车辆或机械，禁止跨项目串账。 */
+async function assertPurchaseAssetLink(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  input: { projectId: number; assetType?: "vehicle" | "machine" | null; assetId?: number | null },
+) {
+  if (!input.assetType && !input.assetId) return null;
+  if (!input.assetType || !input.assetId) throw new TRPCError({ code: "BAD_REQUEST", message: "关联车辆或机械时必须同时选择资产类型和具体设备" });
+  const [asset] = input.assetType === "vehicle"
+    ? await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId, label: transportVehicles.plateNo }).from(transportVehicles).where(eq(transportVehicles.id, input.assetId)).limit(1)
+    : await db.select({ id: machines.id, projectId: machines.projectId, label: machines.name }).from(machines).where(eq(machines.id, input.assetId)).limit(1);
+  if (!asset || asset.projectId !== input.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "关联车辆或机械不存在，或不属于当前项目" });
+  return asset;
+}
 /** 普通采购单据照片不生成水印，只作为采购清单、送货单或验收单的审计附件归档。 */
 const purchaseDocumentUploadInput = z.object({
   projectId: z.number().int().positive(),
@@ -829,6 +852,22 @@ export const purchasingRouter = router({
     return db.select().from(suppliers).where(eq(suppliers.status, "active")).orderBy(suppliers.name);
   }),
 
+  /** 车辆、机械配件采购只能选择当前项目的有效资产，不返回联系方式等不必要字段。 */
+  listAssetOptions: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertPurchaseAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return { vehicles: [], machines: [] };
+    const [vehicles, machineRows] = await Promise.all([
+      db.select({ id: transportVehicles.id, label: transportVehicles.plateNo, status: transportVehicles.status }).from(transportVehicles).where(eq(transportVehicles.projectId, input.projectId)).orderBy(transportVehicles.plateNo),
+      db.select({ id: machines.id, name: machines.name, code: machines.code, status: machines.status }).from(machines).where(eq(machines.projectId, input.projectId)).orderBy(machines.name),
+    ]);
+    return {
+      vehicles: vehicles.map(vehicle => ({ id: vehicle.id, label: vehicle.label, status: vehicle.status })),
+      machines: machineRows.filter(machine => machine.status !== "retired").map(machine => ({ id: machine.id, label: `${machine.name}${machine.code ? ` · ${machine.code}` : ""}`, status: machine.status })),
+    };
+  }),
+
   /** 保存供应商基础资料；联系方式仅允许以脱敏形式进入本系统。 */
   saveSupplier: protectedProcedure.input(supplierInput).mutation(async ({ ctx, input }) => {
     const user = await assertSuperAdmin(ctx);
@@ -929,15 +968,28 @@ export const purchasingRouter = router({
     if (!db) return [];
     const orders = await db.select().from(purchaseOrders).where(eq(purchaseOrders.projectId, input.projectId)).orderBy(desc(purchaseOrders.updatedAt));
     const evidenceIds = Array.from(new Set(orders.flatMap(order => [order.evidenceId, order.invoiceEvidenceId]).filter((id): id is number => id !== null)));
-    const evidenceRows = evidenceIds.length ? await db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType, uploadedBy: evidenceRecords.uploadedBy }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : [];
+    const categoryIds = Array.from(new Set(orders.map(order => order.categoryId).filter((id): id is number => id !== null)));
+    const vehicleAssetIds = Array.from(new Set(orders.filter(order => order.assetType === "vehicle" && order.assetId !== null).map(order => order.assetId!)));
+    const machineAssetIds = Array.from(new Set(orders.filter(order => order.assetType === "machine" && order.assetId !== null).map(order => order.assetId!)));
+    const [evidenceRows, categoryRows, vehicleRows, machineRows] = await Promise.all([
+      evidenceIds.length ? db.select({ id: evidenceRecords.id, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, mimeType: evidenceRecords.mimeType, uploadedBy: evidenceRecords.uploadedBy }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, input.projectId), inArray(evidenceRecords.id, evidenceIds))) : Promise.resolve([]),
+      categoryIds.length ? db.select({ id: purchaseCategories.id, name: purchaseCategories.name }).from(purchaseCategories).where(inArray(purchaseCategories.id, categoryIds)) : Promise.resolve([]),
+      vehicleAssetIds.length ? db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo }).from(transportVehicles).where(and(eq(transportVehicles.projectId, input.projectId), inArray(transportVehicles.id, vehicleAssetIds))) : Promise.resolve([]),
+      machineAssetIds.length ? db.select({ id: machines.id, name: machines.name, code: machines.code }).from(machines).where(and(eq(machines.projectId, input.projectId), inArray(machines.id, machineAssetIds))) : Promise.resolve([]),
+    ]);
     const userIds = Array.from(new Set(orders.flatMap(order => [order.createdBy, ...evidenceRows.map(evidence => evidence.uploadedBy)]).filter((id): id is number => Number.isInteger(id))));
     const userRows = userIds.length ? await db.select({ id: users.id, name: users.name, localUsername: users.localUsername }).from(users).where(inArray(users.id, userIds)) : [];
     const userNameById = new Map(userRows.map(user => [user.id, user.name || user.localUsername || `管理员 #${user.id}`]));
+    const categoryNameById = new Map(categoryRows.map(category => [category.id, category.name]));
+    const assetLabelByKey = new Map<string, string>([
+      ...vehicleRows.map(vehicle => [`vehicle:${vehicle.id}`, `车辆 · ${vehicle.plateNo}`] as const),
+      ...machineRows.map(machine => [`machine:${machine.id}`, `机械 · ${machine.name}${machine.code ? ` (${machine.code})` : ""}`] as const),
+    ]);
     const evidenceById = new Map(await Promise.all(evidenceRows.map(async evidence => {
       const url = await storageGetSignedUrl(evidence.fileKey);
       return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url, uploadedBy: evidence.uploadedBy, uploadedByName: userNameById.get(evidence.uploadedBy) ?? `管理员 #${evidence.uploadedBy}` }] as const;
     })));
-    return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
+    return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, categoryName: order.categoryId ? categoryNameById.get(order.categoryId) ?? "已删除类别" : "采购申请关联", assetLabel: order.assetType && order.assetId ? assetLabelByKey.get(`${order.assetType}:${order.assetId}`) ?? "关联资产已停用" : null, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
   }),
 
   /** 仅返回当前项目的采购取证影像，供小额物资在 OCR 后人工补全并关联，URL 使用短时签名。 */
@@ -1000,10 +1052,11 @@ export const purchasingRouter = router({
       const [supplier] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1);
       if (!supplier || supplier.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效供应商" });
     }
+    const linkedAsset = await assertPurchaseAssetLink(db, input);
     const requiresSupervisorApproval = !(await isSupervisorReviewAutoApprove(db));
-    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, hasInvoice: input.hasInvoice, invoiceEvidenceId: input.hasInvoice ? input.invoiceEvidenceId ?? null : null, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
+    const [created] = await db.insert(purchaseOrders).values({ orderNo: createBusinessNo("SPD"), requestId: null, projectId: input.projectId, procurementMode: "small_direct", categoryId: input.categoryId, itemDescription: input.itemDescription, quantity: input.quantity !== undefined ? String(input.quantity) : null, unitPrice: input.unitPrice !== undefined ? String(roundMoney(input.unitPrice)) : null, evidenceId: input.evidenceId, hasInvoice: input.hasInvoice, invoiceEvidenceId: input.hasInvoice ? input.invoiceEvidenceId ?? null : null, ocrSummary: getPurchaseOcrSummary(evidence.ocrResultJson), supplierId: input.supplierId ?? null, assetType: input.assetType ?? null, assetId: input.assetId ?? null, amount: String(amount), orderedAt: new Date(input.orderedAt), status: requiresSupervisorApproval ? "draft" : "confirmed", createdBy: user.id, confirmedBy: requiresSupervisorApproval ? null : user.id, confirmedAt: requiresSupervisorApproval ? null : new Date() }).$returningId();
     const orderId = Number(created?.id);
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: requiresSupervisorApproval ? "create_small_direct_order" : "auto_approve_small_direct_order_by_supervisor_setting", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，发票 ${input.hasInvoice ? `已附 #${input.invoiceEvidenceId}` : "无发票"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: requiresSupervisorApproval ? "create_small_direct_order" : "auto_approve_small_direct_order_by_supervisor_setting", targetType: "purchase_order", targetId: String(orderId), summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，发票 ${input.hasInvoice ? `已附 #${input.invoiceEvidenceId}` : "无发票"}，资产 ${linkedAsset ? `${input.assetType === "vehicle" ? "车辆" : "机械"} ${linkedAsset.label}` : "未关联"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}` });
     if (requiresSupervisorApproval) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: "purchase_order_small_direct_submitted", targetType: "purchase_order", targetId: String(orderId), title: "清单采购订单待主管确认", content: `金额 ¥${amount.toFixed(2)}（${isManualAmount ? "手动录入" : "自动计算"}），已附采购单据照片，请审核。`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, id: orderId, limit, requiresSupervisorApproval, amount, amountSource: isManualAmount ? "manual" : "auto" };
   }),
@@ -1043,9 +1096,10 @@ export const purchasingRouter = router({
       const [supplier] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1);
       if (!supplier || supplier.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "请选择有效供应商" });
     }
-    await db.insert(purchaseOrders).values({ orderNo: input.orderNo ?? createBusinessNo("PO"), requestId: input.requestId, projectId: input.projectId, supplierId: input.supplierId ?? null, amount: String(roundMoney(input.amount)), orderedAt: new Date(input.orderedAt), status: "draft", createdBy: user.id });
+    const linkedAsset = await assertPurchaseAssetLink(db, input);
+    await db.insert(purchaseOrders).values({ orderNo: input.orderNo ?? createBusinessNo("PO"), requestId: input.requestId, projectId: input.projectId, supplierId: input.supplierId ?? null, assetType: input.assetType ?? null, assetId: input.assetId ?? null, amount: String(roundMoney(input.amount)), orderedAt: new Date(input.orderedAt), status: "draft", createdBy: user.id });
     await db.update(purchaseRequests).set({ status: "ordered" }).where(eq(purchaseRequests.id, input.requestId));
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_order", targetType: "purchase_order", targetId: String(input.requestId), summary: "已从采购申请创建采购订单" });
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "create_order", targetType: "purchase_order", targetId: String(input.requestId), summary: `已从采购申请创建采购订单${linkedAsset ? `，关联${input.assetType === "vehicle" ? "车辆" : "机械"} ${linkedAsset.label}` : ""}` });
     return { success: true };
   }),
 

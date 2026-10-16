@@ -144,13 +144,15 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
   const [existingRoleRows, existingPermissionRows, existingCategories, existingSupervisorReviewSetting, existingAttendanceDeviceLimitSetting] = await Promise.all([
     db.select({ id: systemRoles.id, code: systemRoles.code }).from(systemRoles),
     db.select({ id: systemPermissions.id, code: systemPermissions.code }).from(systemPermissions),
-    db.select({ id: purchaseCategories.id }).from(purchaseCategories).limit(1),
+    db.select({ id: purchaseCategories.id, code: purchaseCategories.code }).from(purchaseCategories),
     db.select({ id: systemSettings.id }).from(systemSettings).where(eq(systemSettings.settingKey, SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY)).limit(1),
     db.select({ id: systemSettings.id }).from(systemSettings).where(eq(systemSettings.settingKey, ATTENDANCE_DEVICE_LIMIT_SETTING_KEY)).limit(1),
   ]);
   const existingRoleCodes = new Set(existingRoleRows.map(item => item.code));
   const existingPermissionCodes = new Set(existingPermissionRows.map(item => item.code));
+  const existingCategoryCodes = new Set(existingCategories.map(item => item.code));
   const missingRoles = roleSeed.filter(role => !existingRoleCodes.has(role.code));
+  const missingCategories = PURCHASE_CATEGORY_CATALOG.filter(category => !existingCategoryCodes.has(category.code));
   const missingPermissions = permissionSeed
     .filter(([code]) => !existingPermissionCodes.has(code))
     .map(([code, name, module, action]) => ({ code, name, module, action }));
@@ -158,8 +160,8 @@ export async function ensureFoundationData(db: NonNullable<Awaited<ReturnType<ty
   await Promise.all([
     missingRoles.length ? db.insert(systemRoles).values(missingRoles) : Promise.resolve(),
     missingPermissions.length ? db.insert(systemPermissions).values(missingPermissions) : Promise.resolve(),
-    existingCategories.length === 0
-      ? db.insert(purchaseCategories).values(PURCHASE_CATEGORY_CATALOG.map(item => ({ ...item, isFixed: true, status: "active" as const })))
+    missingCategories.length
+      ? db.insert(purchaseCategories).values(missingCategories.map(item => ({ ...item, isFixed: true, status: "active" as const })))
       : Promise.resolve(),
     existingSupervisorReviewSetting.length
       ? Promise.resolve()

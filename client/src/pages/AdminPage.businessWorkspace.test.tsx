@@ -702,8 +702,8 @@ describe("采购订单详情与附件收敛", () => {
   it("移除独立缩略图影像板块，并仅在订单详情中提供受控文件入口", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     expect(source).not.toContain("订单单据与发票影像");
-    expect(source).toContain("查看/下载文件：{item.documentAttachment.fileName}");
-    expect(source).toContain("查看/下载文件：{item.invoiceAttachment.fileName}");
+    expect(source).toContain("查看采购单据：{item.documentAttachment.fileName}");
+    expect(source).toContain("查看发票附件：{item.invoiceAttachment.fileName}");
     expect(source).not.toContain("alt={`采购单据 ${item.orderNo}`}");
     expect(source).toContain("pending_approval: \"待审核\"");
     expect(source).toContain("closed: \"已结算\"");

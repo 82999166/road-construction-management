@@ -533,6 +533,20 @@
       "when": 1788615945376,
       "tag": "0075_curly_ironclad",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "5",
+      "when": 1792114142070,
+      "tag": "0076_ambitious_next_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "5",
+      "when": 1792114473355,
+      "tag": "0077_mysterious_zombie",
+      "breakpoints": true
     }
   ]
 }

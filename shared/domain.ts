@@ -13,7 +13,7 @@ export const PURCHASE_CATEGORY_CATALOG = [
   { code: "TOOLS", name: "工器具与低值易耗品", sortOrder: 60 },
   { code: "WATER_ELECTRICITY", name: "水电气与网络", sortOrder: 70 },
   { code: "DORMITORY", name: "宿舍与营地用品", sortOrder: 80 },
-  { code: "VEHICLE", name: "车辆与通勤费用", sortOrder: 90 },
+  { code: "VEHICLE", name: "车辆零配件、保养与通勤费用", sortOrder: 90 },
   { code: "MAINTENANCE", name: "维修与临建维护", sortOrder: 100 },
   { code: "SAFETY", name: "安全文明施工物资", sortOrder: 110 },
   { code: "OTHER", name: "其他经审批零星采购", sortOrder: 120 },
