@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import { describe, expect, it } from "vitest";
@@ -41,5 +42,13 @@ describe("MobileAccessGate", () => {
     expect(markup).toContain("重新加载");
     expect(markup).toContain("企业身份登录");
     expect(markup).not.toContain("正在加载项目权限…");
+  });
+
+  it("认证请求结束后访问移动业务地址会安全回跳统一登录页", () => {
+    const source = readFileSync(new URL("./MobileAccessGate.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("if (isLoading || isAuthenticated || authLoadingTimedOut) return;");
+    expect(source).toContain("window.location.replace(createLoginPath(getCurrentAppPath()));");
+    expect(source).toContain("避免网络抖动时把可能有效的会话错误送回登录页");
   });
 });

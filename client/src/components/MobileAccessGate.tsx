@@ -52,6 +52,16 @@ export function MobileAccessGate({
     return () => window.clearTimeout(timer);
   }, [isLoading]);
 
+  /**
+   * 移动业务地址不能因直接输入 URL 而停留在无认证的展示页。
+   * 仅在认证请求已结束且明确未登录时跳转；认证超时仍保留重试界面，
+   * 避免网络抖动时把可能有效的会话错误送回登录页。
+   */
+  useEffect(() => {
+    if (isLoading || isAuthenticated || authLoadingTimedOut) return;
+    window.location.replace(createLoginPath(getCurrentAppPath()));
+  }, [authLoadingTimedOut, isAuthenticated, isLoading]);
+
   /** 用户显式重试时清除本地降级状态，再交由调用页面刷新真实数据。 */
   function retry() {
     setResourceLoadingTimedOut(false);
