@@ -27,6 +27,11 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain('import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge"');
     expect(source).toContain('import { formatChinaDateTime } from "@/lib/businessTime"');
     expect(source).toContain("labels[status] ?? getBusinessStatusLabel(status)");
+    expect(source).toContain("getBusinessStatusLabel(item.status)");
+    expect(source).toContain("getBusinessStatusLabel(selectedTrip.status)");
+    expect(source).toContain("getBusinessStatusLabel(event.validationStatus)");
+    expect(source).not.toContain("statusLabel[item.status] ?? item.status");
+    expect(source).not.toContain("statusLabel[selectedTrip.status] ?? selectedTrip.status");
     expect(source).toContain("formatChinaDateTime(value, \"未记录\")");
     expect(source).not.toContain('toLocaleString("zh-CN", { hour12: false })');
   });
