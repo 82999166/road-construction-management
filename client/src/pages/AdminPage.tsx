@@ -630,7 +630,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [businessWorkspaceProjectId, setBusinessWorkspaceProjectId] = useState("");
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [machineDetailOpen, setMachineDetailOpen] = useState(false);
-  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: toChinaMonthInput(), dateFrom: "", dateTo: "", vehicleId: "all", status: "all", routePresetId: "all" });
+  const [transportLedgerFilter, setTransportLedgerFilter] = useState<TransportLedgerFilter>({ periodMode: "day", date: toLocalDateInput(), month: toChinaMonthInput(), dateFrom: toLocalDateInput(), dateTo: toLocalDateInput(), vehicleId: "all", status: "all", routePresetId: "all" });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
   const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{ id: number; workerName: string } | null>(null);
@@ -668,7 +668,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [financeClosingDate, setFinanceClosingDate] = useState(() => toLocalDateInput());
   const [financeReopenReason, setFinanceReopenReason] = useState("");
   const [dieselDate, setDieselDate] = useState(() => toLocalDateInput());
-  const [dieselLedgerFilter, setDieselLedgerFilter] = useState({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" });
+  const [dieselLedgerFilter, setDieselLedgerFilter] = useState(() => ({ plateNo: "", dateFrom: toLocalDateInput(), dateTo: toLocalDateInput(), month: "", supplyMethod: "all", assetType: "all", supplierName: "" }));
   const [dieselMachineName, setDieselMachineName] = useState("");
   const [dieselPrintMode, setDieselPrintMode] = useState<"current" | "daily" | "vehicle" | "machine">("current");
   const [dieselPrintOpen, setDieselPrintOpen] = useState(false);
@@ -3720,7 +3720,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3" data-diesel-current-print>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">先在这里选择日期、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。</p></div><Button size="sm" variant="ghost" onClick={() => { setDieselLedgerFilter({ plateNo: "", dateFrom: "", dateTo: "", month: "", supplyMethod: "all", assetType: "all", supplierName: "" }); setDieselMachineName(""); }}>清除筛选</Button></div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#29483e]">柴油组合筛选</p><p className="mt-1 text-xs text-slate-500">首次进入与恢复筛选后默认显示当天；可按需改为日期范围、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。</p></div><Button size="sm" variant="ghost" onClick={() => { const today = toLocalDateInput(); setDieselLedgerFilter({ plateNo: "", dateFrom: today, dateTo: today, month: "", supplyMethod: "all", assetType: "all", supplierName: "" }); setDieselMachineName(""); }}>恢复当天筛选</Button></div>
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 <Select value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"} disabled={dieselLedgerFilter.assetType === "machine"} onValueChange={value => setDieselLedgerFilter(current => ({ ...current, plateNo: value === "ALL_VEHICLES" ? "" : value, assetType: value === "ALL_VEHICLES" ? current.assetType : "vehicle" }))}><SelectTrigger aria-label="柴油筛选车牌"><SelectValue placeholder="全部车辆" /></SelectTrigger><SelectContent><SelectItem value="ALL_VEHICLES">全部车辆</SelectItem>{(dieselVehicleOptions.data ?? []).filter(vehicle => String(vehicle.projectId) === financeProjectId).map(vehicle => <SelectItem key={vehicle.id} value={vehicle.plateNo}>{vehicle.plateNo}</SelectItem>)}</SelectContent></Select>
                 <Input type="date" max={dieselLedgerFilter.dateTo || undefined} value={dieselLedgerFilter.dateFrom} aria-label="柴油加油开始日期" onChange={event => setDieselLedgerFilter(current => ({ ...current, dateFrom: event.target.value }))} />

@@ -18,7 +18,10 @@ function SummaryMetric({ title, value, description, icon: Icon }: { title: strin
 
 /** 临时日结审核、付款与按筛选范围分类导出展示组件。 */
 export default function DailyWageLedger({ summary, rows, refreshing, workbookPending, paymentListPending, submitPending, reviewPending, payPending, formatMoney, displayDate, toBusinessDateInput, onRefresh, onExportWorkbook, onExportPaymentList, onSubmit, onReturnDraft, onApprove, onRegisterPayment }: { summary: DailyWageLedgerSummary; rows: DailyWageLedgerRow[]; refreshing: boolean; workbookPending: boolean; paymentListPending: boolean; submitPending: boolean; reviewPending: boolean; payPending: boolean; formatMoney: (value: string | number) => string; displayDate: (value: Date | string) => string; toBusinessDateInput: (value: Date | string) => string; onRefresh: () => void; onExportWorkbook: (filter: DailyWageExportFilter) => void; onExportPaymentList: () => void; onSubmit: (id: number) => void; onReturnDraft: (id: number) => void; onApprove: (id: number) => void; onRegisterPayment: (row: Pick<DailyWageLedgerRow, "id" | "workerName">) => void }) {
-  const [exportFilter, setExportFilter] = useState<DailyWageExportFilter>({ dateFrom: "", dateTo: "", keyword: "", team: "all", status: "all" });
+  const [exportFilter, setExportFilter] = useState<DailyWageExportFilter>(() => {
+    const today = toBusinessDateInput(new Date());
+    return { dateFrom: today, dateTo: today, keyword: "", team: "all", status: "all" };
+  });
   const teams = useMemo(() => Array.from(new Set(rows.map(item => item.teamName || "未设置班组"))).sort((a, b) => a.localeCompare(b, "zh-CN")), [rows]);
   const filteredRows = useMemo(() => rows.filter(item => {
     const date = toBusinessDateInput(item.settlementDate);

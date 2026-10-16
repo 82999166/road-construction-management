@@ -19,12 +19,11 @@ import { useMemo, useState } from "react";
 
 const money = (value: unknown) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const today = () => toChinaDateInput();
-const monthStart = () => `${today().slice(0, 7)}-01`;
 const statusLabel: Record<string, string> = { approved: "已记账", settled: "已结算", void: "已作废" };
 
 /** 柴油汇总打印只读取服务端按项目范围过滤后的真实记录，并以浏览器系统打印保存 PDF。 */
 export function DieselSummaryPrintDialog({ open, onOpenChange, projectId, projectName }: { open: boolean; onOpenChange: (open: boolean) => void; projectId: number; projectName: string }) {
-  const [dateFrom, setDateFrom] = useState(monthStart);
+  const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [assetType, setAssetType] = useState<"all" | "vehicle" | "machine">("all");
   const [supplyMethod, setSupplyMethod] = useState<"all" | "project_supply" | "external_station">("all");
