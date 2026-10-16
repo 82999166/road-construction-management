@@ -12,6 +12,8 @@ import {
   calculateTieredFreightAmount,
   canApprovePayroll,
   getBusinessStatusLabel,
+  getCardValidationStatusLabel,
+  getSafeCardValidationReason,
   summarizePayrollStatements,
   ConstructionDomainError,
   PURCHASE_CATEGORY_CATALOG,
@@ -29,6 +31,15 @@ describe("施工承包核心业务计算", () => {
     expect(getBusinessStatusLabel("verified")).toBe("已核验");
     expect(getBusinessStatusLabel("settled")).toBe("已结算");
     expect(getBusinessStatusLabel("unexpected_internal_status")).toBe("状态待核对");
+  });
+
+  it("读卡校验状态和原因仅输出受控中文说明", () => {
+    expect(getCardValidationStatusLabel("accepted")).toBe("校验通过");
+    expect(getCardValidationStatusLabel("校验通过")).toBe("校验通过");
+    expect(getCardValidationStatusLabel("unexpected_internal_status")).toBe("状态待核对");
+    expect(getSafeCardValidationReason("卸土地点与配置不符")).toBe("卸土地点与配置不符");
+    expect(getSafeCardValidationReason("site_mismatch_error")).toBe("请由管理员核对车辆卡、地点与时间。");
+    expect(getSafeCardValidationReason("NFC 设备响应异常")).toBe("请由管理员核对车辆卡、地点与时间。");
   });
 
   it("按长宽高和装载系数计算渣土车理论方量", () => {

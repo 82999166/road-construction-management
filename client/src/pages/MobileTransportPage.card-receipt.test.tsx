@@ -10,6 +10,7 @@ describe("移动运输刷卡现场回执", () => {
     expect(source).toContain("请向司机展示现场回执");
     expect(source).toContain("今日第 ${ordinal} 车");
     expect(source).toContain("vehiclePlateNo");
+    expect(source).toContain("getSafeCardValidationReason(result.reason)");
     expect(source).not.toContain("已向司机和主管发送服务号提醒");
   });
 });

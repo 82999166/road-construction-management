@@ -421,6 +421,20 @@ const FINANCE_DETAIL_SOURCE_LABELS: Record<(typeof FINANCE_DETAIL_SOURCES)[numbe
   asset_maintenance: "车辆/机械维修保养",
   transport_settlement: "运输结算单",
 };
+/** 财务来源编码仅用于归集；下钻说明不得直接将内部 sourceType 回显给管理人员。 */
+const FINANCIAL_RECORD_SOURCE_LABELS: Record<string, string> = {
+  financial_reversal: "财务冲销",
+  measurement_claim: "工程计量申报",
+  measurement_payment: "工程计量回款",
+  purchase_order_payable: "采购订单应付",
+  purchase_order_settlement: "采购订单结算",
+  machine_payment_settlement: "机械付款结算",
+  transport_vehicle_settlement: "车辆运费结算",
+  subcontract_payment_settlement: "分包付款结算",
+};
+function financialRecordSourceLabel(sourceType: string | null | undefined) {
+  return sourceType ? FINANCIAL_RECORD_SOURCE_LABELS[sourceType] ?? "业务来源待核对" : "人工财务流水";
+}
 const FINANCE_DETAIL_STATUSES = ["draft", "reviewing", "submitted", "approved", "confirmed", "received", "closed", "settled", "unpaid", "partial", "paid"] as const;
 const financeCategoryDetailInput = z.object({
   projectId: z.number().int().positive(),
@@ -453,7 +467,7 @@ async function getFinanceCategoryDetails(input: z.infer<typeof financeCategoryDe
   ]);
   type DetailRow = { id: string; category: string; source: (typeof FINANCE_DETAIL_SOURCES)[number]; documentNo: string; occurredAt: Date; subcategory: string; amount: number; status: string; details: string };
   const rows: DetailRow[] = [
-    ...financeRows.filter(row => row.settlementStatus !== "void" && !["purchase_order_settlement", "machine_payment_settlement", "transport_vehicle_settlement"].includes(row.sourceType ?? "")).map(row => ({ id: `finance-${row.id}`, category: classifyFinanceCategory(row), source: "finance_record" as const, documentNo: row.recordNo, occurredAt: row.occurredAt, subcategory: row.category || "人工财务流水", amount: round(Number(row.amount)), status: row.settlementStatus, details: row.remarks || (row.sourceType ? `业务来源：${row.sourceType}` : "人工财务流水") })),
+    ...financeRows.filter(row => row.settlementStatus !== "void" && !["purchase_order_settlement", "machine_payment_settlement", "transport_vehicle_settlement"].includes(row.sourceType ?? "")).map(row => ({ id: `finance-${row.id}`, category: classifyFinanceCategory(row), source: "finance_record" as const, documentNo: row.recordNo, occurredAt: row.occurredAt, subcategory: row.category || "人工财务流水", amount: round(Number(row.amount)), status: row.settlementStatus, details: row.remarks || `业务来源：${financialRecordSourceLabel(row.sourceType)}` })),
     ...dieselRows.filter(row => row.status !== "void").map(row => ({ id: `diesel-${row.id}`, category: "diesel", source: "diesel_refuel" as const, documentNo: row.recordNo, occurredAt: row.refueledAt, subcategory: "柴油领用", amount: round(Number(row.amount)), status: row.status, details: `${row.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}${row.stationOrSupplierName ? ` · ${row.stationOrSupplierName}` : ""}${row.remarks ? ` · ${row.remarks}` : ""}` })),
     ...payrollRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `payroll-${row.id}`, category: "payroll", source: "payroll_statement" as const, documentNo: `工资条 #${row.id}`, occurredAt: row.paidAt ?? row.reviewedAt ?? row.createdAt, subcategory: "已审核工资条", amount: round(Number(row.actualAmount)), status: row.status, details: `工资期间：${row.period}${row.paymentReference ? ` · 付款参考号：${row.paymentReference}` : ""}` })),
     ...dailyWageRows.filter(row => ["approved", "paid"].includes(row.status)).map(row => ({ id: `daily-wage-${row.id}`, category: "payroll", source: "daily_wage" as const, documentNo: `日结工资 #${row.id}`, occurredAt: row.settlementDate, subcategory: "已审核临时日结", amount: round(Number(row.actualAmount)), status: row.status, details: `${row.remarks || "临时日结工资"}${row.paymentReference ? ` · 付款参考号：${row.paymentReference}` : ""}` })),

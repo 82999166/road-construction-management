@@ -54,7 +54,7 @@ describe("财务支出分类下钻", () => {
     vi.mocked(getDb).mockResolvedValue(createSequentialSelectDb(
       [{ id: 10, name: "测试项目", organizationId: 1, status: "active" }],
       [
-        { id: 1, recordNo: "FIN-001", category: "生活餐费", sourceType: null, amount: "120.00", settlementStatus: "paid", occurredAt: new Date("2026-10-16T02:00:00.000Z"), remarks: "现场后勤" },
+        { id: 1, recordNo: "FIN-001", category: "生活餐费", sourceType: "unexpected_internal_source", amount: "120.00", settlementStatus: "paid", occurredAt: new Date("2026-10-16T02:00:00.000Z"), remarks: null },
         { id: 2, recordNo: "FIN-002", category: "采购结算", sourceType: "purchase_order_settlement", amount: "500.00", settlementStatus: "paid", occurredAt: new Date("2026-10-16T02:00:00.000Z"), remarks: "不可重复计入" },
         { id: 3, recordNo: "FIN-003", category: "已作废餐费", sourceType: null, amount: "80.00", settlementStatus: "void", occurredAt: new Date("2026-10-16T02:00:00.000Z"), remarks: null },
       ],
@@ -64,7 +64,7 @@ describe("财务支出分类下钻", () => {
     const result = await projectRiskRouter.createCaller(createContext()).financeCategoryDetails({ projectId: 10, period: "2026-10", category: "living" });
 
     expect(result.summary).toEqual({ count: 1, amount: 120 });
-    expect(result.records).toEqual([expect.objectContaining({ category: "living", source: "finance_record", documentNo: "FIN-001", subcategory: "生活餐费", amount: 120, status: "paid" })]);
+    expect(result.records).toEqual([expect.objectContaining({ category: "living", source: "finance_record", documentNo: "FIN-001", subcategory: "生活餐费", amount: 120, status: "paid", details: "业务来源：业务来源待核对" })]);
     expect(result.records.some(item => item.documentNo === "FIN-002")).toBe(false);
     expect(result.records.some(item => item.documentNo === "FIN-003")).toBe(false);
     expect(assertSuperAdmin).toHaveBeenCalledTimes(1);

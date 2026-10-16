@@ -14,6 +14,7 @@ import { trpc } from "@/lib/trpc";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { AlertTriangle, ArrowLeft, Bell, Camera, CircleCheck, CircleHelp, FileText, HardHat, LayoutDashboard, LocateFixed, MapPin, Pencil, Plus, Printer, RefreshCw, Route, Settings2, ShieldCheck, Truck, UserRound } from "lucide-react";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "../../../shared/watermarkTemplate";
+import { getSafeCardValidationReason } from "../../../shared/domain";
 import { Component, lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -405,10 +406,49 @@ export default function MobileTransportPage() {
   const saveRoutePreset = trpc.transport.saveRoutePreset.useMutation({ onSuccess: async () => { toast.success("运输路线已保存，发票将自动带入公里数和运价"); setRouteDialogOpen(false); await utils.transport.listRoutePresets.invalidate(); }, onError: error => toast.error(error.message) });
   const saveTrip = trpc.transport.saveTrip.useMutation({ onSuccess: async data => { const receiptText = formatVehicleStageReceipt(data.vehiclePlateNo, data.dailyVehicleTripOrdinal, "load"); toast.success(tripDraft.invoiceMode === "plate_photo" ? `${receiptText ?? "发票成功"}！${data.tripNo || "运单号已自动生成"}` : data.anomalies.length ? `运输票据已保存，发现 ${data.anomalies.length} 项待核验提示` : `运输票据已保存，系统核算 ${formatMoney(data.amount)}`); setTripDialogOpen(false); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); if (startLoadAfterTripSave) { setStartLoadAfterTripSave(false); toast.info("装土票据已生成，请在“刷卡票据”中选择该票据完成装土刷卡。"); setTicketDialogOpen(true); } }, onError: error => toast.error(error.message) });
   const transitionTrip = trpc.transport.transitionTrip.useMutation({ onSuccess: async () => { toast.success("趟次状态已更新"); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(error.message) });
-  const recordLoadEvent = trpc.transport.recordLoadEvent.useMutation({ onSuccess: async result => { const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null; const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null; const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, "load"); setFieldCardReceipt({ eventType: "load", needsReview: result.needsReview, duplicate: result.duplicate, reason: result.reason ?? null, vehiclePlateNo, dailyVehicleTripOrdinal }); toast.success(result.needsReview ? `装土刷卡已留痕，需人工复核：${result.reason ?? "请核对"}` : result.duplicate ? "装土刷卡已处理，无需重复确认" : `${receiptText ?? "装土刷卡已确认"}，请向司机展示现场回执`); setCardCheckDialog(null); setFieldCardUid(""); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(error.message) });
-  const recordUnloadEvent = trpc.transport.recordUnloadEvent.useMutation({ onSuccess: async result => { const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null; const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null; const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, "unload"); setFieldCardReceipt({ eventType: "unload", needsReview: result.needsReview, duplicate: result.duplicate, reason: result.reason ?? null, vehiclePlateNo, dailyVehicleTripOrdinal }); toast.success(result.needsReview ? `卸土刷卡已留痕，需人工复核：${result.reason ?? "请核对"}` : result.duplicate ? "卸土刷卡已处理，无需重复确认" : `${receiptText ?? "卸土刷卡已确认"}，请向司机展示现场回执`); setCardCheckDialog(null); setFieldCardUid(""); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(error.message) });
+  const recordLoadEvent = trpc.transport.recordLoadEvent.useMutation({
+    onSuccess: async result => {
+      const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null;
+      const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null;
+      const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, "load");
+      const safeReason = getSafeCardValidationReason(result.reason);
+      setFieldCardReceipt({ eventType: "load", needsReview: result.needsReview, duplicate: result.duplicate, reason: safeReason, vehiclePlateNo, dailyVehicleTripOrdinal });
+      toast.success(result.needsReview ? `装土刷卡已留痕，需人工复核：${safeReason ?? "请核对"}` : result.duplicate ? "装土刷卡已处理，无需重复确认" : `${receiptText ?? "装土刷卡已确认"}，请向司机展示现场回执`);
+      setCardCheckDialog(null);
+      setFieldCardUid("");
+      await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
+  const recordUnloadEvent = trpc.transport.recordUnloadEvent.useMutation({
+    onSuccess: async result => {
+      const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null;
+      const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null;
+      const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, "unload");
+      const safeReason = getSafeCardValidationReason(result.reason);
+      setFieldCardReceipt({ eventType: "unload", needsReview: result.needsReview, duplicate: result.duplicate, reason: safeReason, vehiclePlateNo, dailyVehicleTripOrdinal });
+      toast.success(result.needsReview ? `卸土刷卡已留痕，需人工复核：${safeReason ?? "请核对"}` : result.duplicate ? "卸土刷卡已处理，无需重复确认" : `${receiptText ?? "卸土刷卡已确认"}，请向司机展示现场回执`);
+      setCardCheckDialog(null);
+      setFieldCardUid("");
+      await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
   const confirmPlatePhotoUnload = trpc.transport.confirmPlatePhotoUnload.useMutation({ onSuccess: async result => { const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null; const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null; const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, "unload"); toast.success(result.duplicate ? "该直拍票据已完成卸土确认" : `${receiptText ?? "卸土确认成功"}，直拍票据已形成运输闭环`); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(error.message) });
-  const scanNfcLink = trpc.transport.scanNfcLink.useMutation({ onSuccess: async result => { const singleScanClosed = Boolean(result.singleScanClosed); const eventType = result.stage === "in_transit" || singleScanClosed ? "load" : "unload"; const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null; const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null; const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, eventType); setNfcInvoiceResult({ stage: result.stage, singleScanClosed, duplicate: result.duplicate, needsReview: result.needsReview, reason: result.reason ?? null, vehiclePlateNo, dailyVehicleTripOrdinal }); toast.success(result.needsReview ? `刷卡事件已留痕，需人工复核：${result.reason ?? "请核对"}` : result.duplicate ? singleScanClosed ? "该次单次刷卡闭环已处理，无需重复确认" : "该次刷卡已处理，无需重复确认" : `${receiptText ?? (eventType === "load" ? "装土刷卡成功" : "卸土成功")}，${singleScanClosed ? "本趟已直接完成闭环并进入待核验" : eventType === "load" ? "车辆已进入运输中" : "运输票据已进入待核验"}`); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(error.message) });
+  const scanNfcLink = trpc.transport.scanNfcLink.useMutation({
+    onSuccess: async result => {
+      const singleScanClosed = Boolean(result.singleScanClosed);
+      const eventType = result.stage === "in_transit" || singleScanClosed ? "load" : "unload";
+      const vehiclePlateNo = "vehiclePlateNo" in result ? result.vehiclePlateNo ?? null : null;
+      const dailyVehicleTripOrdinal = "dailyVehicleTripOrdinal" in result ? result.dailyVehicleTripOrdinal ?? null : null;
+      const receiptText = formatVehicleStageReceipt(vehiclePlateNo, dailyVehicleTripOrdinal, eventType);
+      const safeReason = getSafeCardValidationReason(result.reason);
+      setNfcInvoiceResult({ stage: result.stage, singleScanClosed, duplicate: result.duplicate, needsReview: result.needsReview, reason: safeReason, vehiclePlateNo, dailyVehicleTripOrdinal });
+      toast.success(result.needsReview ? `刷卡事件已留痕，需人工复核：${safeReason ?? "请核对"}` : result.duplicate ? singleScanClosed ? "该次单次刷卡闭环已处理，无需重复确认" : "该次刷卡已处理，无需重复确认" : `${receiptText ?? (eventType === "load" ? "装土刷卡成功" : "卸土成功")}，${singleScanClosed ? "本趟已直接完成闭环并进入待核验" : eventType === "load" ? "车辆已进入运输中" : "运输票据已进入待核验"}`);
+      await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]);
+    },
+    onError: error => toast.error(error.message),
+  });
 
   function openVehicleDialog(vehicle?: NonNullable<typeof vehicles.data>[number]) {
     setEditingVehicleId(vehicle?.id ?? null);

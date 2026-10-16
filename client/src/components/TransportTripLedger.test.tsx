@@ -29,7 +29,8 @@ describe("运输车辆趟次完整台账", () => {
     expect(source).toContain("labels[status] ?? getBusinessStatusLabel(status)");
     expect(source).toContain("getBusinessStatusLabel(item.status)");
     expect(source).toContain("getBusinessStatusLabel(selectedTrip.status)");
-    expect(source).toContain("getBusinessStatusLabel(event.validationStatus)");
+    expect(source).toContain("getCardValidationStatusLabel(event.validationStatus)");
+    expect(source).toContain("getSafeCardValidationReason(event.validationReason)");
     expect(source).not.toContain("statusLabel[item.status] ?? item.status");
     expect(source).not.toContain("statusLabel[selectedTrip.status] ?? selectedTrip.status");
     expect(source).toContain("formatChinaDateTime(value, \"未记录\")");

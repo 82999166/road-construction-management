@@ -32,6 +32,9 @@ describe("移动运输运单台账", () => {
     expect(source).toContain("onConfirmPlatePhotoUnload?.(tripId)");
     expect(source).toContain("运输运单详情");
     expect(source).toContain("查看受控加油凭证");
+    expect(source).toContain("getCardValidationStatusLabel(event.validationStatus)");
+    expect(source).toContain("getSafeCardValidationReason(event.validationReason)");
+    expect(source).not.toContain("event.validationStatus}${event.validationReason");
     expect(source).not.toContain("longitude");
     expect(source).not.toContain("latitude");
   });

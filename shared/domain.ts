@@ -99,6 +99,34 @@ export function getBusinessStatusLabel(status: string): string {
   return BUSINESS_STATUS_LABELS[status] ?? "状态待核对";
 }
 
+/** 读卡校验状态与普通单据状态分离，禁止把 accepted 等内部枚举直接展示给现场人员。 */
+export const CARD_VALIDATION_STATUS_LABELS: Record<string, string> = {
+  accepted: "校验通过",
+  duplicate: "重复刷卡已识别",
+  needs_review: "待人工核验",
+  rejected: "校验未通过",
+  "校验通过": "校验通过",
+  "重复刷卡已识别": "重复刷卡已识别",
+  "待人工核验": "待人工核验",
+  "校验未通过": "校验未通过",
+};
+
+/** 读卡详情可兼容服务端已中文化投影；未知或空状态统一安全回退。 */
+export function getCardValidationStatusLabel(status: unknown): string {
+  if (typeof status !== "string" || !status.trim()) return "状态待核对";
+  return CARD_VALIDATION_STATUS_LABELS[status.trim().toLowerCase()] ?? "状态待核对";
+}
+
+/**
+ * 核验原因仅展示可读中文业务说明。出现英文、协议字段或上游内部错误时，
+ * 统一收口为人工核对提示，避免客户端绕过服务端投影而泄露内部编码。
+ */
+export function getSafeCardValidationReason(reason: unknown): string | null {
+  if (typeof reason !== "string" || !reason.trim()) return null;
+  const value = reason.trim();
+  return /[A-Za-z]/.test(value) ? "请由管理员核对车辆卡、地点与时间。" : value;
+}
+
 /** 施工日报从现场草稿到归档的受控状态机；已锁定日报不得回退或修改。 */
 export const CONSTRUCTION_DAILY_REPORT_STATUS_TRANSITIONS = {
   draft: ["submitted"],
