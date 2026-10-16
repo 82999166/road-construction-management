@@ -103,6 +103,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain(': "max-w-2xl"}');
   });
 
+  it("高频费用录入窗口在 PC 端提供足够宽的两列或三列工作区", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('DialogContent className="w-[calc(100vw-3rem)] max-w-4xl xl:max-w-5xl"');
+    expect(source).toContain('DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl overflow-y-auto xl:max-w-5xl"');
+    expect(source).toContain('录入机械成本');
+    expect(source).toContain('登记{assetMaintenanceForm.assetType === "vehicle" ? "车辆" : "机械"}维修保养费用');
+    expect(source).toContain('维护柴油指导价');
+  });
+
   it("车辆射频卡绑定窗口展示完整车辆信息，并可在窗口内直接读取卡 ID", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
