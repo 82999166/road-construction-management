@@ -96,6 +96,13 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).not.toContain('max-w-[min(96vw,1320px)]');
   });
 
+  it("其他后台业务详情也使用宽屏且可滚动的 PC 工作区", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('max-h-[88vh] w-[calc(100vw-3rem)] max-w-5xl overflow-y-auto xl:max-w-6xl');
+    expect(source).not.toContain(': "max-w-2xl"}');
+  });
+
   it("车辆射频卡绑定窗口展示完整车辆信息，并可在窗口内直接读取卡 ID", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

@@ -3924,7 +3924,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           </AlertDialogContent>
         </AlertDialog>
         <Dialog open={Boolean(desktopRecordDetail)} onOpenChange={open => { if (!open) setDesktopRecordDetail(null); }}>
-          <DialogContent className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "flex h-[min(92vh,920px)] w-[calc(100vw-2rem)] max-w-[1320px] flex-col overflow-hidden p-0 sm:max-w-[1320px]" : "max-w-2xl"}>
+          <DialogContent className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "flex h-[min(92vh,920px)] w-[calc(100vw-2rem)] max-w-[1320px] flex-col overflow-hidden p-0 sm:max-w-[1320px]" : "max-h-[88vh] w-[calc(100vw-3rem)] max-w-5xl overflow-y-auto xl:max-w-6xl"}>
             <DialogHeader className={desktopRecordDetail?.title.startsWith("单车收益支出分析") ? "shrink-0 border-b border-slate-200 px-6 py-5" : undefined}>
               <DialogTitle>{desktopRecordDetail?.title}</DialogTitle>
               <DialogDescription>{desktopRecordDetail?.description}</DialogDescription>
