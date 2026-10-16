@@ -64,7 +64,7 @@ describe("统一后台业务工作区范围保护", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("普通管理人员账号");
-    expect(source).toContain("管理人员角色授权");
+    expect(source).toContain("为人员分配岗位与数据范围");
     expect(source).toContain("车辆统一台账");
     expect(source).toContain("RFID 写卡");
     expect(source).toContain("机械资源、维修与会计计价台账");
@@ -204,13 +204,13 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("saveAssetMaintenance.mutate");
   });
 
-  it("在权限管理中提供公司管理人员薪资标准的明确入口，并复用受控人员类型筛选", () => {
+  it("在账号与员工分类中提供公司管理人员筛选入口，并复用受控人员类型筛选", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("公司管理人员薪资标准");
-    expect(source).toContain("进入公司人员薪资设置");
+    expect(source).toContain("公司人员薪资");
+    expect(source).toContain('setEmployeeLedgerFilter(current => ({ ...current, type: "management" }))');
     expect(source).toContain('type: "management"');
-    expect(source).toContain("不会覆盖已审核或已付款工资");
+    expect(source).toContain("实际工资仍由考勤和经审核工资条决定");
   });
 
   it("将所有 CSV 导出统一写入当前筛选范围、导出记录数和生成时间", () => {
@@ -246,24 +246,25 @@ describe("统一后台业务工作区范围保护", () => {
     expect(dailySection).not.toContain("window.print()");
   });
 
-  it("将新建员工档案固定放在人员主数据页头，并复用既有员工档案弹窗", () => {
+  it("将新建员工档案置于账号与员工分类页头，并复用既有员工档案弹窗", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
-    const personnelStart = source.indexOf("人员与授权");
-    const filterHeader = source.slice(source.indexOf("人员主数据 · 人事与用工台账"), source.indexOf("employeeProfiles.isLoading"));
+    const accountsStart = source.indexOf('TabsContent value="accounts"');
+    const filterHeader = source.slice(source.indexOf("员工档案、薪资与保险"), source.indexOf("employeeProfiles.isLoading"));
 
     expect(source).toContain("titleActions?: ReactNode");
-    expect(personnelStart).toBeGreaterThan(-1);
-    expect(source.slice(personnelStart, personnelStart + 900)).toContain("新建员工档案");
-    expect(source.slice(personnelStart, personnelStart + 900)).toContain("setEmployeeProfileDialogOpen(true)");
-    expect(filterHeader).not.toContain(">新建员工档案</Button>");
+    expect(accountsStart).toBeGreaterThan(-1);
+    expect(source.slice(accountsStart, accountsStart + 1400)).toContain("新建员工档案");
+    expect(source.slice(accountsStart, accountsStart + 1400)).toContain("setEmployeeProfileDialogOpen(true)");
+    expect(filterHeader).toContain(">新建员工档案</Button>");
+    expect(source).toContain('setPermissionWorkspaceTab("accounts")');
   });
 
   it("在手机宽度将新增台账的动作区与筛选控件分区换行，保留完整文案和足够触控高度", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("min-h-10 w-full bg-[#203c48] text-white hover:bg-[#17313b] sm:w-auto");
+    expect(source).toContain("grid h-auto w-full grid-cols-2 gap-1 rounded-xl");
+    expect(source).toContain("min-h-10 px-3 text-sm");
     expect(source).toContain("grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4");
-    expect(source).toContain("min-h-11 w-full text-sm sm:min-h-8 sm:w-auto");
     expect(source).toContain("grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]");
     expect(source).toContain("min-h-11 w-full self-end text-sm xl:w-auto");
   });
@@ -331,7 +332,6 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("请确认不是重复录入后再继续保存");
     expect(source).toContain("refueledAt: toLocalDateTimeInput(new Date())");
     expect(source).toContain('diesel: "柴油管理"');
-    expect(source).toContain("柴油管理已独立拆分为台账查看、领用登记、指导价、预警、扣油结算、作废、导出和打印");
     expect(foundationSource).toContain('["diesel:read", "柴油台账查看", "diesel", "read"]');
     expect(foundationSource).toContain('["diesel:refuel:create", "柴油领用登记", "diesel", "create"]');
     expect(foundationSource).toContain('["diesel:guideline:manage", "柴油指导价维护", "diesel", "manage"]');
@@ -534,32 +534,33 @@ describe("统一后台业务工作区范围保护", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("角色详细操作权限");
-    expect(source).toContain("查看、新增、编辑、提交、审核、结算、作废、导出或打印");
     expect(source).toContain("permissionActionLabels");
     expect(source).toContain("全选本模块");
     expect(source).toContain("清空</Button>");
-    expect(source).toContain("角色一旦配置某业务域的详细权限");
+    expect(source).toContain("未选动作会被服务端拒绝");
+    expect(source).toContain("setRolePermissionModule");
   });
 
-  it("将权限管理清晰解释为菜单、页面、操作三级，并保留项目范围的服务端共同边界", () => {
+  it("将权限管理分为账号、授权、角色操作和部门菜单四个紧凑分类", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("第一级 · 菜单");
-    expect(source).toContain("第二级 · 页面");
-    expect(source).toContain("第三级 · 操作");
-    expect(source).toContain("用户专属权限仅覆盖本模块操作，不扩大项目范围");
-    expect(source).toContain("跨项目查询会被服务端拒绝");
+    expect(source).toContain('type PermissionWorkspaceTab = "accounts" | "authorization" | "roles" | "department"');
+    expect(source).toContain('value="authorization"');
+    expect(source).toContain('value="accounts"');
+    expect(source).toContain('value="roles"');
+    expect(source).toContain('value="department"');
+    expect(source).toContain("页面调整不会放宽现有权限边界");
+    expect(source).toContain("专属权限只覆盖该用户在对应模块的具体操作");
   });
 
   it("在每位普通管理人员卡片中提供用户专属操作权限入口，并用独立对话框保存到具体用户", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain(">操作权限</Button>");
+    expect(source).toContain(">专属权限</Button>");
     expect(source).toContain("分配用户专属操作权限");
-    expect(source).toContain("正在为“{userPermissionTarget?.name}”设置具体业务动作");
     expect(source).toContain("setUserPermissions.mutate");
     expect(source).toContain("保存该用户权限");
-    expect(source).toContain("留空则沿用角色权限");
+    expect(source).toContain("未勾选时沿用角色权限");
   });
 
   it("提供可解释的 AI 项目风险扫描、处置与财务分类分析，并要求维护设备核定油箱容量", () => {
