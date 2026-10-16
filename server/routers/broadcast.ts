@@ -122,7 +122,7 @@ function normalizeDeepLink(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-/** 将供应商错误码转为后台可执行说明；不回显 OpenID、令牌或请求详情。 */
+/** 将供应商错误码转为后台可执行说明；不回显 OpenID、令牌、请求详情或原始英文编码。 */
 export function getBroadcastFailureGuidance(deliveryReason: string | null, failureCode: string | null) {
   const source = `${failureCode ?? ""} ${deliveryReason ?? ""}`.toLowerCase();
   if (source.includes("40037")) return "微信模板不可下发：请在服务号后台配置并发布可下发的业务模板后重新发送。";
@@ -131,7 +131,16 @@ export function getBroadcastFailureGuidance(deliveryReason: string | null, failu
   if (source.includes("template") || source.includes("not_configured")) return "服务号业务模板尚未配置：请先读取可下发模板并发布模板 ID 与字段映射。";
   if (source.includes("not_bound")) return "收件人尚未完成服务号绑定，系统未向其投递。";
   if (source.includes("network") || source.includes("timeout")) return "微信接口网络请求失败：系统已保留失败审计，可在网络恢复后重新发送。";
-  return deliveryReason ? `投递未成功：${deliveryReason}` : "投递未成功，请查看服务号配置、绑定状态和微信错误码。";
+  return "投递未成功：请检查服务号配置、收件人绑定状态和投递审计后重试。";
+}
+
+/** 投递原因仅返回用户可读状态；底层错误码仍只保留在受控审计数据中。 */
+export function getBroadcastDeliveryReasonLabel(deliveryStatus: string, deliveryReason: string | null, failureCode: string | null) {
+  if (deliveryStatus === "failed") return "投递失败";
+  if (deliveryStatus === "sent") {
+    return deliveryReason === "in_app_scope_notification" ? "站内通知已送达" : "通知已送达";
+  }
+  return null;
 }
 
 /** 新群发不再需要人工审批；草稿及历史审批中记录均可由获授权管理员直接发送。 */
@@ -181,11 +190,11 @@ export const broadcastRouter = router({
       .leftJoin(notificationRecords, eq(notificationRecords.id, officialAccountBroadcastDeliveries.notificationRecordId))
       .where(eq(officialAccountBroadcastDeliveries.broadcastId, input.broadcastId))
       .orderBy(desc(officialAccountBroadcastDeliveries.updatedAt));
-    return rows.map(row => {
-      const failureGuidance = row.deliveryStatus === "failed" ? getBroadcastFailureGuidance(row.deliveryReason, row.failureCode) : null;
+    return rows.map(({ failureCode, ...row }) => {
+      const failureGuidance = row.deliveryStatus === "failed" ? getBroadcastFailureGuidance(row.deliveryReason, failureCode) : null;
       return {
         ...row,
-        deliveryReason: failureGuidance && row.deliveryReason ? `${row.deliveryReason} · ${failureGuidance}` : failureGuidance ?? row.deliveryReason,
+        deliveryReason: getBroadcastDeliveryReasonLabel(row.deliveryStatus, row.deliveryReason, failureCode),
         failureGuidance,
       };
     });
