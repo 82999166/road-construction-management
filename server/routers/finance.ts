@@ -545,6 +545,43 @@ const inventoryInput = z.object({
   remarks: z.string().trim().max(500).nullable().optional(),
 });
 
+/** Excel 历史导入仅接收结构化业务字段；金额、日期、项目范围和重复单号均由服务端再次校验。 */
+const purchaseSpreadsheetImportInput = z.object({
+  projectId: z.number().int().positive(),
+  orders: z.array(z.object({
+    orderNo: z.string().trim().min(4).max(64).nullable().optional(),
+    categoryName: z.string().trim().min(1, "请填写采购类别").max(100),
+    itemDescription: z.string().trim().min(1, "请填写物资说明").max(500),
+    quantity: z.number().gt(0).max(999999999.999).nullable().optional(),
+    unitPrice: moneySchema.nullable().optional(),
+    amount: moneySchema.gt(0, "订单金额必须大于 0"),
+    orderedAt: isoDateTimeSchema,
+    supplierName: z.string().trim().min(1).max(200).nullable().optional(),
+    hasInvoice: z.boolean().default(false),
+    remarks: z.string().trim().max(500).nullable().optional(),
+  }).superRefine((row, context) => {
+    if ((row.quantity === null || row.quantity === undefined) !== (row.unitPrice === null || row.unitPrice === undefined)) {
+      context.addIssue({ code: "custom", path: [row.quantity === null || row.quantity === undefined ? "quantity" : "unitPrice"], message: "数量和单价须同时填写，或同时留空" });
+    }
+    if (row.quantity !== null && row.quantity !== undefined && row.unitPrice !== null && row.unitPrice !== undefined && Math.abs(roundMoney(row.quantity * row.unitPrice) - roundMoney(row.amount)) > 0.01) {
+      context.addIssue({ code: "custom", path: ["amount"], message: "订单金额须与数量×单价一致" });
+    }
+  })).max(300),
+  inventoryTransactions: z.array(z.object({
+    transactionNo: z.string().trim().min(4).max(64).nullable().optional(),
+    transactionType: z.enum(["inbound", "outbound", "return"]),
+    itemName: z.string().trim().min(1, "请填写物料名称").max(200),
+    unit: z.string().trim().min(1, "请填写计量单位").max(32),
+    quantity: z.number().gt(0, "数量必须大于 0").max(999999999.999),
+    unitCost: moneySchema,
+    occurredAt: isoDateTimeSchema,
+    remarks: z.string().trim().max(500).nullable().optional(),
+  })).max(300),
+}).superRefine((input, context) => {
+  if (input.orders.length + input.inventoryTransactions.length < 1) context.addIssue({ code: "custom", path: ["orders"], message: "请至少导入一条采购订单或库存流水" });
+  if (input.orders.length + input.inventoryTransactions.length > 500) context.addIssue({ code: "custom", path: ["orders"], message: "单次最多导入 500 条记录，请拆分文件后重试" });
+});
+
 /** 工程计量草稿只允许申报金额；核定金额由审核状态操作接口独立提交。 */
 const measurementInput = z.object({
   id: z.number().int().positive().optional(),
@@ -990,6 +1027,102 @@ export const purchasingRouter = router({
       return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url, uploadedBy: evidence.uploadedBy, uploadedByName: userNameById.get(evidence.uploadedBy) ?? `管理员 #${evidence.uploadedBy}` }] as const;
     })));
     return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, categoryName: order.categoryId ? categoryNameById.get(order.categoryId) ?? "已删除类别" : "采购申请关联", assetLabel: order.assetType && order.assetId ? assetLabelByKey.get(`${order.assetType}:${order.assetId}`) ?? "关联资产已停用" : null, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
+  }),
+
+  /** 批量导入历史采购订单和库存收发流水：先预校验类别与外部单号，再在一个事务内写入草稿订单和不可变库存流水。 */
+  importSpreadsheet: protectedProcedure.input(purchaseSpreadsheetImportInput).mutation(async ({ ctx, input }) => {
+    const user = requireAuthenticatedUser(ctx);
+    await assertSuperAdmin(ctx);
+    const roleCodes = await assertPurchaseAccess(ctx);
+    if (input.inventoryTransactions.length && !canManageInventory(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无库存收发导入权限" });
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+    const normalizedOrderNos = input.orders.map(row => row.orderNo?.trim()).filter((value): value is string => Boolean(value));
+    const normalizedTransactionNos = input.inventoryTransactions.map(row => row.transactionNo?.trim()).filter((value): value is string => Boolean(value));
+    if (new Set(normalizedOrderNos).size !== normalizedOrderNos.length) throw new TRPCError({ code: "BAD_REQUEST", message: "导入文件中存在重复采购订单号，请修正后重试" });
+    if (new Set(normalizedTransactionNos).size !== normalizedTransactionNos.length) throw new TRPCError({ code: "BAD_REQUEST", message: "导入文件中存在重复库存流水单号，请修正后重试" });
+
+    const [project] = await db.select({ organizationId: projects.organizationId }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+    if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目" });
+    const [categoryRows, existingOrders, existingTransactions, supplierRows] = await Promise.all([
+      db.select({ id: purchaseCategories.id, name: purchaseCategories.name }).from(purchaseCategories).where(eq(purchaseCategories.status, "active")),
+      normalizedOrderNos.length ? db.select({ orderNo: purchaseOrders.orderNo }).from(purchaseOrders).where(inArray(purchaseOrders.orderNo, normalizedOrderNos)) : Promise.resolve([]),
+      normalizedTransactionNos.length ? db.select({ transactionNo: inventoryTransactions.transactionNo }).from(inventoryTransactions).where(inArray(inventoryTransactions.transactionNo, normalizedTransactionNos)) : Promise.resolve([]),
+      db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(eq(suppliers.status, "active")),
+    ]);
+    if (existingOrders.length) throw new TRPCError({ code: "CONFLICT", message: `采购订单号已存在：${existingOrders.slice(0, 3).map(row => row.orderNo).join("、")}${existingOrders.length > 3 ? "等" : ""}` });
+    if (existingTransactions.length) throw new TRPCError({ code: "CONFLICT", message: `库存流水单号已存在：${existingTransactions.slice(0, 3).map(row => row.transactionNo).join("、")}${existingTransactions.length > 3 ? "等" : ""}` });
+    const categoryIdByName = new Map(categoryRows.map(row => [row.name.trim(), row.id]));
+    const unknownCategories = Array.from(new Set(input.orders.map(row => row.categoryName.trim()).filter(name => !categoryIdByName.has(name))));
+    if (unknownCategories.length) throw new TRPCError({ code: "BAD_REQUEST", message: `采购类别不存在或已停用：${unknownCategories.slice(0, 3).join("、")}${unknownCategories.length > 3 ? "等" : ""}` });
+
+    let createdOrders = 0;
+    let createdInventoryTransactions = 0;
+    let createdSuppliers = 0;
+    await db.transaction(async tx => {
+      const supplierIdByName = new Map(supplierRows.map(row => [row.name.trim(), row.id]));
+      const missingSuppliers = Array.from(new Set(input.orders
+        .map(row => row.supplierName?.trim())
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .filter(value => !supplierIdByName.has(value))));
+      for (const supplierName of missingSuppliers) {
+        const result = await tx.insert(suppliers).values({ organizationId: project.organizationId ?? null, name: supplierName, status: "active" });
+        const supplierId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+        if (!supplierId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "导入供应商主数据失败" });
+        supplierIdByName.set(supplierName, supplierId);
+        createdSuppliers += 1;
+      }
+      if (input.orders.length) {
+        await tx.insert(purchaseOrders).values(input.orders.map(row => ({
+          orderNo: row.orderNo?.trim() || createBusinessNo("IMP"),
+          requestId: null,
+          projectId: input.projectId,
+          procurementMode: "imported" as const,
+          categoryId: categoryIdByName.get(row.categoryName.trim()) ?? null,
+          itemDescription: row.itemDescription.trim(),
+          quantity: row.quantity === null || row.quantity === undefined ? null : String(row.quantity),
+          unitPrice: row.unitPrice === null || row.unitPrice === undefined ? null : String(roundMoney(row.unitPrice)),
+          evidenceId: null,
+          hasInvoice: row.hasInvoice,
+          invoiceEvidenceId: null,
+          ocrSummary: row.remarks?.trim() || null,
+          supplierId: row.supplierName?.trim() ? supplierIdByName.get(row.supplierName.trim()) ?? null : null,
+          assetType: null,
+          assetId: null,
+          assetDeductionReference: null,
+          assetDeductedAt: null,
+          amount: String(roundMoney(row.amount)),
+          orderedAt: new Date(row.orderedAt),
+          status: "draft" as const,
+          createdBy: user.id,
+          confirmedBy: null,
+          confirmedAt: null,
+        })));
+        createdOrders = input.orders.length;
+      }
+      if (input.inventoryTransactions.length) {
+        await tx.insert(inventoryTransactions).values(input.inventoryTransactions.map(row => ({
+          projectId: input.projectId,
+          requestId: null,
+          purchaseOrderId: null,
+          transactionNo: row.transactionNo?.trim() || createBusinessNo("IMPINV"),
+          transactionType: row.transactionType,
+          itemName: row.itemName.trim(),
+          unit: row.unit.trim(),
+          quantity: String(row.quantity),
+          unitCost: String(roundMoney(row.unitCost)),
+          amount: String(roundMoney(row.quantity * row.unitCost)),
+          occurredAt: new Date(row.occurredAt),
+          operatorId: user.id,
+          remarks: row.remarks?.trim() || "历史 Excel 导入",
+        })));
+        createdInventoryTransactions = input.inventoryTransactions.length;
+      }
+      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "import_purchase_spreadsheet", targetType: "purchase_inventory_import", targetId: String(input.projectId), summary: `Excel 导入完成：采购订单 ${createdOrders} 条、库存流水 ${createdInventoryTransactions} 条、新建供应商 ${createdSuppliers} 家；导入订单均为草稿，发票附件须后续补传。` });
+    });
+    return { success: true, createdOrders, createdInventoryTransactions, createdSuppliers };
   }),
 
   /** 仅返回当前项目的采购取证影像，供小额物资在 OCR 后人工补全并关联，URL 使用短时签名。 */

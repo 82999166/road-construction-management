@@ -1739,7 +1739,7 @@ export const purchaseOrders = mysqlTable(
     /** 常规订单必须关联已批准申请；小额免申请订单允许为空但必须保存分类、说明和影像证据。 */
     requestId: bigint("requestId", { mode: "number" }),
     projectId: int("projectId").notNull(),
-    procurementMode: mysqlEnum("procurementMode", ["request", "small_direct"]).default("request").notNull(),
+    procurementMode: mysqlEnum("procurementMode", ["request", "small_direct", "imported"]).default("request").notNull(),
     categoryId: int("categoryId"),
     itemDescription: varchar("itemDescription", { length: 500 }),
     /** 清单采购数量与单价由服务端计算金额快照；历史订单允许为空以兼容。 */

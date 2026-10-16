@@ -1,0 +1,1 @@
+ALTER TABLE `purchase_orders` MODIFY COLUMN `procurementMode` enum('request','small_direct','imported') NOT NULL DEFAULT 'request';
