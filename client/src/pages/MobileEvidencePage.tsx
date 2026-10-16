@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LayoutDashboard, LocateFixed, MapPin, ReceiptText, ScanLine, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
@@ -148,7 +149,7 @@ export default function MobileEvidencePage() {
   const selectedProjectId = projectId ?? 0;
   const evidenceListInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const evidence = trpc.evidence.list.useQuery(evidenceListInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const upload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const upload = trpc.evidence.upload.useMutation({ onError: error => toast.error(getUserFacingErrorMessage(error, "现场影像归档失败，请稍后重试")) });
   const reverseGeocode = trpc.location.reverseGeocode.useMutation({
     onSuccess: result => setLocationAddress(result.address),
     onError: () => toast.warning("当前定位未能解析为中文详细地址，请稍后重新读取定位"),
@@ -159,7 +160,7 @@ export default function MobileEvidencePage() {
       toast.success("票据识别已完成，请人工复核结果");
       await evidence.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "票据识别暂不可用，请稍后重试")),
   });
   const removeEvidence = trpc.evidence.delete.useMutation({
     onSuccess: async () => {
@@ -168,7 +169,7 @@ export default function MobileEvidencePage() {
       await evidence.refetch();
       toast.success("现场影像已删除，操作已记录审计");
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "现场影像删除失败，请稍后重试")),
   });
 
   if (loading || !isAuthenticated || projectOptions.isLoading) return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && projectOptions.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载现场取证权限…" title="水印影像取证" description="登录后可按项目范围采集并归档现场影像。" Icon={Camera} onRetry={() => { void refresh(); void projectOptions.refetch(); }} />;
@@ -242,7 +243,7 @@ export default function MobileEvidencePage() {
       toast.success(sourceId.trim() ? `${results.length} 张现场影像已归档，将随关联业务单据一并提交主管审核` : `${results.length} 张现场影像已归档，请在业务单据中关联后提交审核`);
       if (sourceType === "purchase") results.filter(result => result.id).forEach(result => runOcr.mutate({ id: result.id! }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "影像水印或读取失败");
+      toast.error(getUserFacingErrorMessage(error, "影像水印或读取失败，请稍后重试"));
     }
   }
 
@@ -256,8 +257,8 @@ export default function MobileEvidencePage() {
         </header>
 
         <main className="space-y-5 px-5 py-5">
-          {projectOptions.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">项目权限加载失败：{projectOptions.error.message}</CardContent></Card> : null}
-          {captureConfig.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">采集连接器配置加载失败：{captureConfig.error.message}</CardContent></Card> : null}
+          {projectOptions.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">项目权限加载失败：{getUserFacingErrorMessage(projectOptions.error, "暂无法读取项目权限，请稍后重试")}</CardContent></Card> : null}
+          {captureConfig.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-sm text-[#9c4d27]">采集连接器配置加载失败：{getUserFacingErrorMessage(captureConfig.error, "暂无法读取采集配置，请稍后重试")}</CardContent></Card> : null}
           {!projectOptions.data?.length && !projectOptions.isLoading ? <Card className="border-0 bg-[#fffaf3] shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-8 text-center"><Camera className="mx-auto h-8 w-8 text-[#a85e31]" /><h2 className="mt-3 font-semibold">暂无授权项目</h2><p className="mt-2 text-xs leading-5 text-[#765544]">请联系超级管理员为您的岗位分配项目或组织数据范围后再采集影像。</p></CardContent></Card> : <>
             <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="space-y-4 p-4">
               <div><Label>归属项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="mt-2 border-[#ead9c8] bg-[#fffaf5]"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div>
@@ -268,7 +269,7 @@ export default function MobileEvidencePage() {
             <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="p-4"><div className="flex items-end justify-between gap-3"><div><Label>现场影像</Label><p className="mt-1 text-[11px] text-[#80685b]">可连续添加多张；每张将固化管理员、项目、定位、日期、时间与天气水印。</p></div>{files.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {files.length}/12 张</span> : null}</div><label className={`mt-3 flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3 text-center ${cameraEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"}`}><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" disabled={!cameraEnabled} onChange={handleFileChange} /><ImagePlus className="h-7 w-7 text-[#ad6335]" /><span className="mt-2 text-xs font-medium text-[#80543d]">{cameraEnabled ? (files.length ? "继续拍摄或添加照片" : "拍摄或选择 JPG、PNG 影像") : "影像采集连接器已停用"}</span><span className="mt-1 text-[11px] text-[#765544]">单张不超过 8MB，单次最多 12 张</span></label>{previewUrls.length ? <div className="mt-3 grid grid-cols-3 gap-2">{previewUrls.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待归档现场影像 ${index + 1}`} className="aspect-square w-full rounded-xl object-cover" />)}</div> : null}<Button className="mt-4 w-full bg-[#9a5128] text-white hover:bg-[#7e3d1c]" disabled={upload.isPending || captureConfig.isError || !cameraEnabled || !files.length || (locationRequired && !coordinates)} onClick={submitEvidence}>{upload.isPending ? "正在逐张安全归档…" : `归档 ${files.length || ""} 张现场影像`}</Button></CardContent></Card>
             <section>
               <div className="mb-3 flex items-center justify-between"><div><h2 className="text-base font-semibold">最近取证</h2><p className="mt-0.5 text-xs text-[#9b8170]">仅显示取证摘要；照片随关联单据在主管审核、业务详情和归档记录中查看。</p></div><CheckCircle2 className="h-5 w-5 text-[#b87333]" /></div>
-              {evidence.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-xs text-[#9c4d27]">影像台账加载失败：{evidence.error.message}</CardContent></Card> : evidence.isLoading ? <Card className="border-0 bg-white"><CardContent className="p-4 text-center text-sm text-[#8f7566]">正在加载影像台账…</CardContent></Card> : !evidence.data?.length ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-xs leading-5 text-[#765544]">该项目暂未归档现场影像。</CardContent></Card> : <div className="space-y-3">
+              {evidence.error ? <Card className="border-[#f0d8c4] bg-[#fff7ef]"><CardContent className="p-4 text-xs text-[#9c4d27]">影像台账加载失败：{getUserFacingErrorMessage(evidence.error, "暂无法读取影像台账，请稍后重试")}</CardContent></Card> : evidence.isLoading ? <Card className="border-0 bg-white"><CardContent className="p-4 text-center text-sm text-[#8f7566]">正在加载影像台账…</CardContent></Card> : !evidence.data?.length ? <Card className="border-0 bg-white"><CardContent className="p-5 text-center text-xs leading-5 text-[#765544]">该项目暂未归档现场影像。</CardContent></Card> : <div className="space-y-3">
                 {evidence.data.map(item => {
                   const sourceLabel = SOURCE_OPTIONS.find(option => option.value === item.sourceType)?.label || "现场取证";
                   return <Card key={item.id} className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.07)]"><CardContent className="space-y-2.5 p-3.5">

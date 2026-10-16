@@ -9,6 +9,7 @@ import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { DieselSummaryPrintDialog } from "@/components/DieselSummaryPrintDialog";
 import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowLeft, Camera, Fuel, Plus, Printer, ReceiptText, RefreshCw, Tractor, Truck, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -116,14 +117,14 @@ export default function MobileDieselPage() {
   const selectedProjectId = projectId ?? 0;
   const refuelOptions = trpc.diesel.mobileRefuelOptions.useQuery({ projectId: selectedProjectId }, { enabled: isAuthenticated && refuelOpen && Boolean(selectedProjectId) && Boolean(overview.data?.capabilities?.canCreateRefuel), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated && refuelOpen, retry: false });
-  const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(error.message) });
+  const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(getUserFacingErrorMessage(error, "加油表照片归档失败，请稍后重试")) });
   const refuelCreate = trpc.diesel.mobileCreateRefuel.useMutation({
     onSuccess: async result => {
       toast.success(`柴油领用已记账：${result.recordNo} · ${money(result.amount)}`);
       closeRefuelDialog();
       await Promise.all([utils.diesel.mobileOverview.invalidate(), utils.diesel.mobileRefuelOptions.invalidate()]);
     },
-    onError: error => toast.error(error.message),
+    onError: error => toast.error(getUserFacingErrorMessage(error, "柴油领用登记失败，请稍后重试")),
   });
   const assets = draft.assetType === "vehicle" ? refuelOptions.data?.vehicles ?? [] : refuelOptions.data?.machines ?? [];
   const recentDuplicateRefuel = useMemo(() => {
@@ -225,7 +226,7 @@ export default function MobileDieselPage() {
       if (!upload.id) throw new Error("加油表水印影像归档失败");
       await refuelCreate.mutateAsync({ projectId: selectedProjectId, assetType: draft.assetType, assetId: Number(draft.assetId), supplyMethod: draft.supplyMethod, stationOrSupplierName: draft.supplyMethod === "external_station" ? draft.stationOrSupplierName.trim() : null, liters: Number(draft.liters), actualUnitPrice: draft.supplyMethod === "external_station" ? Number(draft.actualUnitPrice) : null, deductFromFreight: draft.assetType === "vehicle" && draft.deductFromFreight, refueledAt: new Date(draft.refueledAt).toISOString(), meterReading: draft.meterReading ? Number(draft.meterReading) : null, receiptNo: draft.receiptNo.trim() || null, evidenceId: upload.id, remarks: draft.remarks.trim() || null });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "柴油领用登记失败，请重试");
+      toast.error(getUserFacingErrorMessage(error, "柴油领用登记失败，请稍后重试"));
     }
   }
 
@@ -233,7 +234,7 @@ export default function MobileDieselPage() {
     return <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || (isAuthenticated && overview.isLoading)} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载柴油管理权限…" title="柴油管理" description="系统只显示当前账号已获柴油台账查看权限和项目范围内的真实台账。" Icon={Fuel} onRetry={() => { void refresh(); void overview.refetch(); }} />;
   }
   if (overview.error) {
-    return <div className="grid min-h-screen place-items-center bg-[#f8f1e7] p-6 text-center text-[#5b3b2e]"><div className="max-w-xs"><Fuel className="mx-auto h-9 w-9 text-[#b96932]" /><h1 className="mt-4 text-lg font-semibold">柴油台账暂不可用</h1><p className="mt-2 text-sm leading-6 text-[#8f7566]">{overview.error.message}</p><Button className="mt-5" variant="outline" onClick={() => void overview.refetch()}><RefreshCw className="mr-1.5 h-4 w-4" />重新加载</Button><Button className="mt-2" variant="ghost" onClick={() => navigate(MOBILE_DIESEL_BACK_PATH)}>返回工作台</Button></div></div>;
+    return <div className="grid min-h-screen place-items-center bg-[#f8f1e7] p-6 text-center text-[#5b3b2e]"><div className="max-w-xs"><Fuel className="mx-auto h-9 w-9 text-[#b96932]" /><h1 className="mt-4 text-lg font-semibold">柴油台账暂不可用</h1><p className="mt-2 text-sm leading-6 text-[#8f7566]">{getUserFacingErrorMessage(overview.error, "暂无法读取柴油台账，请稍后重试")}</p><Button className="mt-5" variant="outline" onClick={() => void overview.refetch()}><RefreshCw className="mr-1.5 h-4 w-4" />重新加载</Button><Button className="mt-2" variant="ghost" onClick={() => navigate(MOBILE_DIESEL_BACK_PATH)}>返回工作台</Button></div></div>;
   }
   const data = overview.data;
   const selectedProjectName = data?.projects.find(project => project.id === projectId)?.name ?? "—";
