@@ -832,7 +832,8 @@ describe("范围通知投递审计脱敏", () => {
   it("前端不展示供应商失败码，投递原因由服务端中文化投影", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain("投递说明：${delivery.deliveryReason}");
+    expect(source).toContain("原因：${delivery.deliveryReason}");
+    expect(source).toContain("处理建议：{delivery.failureGuidance}");
     expect(source).not.toContain("delivery.failureCode");
     expect(source).not.toContain("微信码 ${delivery.failureCode}");
   });
