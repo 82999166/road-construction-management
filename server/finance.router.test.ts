@@ -619,9 +619,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       [{ id: 4, amount: "1000.00", status: "paid" }],
       [{ id: 5, amount: "180.00", status: "approved" }],
       [{ id: 6, amount: "80.00", status: "approved", dieselRefuelRecordId: 3 }, { id: 7, amount: "90.00", status: "approved", dieselRefuelRecordId: null }],
-      [{ id: 8, amount: "60.00", status: "approved" }],
-      [{ id: 9, amount: "47.59", status: "verified" }],
-      [{ id: 10, amount: "47.59", status: "approved" }],
+      [{ id: 8, amount: "410.00", status: "approved" }],
+      [{ id: 9, amount: "60.00", status: "approved" }],
+      [{ id: 10, amount: "47.59", status: "verified" }],
+      [{ id: 11, amount: "47.59", status: "approved" }],
     ];
     let index = 0;
     vi.mocked(getDb).mockResolvedValue({
@@ -632,6 +633,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(result.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "diesel", recordCount: 1, amount: 80 }),
       expect.objectContaining({ code: "machine", recordCount: 1, amount: 90 }),
+      expect.objectContaining({ code: "machine_payment_settlement", recordCount: 1, amount: 410 }),
       expect.objectContaining({ code: "transport_settlement", recordCount: 1, amount: 47.59 }),
     ]));
   });

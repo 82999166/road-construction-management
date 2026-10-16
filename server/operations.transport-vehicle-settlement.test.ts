@@ -29,6 +29,9 @@ describe("渣土车按趟结算与付款闭环", () => {
     expect(source).toContain("canSettleFinancialRecord(roleCodes)");
     expect(source).toContain("已完成付款，依据业务规则不能作废或回退");
     expect(source).toContain("登记付款必须填写付款日期");
+    expect(source).toContain('sourceType: "transport_vehicle_settlement"');
+    expect(source).toContain('category: "渣土车运费结算"');
+    expect(source).toContain("付款日期已封存，须由财务负责人先授权反结账后再登记付款");
   });
 
   it("车辆管理必须提供按车牌日汇总、微信日结和费用结算入口", () => {

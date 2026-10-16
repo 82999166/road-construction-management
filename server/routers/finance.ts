@@ -21,6 +21,7 @@ import {
   measurementTakeoffRecords,
   laborWorkers,
   machineCostRecords,
+  machinePaymentSettlements,
   outsourceContracts,
   payrollStatements,
   payrollTaxWithholdingEntries,
@@ -2010,10 +2011,12 @@ export const financeRouter = router({
     const db = await getDb();
     if (!db) return { incomeAmount: 0, expenseAmount: 0, profitAmount: 0, receivableAmount: 0, payableAmount: 0, records: [] };
     const range = getMonthRange(input.period);
-    const [physicalRecords, periodPurchaseOrders, allPurchaseSettlements] = await Promise.all([
+    const [physicalRecords, periodPurchaseOrders, allPurchaseSettlements, machineSettlements, transportSettlements] = await Promise.all([
       db.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))).orderBy(desc(financialRecords.occurredAt)),
       db.select().from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))).orderBy(desc(purchaseOrders.orderedAt)),
       db.select({ sourceId: financialRecords.sourceId, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus }).from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.sourceType, "purchase_order_settlement"))).orderBy(desc(financialRecords.occurredAt)),
+      db.select({ id: machinePaymentSettlements.id, settlementNo: machinePaymentSettlements.settlementNo, projectId: machinePaymentSettlements.projectId, netPayableAmount: machinePaymentSettlements.netPayableAmount, status: machinePaymentSettlements.status, paymentDate: machinePaymentSettlements.paymentDate }).from(machinePaymentSettlements).where(and(eq(machinePaymentSettlements.projectId, input.projectId), eq(machinePaymentSettlements.period, input.period))).orderBy(desc(machinePaymentSettlements.createdAt)),
+      db.select({ id: transportVehicleSettlements.id, settlementNo: transportVehicleSettlements.settlementNo, projectId: transportVehicleSettlements.projectId, netPayableAmount: transportVehicleSettlements.netPayableAmount, status: transportVehicleSettlements.status, paymentDate: transportVehicleSettlements.paymentDate, periodEnd: transportVehicleSettlements.periodEnd }).from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, input.projectId), gte(transportVehicleSettlements.periodEnd, range.start), lt(transportVehicleSettlements.periodEnd, range.endExclusive))).orderBy(desc(transportVehicleSettlements.createdAt)),
     ]);
     const settledByOrder = new Map<string, number>();
     for (const settlement of allPurchaseSettlements) {
@@ -2042,7 +2045,17 @@ export const financeRouter = router({
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);
-    const records = [...physicalRecords, ...purchasePayables].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
+    /** 已付款结算会在付款事务内写入资金总账；下面仅兼容历史已付款结算，或展示当前已审核待付款应付，绝不双算。 */
+    const ledgerSettlementKeys = new Set(physicalRecords.filter(record => ["machine_payment_settlement", "transport_vehicle_settlement"].includes(record.sourceType ?? "") && record.sourceId).map(record => `${record.sourceType}:${record.sourceId}`));
+    const settlementVirtualRecords = [
+      ...machineSettlements.filter(item => ["approved", "paid"].includes(item.status) && !ledgerSettlementKeys.has(`machine_payment_settlement:${item.id}`)).map(item => ({
+        id: `machine-payment-${item.id}`, recordNo: `${item.settlementNo}-${item.status === "paid" ? "HISTORICAL" : "AP"}`, projectId: item.projectId, direction: "expense" as const, category: "机械付款结算", amount: String(item.netPayableAmount), occurredAt: item.paymentDate ?? range.start, settlementStatus: item.status === "paid" ? "paid" as const : "unpaid" as const, sourceType: item.status === "paid" ? "machine_payment_settlement_legacy" : "machine_payment_settlement_payable", sourceId: String(item.id), evidenceId: null, remarks: item.status === "paid" ? `历史机械付款结算 ${item.settlementNo}：系统补齐资金展示，未改写原始数据` : `机械付款结算 ${item.settlementNo}：已审核待付款`, dailyClosingId: null,
+      })),
+      ...transportSettlements.filter(item => ["approved", "paid"].includes(item.status) && !ledgerSettlementKeys.has(`transport_vehicle_settlement:${item.id}`)).map(item => ({
+        id: `transport-payment-${item.id}`, recordNo: `${item.settlementNo}-${item.status === "paid" ? "HISTORICAL" : "AP"}`, projectId: item.projectId, direction: "expense" as const, category: "渣土车运费结算", amount: String(item.netPayableAmount), occurredAt: item.paymentDate ?? item.periodEnd, settlementStatus: item.status === "paid" ? "paid" as const : "unpaid" as const, sourceType: item.status === "paid" ? "transport_vehicle_settlement_legacy" : "transport_vehicle_settlement_payable", sourceId: String(item.id), evidenceId: null, remarks: item.status === "paid" ? `历史渣土车付款结算 ${item.settlementNo}：系统补齐资金展示，未改写原始数据` : `渣土车结算单 ${item.settlementNo}：已审核待付款`, dailyClosingId: null,
+      })),
+    ];
+    const records = [...physicalRecords, ...purchasePayables, ...settlementVirtualRecords].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
     const confirmedIncomeRecords = records.filter(item => item.direction === "income" && item.sourceType !== "measurement_payment" && item.settlementStatus !== "void");
     const measurementPayments = records.filter(item => item.sourceType === "measurement_payment" && item.settlementStatus !== "void");
     const paymentByClaim = new Map<string, number>();
@@ -2072,13 +2085,14 @@ export const financeRouter = router({
     const db = await getDb();
     if (!db) return { period: input.period, sources: [], pendingTransport: { count: 0, amount: 0 }, settledTransport: { count: 0, amount: 0 } };
     const range = getMonthRange(input.period);
-    const [ledgerRows, purchaseRows, dieselRows, payrollRows, dailyWageRows, machineRows, maintenanceRows, tripRows, settlementRows] = await Promise.all([
+    const [ledgerRows, purchaseRows, dieselRows, payrollRows, dailyWageRows, machineRows, machineSettlementRows, maintenanceRows, tripRows, settlementRows] = await Promise.all([
       db.select({ id: financialRecords.id, direction: financialRecords.direction, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus }).from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.endExclusive))),
       db.select({ id: purchaseOrders.id, amount: purchaseOrders.amount, status: purchaseOrders.status }).from(purchaseOrders).where(and(eq(purchaseOrders.projectId, input.projectId), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
       db.select({ id: dieselRefuelRecords.id, amount: dieselRefuelRecords.amount, status: dieselRefuelRecords.status }).from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, input.projectId), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
       db.select({ id: payrollStatements.id, amount: payrollStatements.actualAmount, status: payrollStatements.status }).from(payrollStatements).where(and(eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period))),
       db.select({ id: temporaryDailyWageSettlements.id, amount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status }).from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.projectId, input.projectId), gte(temporaryDailyWageSettlements.settlementDate, range.start), lt(temporaryDailyWageSettlements.settlementDate, range.endExclusive))),
       db.select({ id: machineCostRecords.id, amount: machineCostRecords.amount, status: machineCostRecords.status, dieselRefuelRecordId: machineCostRecords.dieselRefuelRecordId }).from(machineCostRecords).where(and(eq(machineCostRecords.projectId, input.projectId), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
+      db.select({ id: machinePaymentSettlements.id, amount: machinePaymentSettlements.netPayableAmount, status: machinePaymentSettlements.status }).from(machinePaymentSettlements).where(and(eq(machinePaymentSettlements.projectId, input.projectId), eq(machinePaymentSettlements.period, input.period))),
       db.select({ id: assetMaintenanceRecords.id, amount: assetMaintenanceRecords.amount, status: assetMaintenanceRecords.status }).from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.projectId, input.projectId), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
       db.select({ id: transportTrips.id, amount: transportTrips.calculatedAmount, status: transportTrips.status }).from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), gte(transportTrips.startAt, range.start), lt(transportTrips.startAt, range.endExclusive))),
       db.select({ id: transportVehicleSettlements.id, amount: transportVehicleSettlements.netPayableAmount, status: transportVehicleSettlements.status }).from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, input.projectId), gte(transportVehicleSettlements.periodEnd, range.start), lt(transportVehicleSettlements.periodEnd, range.endExclusive))),
@@ -2094,6 +2108,7 @@ export const financeRouter = router({
       { code: "payroll", label: "月度工资", recordCount: payrollRows.length, effectiveCount: payrollRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(payrollRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "工资台账；付款凭证由劳资流程管理", statusSummary: statusText(payrollRows) },
       { code: "daily_wage", label: "临时日结工资", recordCount: dailyWageRows.length, effectiveCount: dailyWageRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(dailyWageRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "工资台账；付款凭证由劳资流程管理", statusSummary: statusText(dailyWageRows) },
       { code: "machine", label: "机械成本", recordCount: nonDieselMachineRows.length, effectiveCount: valid(nonDieselMachineRows).length, amount: amountOf(valid(nonDieselMachineRows)), accountingLink: "独立机械成本；已关联柴油不重复计入", statusSummary: statusText(nonDieselMachineRows) },
+      { code: "machine_payment_settlement", label: "机械付款结算单", recordCount: machineSettlementRows.length, effectiveCount: machineSettlementRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(machineSettlementRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "付款时同步资金总账；历史付款自动补齐展示", statusSummary: statusText(machineSettlementRows) },
       { code: "maintenance", label: "车辆/机械维修保养", recordCount: maintenanceRows.length, effectiveCount: valid(maintenanceRows).length, amount: amountOf(valid(maintenanceRows)), accountingLink: "独立维修保养台账", statusSummary: statusText(maintenanceRows) },
       { code: "transport_settlement", label: "运输结算单", recordCount: settlementRows.length, effectiveCount: settlementRows.filter(row => ["approved", "paid"].includes(row.status)).length, amount: amountOf(settlementRows.filter(row => ["approved", "paid"].includes(row.status))), accountingLink: "审核/付款按运输结算流程办理", statusSummary: statusText(settlementRows) },
     ];

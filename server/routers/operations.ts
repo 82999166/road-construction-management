@@ -7,7 +7,9 @@ import {
   auditLogs,
   dieselGuidelinePrices,
   dieselRefuelRecords,
+  dailyAccountingClosures,
   evidenceRecords,
+  financialRecords,
   freightRateRules,
   machineCostRecords,
   machineDailyOperations,
@@ -1805,13 +1807,19 @@ export const machineryRouter = router({
     if (["submit", "void"].includes(input.action) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械付款结算单" });
     if (["approve", "pay"].includes(input.action) && !canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅会计、财务负责人或系统管理员可审核与付款" });
     const nextStatus: "submitted" | "approved" | "paid" | "void" = input.action === "submit" ? "submitted" : input.action === "approve" ? "approved" : input.action === "pay" ? "paid" : "void";
+    const paymentDate = input.action === "pay" ? toBusinessDate(input.paymentDate!) : null;
+    if (paymentDate) {
+      const [closure] = await db.select({ status: dailyAccountingClosures.status }).from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, paymentDate))).limit(1);
+      if (closure && ["closed", "archived"].includes(closure.status)) throw new TRPCError({ code: "CONFLICT", message: "付款日期已封存，须由财务负责人先授权反结账后再登记付款" });
+    }
     await db.transaction(async tx => {
       const values: Partial<typeof machinePaymentSettlements.$inferInsert> = input.action === "submit" ? { status: nextStatus, submittedBy: user.id, submittedAt: new Date() }
         : input.action === "approve" ? { status: nextStatus, approvedBy: user.id, approvedAt: new Date() }
-          : input.action === "pay" ? { status: nextStatus, paymentDate: toBusinessDate(input.paymentDate!), paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
+          : input.action === "pay" ? { status: nextStatus, paymentDate: paymentDate!, paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
             : { status: nextStatus, remarks: input.remarks?.trim() || settlement.remarks };
       const result = await tx.update(machinePaymentSettlements).set(values).where(and(eq(machinePaymentSettlements.id, settlement.id), eq(machinePaymentSettlements.status, expectedStatus)));
       assertConditionalStatusWrite(result, "机械付款结算单");
+      if (input.action === "pay") await tx.insert(financialRecords).values({ recordNo: `F-MPAY-${settlement.settlementNo}`, projectId: input.projectId, direction: "expense", category: "机械付款结算", amount: settlement.netPayableAmount, occurredAt: paymentDate!, settlementStatus: "paid", sourceType: "machine_payment_settlement", sourceId: String(settlement.id), evidenceId: null, remarks: `机械付款结算单 ${settlement.settlementNo}${input.paymentReference?.trim() ? `；付款参考号 ${input.paymentReference.trim()}` : ""}` });
       if (input.action === "void") await tx.update(machineMonthlyStatements).set({ status: "approved" }).where(and(eq(machineMonthlyStatements.id, settlement.monthlyStatementId), eq(machineMonthlyStatements.status, "settled")));
     });
     const actionLabel = input.action === "submit" ? "提交会计审核" : input.action === "approve" ? "审核通过" : input.action === "pay" ? "完成付款登记" : "作废";
@@ -3409,14 +3417,20 @@ export const transportRouter = router({
     if (input.action === "submit" || input.action === "void") { if (!canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废渣土车结算单" }); }
     if (input.action === "approve" || input.action === "pay") { if (!canSettleFinancialRecord(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅会计、财务负责人或系统管理员可审核与付款" }); }
     const nextStatus: "submitted" | "approved" | "paid" | "void" = input.action === "submit" ? "submitted" : input.action === "approve" ? "approved" : input.action === "pay" ? "paid" : "void";
+    const paymentDate = input.action === "pay" ? toBusinessDate(input.paymentDate!) : null;
+    if (paymentDate) {
+      const [closure] = await db.select({ status: dailyAccountingClosures.status }).from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, paymentDate))).limit(1);
+      if (closure && ["closed", "archived"].includes(closure.status)) throw new TRPCError({ code: "CONFLICT", message: "付款日期已封存，须由财务负责人先授权反结账后再登记付款" });
+    }
     const items = await db.select().from(transportVehicleSettlementItems).where(eq(transportVehicleSettlementItems.settlementId, settlement.id));
     await db.transaction(async tx => {
       const values: Partial<typeof transportVehicleSettlements.$inferInsert> = input.action === "submit" ? { status: nextStatus, submittedBy: user.id, submittedAt: new Date() }
         : input.action === "approve" ? { status: nextStatus, approvedBy: user.id, approvedAt: new Date() }
-          : input.action === "pay" ? { status: nextStatus, paymentDate: toBusinessDate(input.paymentDate!), paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
+          : input.action === "pay" ? { status: nextStatus, paymentDate: paymentDate!, paymentReference: input.paymentReference?.trim() || null, remarks: input.remarks?.trim() || settlement.remarks, paidBy: user.id, paidAt: new Date() }
             : { status: nextStatus, remarks: input.remarks?.trim() || settlement.remarks };
       const result = await tx.update(transportVehicleSettlements).set(values).where(and(eq(transportVehicleSettlements.id, settlement.id), eq(transportVehicleSettlements.status, expectedStatus)));
       assertConditionalStatusWrite(result, "渣土车结算单");
+      if (input.action === "pay") await tx.insert(financialRecords).values({ recordNo: `F-TPAY-${settlement.settlementNo}`, projectId: input.projectId, direction: "expense", category: "渣土车运费结算", amount: settlement.netPayableAmount, occurredAt: paymentDate!, settlementStatus: "paid", sourceType: "transport_vehicle_settlement", sourceId: String(settlement.id), evidenceId: null, remarks: `渣土车结算单 ${settlement.settlementNo}${input.paymentReference?.trim() ? `；付款参考号 ${input.paymentReference.trim()}` : ""}` });
       if (input.action === "approve") {
         for (const item of items) await tx.update(transportTrips).set({ status: "settled", fuelDeductionAmount: item.fuelDeductionAmount, netSettlementAmount: item.netPayableAmount, activeVehicleTransitKey: null }).where(and(eq(transportTrips.id, item.tripId), eq(transportTrips.status, "verified")));
       }
