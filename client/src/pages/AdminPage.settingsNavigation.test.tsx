@@ -30,14 +30,19 @@ describe("超级管理员系统设置和菜单结构", () => {
     expect(source).toContain("配置版本与安全回滚");
   });
 
-  it("将系统设置按业务参数、接口通知和配置治理分类切换", () => {
-    expect(source).toContain('type SettingsCategory = "business" | "integrations" | "governance"');
+  it("将系统设置按业务规则、通知接入、影像资料和版本治理分类切换", () => {
+    expect(source).toContain('type SettingsCategory = "business" | "integrations" | "media" | "governance"');
     expect(source).toContain('value="business"');
     expect(source).toContain('value="integrations"');
+    expect(source).toContain('value="media"');
     expect(source).toContain('value="governance"');
-    expect(source).toContain("系统设置分类");
-    expect(source).toContain('settingsCategory !== "governance"');
-    expect(source).toContain('settingsCategory !== "business"');
+    expect(source).toContain("平台治理 / 系统设置");
+    expect(source).toContain("业务规则");
+    expect(source).toContain("通知与接入");
+    expect(source).toContain("影像与资料");
+    expect(source).toContain("版本与治理");
+    expect(source).toContain('settingsCategory === "media"');
+    expect(source).toContain('settingsCategory === "governance"');
   });
 
   it("将车辆维护与司机绑定的未知状态安全回退为中文", () => {

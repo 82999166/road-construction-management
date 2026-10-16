@@ -161,7 +161,7 @@ type AliyunOssPhotoStorageConfigurationForm = { enabled: boolean; region: string
 type AliyunOssPhotoStorageValidation = { success: boolean; code: string; message: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
-type SettingsCategory = "business" | "integrations" | "governance";
+type SettingsCategory = "business" | "integrations" | "media" | "governance";
 type PermissionWorkspaceTab = "accounts" | "authorization" | "roles" | "department";
 type BroadcastAudienceType = "project" | "organization" | "role";
 type BroadcastForm = { id?: number; title: string; content: string; deepLink: string; audienceType: BroadcastAudienceType; scopeValue: string };
@@ -2800,31 +2800,43 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
     </div>
   );
 
-  const renderSettings = () => (
-    <div className="space-y-5">
-      <Card className="border-[#d8e3e0] bg-[#f7faf9]">
-        <CardContent className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-          <div><p className="text-sm font-semibold text-[#203c48]">系统设置分类</p><p className="mt-1 text-xs text-slate-500">按业务用途切换，避免所有接口、业务参数和版本治理内容同时堆叠。</p></div>
-          <Tabs value={settingsCategory} onValueChange={value => setSettingsCategory(value as SettingsCategory)} className="w-full sm:w-auto">
-            <TabsList className="grid h-auto w-full grid-cols-3 bg-white sm:w-auto"><TabsTrigger value="business" className="px-3 py-2 text-xs sm:text-sm">业务参数</TabsTrigger><TabsTrigger value="integrations" className="px-3 py-2 text-xs sm:text-sm">接口与通知</TabsTrigger><TabsTrigger value="governance" className="px-3 py-2 text-xs sm:text-sm">配置治理</TabsTrigger></TabsList>
+  const renderSettings = () => {
+    const settingsMeta: Record<SettingsCategory, { label: string; description: string }> = {
+      business: { label: "业务规则", description: "考勤设备、每日汇总与审核规则" },
+      integrations: { label: "通知与接入", description: "短信、公众号、外部 AI 与受控连接" },
+      media: { label: "影像与资料", description: "照片存储与现场水印" },
+      governance: { label: "版本与治理", description: "配置清单、发布记录与安全回滚" },
+    };
+    const activeSettingsMeta = settingsMeta[settingsCategory];
+    const publishedSettingsCount = allSettings.filter(item => item.status === "published").length;
+    const draftSettingsCount = allSettings.filter(item => item.status === "draft").length;
+
+    return (
+    <div className="space-y-4">
+      <Card className="overflow-hidden border-[#cfdfda] bg-[linear-gradient(135deg,#f6fbf9_0%,#f9fbfa_62%,#edf5f2_100%)] shadow-sm">
+        <CardContent className="space-y-4 p-4 lg:p-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0"><p className="text-xs font-semibold tracking-[0.13em] text-[#467067]">平台治理 / 系统设置</p><h1 className="mt-1 text-xl font-semibold tracking-tight text-[#173a3a] lg:text-2xl">{activeSettingsMeta.label}</h1><p className="mt-1 text-sm text-slate-600">{activeSettingsMeta.description}</p></div>
+            <div className="flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-medium text-emerald-800">已发布 {publishedSettingsCount}</span><span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 font-medium text-amber-800">草稿 {draftSettingsCount}</span><span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 font-medium text-slate-600">敏感值均加密托管</span></div>
+          </div>
+          <Tabs value={settingsCategory} onValueChange={value => setSettingsCategory(value as SettingsCategory)} className="w-full">
+            <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-xl bg-white/85 p-1 shadow-inner sm:grid-cols-4"><TabsTrigger value="business" className="min-h-10 px-3 text-xs sm:text-sm">业务规则</TabsTrigger><TabsTrigger value="integrations" className="min-h-10 px-3 text-xs sm:text-sm">通知与接入</TabsTrigger><TabsTrigger value="media" className="min-h-10 px-3 text-xs sm:text-sm">影像与资料</TabsTrigger><TabsTrigger value="governance" className="min-h-10 px-3 text-xs sm:text-sm">版本与治理</TabsTrigger></TabsList>
           </Tabs>
         </CardContent>
       </Card>
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
-      <section className={`space-y-6 ${settingsCategory === "integrations" ? "hidden" : ""}`}>
-        <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">站内通知为基础通道；短信和服务号即时通知可在下方按模块配置。地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
-        {settingsCategory !== "governance" ? <div className="space-y-6">
-        <Card className="border-amber-200 bg-amber-50/60">
+      <div className={settingsCategory === "integrations" || settingsCategory === "governance" ? "grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(380px,.72fr)]" : "max-w-6xl"}>
+      <section className={`space-y-4 ${settingsCategory === "integrations" ? "hidden" : ""}`}>
+        {settingsCategory === "business" ? <Card className="border-amber-200 bg-amber-50/60">
           <CardHeader className="pb-3"><CardTitle className="text-base text-[#203c48]">考勤设备绑定上限</CardTitle><CardDescription>控制每个账号同时启用的手机考勤设备数量。默认3台，支持1至50台；修改后需发布才会影响新设备绑定，已有设备不会自动停用。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap items-end gap-3"><div className="w-40"><Label>允许设备台数</Label><Input className="mt-1 bg-white" type="number" min={1} max={50} step={1} value={attendanceDeviceLimitDraft} onChange={event => setAttendanceDeviceLimitDraft(event.target.value)} /></div><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={!/^([1-9]|[1-4][0-9]|50)$/.test(attendanceDeviceLimitDraft) || saveAttendanceDeviceLimit.isPending} onClick={() => saveAttendanceDeviceLimit.mutate({ ...(attendanceDeviceLimitSetting ? { id: attendanceDeviceLimitSetting.id, expectedVersion: attendanceDeviceLimitSetting.version } : {}), category: "业务参数", settingKey: "ATTENDANCE_DEVICE_BINDING_LIMIT", displayName: "考勤设备绑定上限", value: attendanceDeviceLimitDraft, isSensitive: false, remarks: "每个账号允许同时保持启用状态的考勤设备数量；取值范围1至50台。修改并发布后仅影响后续新设备绑定，已有设备不自动停用。" })}>{saveAttendanceDeviceLimit.isPending ? "保存中…" : "保存草稿"}</Button><Button variant="outline" disabled={!attendanceDeviceLimitSetting || attendanceDeviceLimitSetting.status !== "draft" || publishSetting.isPending} onClick={() => attendanceDeviceLimitSetting && publishSetting.mutate({ id: attendanceDeviceLimitSetting.id, expectedVersion: attendanceDeviceLimitSetting.version })}>{publishSetting.isPending ? "发布中…" : "发布生效"}</Button></div>
             <p className="text-xs text-amber-900">当前状态：{attendanceDeviceLimitSetting?.status === "published" ? "已发布生效" : attendanceDeviceLimitSetting?.status === "draft" ? "有未发布草稿" : "尚未创建，保存后可发布"} · 配置键：ATTENDANCE_DEVICE_BINDING_LIMIT</p>
           </CardContent>
-        </Card>
-        <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
+        </Card> : null}
+        {settingsCategory === "integrations" ? <Suspense fallback={<Card className="border-[#d8e3e0] bg-[#f7faf9]"><CardContent className="py-5 text-sm text-slate-600">正在加载短信与通知通道配置…</CardContent></Card>}>
           <NotificationChannelSettings />
-        </Suspense>
-        <SettingsDisclosure title="阿里云 OSS 照片存储" description="仅用于后续上传的现场照片、柴油小票、采购与财务影像。密钥加密托管，历史照片和非影像附件不迁移、不删除。" defaultOpen>
+        </Suspense> : null}
+        {settingsCategory === "media" ? <SettingsDisclosure title="阿里云 OSS 照片存储" description="仅用于后续上传的现场照片、柴油小票、采购与财务影像。密钥加密托管，历史照片和非影像附件不迁移、不删除。" defaultOpen>
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8e9e5] bg-[#f4faf8] px-3 py-2.5"><label className="flex items-center gap-2 text-sm font-medium text-slate-800"><Checkbox checked={aliyunOssPhotoStorageForm.enabled} onCheckedChange={checked => setAliyunOssPhotoStorageForm(current => ({ ...current, enabled: checked === true }))} />启用阿里云 OSS 作为新照片存储</label><Badge variant="outline" className={aliyunOssPhotoStorageConfiguration.data?.configured && aliyunOssPhotoStorageConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-600"}>{aliyunOssPhotoStorageConfiguration.data?.configured ? aliyunOssPhotoStorageConfiguration.data.enabled ? "已启用" : "已保存，未启用" : "待完整配置"}</Badge></div>
             <div className="grid gap-3 md:grid-cols-2"><Field label="OSS 地域"><Input value={aliyunOssPhotoStorageForm.region} placeholder="例如 oss-cn-hangzhou" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, region: event.target.value }))} /></Field><Field label="OSS Endpoint"><Input type="url" value={aliyunOssPhotoStorageForm.endpoint} placeholder="https://oss-cn-hangzhou.aliyuncs.com" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, endpoint: event.target.value }))} /></Field><Field label="Bucket 名称"><Input value={aliyunOssPhotoStorageForm.bucket} placeholder="仅填写 Bucket 名称" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, bucket: event.target.value }))} /></Field><Field label="照片对象前缀"><Input value={aliyunOssPhotoStorageForm.objectPrefix} placeholder="photos" autoComplete="off" onChange={event => setAliyunOssPhotoStorageForm(current => ({ ...current, objectPrefix: event.target.value }))} /></Field></div>
@@ -2833,8 +2845,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="flex flex-wrap items-center gap-2"><Button className="bg-[#203c48] hover:bg-[#17313b]" disabled={saveAliyunOssPhotoStorageConfiguration.isPending || !aliyunOssPhotoStorageForm.region.trim() || !aliyunOssPhotoStorageForm.endpoint.trim() || !aliyunOssPhotoStorageForm.bucket.trim() || !aliyunOssPhotoStorageForm.objectPrefix.trim()} onClick={() => saveAliyunOssPhotoStorageConfiguration.mutate(aliyunOssPhotoStorageForm)}>{saveAliyunOssPhotoStorageConfiguration.isPending ? "正在加密保存…" : aliyunOssPhotoStorageForm.enabled ? "保存并启用照片 OSS" : "保存 OSS 配置"}</Button><Button type="button" variant="outline" disabled={testAliyunOssPhotoStorageConnection.isPending || !aliyunOssPhotoStorageConfiguration.data?.configured} onClick={() => { setAliyunOssPhotoStorageValidation(null); testAliyunOssPhotoStorageConnection.mutate(); }}>{testAliyunOssPhotoStorageConnection.isPending ? "正在测试…" : "测试 OSS 连接"}</Button><span className="text-xs text-slate-500">测试只读取保留探测对象元数据，不上传、覆盖或删除业务照片。</span></div>
             {aliyunOssPhotoStorageValidation && <div role="status" className={aliyunOssPhotoStorageValidation.success ? "rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800" : "rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"}>{aliyunOssPhotoStorageValidation.message}</div>}
           </div>
-        </SettingsDisclosure>
-        <Card className="border-[#d8e3e0]">
+        </SettingsDisclosure> : null}
+        {settingsCategory === "business" ? <Card className="border-[#d8e3e0]">
           <CardHeader><CardTitle className="text-base">每日项目站内汇总</CardTitle><CardDescription>每天按中国标准时间汇总施工日报、收入开支、计量申报与运输装卸数据，并写入项目负责人的站内消息中心。定时任务、运行结果和配置修改均保留审计记录。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-[1.1fr_.8fr_.8fr]">
@@ -2848,15 +2860,15 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="grid gap-3 rounded-xl border border-slate-100 p-3 lg:grid-cols-[1fr_180px_auto]"><div><Label>预览项目</Label><Select value={dailyDigestPreviewProjectId || "UNASSIGNED"} onValueChange={value => setDailyDigestPreviewProjectId(value === "UNASSIGNED" ? "" : value)}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择项目</SelectItem>{(projects.data ?? []).filter(project => project.status === "active").map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select></div><div><Label>业务日期</Label><Input className="mt-1" type="date" value={dailyDigestPreviewDate} onChange={event => setDailyDigestPreviewDate(event.target.value)} /></div><Button className="self-end" variant="outline" disabled={!dailyDigestPreviewProjectId || dailyDigestPreview.isFetching} onClick={() => dailyDigestPreview.refetch()}>刷新预览</Button></div>
             {dailyDigestPreview.data ? <div className="grid gap-2 rounded-xl bg-[#f7faf9] p-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4"><div><b>施工日报</b><p className="mt-1">{dailyDigestPreview.data.construction.reportCount} 份 · 进度 {dailyDigestPreview.data.construction.averageProgressPercent}%</p></div><div><b>收入 / 开支</b><p className="mt-1">¥{displayMoney(dailyDigestPreview.data.finance.incomeAmount)} / ¥{displayMoney(dailyDigestPreview.data.finance.expenseAmount)}</p></div><div><b>计量申报</b><p className="mt-1">{dailyDigestPreview.data.measurement.claimCount} 笔 · ¥{displayMoney(dailyDigestPreview.data.measurement.declaredAmount)}</p></div><div><b>运输闭环</b><p className="mt-1">{dailyDigestPreview.data.transport.tripCount} 趟 · 装/卸 {dailyDigestPreview.data.transport.loadConfirmedCount}/{dailyDigestPreview.data.transport.unloadConfirmedCount} · 异常 {dailyDigestPreview.data.transport.exceptionTripCount}</p></div></div> : dailyDigestPreviewProjectId && !dailyDigestPreview.isLoading ? <p className="text-xs text-slate-500">选择项目和业务日期后可查看真实聚合结果；预览不会发送通知。</p> : null}
           </CardContent>
-        </Card>
-        <Card className="border-[#d4e2de] bg-[#f5faf8]">
+        </Card> : null}
+        {settingsCategory === "business" ? <Card className="border-[#d4e2de] bg-[#f5faf8]">
           <CardHeader><CardTitle className="text-base">统一上级主管审核</CardTitle><CardDescription>对所有配置为“上级主管审核”的业务统一生效。开启后，施工日报、采购申请和清单采购等主管审核节点会自动通过；关闭后必须由项目上级主管人工审核。会计审核、付款、收入确认、终态锁定和项目权限范围不会被此开关绕过。</CardDescription></CardHeader>
           <CardContent className="flex flex-wrap items-center justify-between gap-4">
             <label className="flex items-center gap-3"><Checkbox checked={supervisorReviewAutoApproveEnabled} disabled={setSupervisorReviewAutoApprove.isPending} onCheckedChange={checked => setSupervisorReviewAutoApprove.mutate({ enabled: Boolean(checked) })} /><span><b className="block text-sm text-slate-800">{supervisorReviewAutoApproveEnabled ? "已开启自动通过" : "已关闭，需人工审核"}</b><span className="mt-1 block text-xs text-slate-600">每次切换即时发布，并写入配置版本与审计日志。</span></span></label>
             <Badge variant="outline" className={supervisorReviewAutoApproveEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-amber-300 bg-amber-50 text-amber-700"}>{supervisorReviewAutoApproveEnabled ? "自动审核通过" : "人工主管审核"}</Badge>
           </CardContent>
-        </Card>
-        <Card className="border-[#cbddea] bg-[#f8fbff]">
+        </Card> : null}
+        {settingsCategory === "media" ? <Card className="border-[#cbddea] bg-[#f8fbff]">
           <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2 text-base"><Camera className="h-4 w-4 text-[#2177d3]" />工程水印信息模板</CardTitle><CardDescription className="mt-1">按参考图以工程信息卡覆盖在现场照片左下角。此处仅维护字段、顺序和文案；拍摄时间、负责人、项目、定位与天气均由现场采集生成并受审计。</CardDescription></div><Badge variant="outline" className="border-[#b8d3eb] bg-white text-[#276da7]">{evidenceWatermarkTemplate.data?.status === "published" ? `已发布 v${evidenceWatermarkTemplate.data.version}` : "默认模板"}</Badge></div></CardHeader>
           <CardContent className="grid gap-5 lg:grid-cols-[1.08fr_.92fr]">
             <div className="space-y-4">
@@ -2875,9 +2887,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </div>
             <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
-        </Card>
-        </div> : null}
-        {settingsCategory !== "business" ? <SettingsDisclosure title="配置清单、版本与回滚" description="查看非成组配置、选择条目并回溯已发布版本。敏感值仅展示掩码，不提供明文导出。">
+        </Card> : null}
+        {settingsCategory === "governance" ? <SettingsDisclosure title="配置清单、版本与回滚" description="查看非成组配置、选择条目并回溯已发布版本。敏感值仅展示掩码，不提供明文导出。">
         <Card>
           <CardHeader><CardTitle className="text-base">配置项清单</CardTitle><CardDescription>敏感值仅以掩码展示。发布后生成版本与审计日志；不提供明文导出。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
@@ -2912,8 +2923,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
         </Card>
         </SettingsDisclosure> : null}
       </section>
-      <aside className={`space-y-4 ${settingsCategory === "business" ? "hidden" : ""}`}>
-        <Card className="border-[#cbded9] bg-[#f4faf8]">
+      <aside className={settingsCategory === "integrations" || settingsCategory === "governance" ? "space-y-4" : "hidden"}>
+        <Card className={settingsCategory === "integrations" ? "border-[#cbded9] bg-[#f4faf8]" : "hidden"}>
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><CardTitle className="text-base">新版微信开发者平台接入状态</CardTitle><CardDescription className="mt-1">服务号开发配置已迁移至“微信开发者平台 → 我的业务 → 服务号”。运营、模板选用和网页授权域名仍按微信各业务后台当前可见能力配置。</CardDescription></div>
@@ -2937,7 +2948,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <p className="rounded-lg bg-[#e8f2ef] px-3 py-2 text-xs leading-5 text-[#28584f]">“绑定关系 → 开放平台”仅在需要与小程序、网站应用或 UnionID 体系打通时配置；当前服务号通知与员工网页授权不以此为前置条件。</p>
           </CardContent>
         </Card>
-        <Card className="border-[#d8e3e0] bg-[#f7faf9]">
+        <Card className={settingsCategory === "integrations" ? "border-[#d8e3e0] bg-[#f7faf9]" : "hidden"}>
           <CardHeader><CardTitle className="text-base">系统内服务号配置</CardTitle><CardDescription>五项基础参数在此一次填写、一次保存并自动校验。首次配置请完整填写；后续只修改公开参数时，两个密钥留空即可保留已加密的现有值。</CardDescription></CardHeader>
           <CardContent>
             <form className="space-y-3" onSubmit={event => { event.preventDefault(); setOfficialAccountConfigurationValidation(null); saveOfficialAccountConfiguration.mutate(officialAccountConfigurationForm); }}>
@@ -2952,7 +2963,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </form>
           </CardContent>
         </Card>
-        <Card className="border-[#cbded9] bg-[#f4faf8]">
+        <Card className={settingsCategory === "integrations" ? "border-[#cbded9] bg-[#f4faf8]" : "hidden"}>
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -2994,7 +3005,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </form>
           </CardContent>
         </Card>
-        <Card className="border-[#d4ddeb] bg-[#f8faff]">
+        <Card className={settingsCategory === "integrations" ? "border-[#d4ddeb] bg-[#f8faff]" : "hidden"}>
           <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-[#445dd1]" />AI 模型 API 接入</CardTitle><CardDescription className="mt-1">用于 AI 项目风控的管理摘要。支持兼容 OpenAI Chat Completions 的公开 HTTPS API；风险扫描、通知和整改不依赖该接口，调用失败会自动回退。</CardDescription></div><Badge variant="outline" className={externalAiConfiguration.data?.enabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : externalAiConfiguration.data?.configured ? "border-amber-300 bg-amber-50 text-amber-700" : "border-slate-300 bg-white text-slate-600"}>{externalAiConfiguration.data?.enabled ? "已启用外部 AI" : externalAiConfiguration.data?.configured ? "已配置，未启用" : "待配置"}</Badge></div></CardHeader>
           <CardContent>
             <form className="space-y-3" onSubmit={event => { event.preventDefault(); setExternalAiApiValidation(null); saveExternalAiConfiguration.mutate(externalAiApiConfigurationForm); }}>
@@ -3008,11 +3019,11 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             </form>
           </CardContent>
         </Card>
-        <Card className="border-[#d8e3e0] bg-[#f7faf9]">
+        <Card className={settingsCategory === "integrations" ? "border-[#d8e3e0] bg-[#f7faf9]" : "hidden"}>
           <CardHeader><CardTitle className="text-base">企业身份账号恢复</CardTitle><CardDescription>仅配置身份提供方公开 HTTPS 恢复页面。系统不保存企业密码，登录页和个人中心将通过受控端点跳转至该地址。</CardDescription></CardHeader>
           <CardContent><Button variant="outline" className="w-full border-[#203c48] text-[#203c48]" onClick={() => setSettingForm({ category: "账号安全", settingKey: "IDENTITY_PROVIDER_RECOVERY_URL", displayName: "企业身份平台账号恢复地址", value: "", isSensitive: false, remarks: "仅限企业统一身份提供方的账号找回或密码重置页面；保存草稿后需发布才会对用户生效。" })}>填入身份恢复地址模板</Button></CardContent>
         </Card>
-        <Card>
+        <Card className={settingsCategory === "governance" ? "border-[#d8e3e0]" : "hidden"}>
           <CardHeader><CardTitle className="text-base">其它系统参数</CardTitle><CardDescription>服务号五项配置请使用上方统一表单；这里仅用于按需维护其它系统参数、业务规则或外部连接器。</CardDescription></CardHeader>
           <CardContent>
             <details className="group">
@@ -3045,6 +3056,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
       </div>
     </div>
   );
+  };
 
   const renderAudit = () => <AdminAuditWorkspace audits={audits.data ?? []} integrity={auditIntegrity.data} isIntegrityLoading={auditIntegrity.isLoading} isRefreshing={auditIntegrity.isFetching || sensitiveAccesses.isFetching} sensitiveAccesses={sensitiveAccesses.data ?? []} onRefresh={() => { void auditIntegrity.refetch(); void sensitiveAccesses.refetch(); }} />;
 
