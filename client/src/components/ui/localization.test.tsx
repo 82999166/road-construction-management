@@ -22,4 +22,8 @@ describe("通用控件中文化", () => {
     expect(source("breadcrumb.tsx")).toContain("面包屑导航");
     expect(source("breadcrumb.tsx")).toContain('<span className="sr-only">更多</span>');
   });
+
+  it("将加载指示器的无障碍提示中文化", () => {
+    expect(source("spinner.tsx")).toContain('aria-label="正在加载"');
+  });
 });

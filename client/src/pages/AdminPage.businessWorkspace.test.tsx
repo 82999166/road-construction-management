@@ -756,6 +756,30 @@ describe("运输台账展示收敛", () => {
   });
 });
 
+describe("柴油台账状态中文化", () => {
+  it("导出与详情使用共享状态中文投影，不直接回显内部枚举", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('displayDate(item.refueledAt), getBusinessStatusLabel(item.status)');
+    expect(source).toContain('{ label: "状态", value: getBusinessStatusLabel(item.status) }');
+    expect(source).not.toContain('displayDate(item.refueledAt), item.status]))}>导出当前筛选明细');
+    expect(source).not.toContain('{ label: "状态", value: item.status }] }) }))} />');
+  });
+});
+
+describe("风险预警标签中文化", () => {
+  it("表格与导出对未知类别、等级和状态采用中文安全回退", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('const displayRiskAlertCategory = (category: string) => categoryLabel[category] ?? "其他风险"');
+    expect(source).toContain('const displayRiskAlertSeverity = (severity: string) => severityLabel[severity] ?? "提示"');
+    expect(source).toContain('const displayRiskAlertStatus = (status: string) => riskAlertStatusLabel[status] ?? "待处置"');
+    expect(source).toContain('displayRiskAlertCategory(item.category), displayRiskAlertSeverity(item.severity)');
+    expect(source).toContain('<Badge variant="outline">{displayRiskAlertStatus(item.status)}</Badge>');
+    expect(source).not.toContain('item.summary, item.status]))}>导出');
+  });
+});
+
 
   it("劳务工资将筛选与查询下沉到仅在劳务菜单挂载的懒加载容器", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
