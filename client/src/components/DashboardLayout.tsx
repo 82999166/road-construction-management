@@ -28,8 +28,8 @@ import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
 
 const defaultMenuItems = [
-  { icon: LayoutDashboard, label: "Page 1", path: "/" },
-  { icon: Users, label: "Page 2", path: "/some-path" },
+  { icon: LayoutDashboard, label: "首页", path: "/" },
+  { icon: Users, label: "功能页", path: "/some-path" },
 ];
 
 /** 侧边栏菜单由上层页面传入，便于独立的超级管理后台复用预置布局。 */
@@ -75,10 +75,10 @@ export default function DashboardLayout({
         <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
           <div className="flex flex-col items-center gap-6">
             <h1 className="text-2xl font-semibold tracking-tight text-center">
-              Sign in to continue
+              请登录后继续
             </h1>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Access to this dashboard requires authentication. Continue to launch the login flow.
+              访问此管理工作台需要完成身份验证。
             </p>
           </div>
           <Button
@@ -86,7 +86,7 @@ export default function DashboardLayout({
             size="lg"
             className="w-full shadow-lg hover:shadow-xl transition-all"
           >
-            Sign in
+            登录
           </Button>
         </div>
       </div>
@@ -186,14 +186,14 @@ function DashboardLayoutContent({
               <button
                 onClick={toggleSidebar}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#f3c64e]"
-                aria-label="Toggle navigation"
+                aria-label="展开或收起导航"
               >
                 <PanelLeft className="h-4 w-4" />
               </button>
               {!isCollapsed ? (
                 <div className="min-w-0">
                     <span className="block truncate text-sm font-semibold tracking-wide text-white">{title}</span>
-                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">YUEXIN · SMART · MANAGEMENT</span>
+                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">悦信 · 智慧工程管理</span>
                 </div>
               ) : null}
             </div>
@@ -280,7 +280,7 @@ function DashboardLayoutContent({
               <div className="flex items-center gap-3">
                 <div className="flex flex-col gap-1">
                   <span className="tracking-tight text-[#1b2d34]">
-                    {activeMenuItem?.label ?? "Menu"}
+                    {activeMenuItem?.label ?? "菜单"}
                   </span>
                 </div>
               </div>

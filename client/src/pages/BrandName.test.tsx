@@ -16,4 +16,17 @@ describe("悦信云智管品牌名称", () => {
       expect(source).toContain("悦信云智管");
     }
   });
+
+  it("入口页、大屏和后台侧栏不展示英文品牌副标题", () => {
+    const files = [
+      "client/src/pages/Home.tsx",
+      "client/src/components/OperatingCommandCenter.tsx",
+      "client/src/components/DashboardLayout.tsx",
+    ];
+    for (const relativePath of files) {
+      const source = readFileSync(new URL(`../../../${relativePath}`, import.meta.url), "utf8");
+      expect(source).toContain("悦信");
+      expect(source).not.toContain("YUEXIN ·");
+    }
+  });
 });
