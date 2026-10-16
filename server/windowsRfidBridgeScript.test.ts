@@ -210,5 +210,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     }
     expect(packer).toContain("utrust-first-install-v13");
     expect(packer).toContain("utf8Bom");
+    expect(packer).toContain('import { fileURLToPath } from "node:url"');
+    expect(packer).toContain("dirname(fileURLToPath(import.meta.url))");
+    expect(packer).not.toContain("dirname(new URL(import.meta.url).pathname)");
   });
 });
