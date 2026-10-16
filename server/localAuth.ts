@@ -12,7 +12,12 @@ import * as db from "./db";
 const TEMPORARY_ADMIN_OPEN_ID = "local-temporary-super-admin";
 const TEMPORARY_ADMIN_NAME = "临时超级管理员";
 const TEMPORARY_ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
-const LOCAL_MANAGER_SESSION_MS = 8 * 60 * 60 * 1000;
+/**
+ * 正式超级管理员与普通本地账号在可信设备上保持登录 30 天；令牌与浏览器 Cookie
+ * 使用相同失效时间，避免出现 Cookie 仍存在而服务端会话已过期的假登录状态。
+ * 临时超级管理员仍严格限制为 8 小时，仅用于受控应急恢复。
+ */
+const LOCAL_ACCOUNT_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURES_PER_WINDOW = 5;
 const LOCAL_MANAGER_OPEN_ID_PREFIX = "local-manager:";
@@ -292,8 +297,8 @@ export async function loginPermanentAdmin(ctx: TrpcContext, input: { username: s
   await clearPersistentFailures("permanent_admin", subjectHash);
   await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
   await recordLoginAudit("permanent_admin_login_success", user.id);
-  await signInUser(ctx, user.openId, user.name || "正式超级管理员", LOCAL_MANAGER_SESSION_MS);
-  return { success: true, expiresInMs: LOCAL_MANAGER_SESSION_MS, mustChangePassword: Boolean(user.localPasswordChangeRequired) } as const;
+  await signInUser(ctx, user.openId, user.name || "正式超级管理员", LOCAL_ACCOUNT_SESSION_MS);
+  return { success: true, expiresInMs: LOCAL_ACCOUNT_SESSION_MS, mustChangePassword: Boolean(user.localPasswordChangeRequired) } as const;
 }
 
 /** 普通管理人员仅可使用后台创建、状态为启用且保存了有效摘要的本地账号登录。 */
@@ -325,9 +330,9 @@ export async function loginLocalManager(ctx: TrpcContext, input: { username: str
   await clearPersistentFailures("local_manager", loginAttemptSubjectHash("local_manager", username || "unknown"));
   await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
   await recordLoginAudit(isDriver ? "local_driver_login_success" : "local_manager_login_success", user.id);
-  await signInUser(ctx, user.openId, user.name || user.localUsername || (isDriver ? "司机" : "普通管理人员"), LOCAL_MANAGER_SESSION_MS);
+  await signInUser(ctx, user.openId, user.name || user.localUsername || (isDriver ? "司机" : "普通管理人员"), LOCAL_ACCOUNT_SESSION_MS);
   // 本地账号不再强制首次改密；口令仍仅以 scrypt 摘要保存，并保留失败限流与安全审计。
-  return { success: true, expiresInMs: LOCAL_MANAGER_SESSION_MS, mustChangePassword: false } as const;
+  return { success: true, expiresInMs: LOCAL_ACCOUNT_SESSION_MS, mustChangePassword: false } as const;
 }
 
 /** 改密要求当前受控会话与当前口令同时成立，避免仅凭被窃取的 Cookie 重置普通人员账号。 */

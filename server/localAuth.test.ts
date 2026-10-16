@@ -189,16 +189,16 @@ describe("正式本地超级管理员登录", () => {
     } as never);
   });
 
-  it("仅允许已启用的正式本地超级管理员获取会话并要求首次改密", async () => {
+  it("仅允许已启用的正式本地超级管理员获取三十天会话并要求首次改密", async () => {
     const { caller, response } = createUnauthenticatedCaller();
 
     await expect(caller.auth.permanentAdminLogin({ username, password })).resolves.toEqual({
       success: true,
-      expiresInMs: 8 * 60 * 60 * 1000,
+      expiresInMs: 30 * 24 * 60 * 60 * 1000,
       mustChangePassword: true,
     });
     expect(upsertUser).toHaveBeenCalledWith(expect.objectContaining({ openId: "local-manager:15111443399" }));
-    expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-temporary-admin-session", expect.objectContaining({ maxAge: 8 * 60 * 60 * 1000 }));
+    expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-temporary-admin-session", expect.objectContaining({ maxAge: 30 * 24 * 60 * 60 * 1000 }));
   });
 
   it("普通本地账号不能通过正式超级管理员入口，也不能用普通入口绕过独立认证", async () => {

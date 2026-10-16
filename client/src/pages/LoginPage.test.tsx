@@ -43,6 +43,7 @@ describe("独立登录页", () => {
     expect(markup).not.toContain("企业身份登录");
     expect(markup).toContain("手机号账号登录");
     expect(markup).toContain("司机在微信绑定车辆时开通手机号账号");
+    expect(markup).toContain("登录成功后在当前设备自动保持 30 天");
     expect(markup).toContain("请输入 11 位手机号");
     expect(markup).toContain('type="tel"');
     expect(markup).toContain('type="password"');
@@ -59,6 +60,7 @@ describe("独立登录页", () => {
 
     expect(markup).toContain("超级管理员登录");
     expect(markup).toContain("正式超级管理员账号登录");
+    expect(markup).toContain("登录成功后在当前设备自动保持 30 天");
     expect(markup).toContain("已关闭的临时入口不会被此表单启用");
     expect(markup).toContain('id="permanent-admin-username"');
     expect(markup).toContain("登录全局管理后台");

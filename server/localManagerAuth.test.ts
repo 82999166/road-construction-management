@@ -69,15 +69,15 @@ describe("普通管理人员本地账号认证", () => {
     vi.mocked(getLocalManagerByUsername).mockResolvedValue({ ...managerUser } as never);
   });
 
-  it("启用账号使用正确口令登录后签发八小时会话，且不再要求首次改密", async () => {
+  it("启用账号使用正确口令登录后签发三十天会话，且不再要求首次改密", async () => {
     const { caller, response } = createCaller();
     await expect(caller.auth.localManagerLogin({ username: " +86 138-0013-8000 ", password: initialPassword })).resolves.toEqual({
       success: true,
-      expiresInMs: 8 * 60 * 60 * 1000,
+      expiresInMs: 30 * 24 * 60 * 60 * 1000,
       mustChangePassword: false,
     });
     expect(upsertUser).toHaveBeenCalledWith(expect.objectContaining({ openId: managerUser.openId }));
-    expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-local-manager-session", expect.objectContaining({ httpOnly: true, maxAge: 8 * 60 * 60 * 1000 }));
+    expect(response.cookie).toHaveBeenCalledWith(expect.any(String), "signed-local-manager-session", expect.objectContaining({ httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 }));
   });
 
   it("手机号可规范化国家码、空格和短横线，并拒绝旧英文账号格式", () => {
