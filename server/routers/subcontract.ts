@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, dailyAccountingClosures, financialRecords, measurementTakeoffRecords, subcontractPackages, subcontractPaymentSettlements, subcontractTeams } from "../../drizzle/schema";
+import { getBusinessStatusLabel } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
@@ -342,8 +343,9 @@ export const subcontractRouter = router({
     if (header && typeof header === "object" && "affectedRows" in header && Number((header as { affectedRows?: unknown }).affectedRows) === 0) {
       throw new TRPCError({ code: "CONFLICT", message: "分包批次已被其他用户更新，请刷新后重试" });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "subcontract", action: "transition_package", targetType: "subcontract_package", targetId: String(record.id), summary: `分包批次 ${record.packageNo} 状态变更为：${input.targetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `subcontract_${input.targetStatus}`, targetType: "subcontract_package", targetId: String(record.id), title: `分包批次已${input.targetStatus}`, deepLink: "/admin" }).catch(() => undefined);
+    const packageStatusLabel = getBusinessStatusLabel(input.targetStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "subcontract", action: "transition_package", targetType: "subcontract_package", targetId: String(record.id), summary: `分包批次 ${record.packageNo} 状态变更为：${packageStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `subcontract_${input.targetStatus}`, targetType: "subcontract_package", targetId: String(record.id), title: `分包批次${packageStatusLabel}`, deepLink: "/admin" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -474,9 +476,9 @@ export const subcontractRouter = router({
           remarks: `分包付款结算单 ${settlement.settlementNo}${input.paymentReference?.trim() ? `；付款参考号 ${input.paymentReference.trim()}` : ""}`,
         });
       }
-      await tx.insert(auditLogs).values({ userId: user.id, module: "subcontract", action: "transition_payment_settlement", targetType: "subcontract_payment_settlement", targetId: String(settlement.id), summary: `分包应付结算单 ${settlement.settlementNo} 状态变更为：${input.targetStatus}` });
+      await tx.insert(auditLogs).values({ userId: user.id, module: "subcontract", action: "transition_payment_settlement", targetType: "subcontract_payment_settlement", targetId: String(settlement.id), summary: `分包应付结算单 ${settlement.settlementNo} 状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: `subcontract_payment_${input.targetStatus}`, targetType: "subcontract_payment_settlement", targetId: String(settlement.id), title: `分包应付结算单已${input.targetStatus}`, deepLink: "/admin" }).catch(() => undefined);
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: `subcontract_payment_${input.targetStatus}`, targetType: "subcontract_payment_settlement", targetId: String(settlement.id), title: `分包应付结算单${getBusinessStatusLabel(input.targetStatus)}`, deepLink: "/admin" }).catch(() => undefined);
     return { success: true };
   }),
 

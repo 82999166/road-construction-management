@@ -13,6 +13,7 @@ import {
   users,
   userRoleAssignments,
 } from "../../drizzle/schema";
+import { getBusinessStatusLabel } from "../../shared/domain";
 import { assertSuperAdmin, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
@@ -280,7 +281,7 @@ export const broadcastRouter = router({
     const result = await db.update(officialAccountBroadcasts).set(patch).where(and(eq(officialAccountBroadcasts.id, existing.id), eq(officialAccountBroadcasts.status, existing.status)));
     const affectedRows = Array.isArray(result) ? Number((result[0] as { affectedRows?: number } | undefined)?.affectedRows ?? 1) : 1;
     if (affectedRows === 0) throw new TRPCError({ code: "CONFLICT", message: "群发单已被其他管理员更新，请刷新后重试" });
-    await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: `broadcast_${input.action}`, targetType: "official_account_broadcast", targetId: String(existing.id), summary: `服务号群发单状态变更为：${nextStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: `broadcast_${input.action}`, targetType: "official_account_broadcast", targetId: String(existing.id), summary: `服务号群发单状态变更为：${getBusinessStatusLabel(nextStatus)}` });
     return { success: true, status: nextStatus };
   }),
 

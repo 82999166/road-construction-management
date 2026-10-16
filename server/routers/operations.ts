@@ -42,6 +42,7 @@ import {
   calculateTheoreticalVolume,
   calculateTieredFreightAmount,
   ConstructionDomainError,
+  getBusinessStatusLabel,
 } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, getSuperAdminAccess, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -1679,7 +1680,7 @@ export const machineryRouter = router({
     if (!["approved", "settled"].includes(input.nextStatus) && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械日作业" });
     const result = await db.update(machineDailyOperations).set({ status: input.nextStatus }).where(and(eq(machineDailyOperations.id, input.id), eq(machineDailyOperations.status, record.status)));
     assertConditionalStatusWrite(result, "机械日作业");
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_daily_operation", targetType: "machine_daily_operation", targetId: String(input.id), summary: `机械日作业状态变更为：${input.nextStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_daily_operation", targetType: "machine_daily_operation", targetId: String(input.id), summary: `机械日作业状态变更为：${getBusinessStatusLabel(input.nextStatus)}` });
     return { success: true };
   }),
 
@@ -1743,8 +1744,9 @@ export const machineryRouter = router({
     if (input.nextStatus !== "approved" && !canManageSettlement(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权提交或作废机械月度明细" });
     const result = await db.update(machineMonthlyStatements).set({ status: input.nextStatus }).where(and(eq(machineMonthlyStatements.id, input.id), eq(machineMonthlyStatements.status, record.status)));
     assertConditionalStatusWrite(result, "机械月度明细");
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_monthly_statement", targetType: "machine_monthly_statement", targetId: String(input.id), summary: `机械月度明细状态变更为：${input.nextStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "machinery", eventCode: `machine_monthly_statement_${input.nextStatus}`, targetType: "machine_monthly_statement", targetId: String(input.id), title: `机械月度明细已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
+    const monthlyStatementStatusLabel = getBusinessStatusLabel(input.nextStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_monthly_statement", targetType: "machine_monthly_statement", targetId: String(input.id), summary: `机械月度明细状态变更为：${monthlyStatementStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "machinery", eventCode: `machine_monthly_statement_${input.nextStatus}`, targetType: "machine_monthly_statement", targetId: String(input.id), title: `机械月度明细${monthlyStatementStatusLabel}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -1897,8 +1899,9 @@ export const machineryRouter = router({
       .set({ status: input.nextStatus })
       .where(and(eq(machineCostRecords.id, input.id), eq(machineCostRecords.status, record.status)));
     assertConditionalStatusWrite(updateResult, "机械成本记录");
-    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_cost", targetType: "machine_cost", targetId: String(input.id), summary: `机械成本状态变更为：${input.nextStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "machinery", eventCode: `machine_cost_${input.nextStatus}`, targetType: "machine_cost", targetId: String(input.id), title: `机械成本已${input.nextStatus}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
+    const machineCostStatusLabel = getBusinessStatusLabel(input.nextStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "transition_cost", targetType: "machine_cost", targetId: String(input.id), summary: `机械成本状态变更为：${machineCostStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "machinery", eventCode: `machine_cost_${input.nextStatus}`, targetType: "machine_cost", targetId: String(input.id), title: `机械成本${machineCostStatusLabel}`, deepLink: "/mobile/machinery" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -3203,9 +3206,10 @@ export const transportRouter = router({
     if (input.nextStatus === "settled" && approvedFuelRecords.length) {
       await db.update(dieselRefuelRecords).set({ status: "settled" }).where(and(eq(dieselRefuelRecords.transportTripId, input.id), eq(dieselRefuelRecords.status, "approved")));
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${input.nextStatus}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, deepLink: "/mobile/transport" }).catch(() => undefined);
-    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次已${input.nextStatus}`, content: `运单 ${trip.tripNo} 状态已更新为 ${input.nextStatus}${input.nextStatus === "settled" ? `，净结算 ¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}。`, deepLink: "/mobile/transport" });
+    const transportStatusLabel = getBusinessStatusLabel(input.nextStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "transition_trip", targetType: "transport_trip", targetId: String(input.id), summary: `运输趟次状态变更为：${transportStatusLabel}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "transport", eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次${transportStatusLabel}`, deepLink: "/mobile/transport" }).catch(() => undefined);
+    notifyExternalDriverWechat({ vehicleId: trip.vehicleId, projectId: input.projectId, eventCode: `transport_trip_${input.nextStatus}`, targetType: "transport_trip", targetId: String(input.id), title: `运输趟次${transportStatusLabel}`, content: `运单 ${trip.tripNo} 状态已更新为${transportStatusLabel}${input.nextStatus === "settled" ? `，净结算 ¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}。`, deepLink: "/mobile/transport" });
     return { success: true };
   }),
 

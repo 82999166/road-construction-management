@@ -49,6 +49,56 @@ export const APPROVAL_STATUS_TRANSITIONS = {
   void: [],
 } as const;
 
+/**
+ * 服务端通知、审计摘要与打印数据统一使用中文业务状态。
+ * 事件编码、数据库枚举和 API 参数仍保持稳定的英文值，避免文案调整影响状态机。
+ * 未登记状态不回显内部枚举，统一提示人工核对。
+ */
+export const BUSINESS_STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  pending: "待办理",
+  pending_review: "待复核",
+  submitted: "已提交",
+  allocated: "已分配",
+  reviewing: "审核中",
+  reviewed: "已复核",
+  approved: "已审核",
+  verified: "已核验",
+  rejected: "已退回",
+  received: "已收货",
+  stocked: "已入库",
+  ordered: "已下单",
+  confirmed: "已确认",
+  generated: "已生成",
+  handed_off: "已交接",
+  ready_for_handoff: "待交接",
+  receipt_recorded: "已登记回执",
+  not_applicable: "不适用",
+  issued: "已开具",
+  red_flushed: "已红冲",
+  closed: "已关闭",
+  settled: "已结算",
+  paid: "已付款",
+  partial: "部分付款",
+  unpaid: "待付款",
+  void: "已作废",
+  locked: "已锁定",
+  active: "启用",
+  suspended: "已暂停",
+  expired: "已到期",
+  disabled: "已停用",
+  publishing: "发送中",
+  published: "已发布",
+  cancelled: "已取消",
+  sent: "已发送",
+  failed: "发送失败",
+};
+
+/** 获取用户可见的中文状态，禁止将新增或异常内部枚举直接显示给业务人员。 */
+export function getBusinessStatusLabel(status: string): string {
+  return BUSINESS_STATUS_LABELS[status] ?? "状态待核对";
+}
+
 /** 施工日报从现场草稿到归档的受控状态机；已锁定日报不得回退或修改。 */
 export const CONSTRUCTION_DAILY_REPORT_STATUS_TRANSITIONS = {
   draft: ["submitted"],

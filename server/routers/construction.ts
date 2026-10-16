@@ -2,7 +2,7 @@ import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, constructionDailyReports, evidenceRecords, projects, systemRoles, userRoleAssignments } from "../../drizzle/schema";
-import { assertConstructionDailyReportStatusTransition, ConstructionDomainError } from "../../shared/domain";
+import { assertConstructionDailyReportStatusTransition, ConstructionDomainError, getBusinessStatusLabel } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, type BusinessOperationAction, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { storageGetSignedUrl } from "../storage";
@@ -285,8 +285,10 @@ export const constructionRouter = router({
       .set({ status: input.nextStatus, reviewedBy: reviewed ? user.id : null, reviewedAt: reviewed ? new Date() : null })
       .where(and(eq(constructionDailyReports.id, input.id), eq(constructionDailyReports.projectId, input.projectId), eq(constructionDailyReports.status, existing.status)));
     assertConditionalDailyReportWrite(updateResult);
-    await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "transition_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报状态从 ${existing.status} 变更为 ${input.nextStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: `construction_daily_report_${input.nextStatus}`, targetType: "construction_daily_report", targetId: String(input.id), title: `施工日报已${input.nextStatus}`, content: "施工日报处理状态已更新，请进入系统查看受控记录。", deepLink: "/mobile/construction" }).catch(() => undefined);
+    const currentStatusLabel = getBusinessStatusLabel(existing.status);
+    const nextStatusLabel = getBusinessStatusLabel(input.nextStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "construction", action: "transition_daily_report", targetType: "construction_daily_report", targetId: String(input.id), summary: `施工日报状态从${currentStatusLabel}变更为${nextStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "construction", eventCode: `construction_daily_report_${input.nextStatus}`, targetType: "construction_daily_report", targetId: String(input.id), title: `施工日报${nextStatusLabel}`, content: "施工日报处理状态已更新，请进入系统查看受控记录。", deepLink: "/mobile/construction" }).catch(() => undefined);
     return { success: true };
   }),
 });

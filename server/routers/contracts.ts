@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { auditLogs, outsourceContracts } from "../../drizzle/schema";
+import { getBusinessStatusLabel } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getRoleOperationPermissionDecision, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
@@ -98,7 +99,7 @@ export const contractRouter = router({
     const targets: Record<string, string[]> = { draft: ["active", "void"], active: ["suspended", "expired", "closed"], suspended: ["active", "closed", "void"] };
     if (!targets[existing.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前合同状态不允许该操作" });
     await db.update(outsourceContracts).set({ status: input.targetStatus }).where(and(eq(outsourceContracts.id, input.id), eq(outsourceContracts.status, existing.status)));
-    await db.insert(auditLogs).values({ userId: user.id, module: "contract", action: "transition_outsource_contract", targetType: "outsource_contract", targetId: String(input.id), summary: `外包合同状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "contract", action: "transition_outsource_contract", targetType: "outsource_contract", targetId: String(input.id), summary: `外包合同状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "contract", eventCode: `outsource_contract_${input.targetStatus}`, targetType: "outsource_contract", targetId: String(input.id), title: `外包合同状态已更新`, content: "一份外包合同的办理状态已更新，请进入系统查看受控合同台账。", deepLink: "/admin/contracts" }).catch(() => undefined);
     return { success: true };
   }),

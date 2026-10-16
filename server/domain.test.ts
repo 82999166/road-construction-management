@@ -11,6 +11,7 @@ import {
   calculateTheoreticalVolume,
   calculateTieredFreightAmount,
   canApprovePayroll,
+  getBusinessStatusLabel,
   summarizePayrollStatements,
   ConstructionDomainError,
   PURCHASE_CATEGORY_CATALOG,
@@ -21,6 +22,13 @@ describe("施工承包核心业务计算", () => {
     expect(PURCHASE_CATEGORY_CATALOG).toHaveLength(12);
     expect(PURCHASE_CATEGORY_CATALOG.map(item => item.code)).toContain("FUEL");
     expect(PURCHASE_CATEGORY_CATALOG.map(item => item.code)).toContain("SPARE_PARTS");
+  });
+
+  it("用户可见状态统一映射为中文，未知内部码不直接回显", () => {
+    expect(getBusinessStatusLabel("submitted")).toBe("已提交");
+    expect(getBusinessStatusLabel("verified")).toBe("已核验");
+    expect(getBusinessStatusLabel("settled")).toBe("已结算");
+    expect(getBusinessStatusLabel("unexpected_internal_status")).toBe("状态待核对");
   });
 
   it("按长宽高和装载系数计算渣土车理论方量", () => {

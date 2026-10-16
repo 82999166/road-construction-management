@@ -47,6 +47,7 @@ import {
   assertPurchaseOrderStatusTransition,
   assertPurchaseRequestStatusTransition,
   ConstructionDomainError,
+  getBusinessStatusLabel,
 } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, assertSuperAdmin, getCurrentDataScope, getEffectiveRoleCodes, hasUserSpecificOperationPermission, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -993,8 +994,9 @@ export const purchasingRouter = router({
       .set(patch)
       .where(and(eq(purchaseRequests.id, input.id), eq(purchaseRequests.status, request.status)));
     assertConditionalBusinessWrite(updateResult, "采购申请已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: autoApprove ? "auto_approve_purchase_request_by_supervisor_setting" : "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: autoApprove ? "统一上级主管审核开关已开启：采购申请自动审核通过" : `采购申请状态变更为：${effectiveTargetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${effectiveTargetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: autoApprove ? "采购申请已自动审核通过" : `采购申请已${effectiveTargetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
+    const purchaseRequestStatusLabel = getBusinessStatusLabel(effectiveTargetStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: autoApprove ? "auto_approve_purchase_request_by_supervisor_setting" : "transition_request", targetType: "purchase_request", targetId: String(input.id), summary: autoApprove ? "统一上级主管审核开关已开启：采购申请自动审核通过" : `采购申请状态变更为：${purchaseRequestStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_request_${effectiveTargetStatus}`, targetType: "purchase_request", targetId: String(input.id), title: autoApprove ? "采购申请已自动审核通过" : `采购申请${purchaseRequestStatusLabel}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, status: effectiveTargetStatus, autoApproved: autoApprove };
   }),
 
@@ -1255,8 +1257,9 @@ export const purchasingRouter = router({
       .where(and(eq(purchaseOrders.id, input.id), eq(purchaseOrders.status, order.status)));
     assertConditionalBusinessWrite(updateResult, "采购订单已被其他用户更新，请刷新后重试");
     if (input.targetStatus === "received" && order.requestId !== null) await db.update(purchaseRequests).set({ status: "received" }).where(eq(purchaseRequests.id, order.requestId));
-    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_order", targetType: "purchase_order", targetId: String(input.id), summary: `采购订单状态变更为：${input.targetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_order_${input.targetStatus}`, targetType: "purchase_order", targetId: String(input.id), title: `采购订单已${input.targetStatus}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
+    const purchaseOrderStatusLabel = getBusinessStatusLabel(input.targetStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "transition_order", targetType: "purchase_order", targetId: String(input.id), summary: `采购订单状态变更为：${purchaseOrderStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "purchasing", eventCode: `purchase_order_${input.targetStatus}`, targetType: "purchase_order", targetId: String(input.id), title: `采购订单${purchaseOrderStatusLabel}`, deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -1423,8 +1426,9 @@ export const measurementRouter = router({
     if (input.targetStatus === "locked") patch.lockedAt = new Date();
     const updateResult = await db.update(measurementTakeoffRecords).set(patch).where(and(eq(measurementTakeoffRecords.id, input.id), eq(measurementTakeoffRecords.status, record.status)));
     assertConditionalBusinessWrite(updateResult, "收方记录已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_takeoff", targetType: "measurement_takeoff", targetId: String(input.id), summary: `项目收方状态变更为：${input.targetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `takeoff_${input.targetStatus}`, targetType: "measurement_takeoff", targetId: String(input.id), title: `项目收方已${input.targetStatus}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
+    const takeoffStatusLabel = getBusinessStatusLabel(input.targetStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_takeoff", targetType: "measurement_takeoff", targetId: String(input.id), summary: `项目收方状态变更为：${takeoffStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `takeoff_${input.targetStatus}`, targetType: "measurement_takeoff", targetId: String(input.id), title: `项目收方${takeoffStatusLabel}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -1500,8 +1504,9 @@ export const measurementRouter = router({
         await db.insert(financialRecords).values({ recordNo: createBusinessNo("FIN"), projectId: input.projectId, direction: "income", category: "工程计量收入", amount: String(roundMoney(incomeAmount)), occurredAt: now, settlementStatus: "unpaid", sourceType: "measurement_claim", sourceId, remarks: `由工程计量申报 ${claim.claimNo} 自动确认收入` });
       }
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_claim", targetType: "measurement_claim", targetId: String(input.id), summary: `工程计量状态变更为：${input.targetStatus}` });
-    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `measurement_${input.targetStatus}`, targetType: "measurement_claim", targetId: String(input.id), title: `工程计量已${input.targetStatus}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
+    const measurementStatusLabel = getBusinessStatusLabel(input.targetStatus);
+    await db.insert(auditLogs).values({ userId: user.id, module: "measurement", action: "transition_claim", targetType: "measurement_claim", targetId: String(input.id), summary: `工程计量状态变更为：${measurementStatusLabel}` });
+    void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "measurement", eventCode: `measurement_${input.targetStatus}`, targetType: "measurement_claim", targetId: String(input.id), title: `工程计量${measurementStatusLabel}`, deepLink: "/mobile/measurement" }).catch(() => undefined);
     return { success: true };
   }),
 
@@ -1685,7 +1690,7 @@ export const financeRouter = router({
     if (input.targetStatus === "receipt_recorded" && !input.documentReference && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部回执时至少填写回执引用或关联受控证据" });
     const result = await db.update(taxAuxiliaryEntries).set({ status: input.targetStatus, documentReference: input.documentReference ?? entry.documentReference, evidenceId: input.evidenceId ?? entry.evidenceId, notes: input.notes ?? entry.notes }).where(and(eq(taxAuxiliaryEntries.id, input.id), eq(taxAuxiliaryEntries.status, entry.status)));
     assertConditionalBusinessWrite(result, "财税辅助事项已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_auxiliary_${input.targetStatus}`, targetType: "tax_auxiliary_entry", targetId: String(input.id), summary: `财税辅助事项状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_auxiliary_${input.targetStatus}`, targetType: "tax_auxiliary_entry", targetId: String(input.id), summary: `财税辅助事项状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
@@ -1736,7 +1741,7 @@ export const financeRouter = router({
     if (input.targetStatus === "receipt_recorded" && !input.receiptReference && !input.receiptEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部回执时至少填写回执引用或关联受控证据" });
     const result = await db.update(taxHandoffBatches).set({ status: input.targetStatus, receiptReference: input.receiptReference ?? batch.receiptReference, receiptEvidenceId: input.receiptEvidenceId ?? batch.receiptEvidenceId, receiptRecordedBy: input.targetStatus === "receipt_recorded" ? user.id : batch.receiptRecordedBy, receiptRecordedAt: input.targetStatus === "receipt_recorded" ? new Date() : batch.receiptRecordedAt, notes: input.notes ?? batch.notes }).where(and(eq(taxHandoffBatches.id, input.id), eq(taxHandoffBatches.status, batch.status)));
     assertConditionalBusinessWrite(result, "财税交接批次已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_handoff_${input.targetStatus}`, targetType: "tax_handoff_batch", targetId: batch.batchNo, summary: `财税交接批次状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_tax_handoff_${input.targetStatus}`, targetType: "tax_handoff_batch", targetId: batch.batchNo, summary: `财税交接批次状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
@@ -1803,7 +1808,7 @@ export const financeRouter = router({
     if (input.targetStatus === "receipt_recorded" && !input.externalReference && !input.evidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记外部扣缴/申报回执时至少填写外部引用或关联受控证据" });
     const result = await db.update(payrollTaxWithholdingEntries).set({ status: input.targetStatus, externalReference: input.externalReference ?? entry.externalReference, evidenceId: input.evidenceId ?? entry.evidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: input.targetStatus === "reviewed" ? user.id : entry.reviewedBy, reviewedAt: input.targetStatus === "reviewed" ? new Date() : entry.reviewedAt }).where(and(eq(payrollTaxWithholdingEntries.id, input.id), eq(payrollTaxWithholdingEntries.status, entry.status)));
     assertConditionalBusinessWrite(result, "薪税辅助测算已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_payroll_tax_${input.targetStatus}`, targetType: "payroll_tax_withholding", targetId: String(input.id), summary: `薪税辅助测算状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_payroll_tax_${input.targetStatus}`, targetType: "payroll_tax_withholding", targetId: String(input.id), summary: `薪税辅助测算状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
@@ -1849,7 +1854,7 @@ export const financeRouter = router({
     if (input.targetStatus === "receipt_recorded" && !input.paymentReference && !input.paymentEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记合同税费回执时至少填写支付/回执引用或关联受控证据" });
     const result = await db.update(contractTaxRegistrations).set({ status: input.targetStatus, paymentReference: input.paymentReference ?? entry.paymentReference, paymentEvidenceId: input.paymentEvidenceId ?? entry.paymentEvidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: ["confirmed", "not_applicable"].includes(input.targetStatus) ? user.id : entry.reviewedBy, reviewedAt: ["confirmed", "not_applicable"].includes(input.targetStatus) ? new Date() : entry.reviewedAt }).where(and(eq(contractTaxRegistrations.id, input.id), eq(contractTaxRegistrations.status, entry.status)));
     assertConditionalBusinessWrite(result, "合同税费资料已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_contract_tax_${input.targetStatus}`, targetType: "contract_tax_registration", targetId: String(input.id), summary: `合同税费资料状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_contract_tax_${input.targetStatus}`, targetType: "contract_tax_registration", targetId: String(input.id), summary: `合同税费资料状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
@@ -1892,7 +1897,7 @@ export const financeRouter = router({
     if (input.targetStatus === "receipt_recorded" && !input.taxPaymentReference && !input.taxPaymentEvidenceId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记实际预缴回执时至少填写完税/回执引用或关联受控证据" });
     const result = await db.update(crossRegionConstructionTaxLedgers).set({ status: input.targetStatus, taxPaymentReference: input.taxPaymentReference ?? entry.taxPaymentReference, taxPaymentEvidenceId: input.taxPaymentEvidenceId ?? entry.taxPaymentEvidenceId, reviewNote: input.reviewNote ?? entry.reviewNote, reviewedBy: ["ready_for_handoff", "not_applicable"].includes(input.targetStatus) ? user.id : entry.reviewedBy, reviewedAt: ["ready_for_handoff", "not_applicable"].includes(input.targetStatus) ? new Date() : entry.reviewedAt }).where(and(eq(crossRegionConstructionTaxLedgers.id, input.id), eq(crossRegionConstructionTaxLedgers.status, entry.status)));
     assertConditionalBusinessWrite(result, "跨地区预缴资料已被其他用户更新，请刷新后重试");
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_cross_region_tax_${input.targetStatus}`, targetType: "cross_region_construction_tax", targetId: String(input.id), summary: `跨地区预缴资料状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `transition_cross_region_tax_${input.targetStatus}`, targetType: "cross_region_construction_tax", targetId: String(input.id), summary: `跨地区预缴资料状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
@@ -2037,7 +2042,7 @@ export const financeRouter = router({
         await tx.update(financialInvoices).set({ status: "red_flushed", allocationStatus: "red_flushed", voidReason: input.reason ?? null }).where(eq(financialInvoices.originalId, original.id));
       });
     }
-    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票原件 ${invoice.invoiceNo} 的项目分摊状态变更为：${input.targetStatus}` });
+    await db.insert(auditLogs).values({ userId: user.id, module: "finance", action: `invoice_${input.targetStatus}`, targetType: "financial_invoice", targetId: String(input.id), summary: `发票原件 ${invoice.invoiceNo} 的项目分摊状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     return { success: true };
   }),
 
