@@ -11,6 +11,12 @@ describe("财务账本打印中心", () => {
     expect(source).toContain('id: "subcategories"');
     expect(source).toContain("financeLedgerFilterLabel");
     expect(source).toContain("financeLedgerPrintRows");
+    expect(source).toContain("financeSettlementStatusDisplay");
+    expect(source).toContain("financeSourceTypeDisplay");
+    expect(source).toContain("expenseCategoryDisplay");
+    expect(source).toContain("expenseSourceDisplay");
+    expect(source).not.toContain("settlementStatusLabel[record.settlementStatus] ?? record.settlementStatus");
+    expect(source).not.toContain('sourceTypeLabel[record.sourceType ?? "manual"] ?? record.sourceType');
   });
 
   it("为财税辅助、交接、薪税、合同税费和跨地区预缴资料补齐按项目与期间打印", () => {

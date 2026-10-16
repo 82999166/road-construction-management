@@ -12,5 +12,8 @@ describe("柴油 A4 汇总打印模板", () => {
     expect(source).toContain("deductibleAmount");
     expect(source).toContain("openA4LandscapePrintDocument");
     expect(source).toContain("合计：记录");
+    expect(source).toContain('const statusDisplay = (status: string | null | undefined) => statusLabel[status ?? ""] ?? "待处理"');
+    expect(source).toContain("statusDisplay(record.status)");
+    expect(source).not.toContain("statusLabel[record.status] ?? record.status");
   });
 });
