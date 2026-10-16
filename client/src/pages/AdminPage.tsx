@@ -158,6 +158,7 @@ type AliyunOssPhotoStorageConfigurationForm = { enabled: boolean; region: string
 type AliyunOssPhotoStorageValidation = { success: boolean; code: string; message: string };
 type SettingDeleteTarget = { id: number; displayName: string; settingKey: string; version: number; isSensitive: boolean };
 type DailyDigestForm = { enabled: boolean; deliveryHour: string; deliveryMinute: string; includeEmptyProjects: boolean };
+type SettingsCategory = "business" | "integrations" | "governance";
 type BroadcastAudienceType = "project" | "organization" | "role";
 type BroadcastForm = { id?: number; title: string; content: string; deepLink: string; audienceType: BroadcastAudienceType; scopeValue: string };
 type MasterDataResource = "organization" | "position" | "project" | "vehicle" | "role" | "department_scope" | "role_assignment";
@@ -1087,6 +1088,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   const [settingDeleteTarget, setSettingDeleteTarget] = useState<SettingDeleteTarget | null>(null);
   const [masterDataDeleteTarget, setMasterDataDeleteTarget] = useState<MasterDataDeleteTarget | null>(null);
   const [attendanceDeviceLimitDraft, setAttendanceDeviceLimitDraft] = useState("3");
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("business");
 
   // 首次加载后默认选中第一个角色；角色切换后以服务端真实权限回显编辑矩阵。
   useEffect(() => {
@@ -2752,9 +2754,19 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
   );
 
   const renderSettings = () => (
-    <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
-      <section className="space-y-6">
+    <div className="space-y-5">
+      <Card className="border-[#d8e3e0] bg-[#f7faf9]">
+        <CardContent className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div><p className="text-sm font-semibold text-[#203c48]">系统设置分类</p><p className="mt-1 text-xs text-slate-500">按业务用途切换，避免所有接口、业务参数和版本治理内容同时堆叠。</p></div>
+          <Tabs value={settingsCategory} onValueChange={value => setSettingsCategory(value as SettingsCategory)} className="w-full sm:w-auto">
+            <TabsList className="grid h-auto w-full grid-cols-3 bg-white sm:w-auto"><TabsTrigger value="business" className="px-3 py-2 text-xs sm:text-sm">业务参数</TabsTrigger><TabsTrigger value="integrations" className="px-3 py-2 text-xs sm:text-sm">接口与通知</TabsTrigger><TabsTrigger value="governance" className="px-3 py-2 text-xs sm:text-sm">配置治理</TabsTrigger></TabsList>
+          </Tabs>
+        </CardContent>
+      </Card>
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+      <section className={`space-y-6 ${settingsCategory === "integrations" ? "hidden" : ""}`}>
         <div><p className="text-sm font-medium text-[#203c48]">系统设置中心</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">接口、密钥与业务参数</h1><p className="mt-2 text-sm text-slate-500">站内通知为基础通道；短信和服务号即时通知可在下方按模块配置。地图、OCR、定位、油卡和地磅等连接均在此处加密托管并经过发布流程。</p></div>
+        {settingsCategory !== "governance" ? <div className="space-y-6">
         <Card className="border-amber-200 bg-amber-50/60">
           <CardHeader className="pb-3"><CardTitle className="text-base text-[#203c48]">考勤设备绑定上限</CardTitle><CardDescription>控制每个账号同时启用的手机考勤设备数量。默认3台，支持1至50台；修改后需发布才会影响新设备绑定，已有设备不会自动停用。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
@@ -2817,7 +2829,8 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner"><p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">现场照片水印预览</p><div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4"><div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg"><div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">{watermarkTemplateForm.title || "工程水印"}</div><div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">{watermarkTemplateForm.fields.map(field => <p key={field}>{({ capturedAt: "拍摄时间：2026/08/16 13:31", principal: "施工负责人：现场管理员", weather: "天气：晴 33℃", location: "详细地点：当前现场地址", coordinates: "详细地点：当前现场地址", organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`, project: "项目名称：当前授权项目", antiCounterfeit: "防伪编号：归档时生成" } as Record<string, string>)[field]}</p>)}</div><div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">{watermarkTemplateForm.footerLabel || "防伪水印 · 真实时间"}</div></div></div><p className="mt-3 text-xs leading-5 text-slate-600">预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。</p></div>
           </CardContent>
         </Card>
-        <SettingsDisclosure title="配置清单、版本与回滚" description="查看非成组配置、选择条目并回溯已发布版本。敏感值仅展示掩码，不提供明文导出。">
+        </div> : null}
+        {settingsCategory !== "business" ? <SettingsDisclosure title="配置清单、版本与回滚" description="查看非成组配置、选择条目并回溯已发布版本。敏感值仅展示掩码，不提供明文导出。">
         <Card>
           <CardHeader><CardTitle className="text-base">配置项清单</CardTitle><CardDescription>敏感值仅以掩码展示。发布后生成版本与审计日志；不提供明文导出。</CardDescription></CardHeader>
           <CardContent className="space-y-3">
@@ -2850,9 +2863,9 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
             {["基础品牌与多语言", "账号安全与密码策略", "微信公众号服务号与消息模板", "地图 / OCR / 定位连接器", "油卡 / 地磅 / 外部 API", "业务参数与编号规则", "文档影像与归档规则", "运行监控与审计", "发布、回滚与版本"].map(item => <div key={item} className="rounded-lg bg-slate-50 px-3 py-3 text-sm text-slate-600">{item}</div>)}
           </CardContent>
         </Card>
-        </SettingsDisclosure>
+        </SettingsDisclosure> : null}
       </section>
-      <aside className="space-y-4">
+      <aside className={`space-y-4 ${settingsCategory === "business" ? "hidden" : ""}`}>
         <Card className="border-[#cbded9] bg-[#f4faf8]">
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2982,6 +2995,7 @@ export default function AdminPage({ scopedSection }: { scopedSection?: ScopedPcA
           </AlertDialogContent>
         </AlertDialog>
       </aside>
+      </div>
     </div>
   );
 
