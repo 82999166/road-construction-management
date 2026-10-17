@@ -86,6 +86,20 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("costName: machineCostForm.costName.trim()");
   });
 
+  it("超级管理后台登记加班时移除台班字段并自动关联机械驾驶员", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("登记机械加班");
+    expect(source).toContain("驾驶员（按机械档案自动关联）");
+    expect(source).toContain('value={selectedMachineForDialog?.driverName || "按机械档案 / 未登记"}');
+    expect(source).not.toContain('Field label="台班数"');
+    expect(source).not.toContain('Field label="台班单价（元）"');
+    expect(source).not.toContain("预计台班金额");
+    expect(source).not.toContain("保存台班草稿");
+    expect(source).toContain("shiftCount: 0");
+    expect(source).toContain("shiftRate: 0");
+  });
+
   it("单车收益支出分析使用宽屏分区弹窗，完整承载统计卡和月度、按日明细", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 
