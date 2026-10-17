@@ -61,4 +61,13 @@ describe("移动端机械会计月度明细", () => {
     expect(source).not.toContain('fixed bottom-[4.65rem]');
     expect(source).not.toContain('fixed bottom-[9.6rem]');
   });
+
+  it("现场加班录入直接保存记录，不向用户暴露草稿按钮", () => {
+    const source = readFileSync(new URL("./MobileMachineryPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("保存加班记录");
+    expect(source).toContain("加班记录已保存，等待审核");
+    expect(source).not.toContain("保存加班草稿");
+    expect(source).not.toContain("台班与加班记录已保存为草稿");
+  });
 });

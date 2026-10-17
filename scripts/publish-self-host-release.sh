@@ -96,6 +96,10 @@ tar -xzf "$package_path" -C "$staging_release"
 [[ -f "$staging_release/dist/index.cjs" ]]
 [[ -f "$staging_release/package.json" ]]
 [[ -f "$staging_release/pnpm-lock.yaml" ]]
+# 归档可能保留构建机的属主/权限；正式服务以 yxapp 运行，发布目录必须可遍历且不可写。
+chown -R root:root "$staging_release"
+find "$staging_release" -type d -exec chmod 755 {} +
+find "$staging_release" -type f -exec chmod 644 {} +
 mv "$staging_release" "$new_release"
 ln -sfn "$new_release" "$APP_ROOT/current.next"
 mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"
