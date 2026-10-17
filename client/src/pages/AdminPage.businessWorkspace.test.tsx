@@ -92,8 +92,8 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("登记机械加班");
     expect(source).toContain("驾驶员（按机械档案自动关联）");
     expect(source).toContain('value={selectedMachineForDialog?.driverName || "按机械档案 / 未登记"}');
-    expect(source).not.toContain('Field label="台班数"');
-    expect(source).not.toContain('Field label="台班单价（元）"');
+    expect(source).not.toContain("台班数");
+    expect(source).not.toContain("台班单价");
     expect(source).not.toContain("预计台班金额");
     expect(source).not.toContain("保存台班草稿");
     expect(source).toContain("shiftCount: 0");
