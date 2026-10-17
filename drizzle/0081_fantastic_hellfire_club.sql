@@ -1,0 +1,1 @@
+ALTER TABLE `purchase_orders` ADD `purchaserName` varchar(128);

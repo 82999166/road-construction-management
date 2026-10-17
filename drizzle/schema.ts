@@ -1757,6 +1757,8 @@ export const purchaseOrders = mysqlTable(
     invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
     ocrSummary: varchar("ocrSummary", { length: 500 }),
     supplierId: int("supplierId"),
+    /** 历史导入订单保留实际采购者快照；常规订单可为空并在界面回退至创建人。 */
+    purchaserName: varchar("purchaserName", { length: 128 }),
     /** 车辆或机械零配件采购必须关联具体资产，普通采购保持为空。 */
     assetType: mysqlEnum("assetType", ["vehicle", "machine"]),
     assetId: int("assetId"),

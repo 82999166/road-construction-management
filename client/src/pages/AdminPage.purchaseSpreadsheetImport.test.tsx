@@ -17,6 +17,7 @@ describe("采购仓储 Excel 导入界面", () => {
     expect(source).toContain("库存流水导入");
     expect(source).toContain("填写说明");
     expect(source).toContain("所有时间按北京时间处理");
+    expect(source).toContain("采购者（必填）");
     expect(source).toContain("采购类别（必填）");
     expect(source).toContain("收发类型（入库/领用出库/退库）");
   });
@@ -26,5 +27,8 @@ describe("采购仓储 Excel 导入界面", () => {
     expect(source).toContain("文件中没有可导入的数据行");
     expect(source).toContain("单次最多导入 500 条记录");
     expect(source).toContain("订单金额须等于数量×单价");
+    expect(source).toContain("请填写“采购者（必填）”");
+    expect(source).toContain("按采购者筛选");
+    expect(source).toContain("采购者：{item.purchaserName");
   });
 });

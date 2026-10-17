@@ -558,6 +558,7 @@ const purchaseSpreadsheetImportInput = z.object({
     amount: moneySchema.gt(0, "订单金额必须大于 0"),
     orderedAt: isoDateTimeSchema,
     supplierName: z.string().trim().min(1).max(200).nullable().optional(),
+    purchaserName: z.string().trim().min(1, "请填写采购者").max(128),
     hasInvoice: z.boolean().default(false),
     remarks: z.string().trim().max(500).nullable().optional(),
   }).superRefine((row, context) => {
@@ -1028,7 +1029,7 @@ export const purchasingRouter = router({
       const url = await storageGetSignedUrl(evidence.fileKey);
       return [evidence.id, { fileName: evidence.fileName, mimeType: evidence.mimeType || "application/octet-stream", url, uploadedBy: evidence.uploadedBy, uploadedByName: userNameById.get(evidence.uploadedBy) ?? `管理员 #${evidence.uploadedBy}` }] as const;
     })));
-    return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, categoryName: order.categoryId ? categoryNameById.get(order.categoryId) ?? "已删除类别" : "采购申请关联", assetLabel: order.assetType && order.assetId ? assetLabelByKey.get(`${order.assetType}:${order.assetId}`) ?? "关联资产已停用" : null, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
+    return orders.map(order => { const documentAttachment = order.evidenceId ? evidenceById.get(order.evidenceId) ?? null : null; const invoiceAttachment = order.invoiceEvidenceId ? evidenceById.get(order.invoiceEvidenceId) ?? null : null; return { ...order, purchaserName: order.purchaserName?.trim() || userNameById.get(order.createdBy) || `管理员 #${order.createdBy}`, categoryName: order.categoryId ? categoryNameById.get(order.categoryId) ?? "已删除类别" : "采购申请关联", assetLabel: order.assetType && order.assetId ? assetLabelByKey.get(`${order.assetType}:${order.assetId}`) ?? "关联资产已停用" : null, createdByName: userNameById.get(order.createdBy) ?? `管理员 #${order.createdBy}`, documentUploadedBy: documentAttachment?.uploadedBy ?? null, documentUploadedByName: documentAttachment?.uploadedByName ?? null, documentAttachment, invoiceAttachment }; });
   }),
 
   /** 批量导入历史采购订单和库存收发流水：先预校验类别与外部单号，再在一个事务内写入草稿订单和不可变库存流水。 */
@@ -1091,6 +1092,7 @@ export const purchasingRouter = router({
           invoiceEvidenceId: null,
           ocrSummary: row.remarks?.trim() || null,
           supplierId: row.supplierName?.trim() ? supplierIdByName.get(row.supplierName.trim()) ?? null : null,
+          purchaserName: row.purchaserName.trim(),
           assetType: null,
           assetId: null,
           assetDeductionReference: null,
@@ -1122,7 +1124,7 @@ export const purchasingRouter = router({
         })));
         createdInventoryTransactions = input.inventoryTransactions.length;
       }
-      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "import_purchase_spreadsheet", targetType: "purchase_inventory_import", targetId: String(input.projectId), summary: `Excel 导入完成：采购订单 ${createdOrders} 条、库存流水 ${createdInventoryTransactions} 条、新建供应商 ${createdSuppliers} 家；导入订单均为草稿，发票附件须后续补传。` });
+      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: "import_purchase_spreadsheet", targetType: "purchase_inventory_import", targetId: String(input.projectId), summary: `Excel 导入完成：采购订单 ${createdOrders} 条、库存流水 ${createdInventoryTransactions} 条、新建供应商 ${createdSuppliers} 家；导入订单均保留采购者快照且为草稿，发票附件须后续补传。` });
     });
     return { success: true, createdOrders, createdInventoryTransactions, createdSuppliers };
   }),

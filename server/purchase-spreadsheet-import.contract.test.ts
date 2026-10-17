@@ -23,6 +23,14 @@ describe("采购仓储 Excel 历史导入契约", () => {
     expect(procedure).toContain('action: "import_purchase_spreadsheet"');
   });
 
+  it("将实际采购者作为独立快照保存，不能混同导入操作人", () => {
+    const procedure = source.slice(source.indexOf("importSpreadsheet:"), source.indexOf("listPurchaseEvidences:"));
+    expect(schema).toContain('purchaserName: varchar("purchaserName", { length: 128 })');
+    expect(source).toContain('purchaserName: z.string().trim().min(1, "请填写采购者").max(128)');
+    expect(procedure).toContain("purchaserName: row.purchaserName.trim()");
+    expect(procedure).toContain("采购者快照");
+  });
+
   it("历史采购订单采用独立模式、草稿状态并允许之后补传附件", () => {
     const procedure = source.slice(source.indexOf("importSpreadsheet:"), source.indexOf("listPurchaseEvidences:"));
     expect(schema).toContain('mysqlEnum("procurementMode", ["request", "small_direct", "imported"])');

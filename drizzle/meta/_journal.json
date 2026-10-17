@@ -568,6 +568,13 @@
       "when": 1792193749437,
       "tag": "0080_nostalgic_masked_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "5",
+      "when": 1792205386964,
+      "tag": "0081_fantastic_hellfire_club",
+      "breakpoints": true
     }
   ]
 }
