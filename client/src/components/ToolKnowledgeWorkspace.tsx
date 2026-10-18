@@ -144,35 +144,42 @@ export default function ToolKnowledgeWorkspace({
             value={group.id}
             className="mt-0 space-y-4"
           >
-            <Card className="border-[#d9e6df] bg-[#f6fbf8]">
-              <CardContent className="flex flex-wrap items-center gap-3 p-3 text-sm text-[#416958]">
-                <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#e1f1e9] text-[#216548]">
-                  <BookOpenCheck className="h-4 w-4" />
-                </span>
-                <div>
-                  <p className="font-semibold">{group.label}专业区</p>
-                  <p className="mt-0.5 text-xs text-[#678475]">
-                    {group.short} · {group.specs.length} 个自动计算器 ·{" "}
-                    {
-                      ENGINEERING_KNOWLEDGE_ITEMS.filter(
-                        item => item.tab === group.knowledgeTab
-                      ).length
-                    }{" "}
-                    项知识资料
-                  </p>
+            <Card className="border-[#d9e6df] bg-[#f6fbf8] shadow-none">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm text-[#416958]">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#e1f1e9] text-[#216548]">
+                    <BookOpenCheck className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <p className="font-semibold">{group.label}专业区</p>
+                    <p className="mt-0.5 text-xs text-[#678475]">
+                      {group.short} · {group.specs.length} 个自动计算器 ·{" "}
+                      {
+                        ENGINEERING_KNOWLEDGE_ITEMS.filter(
+                          item => item.tab === group.knowledgeTab
+                        ).length
+                      }{" "}
+                      项知识资料
+                    </p>
+                  </div>
                 </div>
+                <span className="rounded-full border border-[#c9dfd4] bg-white px-2.5 py-1 text-xs text-[#4d7565]">
+                  先算后查 · 内容默认折叠
+                </span>
               </CardContent>
             </Card>
             <EngineeringCalculatorDirectory
               specs={group.specs}
               categoryLabel={group.label}
               categoryDescription={group.short}
+              compact
               testId={`calculator-category-${group.id}`}
             />
             <EngineeringKnowledgeLibrary
               tab={group.knowledgeTab}
               hideTabNavigation
               showCalculatorPanels={false}
+              compact
               testId={`knowledge-category-${group.id}`}
             />
           </TabsContent>
@@ -193,7 +200,7 @@ export default function ToolKnowledgeWorkspace({
             </CardContent>
           </Card>
           <div data-testid="common-calculators-panel">
-            <ConstructionToolbox includeKnowledge={false} />
+            <ConstructionToolbox />
           </div>
           {includeSettlementTemplate ? (
             <Suspense

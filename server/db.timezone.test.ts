@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { CHINA_DATABASE_TIMEZONE, withChinaDatabaseTimezone } from "./db";
 
@@ -9,5 +10,14 @@ describe("数据库北京时间连接配置", () => {
     expect(parsed.searchParams.get("ssl")).toBe("true");
     expect(parsed.searchParams.get("charset")).toBe("utf8mb4");
     expect(parsed.searchParams.get("timezone")).toBe(CHINA_DATABASE_TIMEZONE);
+  });
+
+  it("数据库客户端绑定 schema，确保迁移后的字段可获得查询类型保护", () => {
+    const source = readFileSync(new URL("./db.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('import * as schema from "../drizzle/schema"');
+    expect(source).toContain("type ApplicationDatabase");
+    expect(source).toContain("schema,");
+    expect(source).toContain('mode: "default"');
   });
 });

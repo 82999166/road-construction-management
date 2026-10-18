@@ -8,11 +8,14 @@ import {
 } from "@/lib/engineering-calculators";
 
 describe("全量工程自动计算工具目录", () => {
-  it("提供282个可执行公式的独立搜索与默认折叠入口", () => {
+  it("提供审校公式、真实状态筛选与默认折叠入口", () => {
     const html = renderToStaticMarkup(<EngineeringCalculatorDirectory />);
     expect(html).toContain("自动计算工具目录");
-    expect(html).toContain("共 282 个已审校的可执行公式");
+    expect(html).toContain("本专业");
     expect(html).toContain("搜索全部自动计算工具");
+    expect(html).toContain("工具状态");
+    expect(html).toContain("可实时计算");
+    expect(html).toContain("必须专业复核");
     expect(html).toContain("矩形基础土方开挖体积");
     expect(html).toContain("继续加载 24 个工具");
   });

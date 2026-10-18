@@ -49,14 +49,17 @@ describe("工程工具知识库", () => {
     expect(automaticItems).toHaveLength(261);
   });
 
-  it("提供专业 Tab、检索入口、详情字段和高风险统一提示", () => {
+  it("提供专业 Tab、真实筛选、规范详情字段和高风险统一提示", () => {
     const markup = renderToStaticMarkup(<EngineeringKnowledgeLibrary />);
     expect(markup).toContain("工程工具知识库");
     expect(markup).toContain("建筑市政 45");
     expect(markup).toContain("铁路 62");
     expect(markup).toContain("计量结算术语 40");
     expect(markup).toContain("全局搜索：名称、公式、变量、示例、标准或术语");
-    expect(markup).toContain("自动计算条目可展开输入参数并实时查看结果");
+    expect(markup).toContain("筛选条件");
+    expect(markup).toContain("全部类型");
+    expect(markup).toContain("全部风险");
+    expect(markup).toContain("筛选后展开查看依据、示例与适用边界");
     expect(markup).toContain("统一使用边界");
     expect(markup).toContain("不能替代试验室试配");
   });
@@ -71,7 +74,7 @@ describe("工程工具知识库", () => {
       />
     );
     expect(markup).toContain("机械运输成本 · 知识与标准");
-    expect(markup).toContain("机械、运输与成本相关资料共 48 项");
+    expect(markup).toContain("机械、运输与成本共 48 项资料");
     expect(markup).toContain("搜索机械运输成本知识、标准、术语或示例");
     expect(markup).toContain('data-testid="knowledge-category-machinery"');
     expect(markup).not.toContain("全部 356");

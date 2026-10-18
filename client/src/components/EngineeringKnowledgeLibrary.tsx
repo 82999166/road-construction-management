@@ -7,7 +7,7 @@ import {
   FileText,
   Search,
   ShieldAlert,
-  SlidersHorizontal,
+  ListFilter,
 } from "lucide-react";
 import {
   Accordion,
@@ -53,6 +53,8 @@ type KnowledgeLibraryProps = {
   tab?: "全部" | KnowledgeTab;
   hideTabNavigation?: boolean;
   showCalculatorPanels?: boolean;
+  /** 嵌入分类工作台时压缩重复标题。 */
+  compact?: boolean;
   testId?: string;
 };
 
@@ -253,13 +255,14 @@ function RiskBadge({ risk }: { risk: KnowledgeRisk }) {
     黄色: "border-[#ead6a7] bg-[#fff8e8] text-[#92620c]",
     红色: "border-[#edc2bd] bg-[#fff1ef] text-[#a5392e]",
   };
+  const labels: Record<KnowledgeRisk, string> = {
+    绿色: "可直接查阅",
+    黄色: "需项目参数",
+    红色: "必须专业复核",
+  };
   return (
     <Badge variant="outline" className={styles[risk]}>
-      {risk === "绿色"
-        ? "可直接查阅"
-        : risk === "黄色"
-          ? "需项目参数"
-          : "必须专业复核"}
+      {labels[risk]}
     </Badge>
   );
 }
@@ -276,14 +279,18 @@ function DetailSection({
   if (!value) return null;
   const classes =
     tone === "formula"
-      ? "border-[#c8ded6] bg-[#f3faf7] text-[#1e5848] font-mono"
+      ? "border-[#c8ded6] bg-[#f3faf7] text-[#1e5848]"
       : tone === "warning"
         ? "border-[#efd2b9] bg-[#fff8ef] text-[#7d4d2d]"
         : "border-[#ebe1d6] bg-[#fffcf8] text-[#594d45]";
   return (
     <section className={`rounded-xl border p-3 ${classes}`}>
-      <p className="mb-1 text-xs font-semibold tracking-wide">{label}</p>
-      <div className="whitespace-pre-wrap text-sm leading-6">{value}</div>
+      <p className="mb-1.5 text-xs font-semibold tracking-wide">{label}</p>
+      <div
+        className={`whitespace-pre-wrap text-sm leading-6 ${tone === "formula" ? "font-mono" : ""}`}
+      >
+        {value}
+      </div>
     </section>
   );
 }
@@ -304,8 +311,8 @@ function KnowledgeDetail({
       {showCalculatorPanel && calculator ? (
         <EngineeringCalculatorPanel key={calculator.id} spec={calculator} />
       ) : null}
+      <DetailSection label="定义与适用场景" value={item.definition} />
       <div className="grid gap-3 xl:grid-cols-2">
-        <DetailSection label="定义与适用场景" value={item.definition} />
         <DetailSection
           label="公式或操作步骤"
           value={item.formula}
@@ -314,36 +321,62 @@ function KnowledgeDetail({
         <DetailSection label="全部变量与单位" value={item.variables} />
         <DetailSection label="完整数值示例" value={item.example} />
         <DetailSection label="结果解释" value={item.result} />
+      </div>
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <DetailSection label="关联标准/规程" value={item.standard} />
         <DetailSection
           label="注意事项与禁用边界"
           value={item.caution}
           tone="warning"
         />
-        <DetailSection label="关联标准/规程" value={item.standard} />
-        <DetailSection label="建议页面控件" value={item.controls} />
       </div>
     </div>
   );
 }
 
+const FORM_FILTERS: { id: "all" | KnowledgeForm; label: string }[] = [
+  { id: "all", label: "全部类型" },
+  { id: "自动计算器", label: "自动计算器" },
+  { id: "查表/材料标准", label: "材料标准" },
+  { id: "步骤模板", label: "步骤模板" },
+  { id: "术语词典", label: "术语词典" },
+];
+const RISK_FILTERS: { id: "all" | KnowledgeRisk; label: string }[] = [
+  { id: "all", label: "全部风险" },
+  { id: "绿色", label: "可直接查阅" },
+  { id: "黄色", label: "需项目参数" },
+  { id: "红色", label: "必须专业复核" },
+];
+
 export default function EngineeringKnowledgeLibrary({
   tab: fixedTab,
   hideTabNavigation = false,
   showCalculatorPanels = true,
+  compact = false,
   testId,
 }: KnowledgeLibraryProps) {
   const [selectedTab, setSelectedTab] = useState<"全部" | KnowledgeTab>(
     fixedTab ?? "全部"
   );
   const [query, setQuery] = useState("");
-  const [visibleCount, setVisibleCount] = useState(24);
+  const [formFilter, setFormFilter] = useState<"all" | KnowledgeForm>("all");
+  const [riskFilter, setRiskFilter] = useState<"all" | KnowledgeRisk>("all");
   const [showHelp, setShowHelp] = useState(false);
   const [openItemIds, setOpenItemIds] = useState<string[]>([]);
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>(
+    {}
+  );
+  const [visibleGroupCount, setVisibleGroupCount] = useState(compact ? 3 : 6);
   const activeTab = fixedTab ?? selectedTab;
+  const groupPageSize = compact ? 8 : 12;
+  const categoryPageSize = compact ? 3 : 6;
+
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
     return ENGINEERING_KNOWLEDGE_ITEMS.filter(item => {
       if (activeTab !== "全部" && item.tab !== activeTab) return false;
+      if (formFilter !== "all" && item.form !== formFilter) return false;
+      if (riskFilter !== "all" && item.risk !== riskFilter) return false;
       if (!keyword) return true;
       return [
         item.id,
@@ -359,20 +392,23 @@ export default function EngineeringKnowledgeLibrary({
         .toLocaleLowerCase()
         .includes(keyword);
     });
-  }, [activeTab, query]);
-  const shown = filtered.slice(0, visibleCount);
+  }, [activeTab, formFilter, query, riskFilter]);
+
   const groups = useMemo(
-    () => Array.from(new Set(shown.map(item => item.subcategory))),
-    [shown]
+    () => Array.from(new Set(filtered.map(item => item.subcategory))),
+    [filtered]
   );
   const currentTab = TAB_CONFIG.find(item => item.id === activeTab);
+  const hasFilters =
+    Boolean(query.trim()) || formFilter !== "all" || riskFilter !== "all";
+  const shownGroups = groups.slice(0, visibleGroupCount);
 
   useEffect(() => {
-    setVisibleCount(24);
-    setOpenItemIds(
-      query.trim() ? filtered.slice(0, 24).map(item => item.id) : []
-    );
-  }, [activeTab, query]);
+    setVisibleCounts({});
+    setVisibleGroupCount(categoryPageSize);
+    // 搜索、切换专业或条件时始终保持折叠，避免一次性展开几十个详情。
+    setOpenItemIds([]);
+  }, [activeTab, categoryPageSize, formFilter, query, riskFilter]);
 
   useEffect(() => {
     if (fixedTab) setSelectedTab(fixedTab);
@@ -384,30 +420,35 @@ export default function EngineeringKnowledgeLibrary({
       : "工程工具知识库";
   const description =
     currentTab && fixedTab
-      ? `${currentTab.short}相关资料共 ${filtered.length} 项。自动计算请在上方“自动计算”区输入参数；此处保留公式依据、标准边界、示例和术语。`
-      : `已接入 ${ENGINEERING_KNOWLEDGE_TOTAL} 项审校内容。自动计算条目可展开输入参数并实时查看结果；其余内容按专业 Tab 查询。`;
+      ? `${currentTab.short}共 ${filtered.length} 项资料。此处保留标准、示例和边界；自动计算请在上方业务区完成。`
+      : `已接入 ${ENGINEERING_KNOWLEDGE_TOTAL} 项审校内容。按专业、条目类型和风险级别筛选后展开查看依据、示例与适用边界。`;
 
   return (
     <section
       id="engineering-knowledge-library"
       data-testid={testId}
-      className="scroll-mt-6 space-y-4"
+      className="scroll-mt-6 space-y-3"
     >
-      <Card className="overflow-hidden border-[#b8d4ca] shadow-[0_12px_30px_rgba(29,78,62,.08)]">
-        <CardHeader className="border-b border-[#d9e7df] bg-[linear-gradient(135deg,#f4fbf7,#edf5f1)]">
+      <Card className="overflow-hidden border-[#b8d4ca] bg-white shadow-[0_10px_24px_rgba(29,78,62,.06)]">
+        <CardHeader
+          className={`border-b border-[#d9e7df] bg-[linear-gradient(135deg,#f4fbf7,#edf5f1)] ${compact ? "space-y-2 px-4 py-3.5 sm:px-5" : "space-y-3 p-4 sm:p-5"}`}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle className="flex items-center gap-2 text-lg text-[#234c3f]">
-                <BookOpenCheck className="h-5 w-5 text-[#187157]" />
+            <div className="min-w-0">
+              <CardTitle className="flex items-center gap-2 text-base text-[#234c3f] sm:text-lg">
+                <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#e1f1e9] text-[#187157]">
+                  <BookOpenCheck className="h-4 w-4" />
+                </span>
                 {title}
               </CardTitle>
-              <CardDescription className="mt-1.5 max-w-3xl leading-6">
+              <CardDescription className="mt-1.5 max-w-3xl leading-5">
                 {description}
               </CardDescription>
             </div>
             <Button
               type="button"
               variant="outline"
+              size="sm"
               className="border-[#a8c8bb] bg-white text-[#245b49] hover:bg-[#f2faf6]"
               onClick={() => setShowHelp(current => !current)}
             >
@@ -416,23 +457,23 @@ export default function EngineeringKnowledgeLibrary({
             </Button>
           </div>
           {showHelp ? (
-            <div className="mt-4 grid gap-3 rounded-xl border border-[#c7ddd2] bg-white/80 p-4 text-sm leading-6 text-[#405b50] md:grid-cols-3">
+            <div className="grid gap-3 rounded-xl border border-[#c7ddd2] bg-white/80 p-3 text-sm leading-6 text-[#405b50] md:grid-cols-3">
               <p>
-                <strong className="text-[#1b5542]">第一步：</strong>选择专业 Tab
-                或全局搜索，例如“压实度”“盖梁”“K30”“钢筋”。
+                <strong className="text-[#1b5542]">第一步：</strong>
+                选择专业、条目类型或风险级别，并按名称、标准、公式、术语检索。
               </p>
               <p>
                 <strong className="text-[#1b5542]">第二步：</strong>
-                展开条目后，查看公式依据、变量、示例和适用边界；计算器在同专业的“自动计算”区。
+                展开单个条目，依次查看适用范围、依据、示例与结果解释。
               </p>
               <p>
                 <strong className="text-[#8a4c25]">安全边界：</strong>
-                红色内容仅作辅助计算或记录，必须由设计、试验或专业人员复核。
+                红色内容只作辅助资料，必须由设计、试验或专业人员复核。
               </p>
             </div>
           ) : null}
         </CardHeader>
-        <CardContent className="space-y-4 p-4 sm:p-5">
+        <CardContent className="space-y-3 p-4 sm:p-5">
           {!hideTabNavigation ? (
             <Tabs
               value={activeTab}
@@ -459,7 +500,8 @@ export default function EngineeringKnowledgeLibrary({
               </div>
             </Tabs>
           ) : null}
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
             <div className="relative">
               <Search className="absolute left-3 top-3.5 h-4 w-4 text-[#28735a]" />
               <Input
@@ -484,108 +526,207 @@ export default function EngineeringKnowledgeLibrary({
                 </Button>
               ) : null}
             </div>
-            <div className="rounded-lg border border-[#dbe8e2] bg-[#f7fbf9] px-3 py-2 text-sm text-[#386453]">
-              <SlidersHorizontal className="mr-1.5 inline h-4 w-4" />
-              {currentTab ? `${currentTab.short} · ` : "全部专业 · "}匹配{" "}
-              <strong>{filtered.length}</strong> 项
+            <div className="flex items-center rounded-lg border border-[#dbe8e2] bg-[#f7fbf9] px-3 py-2 text-sm text-[#386453]">
+              <ListFilter className="mr-1.5 h-4 w-4" />
+              匹配 <strong className="mx-1">{filtered.length}</strong> 项
             </div>
+          </div>
+
+          <div
+            aria-label="知识资料筛选"
+            className="grid gap-2 rounded-xl border border-[#e0ebe5] bg-[#fbfdfc] p-2 sm:grid-cols-[auto_minmax(160px,1fr)_minmax(160px,1fr)_auto] sm:items-center"
+          >
+            <span className="px-1 text-xs font-medium text-[#557466]">
+              筛选条件
+            </span>
+            <label className="sr-only" htmlFor="knowledge-form-filter">
+              条目类型
+            </label>
+            <select
+              id="knowledge-form-filter"
+              value={formFilter}
+              onChange={event =>
+                setFormFilter(event.target.value as "all" | KnowledgeForm)
+              }
+              className="h-9 rounded-md border border-[#c8ddd2] bg-white px-2 text-sm text-[#386453] outline-none focus:ring-2 focus:ring-[#27775c]"
+            >
+              {FORM_FILTERS.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <label className="sr-only" htmlFor="knowledge-risk-filter">
+              复核要求
+            </label>
+            <select
+              id="knowledge-risk-filter"
+              value={riskFilter}
+              onChange={event =>
+                setRiskFilter(event.target.value as "all" | KnowledgeRisk)
+              }
+              className="h-9 rounded-md border border-[#c8ddd2] bg-white px-2 text-sm text-[#386453] outline-none focus:ring-2 focus:ring-[#27775c]"
+            >
+              {RISK_FILTERS.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            {hasFilters ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 text-xs text-[#356a55]"
+                onClick={() => {
+                  setQuery("");
+                  setFormFilter("all");
+                  setRiskFilter("all");
+                }}
+              >
+                清除筛选
+              </Button>
+            ) : (
+              <span className="hidden sm:block" />
+            )}
           </div>
         </CardContent>
       </Card>
+
       {groups.length === 0 ? (
         <Card className="border-dashed border-[#d5ddd8]">
           <CardContent className="p-8 text-center text-sm text-slate-500">
-            没有匹配的知识条目，请尝试减少关键词或切换专业分类。
+            没有匹配的知识条目。可清除筛选或更换关键词后重试。
           </CardContent>
         </Card>
       ) : (
-        groups.map(group => (
-          <section key={group} className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="h-5 w-1 rounded-full bg-[#1d8160]" />
-              <h3 className="text-base font-semibold text-[#274b3e]">
-                {group}
-              </h3>
-              <Badge
-                variant="secondary"
-                className="bg-[#eaf4ef] text-[#356a55]"
-              >
-                {shown.filter(item => item.subcategory === group).length} 项
-              </Badge>
-            </div>
-            <Accordion
-              type="multiple"
-              value={openItemIds.filter(id =>
-                shown.some(item => item.id === id)
-              )}
-              onValueChange={setOpenItemIds}
-              className="space-y-2"
+        shownGroups.map(group => {
+          const groupItems = filtered.filter(
+            item => item.subcategory === group
+          );
+          const limit = visibleCounts[group] ?? groupPageSize;
+          const shownItems = groupItems.slice(0, limit);
+          return (
+            <section
+              key={group}
+              className="overflow-hidden rounded-xl border border-[#dfe9e4] bg-[#fbfdfc]"
             >
-              {shown
-                .filter(item => item.subcategory === group)
-                .map(item => (
-                  <AccordionItem
-                    key={item.id}
-                    value={item.id}
-                    className="overflow-hidden rounded-xl border border-[#dce7e1] bg-white px-0 shadow-sm"
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#e5eee9] bg-[#f4faf7] px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <span className="h-5 w-1 rounded-full bg-[#1d8160]" />
+                  <h3 className="text-sm font-semibold text-[#274b3e]">
+                    {group}
+                  </h3>
+                  <Badge
+                    variant="secondary"
+                    className="bg-[#e1f1e9] text-[#356a55]"
                   >
-                    <AccordionTrigger className="px-4 py-3.5 text-left hover:no-underline">
-                      <div className="min-w-0 pr-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-semibold text-[#2b453b]">
-                            {item.name}
-                          </span>
-                          <Badge
-                            variant="outline"
-                            className="border-[#c6ddd2] text-[#367260]"
-                          >
-                            {item.form}
-                          </Badge>
-                          <RiskBadge risk={item.risk} />
+                    {groupItems.length} 项
+                  </Badge>
+                </div>
+                <span className="text-xs text-[#6d887b]">
+                  已显示 {shownItems.length}/{groupItems.length}
+                </span>
+              </div>
+              <div className="space-y-2 p-3">
+                <Accordion
+                  type="multiple"
+                  value={openItemIds.filter(id =>
+                    shownItems.some(item => item.id === id)
+                  )}
+                  onValueChange={setOpenItemIds}
+                  className="space-y-2"
+                >
+                  {shownItems.map(item => (
+                    <AccordionItem
+                      key={item.id}
+                      value={item.id}
+                      className="overflow-hidden rounded-xl border border-[#dce7e1] bg-white px-0 shadow-sm transition-colors hover:border-[#b8d7c6]"
+                    >
+                      <AccordionTrigger className="min-h-14 px-4 py-3 text-left hover:no-underline sm:px-5">
+                        <div className="min-w-0 pr-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-[#2b453b]">
+                              {item.name}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="border-[#c6ddd2] bg-[#f8fcfa] text-[#367260]"
+                            >
+                              {item.form}
+                            </Badge>
+                            <RiskBadge risk={item.risk} />
+                          </div>
+                          <p className="mt-1.5 line-clamp-1 text-xs leading-5 text-[#617b70]">
+                            {item.definition}
+                          </p>
+                          <p className="mt-1 text-xs text-[#799087]">
+                            <span className="font-mono">{item.id}</span>
+                            <span className="mx-1.5 text-[#bdc9c3]">·</span>
+                            {item.tabLabel}
+                          </p>
                         </div>
-                        <p className="mt-1 text-xs text-[#799087]">
-                          <span className="font-mono">{item.id}</span> ·{" "}
-                          {item.tabLabel} ·{" "}
-                          {item.automatable
-                            ? `自动计算：${item.automatable}`
-                            : "资料查阅"}
-                        </p>
-                      </div>
-                      <ChevronDown className="h-4 w-4 shrink-0 text-[#67917f]" />
-                    </AccordionTrigger>
-                    <AccordionContent className="border-t border-[#edf2ef] px-4 pb-4 pt-4">
-                      <KnowledgeDetail
-                        item={item}
-                        showCalculatorPanel={showCalculatorPanels}
-                      />
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-            </Accordion>
-          </section>
-        ))
+                        <ChevronDown className="h-4 w-4 shrink-0 text-[#67917f]" />
+                      </AccordionTrigger>
+                      <AccordionContent className="data-[state=closed]:animate-none data-[state=open]:animate-none border-t border-[#edf2ef] bg-[#fcfefd] px-4 pb-4 pt-4 sm:px-5">
+                        <KnowledgeDetail
+                          item={item}
+                          showCalculatorPanel={showCalculatorPanels}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+                {shownItems.length < groupItems.length ? (
+                  <div className="flex justify-center pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="border-[#a8cdbb] bg-white text-[#235d49] hover:bg-[#f1faf5]"
+                      onClick={() =>
+                        setVisibleCounts(current => ({
+                          ...current,
+                          [group]: Math.min(
+                            (current[group] ?? groupPageSize) + groupPageSize,
+                            groupItems.length
+                          ),
+                        }))
+                      }
+                    >
+                      <FileText className="mr-1.5 h-4 w-4" />
+                      加载更多（已显示 {shownItems.length}/{groupItems.length}）
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          );
+        })
       )}
-      {shown.length < filtered.length ? (
-        <div className="flex justify-center pt-1">
+      {shownGroups.length < groups.length ? (
+        <div className="flex justify-center">
           <Button
             type="button"
             variant="outline"
-            className="border-[#99c3b0] bg-white text-[#235d49] hover:bg-[#f1faf5]"
+            className="border-[#a8cdbb] bg-white text-[#235d49] hover:bg-[#f1faf5]"
             onClick={() =>
-              setVisibleCount(current =>
-                Math.min(current + 24, filtered.length)
+              setVisibleGroupCount(current =>
+                Math.min(current + categoryPageSize, groups.length)
               )
             }
           >
-            <FileText className="mr-1.5 h-4 w-4" />
-            继续加载 24 项（已显示 {shown.length}/{filtered.length}）
+            <ListFilter className="mr-1.5 h-4 w-4" />
+            加载更多分类（已显示 {shownGroups.length}/{groups.length}）
           </Button>
         </div>
       ) : null}
-      <p className="rounded-xl border border-[#f0dcc3] bg-[#fff9f2] px-4 py-3 text-xs leading-5 text-[#74513a]">
-        <ShieldAlert className="mr-1 inline h-4 w-4 align-text-bottom text-[#b66b2c]" />
-        <strong>统一使用边界：</strong>
-        材料配比仅作参考，不能替代试验室试配；结构安全、爆破、临电、吊装、边坡、隧道监测与轨道限值等高风险内容，系统只提供记录、查阅或辅助计算，不作无条件自动判定。
+      <p className="flex items-start gap-2 rounded-xl border border-[#f0dcc3] bg-[#fff9f2] px-4 py-3 text-xs leading-5 text-[#74513a]">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#b66b2c]" />
+        <span>
+          <strong>统一使用边界：</strong>
+          材料配比仅作参考，不能替代试验室试配；结构安全、爆破、临电、吊装、边坡、隧道监测与轨道限值等高风险内容，系统只提供记录、查阅或辅助计算，不作无条件自动判定。
+        </span>
       </p>
     </section>
   );

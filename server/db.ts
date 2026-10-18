@@ -1,9 +1,12 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import { and, eq, ne, or } from "drizzle-orm";
+import * as schema from "../drizzle/schema";
 import { InsertUser, loginRateLimitStates, systemRoles, userRoleAssignments, users } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
-let _db: ReturnType<typeof drizzle> | null = null;
+/** 显式绑定 schema，确保新增迁移字段在查询类型投影中可见。 */
+type ApplicationDatabase = ReturnType<typeof drizzle<typeof schema>>;
+let _db: ApplicationDatabase | null = null;
 
 /**
  * MySQL DATETIME/TIMESTAMP 本身不携带时区。生产库历史记录按北京时间写入，
@@ -21,7 +24,10 @@ export function withChinaDatabaseTimezone(databaseUrl: string) {
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(withChinaDatabaseTimezone(process.env.DATABASE_URL));
+      _db = drizzle(withChinaDatabaseTimezone(process.env.DATABASE_URL), {
+        schema,
+        mode: "default",
+      });
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
