@@ -244,6 +244,16 @@ describe("统一后台业务工作区范围保护", () => {
     expect(source).toContain("实际工资仍由考勤和经审核工资条决定");
   });
 
+  it("在劳务工资页展示公司全员花名册，并且不受当前劳务项目范围限制", () => {
+    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('lazy(() => import("@/components/CompanyPersonnelRoster"))');
+    expect(source).toContain("admin.employee.listCompanyRoster");
+    expect(source).toContain("enabled: canQuery && isLabor && !scopedSection");
+    expect(source).toContain("<CompanyPersonnelRoster");
+    expect(source).toContain("!scopedSection ? <CompanyPersonnelRoster");
+  });
+
   it("将所有 CSV 导出统一写入当前筛选范围、导出记录数和生成时间", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
 

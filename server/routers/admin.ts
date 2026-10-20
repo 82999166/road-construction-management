@@ -784,6 +784,71 @@ export const adminRouter = router({
         return { ...profile, displayName: user?.name ?? worker?.realName ?? "未命名员工", localUsername: null, laborTeamName: worker?.teamName ?? null, policies, insuranceStatus };
       }));
     }),
+    /**
+     * 公司人员花名册汇总：保留三类原始人员主数据的可追溯来源，但不向页面暴露
+     * 手机号、登录账号、证件或资金字段。员工档案优先；未建档的账号、实名工人补齐展示。
+     */
+    listCompanyRoster: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const [profileRows, accountRows, workerRows, projectRows] = await Promise.all([
+        db.select().from(employeeProfiles),
+        db.select({ id: users.id, name: users.name, localAccountStatus: users.localAccountStatus }).from(users),
+        db.select({ id: laborWorkers.id, realName: laborWorkers.realName, projectId: laborWorkers.projectId, teamName: laborWorkers.teamName, workerCategory: laborWorkers.workerCategory, attendanceStatus: laborWorkers.attendanceStatus, entryDate: laborWorkers.entryDate }).from(laborWorkers),
+        db.select({ id: projects.id, name: projects.name }).from(projects),
+      ]);
+      const accountById = new Map(accountRows.map(account => [account.id, account]));
+      const workerById = new Map(workerRows.map(worker => [worker.id, worker]));
+      const projectNameById = new Map(projectRows.map(project => [project.id, project.name]));
+      const linkedAccountIds = new Set(profileRows.flatMap(profile => profile.userId ? [profile.userId] : []));
+      const linkedWorkerIds = new Set(profileRows.flatMap(profile => profile.laborWorkerId ? [profile.laborWorkerId] : []));
+      const profileEntries = profileRows.map(profile => {
+        const account = profile.userId ? accountById.get(profile.userId) : undefined;
+        const worker = profile.laborWorkerId ? workerById.get(profile.laborWorkerId) : undefined;
+        const projectId = profile.projectId ?? worker?.projectId ?? null;
+        return {
+          id: `profile:${profile.id}`,
+          displayName: account?.name ?? worker?.realName ?? "未命名员工",
+          employeeType: profile.employeeType,
+          workerCategory: worker?.workerCategory ?? null,
+          employmentStatus: profile.employmentStatus,
+          projectId,
+          projectName: projectId ? projectNameById.get(projectId) ?? "项目待同步" : null,
+          teamName: profile.teamName ?? worker?.teamName ?? null,
+          joinedAt: profile.joinedAt ?? worker?.entryDate ?? null,
+          salaryBasis: profile.salaryBasis,
+          profileComplete: true,
+        } as const;
+      });
+      const unprofiledAccounts = accountRows.filter(account => !linkedAccountIds.has(account.id)).map(account => ({
+        id: `account:${account.id}`,
+        displayName: account.name ?? "未命名公司人员",
+        employeeType: "management" as const,
+        workerCategory: null,
+        employmentStatus: account.localAccountStatus === "disabled" ? "suspended" as const : "active" as const,
+        projectId: null,
+        projectName: null,
+        teamName: null,
+        joinedAt: null,
+        salaryBasis: null,
+        profileComplete: false,
+      }));
+      const unprofiledWorkers = workerRows.filter(worker => !linkedWorkerIds.has(worker.id)).map(worker => ({
+        id: `worker:${worker.id}`,
+        displayName: worker.realName,
+        employeeType: worker.workerCategory === "company_admin" ? "management" as const : "construction_worker" as const,
+        workerCategory: worker.workerCategory,
+        employmentStatus: worker.attendanceStatus === "left" ? "left" as const : worker.attendanceStatus === "active" ? "active" as const : "pending" as const,
+        projectId: worker.projectId,
+        projectName: projectNameById.get(worker.projectId) ?? "项目待同步",
+        teamName: worker.teamName,
+        joinedAt: worker.entryDate,
+        salaryBasis: null,
+        profileComplete: false,
+      }));
+      return [...profileEntries, ...unprofiledAccounts, ...unprofiledWorkers].sort((left, right) => left.displayName.localeCompare(right.displayName, "zh-CN"));
+    }),
     saveProfile: protectedProcedure.input(employeeProfileInput).mutation(async ({ ctx, input }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();

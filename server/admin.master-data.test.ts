@@ -212,6 +212,31 @@ describe("超级管理主数据约束", () => {
     await expect(caller.employee.saveProfile({ ...base, userId: 2, laborWorkerId: 3 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("公司全员花名册合并员工档案、未建档账号和实名制人员，并且不返回敏感字段", async () => {
+    let selectIndex = 0;
+    const resultSets = [
+      [{ id: 10, userId: 2, laborWorkerId: null, projectId: 8, employeeType: "management", teamName: "项目管理部", employmentStatus: "active", joinedAt: new Date("2026-10-01"), salaryBasis: "monthly" }],
+      [{ id: 2, name: "张经理", localAccountStatus: "active" }, { id: 3, name: "李主管", localAccountStatus: "disabled" }],
+      [{ id: 21, realName: "王师傅", projectId: 8, teamName: "机械班组", workerCategory: "labor_team", attendanceStatus: "active", entryDate: new Date("2026-10-02") }],
+      [{ id: 8, name: "高速一标" }],
+    ];
+    vi.mocked(getDb).mockResolvedValue({
+      select: vi.fn(() => ({ from: vi.fn(() => Promise.resolve(resultSets[selectIndex++] ?? [])) })),
+    } as never);
+
+    const roster = await adminRouter.createCaller(createAdminContext()).employee.listCompanyRoster();
+
+    expect(roster).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "profile:10", displayName: "张经理", employeeType: "management", projectName: "高速一标", profileComplete: true }),
+      expect.objectContaining({ id: "account:3", displayName: "李主管", employmentStatus: "suspended", profileComplete: false }),
+      expect.objectContaining({ id: "worker:21", displayName: "王师傅", workerCategory: "labor_team", projectName: "高速一标", profileComplete: false }),
+    ]));
+    expect(roster).toHaveLength(3);
+    expect(roster[0]).not.toHaveProperty("localUsername");
+    expect(roster[0]).not.toHaveProperty("phoneEncrypted");
+    expect(roster[0]).not.toHaveProperty("bankAccountEncrypted");
+  });
+
   it("拒绝保险到期日期早于购买日期和无效维修保养金额", async () => {
     vi.mocked(getDb).mockResolvedValue({} as never);
     const caller = adminRouter.createCaller(createAdminContext());
