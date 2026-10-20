@@ -1591,6 +1591,7 @@ export const adminRouter = router({
             attendanceStatus: laborWorkers.attendanceStatus,
             entryDate: laborWorkers.entryDate,
             phoneEncrypted: laborWorkers.phoneEncrypted,
+            bankAccountEncrypted: laborWorkers.bankAccountEncrypted,
           })
           .from(laborWorkers),
         db.select({ id: projects.id, name: projects.name }).from(projects),
@@ -1710,6 +1711,9 @@ export const adminRouter = router({
             : null);
         return {
           contactPhoneMasked: phoneMasked,
+          bankAccountMasked: worker?.bankAccountEncrypted
+            ? maskSecret(decryptSecret(worker.bankAccountEncrypted))
+            : null,
           tradeName: userProfile?.positionId
             ? (positionNameById.get(userProfile.positionId) ?? null)
             : (worker?.teamName ?? null),
@@ -1760,6 +1764,9 @@ export const adminRouter = router({
           : undefined;
         const projectId = profile.projectId ?? worker?.projectId ?? null;
         return {
+          profileId: profile.id,
+          userId: profile.userId,
+          laborWorkerId: profile.laborWorkerId,
           id: `profile:${profile.id}`,
           displayName: account?.name ?? worker?.realName ?? "未命名员工",
           employeeType: profile.employeeType,
@@ -1784,6 +1791,9 @@ export const adminRouter = router({
       const unprofiledAccounts = accountRows
         .filter(account => !linkedAccountIds.has(account.id))
         .map(account => ({
+          profileId: null,
+          userId: account.id,
+          laborWorkerId: null,
           id: `account:${account.id}`,
           displayName: account.name ?? "未命名公司人员",
           employeeType: "management" as const,
@@ -1803,6 +1813,9 @@ export const adminRouter = router({
       const unprofiledWorkers = workerRows
         .filter(worker => !linkedWorkerIds.has(worker.id))
         .map(worker => ({
+          profileId: null,
+          userId: null,
+          laborWorkerId: worker.id,
           id: `worker:${worker.id}`,
           displayName: worker.realName,
           employeeType:

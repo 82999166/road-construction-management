@@ -25,4 +25,12 @@ describe("CompanyPersonnelRoster", () => {
     expect(source).not.toContain("bankAccountEncrypted");
     expect(source).not.toContain("localUsername");
   });
+
+  it("支持从人员详情维护档案并仅展示银行卡脱敏信息", () => {
+    expect(source).toContain("修改员工资料");
+    expect(source).toContain("保存员工档案");
+    expect(source).toContain("bankAccountMasked");
+    expect(source).toContain("银行卡（脱敏）");
+    expect(source).not.toContain("decryptSecret");
+  });
 });

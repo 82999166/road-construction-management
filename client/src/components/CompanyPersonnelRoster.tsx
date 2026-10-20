@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +36,9 @@ import {
 
 export type CompanyPersonnelRosterRow = {
   id: string;
+  profileId: number | null;
+  userId: number | null;
+  laborWorkerId: number | null;
   displayName: string;
   employeeType: "management" | "operator" | "construction_worker";
   workerCategory: "company_admin" | "labor_team" | "temporary_daily" | null;
@@ -57,6 +62,7 @@ export type CompanyPersonnelRosterRow = {
   latestPayableAmount: string | number | null;
   latestActualAmount: string | number | null;
   latestPayrollStatus: string | null;
+  bankAccountMasked: string | null;
 };
 
 type Props = {
@@ -64,6 +70,7 @@ type Props = {
   loading: boolean;
   hasError: boolean;
   onRetry: () => void;
+  onSaved?: () => void | Promise<void>;
   displayDate: (value: Date | string) => string;
 };
 
@@ -110,6 +117,7 @@ export default function CompanyPersonnelRoster({
   loading,
   hasError,
   onRetry,
+  onSaved,
   displayDate,
 }: Props) {
   const [search, setSearch] = useState("");
@@ -118,6 +126,37 @@ export default function CompanyPersonnelRoster({
   const [projectId, setProjectId] = useState("all");
   const [selectedRow, setSelectedRow] =
     useState<CompanyPersonnelRosterRow | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    teamName: "",
+    projectId: "",
+    employmentStatus: "active" as "active" | "suspended" | "left",
+    joinedAt: "",
+    salaryBasis: "monthly" as "monthly" | "daily" | "hourly" | "piecework",
+    baseSalary: "",
+    remarks: "",
+  });
+  const saveProfile = trpc.admin.employee.saveProfile.useMutation({
+    onSuccess: async () => {
+      toast.success("员工档案已保存");
+      setEditing(false);
+      await onSaved?.();
+    },
+    onError: error => toast.error(error.message || "员工档案保存失败"),
+  });
+  const beginEdit = (row: CompanyPersonnelRosterRow) => {
+    setDraft({
+      teamName: row.teamName ?? "",
+      projectId: row.projectId ? String(row.projectId) : "",
+      employmentStatus:
+        row.employmentStatus === "pending" ? "active" : row.employmentStatus,
+      joinedAt: row.joinedAt ? String(row.joinedAt).slice(0, 10) : "",
+      salaryBasis: row.salaryBasis ?? "monthly",
+      baseSalary: row.baseSalary == null ? "" : String(row.baseSalary),
+      remarks: "",
+    });
+    setEditing(true);
+  };
 
   const projectOptions = useMemo(
     () =>
@@ -390,6 +429,12 @@ export default function CompanyPersonnelRoster({
                   </p>
                 </div>
                 <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">银行卡（脱敏）</p>
+                  <p className="mt-1 font-medium">
+                    {selectedRow.bankAccountMasked || "未登记"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">工种 / 班组</p>
                   <p className="mt-1 font-medium">
                     {selectedRow.tradeName || "未登记工种"} ·{" "}
@@ -469,7 +514,177 @@ export default function CompanyPersonnelRoster({
                   ；金额以审核工资条为准。
                 </p>
               </section>
+              <div className="flex justify-end gap-2">
+                {selectedRow.profileId ? (
+                  <Button type="button" onClick={() => beginEdit(selectedRow)}>
+                    修改员工资料
+                  </Button>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    该人员尚未建立统一员工档案，请先建档后修改。
+                  </p>
+                )}
+              </div>
             </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={editing} onOpenChange={setEditing}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>修改员工档案</DialogTitle>
+            <DialogDescription>
+              仅超级管理员可修改；银行卡和联系方式只显示脱敏信息。
+            </DialogDescription>
+          </DialogHeader>
+          {selectedRow ? (
+            <form
+              className="grid gap-3 sm:grid-cols-2"
+              onSubmit={event => {
+                event.preventDefault();
+                if (!selectedRow.profileId) return;
+                saveProfile.mutate({
+                  id: selectedRow.profileId,
+                  userId: selectedRow.userId,
+                  laborWorkerId: selectedRow.laborWorkerId,
+                  projectId: draft.projectId ? Number(draft.projectId) : null,
+                  employeeType: selectedRow.employeeType,
+                  teamName: draft.teamName.trim() || null,
+                  employmentStatus: draft.employmentStatus,
+                  joinedAt: draft.joinedAt || null,
+                  leftAt: null,
+                  salaryBasis: draft.salaryBasis,
+                  baseSalary: draft.baseSalary
+                    ? Number(draft.baseSalary)
+                    : null,
+                  remarks: draft.remarks.trim() || null,
+                });
+              }}
+            >
+              <div className="sm:col-span-2 rounded-lg bg-slate-50 p-3 text-sm font-medium">
+                {selectedRow.displayName}
+              </div>
+              <label className="grid gap-1 text-sm">
+                项目编号
+                <Input
+                  value={draft.projectId}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      projectId: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                班组
+                <Input
+                  value={draft.teamName}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      teamName: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                在职状态
+                <Select
+                  value={draft.employmentStatus}
+                  onValueChange={value =>
+                    setDraft(current => ({
+                      ...current,
+                      employmentStatus:
+                        value as typeof current.employmentStatus,
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">在职</SelectItem>
+                    <SelectItem value="suspended">已停用</SelectItem>
+                    <SelectItem value="left">已离职</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="grid gap-1 text-sm">
+                入职日期
+                <Input
+                  type="date"
+                  value={draft.joinedAt}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      joinedAt: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                计薪口径
+                <Select
+                  value={draft.salaryBasis}
+                  onValueChange={value =>
+                    setDraft(current => ({
+                      ...current,
+                      salaryBasis: value as typeof current.salaryBasis,
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">月薪</SelectItem>
+                    <SelectItem value="daily">日薪</SelectItem>
+                    <SelectItem value="hourly">时薪</SelectItem>
+                    <SelectItem value="piecework">计件</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="grid gap-1 text-sm">
+                基础薪资 / 单价
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={draft.baseSalary}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      baseSalary: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label className="grid gap-1 text-sm sm:col-span-2">
+                备注
+                <Input
+                  value={draft.remarks}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      remarks: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <div className="flex justify-end gap-2 sm:col-span-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditing(false)}
+                >
+                  取消
+                </Button>
+                <Button type="submit" disabled={saveProfile.isPending}>
+                  {saveProfile.isPending ? "正在保存…" : "保存员工档案"}
+                </Button>
+              </div>
+            </form>
           ) : null}
         </DialogContent>
       </Dialog>
