@@ -19,8 +19,8 @@ describe("CompanyPersonnelRoster", () => {
     expect(source).toContain("全部归属项目");
   });
 
-  it("明确不展示手机号、证件号、银行卡和登录账号", () => {
-    expect(source).toContain("不显示手机号、证件号、银行卡或登录账号");
+  it("不回显完整手机号、证件号、银行卡和登录账号", () => {
+    expect(source).toContain("详情只显示脱敏号码");
     expect(source).not.toContain("phoneEncrypted");
     expect(source).not.toContain("bankAccountEncrypted");
     expect(source).not.toContain("localUsername");
@@ -31,6 +31,7 @@ describe("CompanyPersonnelRoster", () => {
     expect(source).toContain("保存员工档案");
     expect(source).toContain("bankAccountMasked");
     expect(source).toContain("银行卡（脱敏）");
+    expect(source).toContain("手机号（新增或修改）");
     expect(source).not.toContain("decryptSecret");
   });
 });

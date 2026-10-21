@@ -398,6 +398,12 @@ const employeeProfileInput = z
     leftAt: z.string().date().nullable().optional(),
     salaryBasis: z.enum(["monthly", "daily", "hourly", "piecework"]),
     baseSalary: z.number().min(0).max(999999999999.99).nullable().optional(),
+    phoneNumber: z
+      .string()
+      .trim()
+      .regex(/^[0-9+\-\s()]{7,24}$/, "请输入有效手机号")
+      .nullable()
+      .optional(),
     remarks: z.string().trim().max(500).nullable().optional(),
   })
   .superRefine((value, ctx) => {
@@ -1930,6 +1936,25 @@ export const adminRouter = router({
             .set(values)
             .where(eq(employeeProfiles.id, input.id));
         } else await db.insert(employeeProfiles).values(values);
+        if (input.laborWorkerId) {
+          await db
+            .update(laborWorkers)
+            .set({
+              phoneEncrypted: input.phoneNumber
+                ? encryptSecret(input.phoneNumber)
+                : null,
+            })
+            .where(eq(laborWorkers.id, input.laborWorkerId));
+        } else if (input.userId) {
+          await db
+            .update(userProfiles)
+            .set({
+              phoneMasked: input.phoneNumber
+                ? maskSecret(input.phoneNumber)
+                : null,
+            })
+            .where(eq(userProfiles.userId, input.userId));
+        }
         await db.insert(auditLogs).values({
           userId: admin.id,
           module: "personnel",

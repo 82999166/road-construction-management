@@ -134,6 +134,7 @@ export default function CompanyPersonnelRoster({
     joinedAt: "",
     salaryBasis: "monthly" as "monthly" | "daily" | "hourly" | "piecework",
     baseSalary: "",
+    phoneNumber: "",
     remarks: "",
   });
   const saveProfile = trpc.admin.employee.saveProfile.useMutation({
@@ -153,6 +154,7 @@ export default function CompanyPersonnelRoster({
       joinedAt: row.joinedAt ? String(row.joinedAt).slice(0, 10) : "",
       salaryBasis: row.salaryBasis ?? "monthly",
       baseSalary: row.baseSalary == null ? "" : String(row.baseSalary),
+      phoneNumber: "",
       remarks: "",
     });
     setEditing(true);
@@ -534,7 +536,7 @@ export default function CompanyPersonnelRoster({
           <DialogHeader>
             <DialogTitle>修改员工档案</DialogTitle>
             <DialogDescription>
-              仅超级管理员可修改；银行卡和联系方式只显示脱敏信息。
+              仅超级管理员可修改；已登记手机号不会回显，输入新号码后将加密保存，详情只显示脱敏号码。
             </DialogDescription>
           </DialogHeader>
           {selectedRow ? (
@@ -557,6 +559,7 @@ export default function CompanyPersonnelRoster({
                   baseSalary: draft.baseSalary
                     ? Number(draft.baseSalary)
                     : null,
+                  phoneNumber: draft.phoneNumber.trim() || null,
                   remarks: draft.remarks.trim() || null,
                 });
               }}
@@ -658,6 +661,21 @@ export default function CompanyPersonnelRoster({
                       baseSalary: event.target.value,
                     }))
                   }
+                />
+              </label>
+              <label className="grid gap-1 text-sm">
+                手机号（新增或修改）
+                <Input
+                  inputMode="tel"
+                  autoComplete="off"
+                  value={draft.phoneNumber}
+                  onChange={event =>
+                    setDraft(current => ({
+                      ...current,
+                      phoneNumber: event.target.value,
+                    }))
+                  }
+                  placeholder="请输入手机号"
                 />
               </label>
               <label className="grid gap-1 text-sm sm:col-span-2">
