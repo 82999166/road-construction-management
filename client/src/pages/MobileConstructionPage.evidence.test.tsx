@@ -9,7 +9,9 @@ describe("移动端施工日报关联影像", () => {
     expect(source).toContain("const reviewEvidence");
     expect(source).toContain("随日报提交的现场照片");
     expect(source).toContain("水印照片仅对当前项目的主管审核范围显示");
-    expect(source).toContain("点击放大");
+    expect(source).toContain("点击预览");
+    expect(source).toContain("ProtectedImagePreview");
+    expect(source).toContain("站内预览");
   });
 
   it("使用设备日期、中国时区与独立 A4 日报打印，且未知状态不回显内部枚举", () => {

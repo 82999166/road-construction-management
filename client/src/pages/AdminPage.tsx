@@ -6,6 +6,7 @@ import BusinessStatusBadge, {
   getBusinessStatusLabel,
 } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
+import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
 import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import {
   getBusinessWorkspaceProjectState,
@@ -13572,11 +13573,11 @@ export default function AdminPage({
           ? evidence.map((photo, index) => ({
               label: `照片 ${index + 1}`,
               value: (
-                <a
+                <ProtectedImagePreview
+                  file={{ url: photo.url }}
+                  title={`施工日报照片 ${index + 1}`}
+                  description="点击查看站内原图，不会下载照片。"
                   className="block max-w-sm overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2 hover:border-[#2d6b63]"
-                  href={photo.url}
-                  target="_blank"
-                  rel="noreferrer"
                 >
                   <img
                     className="h-40 w-full rounded object-cover"
@@ -13585,9 +13586,9 @@ export default function AdminPage({
                   />
                   <span className="mt-2 block text-xs leading-5 text-slate-600">
                     {photo.description || "施工日报现场影像"} ·{" "}
-                    {displayDate(photo.capturedAt)}
+                    {displayDate(photo.capturedAt)} · 点击预览
                   </span>
-                </a>
+                </ProtectedImagePreview>
               ),
             }))
           : [{ label: "关联状态", value: "尚无已归档照片" }],
@@ -14773,20 +14774,15 @@ export default function AdminPage({
                                           {
                                             label: "采购单据",
                                             value: item.documentAttachment ? (
-                                              <a
+                                              <ProtectedImagePreview
+                                                file={item.documentAttachment}
+                                                title="采购单据"
+                                                description="照片在当前页面内预览，不会下载。"
                                                 className="font-medium text-[#2b6660] underline"
-                                                href={
-                                                  item.documentAttachment.url
-                                                }
-                                                target="_blank"
-                                                rel="noreferrer"
                                               >
                                                 查看采购单据：
-                                                {
-                                                  item.documentAttachment
-                                                    .fileName
-                                                }
-                                              </a>
+                                                {item.documentAttachment.fileName}
+                                              </ProtectedImagePreview>
                                             ) : (
                                               "未关联采购单据"
                                             ),
@@ -14795,20 +14791,15 @@ export default function AdminPage({
                                             label: "发票附件",
                                             value: item.hasInvoice ? (
                                               item.invoiceAttachment ? (
-                                                <a
+                                                <ProtectedImagePreview
+                                                  file={item.invoiceAttachment}
+                                                  title="发票附件"
+                                                  description="照片在当前页面内预览，不会下载。"
                                                   className="font-medium text-[#2b6660] underline"
-                                                  href={
-                                                    item.invoiceAttachment.url
-                                                  }
-                                                  target="_blank"
-                                                  rel="noreferrer"
                                                 >
                                                   查看发票附件：
-                                                  {
-                                                    item.invoiceAttachment
-                                                      .fileName
-                                                  }
-                                                </a>
+                                                  {item.invoiceAttachment.fileName}
+                                                </ProtectedImagePreview>
                                               ) : (
                                                 "已登记发票，但未找到归档附件"
                                               )
@@ -21685,14 +21676,14 @@ export default function AdminPage({
                       `¥ ${displayMoney(item.amount)}`,
                       <div className="space-y-1">
                         {item.receiptEvidence?.url ? (
-                          <a
+                          <ProtectedImagePreview
+                            file={{ url: item.receiptEvidence.url!, fileName: item.receiptEvidence.fileName, mimeType: item.receiptEvidence.mimeType }}
+                            title="柴油加油小票"
+                            description="小票照片仅在当前授权范围内站内预览。"
                             className="text-xs font-medium text-[#2b6660] underline"
-                            href={item.receiptEvidence.url}
-                            target="_blank"
-                            rel="noreferrer"
                           >
                             查看小票照片
-                          </a>
+                          </ProtectedImagePreview>
                         ) : (
                           <p className="text-xs text-slate-500">无小票照片</p>
                         )}
@@ -21749,15 +21740,15 @@ export default function AdminPage({
                           {
                             label: "现金小票",
                             value: item.receiptEvidence?.url ? (
-                              <a
+                              <ProtectedImagePreview
+                                file={{ url: item.receiptEvidence.url!, fileName: item.receiptEvidence.fileName, mimeType: item.receiptEvidence.mimeType }}
+                                title="柴油加油小票"
+                                description="小票照片仅在当前授权范围内站内预览。"
                                 className="font-medium text-[#2b6660] underline"
-                                href={item.receiptEvidence.url}
-                                target="_blank"
-                                rel="noreferrer"
                               >
                                 查看受控小票影像：
                                 {item.receiptEvidence.fileName}
-                              </a>
+                              </ProtectedImagePreview>
                             ) : (
                               "未关联小票照片"
                             ),

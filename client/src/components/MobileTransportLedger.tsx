@@ -1,11 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
-import { CalendarDays, ChevronRight, CircleAlert, ExternalLink, FileText, Fuel, LoaderCircle, Truck } from "lucide-react";
+import { CalendarDays, ChevronRight, CircleAlert, FileText, Fuel, LoaderCircle, Truck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { getCardValidationStatusLabel, getSafeCardValidationReason } from "../../../shared/domain";
 
@@ -114,7 +115,7 @@ function TripDetail({ trip, onConfirmPlatePhotoUnload }: { trip: any; onConfirmP
 }
 
 function FuelDeductionDetail({ record }: { record: any }) {
-  return <div className="rounded-xl border border-[#ead9c8] p-3"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[#5d3828]">{record.vehiclePlateNo}</p><p className="mt-1 text-[11px] text-[#8f7566]">{record.recordNo}</p></div><span className="rounded-full bg-[#fff2de] px-2 py-1 text-xs font-semibold text-[#9a5128]">{formatMoney(record.amount)}</span></div><div className="mt-3"><DetailBlock title="加油与扣款信息" rows={[["加油时间", formatDateTime(record.refueledAt)], ["油量", `${Number(record.liters).toFixed(2)} L`], ["加油金额", formatMoney(record.amount)], ["扣款单价", `${formatMoney(record.appliedUnitPrice)} / L`], ["加油机表数", record.meterReading === null || record.meterReading === undefined ? "未记录" : String(record.meterReading)], ["供油方式", record.supplyMethod === "external_station" ? "外部加油站" : "项目部供油"], ["加油站/供油方", record.stationOrSupplierName || "未记录"], ["票据编号", record.receiptNo || "未记录"], ["备注", record.remarks || "未记录"]]} /></div>{record.evidence ? <a href={record.evidence.url} target="_blank" rel="noreferrer" className="mt-3 flex items-center justify-between rounded-lg bg-[#f8ead8] px-3 py-2 text-xs font-semibold text-[#80543d]"><span>查看受控加油凭证</span><ExternalLink className="h-3.5 w-3.5" /></a> : null}</div>;
+  return <div className="rounded-xl border border-[#ead9c8] p-3"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[#5d3828]">{record.vehiclePlateNo}</p><p className="mt-1 text-[11px] text-[#8f7566]">{record.recordNo}</p></div><span className="rounded-full bg-[#fff2de] px-2 py-1 text-xs font-semibold text-[#9a5128]">{formatMoney(record.amount)}</span></div><div className="mt-3"><DetailBlock title="加油与扣款信息" rows={[["加油时间", formatDateTime(record.refueledAt)], ["油量", `${Number(record.liters).toFixed(2)} L`], ["加油金额", formatMoney(record.amount)], ["扣款单价", `${formatMoney(record.appliedUnitPrice)} / L`], ["加油机表数", record.meterReading === null || record.meterReading === undefined ? "未记录" : String(record.meterReading)], ["供油方式", record.supplyMethod === "external_station" ? "外部加油站" : "项目部供油"], ["加油站/供油方", record.stationOrSupplierName || "未记录"], ["票据编号", record.receiptNo || "未记录"], ["备注", record.remarks || "未记录"]]} /></div>{record.evidence ? <ProtectedImagePreview file={record.evidence} title="柴油加油凭证" description="凭证照片在当前页面内预览，不会下载。" className="mt-3 flex w-full items-center justify-between rounded-lg bg-[#f8ead8] px-3 py-2 text-xs font-semibold text-[#80543d]"><span>查看受控加油凭证</span><FileText className="h-3.5 w-3.5" /></ProtectedImagePreview> : null}</div>;
 }
 
 function DetailBlock({ title, rows }: { title: string; rows: Array<[string, string]> }) { return <div className="rounded-xl border border-[#ead9c8] p-3"><p className="font-semibold text-[#5d3828]">{title}</p><dl className="mt-2 space-y-2 text-xs">{rows.map(([label, value]) => <div className="grid grid-cols-[88px_1fr] gap-2" key={`${label}-${value}`}><dt className="text-[#8f7566]">{label}</dt><dd className="break-words text-[#4e3024]">{value || "未记录"}</dd></div>)}</dl></div>; }

@@ -39,6 +39,8 @@ describe("移动采购库存凭证与权限反馈", () => {
     expect(source).toContain('uploadPurchaseDocumentFile(event.target.files?.[0], "inventory")');
     expect(source).toContain("evidenceId: inventoryDraft.evidenceId ? Number(inventoryDraft.evidenceId) : null");
     expect(source).toContain("查看凭证");
+    expect(source).toContain("ProtectedImagePreview");
+    expect(source).toContain("当前页面内预览，不会下载");
   });
 });
 
@@ -47,6 +49,7 @@ describe("移动采购订单详情", () => {
     const source = readFileSync(new URL("./MobilePurchasingPage.tsx", import.meta.url), "utf8");
     expect(source).toContain("采购订单详情 · {selectedOrder?.orderNo}");
     expect(source).toContain("查看采购单据：{selectedOrder.documentAttachment.fileName}");
+    expect(source).toContain("title=\"采购单据\"");
     expect(source).toContain("查看发票附件：{selectedOrder.invoiceAttachment.fileName}");
     expect(source).toContain("pending_approval: \"待审核\"");
     expect(source).toContain("closed: \"已结算\"");
