@@ -51,4 +51,14 @@ describe("移动端主流手机宽度自适应", () => {
     expect(css).toContain("font-size: 112.5%");
     expect(css).not.toContain("html[data-layout-scale=\"large\"] {\n  zoom:");
   });
+
+  it("Portal 弹窗不依赖业务页面壳层，并在手机端将录入网格安全收为单列", () => {
+    const css = source("src/index.css");
+
+    expect(css).toContain('[data-slot="dialog-content"]');
+    expect(css).toContain('[data-slot="alert-dialog-content"]');
+    expect(css).toContain('[data-slot="select-trigger"]');
+    expect(css).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(css).not.toContain('.mobile-viewport-shell [data-slot="dialog-content"]');
+  });
 });

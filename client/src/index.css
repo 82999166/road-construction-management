@@ -244,9 +244,27 @@ html[data-layout-scale="large"] .mobile-viewport-shell {
     padding-left: max(0.75rem, env(safe-area-inset-left));
   }
 
-  .mobile-viewport-shell [data-slot="dialog-content"] {
-    width: calc(100vw - 1.5rem);
-    max-width: calc(100vw - 1.5rem);
+  /* Dialog 由 Portal 挂到 body，不能依赖 mobile-viewport-shell 的后代选择器。
+   * 原语已用左右 inset 和 dvh 固定窗口；这里处理表单子项的最小宽度与窄屏降列。 */
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"] {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  [data-slot="dialog-content"] :where(.grid > *, .flex > *),
+  [data-slot="alert-dialog-content"] :where(.grid > *, .flex > *) {
+    min-width: 0;
+  }
+
+  [data-slot="dialog-content"] [data-slot="select-trigger"],
+  [data-slot="alert-dialog-content"] [data-slot="select-trigger"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  [data-slot="dialog-content"] .grid[class*="grid-cols-"],
+  [data-slot="alert-dialog-content"] .grid[class*="grid-cols-"] {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

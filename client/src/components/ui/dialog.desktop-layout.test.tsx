@@ -24,6 +24,20 @@ describe("PC 管理后台弹窗宽屏布局", () => {
     expect(source).toContain("max-h-[calc(100vh-2rem)]");
   });
 
+  it("手机录入窗口由通用原语固定在可视范围内，只允许纵向滚动", () => {
+    const dialog = readSource("dialog.tsx");
+    const alertDialog = readSource("alert-dialog.tsx");
+
+    for (const source of [dialog, alertDialog]) {
+      expect(source).toContain("left-3 right-3");
+      expect(source).toContain("max-h-[calc(100dvh-1.5rem)]");
+      expect(source).toContain("overflow-x-clip overflow-y-auto");
+      expect(source).toContain("overscroll-contain");
+      expect(source).toContain("sm:left-[50%]");
+      expect(source).not.toContain("slide-in-from-bottom");
+    }
+  });
+
   it("财务支出分类明细和后台存量表单不再维持窄窗", () => {
     const source = readFileSync(
       new URL("../../pages/AdminPage.tsx", import.meta.url),
