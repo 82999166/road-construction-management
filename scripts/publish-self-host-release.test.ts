@@ -7,6 +7,8 @@ describe("自建正式服务器原子发布脚本", () => {
     expect(source).toContain("upload_via_ssh");
     expect(source).toContain("base64 -w 0");
     expect(source).toContain("base64 -d");
+    expect(source).toContain('upload_sentinel="__YX_RELEASE_UPLOAD_END__"');
+    expect(source).toContain("while IFS= read -r upload_line");
     expect(source).toContain('ssh_key_path="${SSH_KEY_PATH:-}"');
     expect(source).toContain('ssh -tt "${ssh_options[@]}"');
     expect(source).toContain("PreferredAuthentications=publickey");

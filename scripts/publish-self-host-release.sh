@@ -56,11 +56,14 @@ upload_via_ssh() {
   local source_path="$1"
   local remote_path="$2"
   local upload_sentinel="__YX_RELEASE_UPLOAD_END__"
+  local upload_command="temp_upload=\$(mktemp); cleanup_upload() { rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
   if [[ -n "$ssh_key_path" ]]; then
-    # 密钥通道同样使用伪终端；保留Base64的安全换行，避免终端单行缓冲截断大包。
-    base64 "$source_path" | run_remote_ssh "stty -echo; base64 -d > '$remote_path'; stty echo"
+    # 伪终端不会以stdin EOF结束远端读取，故显式写入结束标记；保留安全换行避免大包单行截断。
+    base64 "$source_path" | {
+      cat
+      printf '%s\n' "$upload_sentinel"
+    } | run_remote_ssh "stty -echo; $upload_command; stty echo"
   else
-    local upload_command="temp_upload=\$(mktemp); cleanup_upload() { rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
     base64 -w 0 "$source_path" | {
       cat
       printf '\n%s\n' "$upload_sentinel"
