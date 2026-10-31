@@ -31,7 +31,8 @@ fi
 
 run_remote_ssh() {
   if [[ -n "$ssh_key_path" ]]; then
-    ssh -T "${ssh_options[@]}" \
+    # 正式服务器策略要求已分配伪终端的 SSH 会话；密钥认证同样保持此约束。
+    ssh -tt "${ssh_options[@]}" \
       -i "$ssh_key_path" \
       -o BatchMode=yes \
       -o PreferredAuthentications=publickey \
@@ -56,8 +57,8 @@ upload_via_ssh() {
   local remote_path="$2"
   local upload_sentinel="__YX_RELEASE_UPLOAD_END__"
   if [[ -n "$ssh_key_path" ]]; then
-    # 无终端密钥通道以 SSH EOF 表示上传结束，避免大包被 read 单行缓冲截断。
-    base64 -w 0 "$source_path" | run_remote_ssh "base64 -d > '$remote_path'"
+    # 密钥通道同样使用伪终端；保留Base64的安全换行，避免终端单行缓冲截断大包。
+    base64 "$source_path" | run_remote_ssh "stty -echo; base64 -d > '$remote_path'; stty echo"
   else
     local upload_command="temp_upload=\$(mktemp); cleanup_upload() { rm -f \"\$temp_upload\"; }; trap cleanup_upload EXIT; while IFS= read -r upload_line; do [ \"\$upload_line\" = \"$upload_sentinel\" ] && break; printf '%s\\n' \"\$upload_line\" >> \"\$temp_upload\"; done; base64 -d \"\$temp_upload\" > '$remote_path'"
     base64 -w 0 "$source_path" | {
