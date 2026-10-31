@@ -104,4 +104,13 @@ describe("MobileProfilePage", () => {
     expect(markup).toContain("项目经理");
     expect(markup).not.toContain("PROJECT_MANAGER");
   });
+
+  it("提供当前设备的粗体显示和放大版面辅助开关", () => {
+    const markup = renderToStaticMarkup(<MobileProfilePage />);
+
+    expect(markup).toContain("显示与辅助");
+    expect(markup).toContain("粗体显示");
+    expect(markup).toContain("放大版面");
+    expect(markup).toContain("仅保存到本设备浏览器");
+  });
 });

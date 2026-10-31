@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { DisplayPreferencesPanel } from "@/components/DisplayPreferencesPanel";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { getScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import { getAuthorizedManagementModules } from "@/lib/managementPortal";
@@ -68,7 +69,7 @@ export default function ScopedManagementModulePage({ section }: { section: strin
   const Page = module.Page;
   return <main className="min-h-screen bg-[#f7f1e8]" data-pc-management-module={module.code}>
     <header className="sticky top-0 z-20 border-b border-[#e7d6c4] bg-[#fffaf4]/95 backdrop-blur print:hidden">
-      <div className="mx-auto flex max-w-[1440px] items-center gap-3 px-5 py-3 lg:px-8"><Button variant="outline" size="sm" onClick={() => navigate("/admin")}><ArrowLeft className="mr-1.5 h-4 w-4" />业务工作台</Button><div><p className="text-sm font-semibold text-[#342018]">{module.title}</p><p className="text-xs text-[#896b5b]">PC 统一业务页面 · 内容按已授权项目范围显示</p></div></div>
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 px-5 py-3 lg:px-8"><div className="flex min-w-0 items-center gap-3"><Button variant="outline" size="sm" onClick={() => navigate("/admin")}><ArrowLeft className="mr-1.5 h-4 w-4" />业务工作台</Button><div><p className="text-sm font-semibold text-[#342018]">{module.title}</p><p className="text-xs text-[#896b5b]">PC 统一业务页面 · 内容按已授权项目范围显示</p></div></div><DisplayPreferencesPanel className="shrink-0" /></div>
     </header>
     <Suspense fallback={<div className="grid min-h-[60vh] place-items-center text-sm text-[#76523f]">正在加载 {module.title}…</div>}><Page /></Suspense>
   </main>;

@@ -14,15 +14,27 @@ describe("移动端施工日报关联影像", () => {
     expect(source).toContain("站内预览");
   });
 
+  it("所有日报状态均提供独立只读详情，且仅在打开详情或审核时请求当前日报照片", () => {
+    const source = readFileSync(new URL("./MobileConstructionPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const [detailTarget");
+    expect(source).toContain("查看详情");
+    expect(source).toContain("施工日报详情");
+    expect(source).toContain("const detailEvidence");
+    expect(source).toContain("[detailTarget?.id, reviewTarget?.id]");
+    expect(source).toContain("详情不授予编辑或审核权限");
+  });
+
   it("使用设备日期、中国时区与独立 A4 日报打印，且未知状态不回显内部枚举", () => {
     const source = readFileSync(new URL("./MobileConstructionPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("return toDeviceDateInput();");
     expect(source).toContain("return formatChinaDateTime(value);");
     expect(source).toContain("return labels[value] ?? { label: \"待处理\"");
-    expect(source).toContain("function printCurrentReports()");
+    expect(source).toContain("async function printCurrentReports()");
     expect(source).toContain("openA4LandscapePrintDocument");
-    expect(source).toContain("onClick={printCurrentReports}");
+    expect(source).toContain("utils.construction.printReports.fetch");
+    expect(source).toContain("void printCurrentReports()");
     expect(source).not.toContain("onClick={() => window.print()}");
   });
 

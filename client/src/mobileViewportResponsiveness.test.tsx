@@ -41,4 +41,14 @@ describe("移动端主流手机宽度自适应", () => {
     expect(navigation).toContain("w-full max-w-none");
     expect(navigation).not.toContain("left-1/2");
   });
+
+  it("粗体与放大版面通过根显示偏好令牌生效，不使用破坏触控定位的缩放变换", () => {
+    const css = source("src/index.css");
+
+    expect(css).toContain('html[data-text-weight="bold"]');
+    expect(css).toContain('html[data-layout-scale="large"]');
+    expect(css).toContain("--ui-control-min-height");
+    expect(css).toContain("font-size: 112.5%");
+    expect(css).not.toContain("html[data-layout-scale=\"large\"] {\n  zoom:");
+  });
 });

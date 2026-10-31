@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/sidebar";
 import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
+import { DisplayPreferencesPanel } from "@/components/DisplayPreferencesPanel";
 import { LayoutDashboard, LogOut, PanelLeft, Users, type LucideIcon } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -270,7 +271,7 @@ function DashboardLayoutContent({
         {!isMobile && (
           <div className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-[#dce3de] bg-[#f8f8f4]/95 px-6 backdrop-blur md:flex lg:px-8">
             <div className="flex min-w-0 items-center gap-3"><span className="text-xs font-semibold tracking-[0.14em] text-[#70827b]">项目指挥台</span><span className="text-[#c5cfca]">/</span><span className="truncate text-sm font-medium text-[#1b2d34]">{activeMenuItem?.label ?? "系统治理"}</span></div>
-            <div className="flex items-center gap-2 text-xs text-[#60736c]"><span className="h-2 w-2 rounded-full bg-[#f3c64e]" />PC 超级治理 · 已授权</div>
+            <div className="flex items-center gap-2 text-xs text-[#60736c]"><DisplayPreferencesPanel className="h-9 border-[#cbd7d5] bg-white text-[#284651] hover:bg-[#eff6f4]" /><span className="ml-1 h-2 w-2 rounded-full bg-[#f3c64e]" />PC 超级治理 · 已授权</div>
           </div>
         )}
         {isMobile && (

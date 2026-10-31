@@ -140,8 +140,10 @@ export default function MobileConstructionPage() {
   const [weatherCoordinates, setWeatherCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [weatherAddress, setWeatherAddress] = useState("");
   const [weatherStatus, setWeatherStatus] = useState("打开新建日报后将自动获取当前天气；您仍可手动调整。");
+  const [detailTarget, setDetailTarget] = useState<NonNullable<typeof reports.data>[number] | null>(null);
   const [reviewTarget, setReviewTarget] = useState<NonNullable<typeof reports.data>[number] | null>(null);
   const [reviewReply, setReviewReply] = useState("");
+  const [isPrinting, setIsPrinting] = useState(false);
 
   const projectOptions = trpc.construction.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -149,12 +151,18 @@ export default function MobileConstructionPage() {
   }, [projectId, projectOptions.data]);
 
   const selectedProjectId = projectId ?? 0;
+  useEffect(() => {
+    setDetailTarget(null);
+    setReviewTarget(null);
+    setReviewReply("");
+  }, [selectedProjectId]);
   const reportInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const reports = trpc.construction.listReports.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
   const summary = trpc.construction.summary.useQuery(reportInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
-  const reportEvidenceIds = useMemo(() => (reports.data ?? []).map(report => Number(report.id)).filter(Number.isInteger), [reports.data]);
+  const reportEvidenceIds = useMemo(() => Array.from(new Set([detailTarget?.id, reviewTarget?.id].filter((id): id is number => Number.isInteger(id)))), [detailTarget?.id, reviewTarget?.id]);
   const reportEvidenceInput = useMemo(() => ({ projectId: selectedProjectId, reportIds: reportEvidenceIds.length ? reportEvidenceIds : [0] }), [selectedProjectId, reportEvidenceIds]);
   const reportEvidence = trpc.construction.reportEvidence.useQuery(reportEvidenceInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && reportEvidenceIds.length > 0, retry: false });
+  const detailEvidence = useMemo(() => (reportEvidence.data ?? []).filter(item => item.reportId === detailTarget?.id), [reportEvidence.data, detailTarget?.id]);
   const reviewEvidence = useMemo(() => (reportEvidence.data ?? []).filter(item => item.reportId === reviewTarget?.id), [reportEvidence.data, reviewTarget?.id]);
   const resolvedWeather = trpc.construction.resolveCurrentWeather.useQuery(weatherCoordinates ?? { latitude: 0, longitude: 0 }, { enabled: isAuthenticated && dialogOpen && !editingId && Boolean(weatherCoordinates), retry: false });
   const captureConfig = trpc.evidence.captureConfig.useQuery(undefined, { enabled: isAuthenticated, retry: false });
@@ -341,11 +349,20 @@ export default function MobileConstructionPage() {
     });
   }
 
-  function printCurrentReports() {
-    const printableReports = reports.data ?? [];
-    const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? "当前项目";
-    const rows = printableReports.map((report, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(getBusinessDateText(report.reportDate))}</td><td>${escapePrintHtml(report.workArea)}</td><td>${escapePrintHtml(getWeatherLabel(report.weather))}</td><td class="right">${escapePrintHtml(Number(report.progressPercent ?? 0).toFixed(2))}%</td><td>${escapePrintHtml(getStatusMeta(report.status).label)}</td><td>${escapePrintHtml(report.workContent.slice(0, 240))}</td><td>${escapePrintHtml(report.safetyNotes || "—")}</td><td>${escapePrintHtml(report.issueNotes || "—")}</td></tr>`).join("");
-    openA4LandscapePrintDocument({ title: "施工日报明细表", bodyHtml: `<h1>施工日报明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:5%">序号</th><th style="width:10%">日期</th><th style="width:12%">施工部位</th><th style="width:6%">天气</th><th style="width:8%">累计进度</th><th style="width:9%">状态</th><th style="width:22%">施工内容</th><th style="width:14%">安全情况</th><th style="width:14%">质量/协调问题</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="center">当前项目暂无施工日报</td></tr>'}<tr class="summary"><td colspan="9">合计：当前项目施工日报 ${printableReports.length} 份；待审核 ${summary.data?.submitted ?? 0} 份，已审核 ${summary.data?.approved ?? 0} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
+  async function printCurrentReports() {
+    if (!selectedProjectId) return;
+    setIsPrinting(true);
+    try {
+      const printableReports = await utils.construction.printReports.fetch({ projectId: selectedProjectId });
+      const projectName = projectOptions.data?.find(project => project.id === selectedProjectId)?.name ?? "当前项目";
+      const statusCounts = printableReports.reduce((counts, report) => ({ ...counts, [report.status]: (counts[report.status] ?? 0) + 1 }), {} as Record<string, number>);
+      const rows = printableReports.map((report, index) => `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(getBusinessDateText(report.reportDate))}</td><td>${escapePrintHtml(report.workArea)}</td><td>${escapePrintHtml(getWeatherLabel(report.weather))}</td><td class="right">${escapePrintHtml(Number(report.progressPercent ?? 0).toFixed(2))}%</td><td>${escapePrintHtml(getStatusMeta(report.status).label)}</td><td>${escapePrintHtml(report.workContent.slice(0, 240))}</td><td>${escapePrintHtml(report.safetyNotes || "—")}</td><td>${escapePrintHtml(report.issueNotes || "—")}</td></tr>`).join("");
+      openA4LandscapePrintDocument({ title: "施工日报明细表", bodyHtml: `<h1>施工日报明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:5%">序号</th><th style="width:10%">日期</th><th style="width:12%">施工部位</th><th style="width:6%">天气</th><th style="width:8%">累计进度</th><th style="width:9%">状态</th><th style="width:22%">施工内容</th><th style="width:14%">安全情况</th><th style="width:14%">质量/协调问题</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="center">当前项目暂无施工日报</td></tr>'}<tr class="summary"><td colspan="9">合计：当前项目施工日报 ${printableReports.length} 份；待审核 ${statusCounts.submitted ?? 0} 份，已审核 ${(statusCounts.approved ?? 0) + (statusCounts.locked ?? 0)} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>` });
+    } catch (error) {
+      toast.error(getUserFacingErrorMessage(error, "当前账号无施工日报打印权限，或请缩小打印范围后重试"));
+    } finally {
+      setIsPrinting(false);
+    }
   }
 
   if (loading || !isAuthenticated || authLoadingTimedOut) {
@@ -357,7 +374,7 @@ export default function MobileConstructionPage() {
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
       <div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(71,42,29,.12)]">
         <header className="bg-[#3a2117] px-5 pb-7 pt-5 text-[#fff7ea]">
-          <div className="flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">施工现场</p><p className="mt-0.5 text-xs text-[#e8cfb2]">日报 · 进度 · 安全问题</p></div><button aria-label="打印当前施工日报" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={printCurrentReports}><Printer className="h-5 w-5" /></button></div>
+          <div className="flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">施工现场</p><p className="mt-0.5 text-xs text-[#e8cfb2]">日报 · 进度 · 安全问题</p></div><button aria-label="打印当前施工日报" disabled={isPrinting} className="grid h-10 w-10 place-items-center rounded-full bg-white/10 disabled:opacity-60" onClick={() => { void printCurrentReports(); }}><Printer className="h-5 w-5" /></button></div>
           <div className="mt-6"><Label htmlFor="construction-project" className="text-xs text-[#e8cfb2]">当前项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger id="construction-project" className="mt-1 border-white/15 bg-white/10 text-[#fff7ea]"><SelectValue placeholder="请选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select></div>
         </header>
 
@@ -372,7 +389,7 @@ export default function MobileConstructionPage() {
               const status = getStatusMeta(report.status);
               const isOwner = report.createdBy === user?.id;
               const canEdit = (isOwner || isSuperAdmin) && (report.status === "draft" || report.status === "rejected");
-              return <Card key={report.id} className="border-[#ead9c8] bg-white"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{getBusinessDateText(report.reportDate)} · {report.workArea}</p><span className={`rounded-full px-2 py-0.5 text-xs ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#9b8170]">天气：{getWeatherLabel(report.weather)} · 累计完成 {Number(report.progressPercent ?? 0).toFixed(2)}%</p></div>{canEdit ? <Button variant="outline" size="sm" className="border-[#dfc4a9] bg-white print:hidden" onClick={() => openEdit(report)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑</Button> : null}</div><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#5b3b2e]">{report.workContent}</p>{report.safetyNotes ? <p className="mt-2 rounded-xl bg-[#fff3df] p-2 text-xs leading-5 text-[#7a4d25]">安全：{report.safetyNotes}</p> : null}{report.issueNotes ? <p className="mt-2 rounded-xl bg-[#f9e9e4] p-2 text-xs leading-5 text-[#934936]">问题：{report.issueNotes}</p> : null}{report.reviewReply ? <p className={`mt-2 rounded-xl p-2 text-xs leading-5 ${report.status === "rejected" ? "bg-[#f9e9e4] text-[#934936]" : "bg-[#eaf4ec] text-[#3f6d46]"}`}>主管回复：{report.reviewReply}</p> : null}<div className="mt-3 flex flex-wrap gap-2 print:hidden">{isOwner && report.status === "draft" ? <Button size="sm" className="bg-[#9f582b] text-white hover:bg-[#85451f]" disabled={submitForReview.isPending} onClick={() => submitForReview.mutate({ id: report.id, projectId: selectedProjectId })}>提交主管审核</Button> : null}{report.status === "submitted" ? <Button size="sm" variant="outline" className="border-[#6f9775] text-[#3f6d46]" onClick={() => { setReviewTarget(report); setReviewReply(""); }}>主管审核回复</Button> : null}</div></CardContent></Card>;
+              return <Card key={report.id} className="border-[#ead9c8] bg-white"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{getBusinessDateText(report.reportDate)} · {report.workArea}</p><span className={`rounded-full px-2 py-0.5 text-xs ${status.className}`}>{status.label}</span></div><p className="mt-1 text-xs text-[#9b8170]">天气：{getWeatherLabel(report.weather)} · 累计完成 {Number(report.progressPercent ?? 0).toFixed(2)}%</p></div>{canEdit ? <Button variant="outline" size="sm" className="border-[#dfc4a9] bg-white print:hidden" onClick={() => openEdit(report)}><Pencil className="mr-1 h-3.5 w-3.5" />编辑</Button> : null}</div><p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#5b3b2e]">{report.workContent}</p>{report.safetyNotes ? <p className="mt-2 rounded-xl bg-[#fff3df] p-2 text-xs leading-5 text-[#7a4d25]">安全：{report.safetyNotes}</p> : null}{report.issueNotes ? <p className="mt-2 rounded-xl bg-[#f9e9e4] p-2 text-xs leading-5 text-[#934936]">问题：{report.issueNotes}</p> : null}{report.reviewReply ? <p className={`mt-2 rounded-xl p-2 text-xs leading-5 ${report.status === "rejected" ? "bg-[#f9e9e4] text-[#934936]" : "bg-[#eaf4ec] text-[#3f6d46]"}`}>主管回复：{report.reviewReply}</p> : null}<div className="mt-3 flex flex-wrap gap-2 print:hidden"><Button size="sm" variant="outline" className="border-[#b99679] text-[#6c452f]" onClick={() => setDetailTarget(report)}><FileText className="mr-1 h-3.5 w-3.5" />查看详情</Button>{isOwner && report.status === "draft" ? <Button size="sm" className="bg-[#9f582b] text-white hover:bg-[#85451f]" disabled={submitForReview.isPending} onClick={() => submitForReview.mutate({ id: report.id, projectId: selectedProjectId })}>提交主管审核</Button> : null}{report.status === "submitted" ? <Button size="sm" variant="outline" className="border-[#6f9775] text-[#3f6d46]" onClick={() => { setReviewTarget(report); setReviewReply(""); }}>主管审核回复</Button> : null}</div></CardContent></Card>;
             })}
           </section>
         </main>
@@ -402,6 +419,16 @@ export default function MobileConstructionPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
             <Button disabled={saveReport.isPending || evidenceUpload.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={submitDraft}><Camera className="mr-1.5 h-4 w-4" />{saveReport.isPending || evidenceUpload.isPending ? "正在保存…" : pendingEvidenceFiles.length ? `保存日报并归档 ${pendingEvidenceFiles.length} 张照片` : (editingId ? "保存修改" : "保存草稿")}</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(detailTarget)} onOpenChange={open => { if (!open) setDetailTarget(null); }}>
+        <DialogContent className="max-h-[88dvh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+          <DialogHeader>
+            <DialogTitle>施工日报详情</DialogTitle>
+            <DialogDescription>只读查看当前项目内的日报、审核结果与关联现场照片；详情不授予编辑或审核权限。</DialogDescription>
+          </DialogHeader>
+          {detailTarget ? <div className="space-y-4"><section className="rounded-xl bg-[#fff5e8] p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">{getBusinessDateText(detailTarget.reportDate)} · {detailTarget.workArea}</p><span className={`rounded-full px-2 py-0.5 text-xs ${getStatusMeta(detailTarget.status).className}`}>{getStatusMeta(detailTarget.status).label}</span></div><p className="mt-2 text-xs leading-5 text-[#80604c]">填报管理员：{detailTarget.createdByName || `管理员 #${detailTarget.createdBy}`}　·　天气：{getWeatherLabel(detailTarget.weather)}　·　累计完成 {Number(detailTarget.progressPercent ?? 0).toFixed(2)}%</p></section><section className="space-y-2"><p className="text-sm font-semibold text-[#5b3b2e]">当日施工内容</p><p className="whitespace-pre-wrap rounded-xl border border-[#ead9c8] bg-white p-3 text-sm leading-6 text-[#5b3b2e]">{detailTarget.workContent}</p></section><div className="grid gap-3 sm:grid-cols-2"><section className="rounded-xl bg-[#fff3df] p-3"><p className="text-xs font-semibold text-[#7a4d25]">安全情况</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-[#7a4d25]">{detailTarget.safetyNotes || "未记录"}</p></section><section className="rounded-xl bg-[#f9e9e4] p-3"><p className="text-xs font-semibold text-[#934936]">质量 / 协调问题</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-[#934936]">{detailTarget.issueNotes || "未记录"}</p></section></div>{detailTarget.reviewReply ? <section className={`rounded-xl p-3 ${detailTarget.status === "rejected" ? "bg-[#f9e9e4] text-[#934936]" : "bg-[#eaf4ec] text-[#3f6d46]"}`}><p className="text-xs font-semibold">主管审核回复</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6">{detailTarget.reviewReply}</p></section> : null}<section className="rounded-xl border border-[#ead9c8] bg-[#fffaf5] p-3"><div className="flex items-center justify-between gap-2"><div><p className="text-sm font-semibold text-[#5b3b2e]">关联现场照片</p><p className="mt-1 text-[11px] leading-4 text-[#8f7566]">仅在当前项目与施工读取授权范围内站内预览。</p></div><span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">{reportEvidence.isFetching ? "读取中" : `${detailEvidence.length} 张`}</span></div>{reportEvidence.isFetching ? <p className="mt-3 text-xs text-[#8f7566]">正在读取关联影像…</p> : detailEvidence.length ? <div className="mt-3 grid grid-cols-2 gap-2">{detailEvidence.map((photo, index) => <ProtectedImagePreview key={photo.id} file={{ url: photo.url, fileName: photo.fileName }} title={`施工日报照片 ${index + 1}`} description="现场水印照片仅在当前项目授权范围内站内预览。" className="overflow-hidden rounded-lg border border-[#ead9c8] bg-white"><img className="aspect-square w-full object-cover" src={photo.url} alt={photo.description || `施工日报照片 ${index + 1}`} /><span className="block truncate px-2 py-1.5 text-[11px] text-[#80604c]">照片 {index + 1} · 点击预览</span></ProtectedImagePreview>)}</div> : <p className="mt-3 rounded-lg bg-white p-2 text-xs leading-5 text-[#8f7566]">该日报暂未关联照片。</p>}</section></div> : null}
+          <DialogFooter><Button onClick={() => setDetailTarget(null)}>关闭详情</Button></DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog open={Boolean(reviewTarget)} onOpenChange={open => { if (!open) { setReviewTarget(null); setReviewReply(""); } }}>

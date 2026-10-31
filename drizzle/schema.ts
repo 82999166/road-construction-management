@@ -419,6 +419,7 @@ export const constructionDailyReports = mysqlTable(
   },
   table => ({
     projectDateIndex: index("construction_daily_reports_project_date_index").on(table.projectId, table.reportDate),
+    projectSubmitterDateIndex: index("construction_daily_reports_project_submitter_date_index").on(table.projectId, table.createdBy, table.reportDate),
     projectStatusIndex: index("construction_daily_reports_project_status_index").on(table.projectId, table.status),
   }),
 );

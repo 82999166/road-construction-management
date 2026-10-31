@@ -1,0 +1,1 @@
+CREATE INDEX `construction_daily_reports_project_submitter_date_index` ON `construction_daily_reports` (`projectId`,`createdBy`,`reportDate`);

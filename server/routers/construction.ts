@@ -1,7 +1,7 @@
-import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, like, lte, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { auditLogs, constructionDailyReports, evidenceRecords, projects, systemRoles, userRoleAssignments } from "../../drizzle/schema";
+import { auditLogs, constructionDailyReports, evidenceRecords, projects, systemRoles, userRoleAssignments, users } from "../../drizzle/schema";
 import { assertConstructionDailyReportStatusTransition, ConstructionDomainError, getBusinessStatusLabel } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, type BusinessOperationAction, getCurrentDataScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -13,6 +13,18 @@ import { createInAppMessage } from "./messages";
 
 const businessDateSchema = z.string().date("日期格式应为 YYYY-MM-DD");
 const reportStatusSchema = z.enum(["draft", "submitted", "approved", "rejected", "locked"]);
+const constructionReportFilterInput = z.object({
+  projectId: z.number().int().positive(),
+  dateFrom: businessDateSchema.optional(),
+  dateTo: businessDateSchema.optional(),
+  createdBy: z.number().int().positive().optional(),
+  keyword: z.string().trim().min(1, "关键词不能为空").max(100, "关键词不得超过 100 个字符").optional(),
+}).superRefine((value, context) => {
+  if (value.dateFrom && value.dateTo && value.dateFrom > value.dateTo) {
+    context.addIssue({ code: "custom", message: "开始日期不能晚于结束日期", path: ["dateTo"] });
+  }
+});
+type ConstructionReportFilter = z.infer<typeof constructionReportFilterInput>;
 
 /** 施工日报输入只接收现场业务说明和完成比例，不接收任何认证、资金或个人敏感字段。 */
 const dailyReportInput = z.object({
@@ -29,6 +41,52 @@ const dailyReportInput = z.object({
 
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+/** MySQL LIKE 中将通配字符视为普通文字，避免关键词改变检索范围。 */
+function escapeLikeKeyword(value: string) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function getConstructionReportPredicates(input: ConstructionReportFilter) {
+  const predicates = [eq(constructionDailyReports.projectId, input.projectId)];
+  if (input.dateFrom) predicates.push(gte(constructionDailyReports.reportDate, toBusinessDate(input.dateFrom)));
+  if (input.dateTo) predicates.push(lte(constructionDailyReports.reportDate, toBusinessDate(input.dateTo)));
+  if (input.createdBy) predicates.push(eq(constructionDailyReports.createdBy, input.createdBy));
+  if (input.keyword) {
+    const keyword = `%${escapeLikeKeyword(input.keyword)}%`;
+    predicates.push(or(
+      like(constructionDailyReports.workArea, keyword),
+      like(constructionDailyReports.workContent, keyword),
+      like(constructionDailyReports.safetyNotes, keyword),
+      like(constructionDailyReports.issueNotes, keyword),
+    )!);
+  }
+  return predicates;
+}
+
+const constructionReportProjection = {
+  id: constructionDailyReports.id,
+  projectId: constructionDailyReports.projectId,
+  reportDate: constructionDailyReports.reportDate,
+  workArea: constructionDailyReports.workArea,
+  weather: constructionDailyReports.weather,
+  workContent: constructionDailyReports.workContent,
+  safetyNotes: constructionDailyReports.safetyNotes,
+  issueNotes: constructionDailyReports.issueNotes,
+  progressPercent: constructionDailyReports.progressPercent,
+  status: constructionDailyReports.status,
+  createdBy: constructionDailyReports.createdBy,
+  createdByName: users.name,
+  reviewReply: constructionDailyReports.reviewReply,
+  reviewedBy: constructionDailyReports.reviewedBy,
+  reviewedAt: constructionDailyReports.reviewedAt,
+  createdAt: constructionDailyReports.createdAt,
+  updatedAt: constructionDailyReports.updatedAt,
+};
+
+function withSubmitterDisplayName<T extends { createdBy: number; createdByName: string | null }>(rows: T[]) {
+  return rows.map(row => ({ ...row, createdByName: row.createdByName?.trim() || `管理员 #${row.createdBy}` }));
 }
 
 /** 施工现场业务仅面向项目负责人、施工负责人、安全负责人及全局超级管理员。 */
@@ -136,12 +194,31 @@ export const constructionRouter = router({
     }
   }),
 
-  listReports: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+  listReports: protectedProcedure.input(constructionReportFilterInput).query(async ({ ctx, input }) => {
     await assertConstructionAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return [];
-    return db.select().from(constructionDailyReports).where(eq(constructionDailyReports.projectId, input.projectId)).orderBy(desc(constructionDailyReports.reportDate), desc(constructionDailyReports.updatedAt));
+    const rows = await db.select(constructionReportProjection)
+      .from(constructionDailyReports)
+      .leftJoin(users, eq(constructionDailyReports.createdBy, users.id))
+      .where(and(...getConstructionReportPredicates(input)))
+      .orderBy(desc(constructionDailyReports.reportDate), desc(constructionDailyReports.updatedAt));
+    return withSubmitterDisplayName(rows);
+  }),
+
+  /** 当前项目日报提交管理员下拉，仅返回受控显示名和内部筛选ID。 */
+  reportSubmitterOptions: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    await assertConstructionAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const rows = await db.select({ id: constructionDailyReports.createdBy, name: users.name })
+      .from(constructionDailyReports)
+      .leftJoin(users, eq(constructionDailyReports.createdBy, users.id))
+      .where(eq(constructionDailyReports.projectId, input.projectId));
+    return Array.from(new Map(rows.map(row => [row.id, { id: row.id, name: row.name?.trim() || `管理员 #${row.id}` }])).values())
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
   }),
 
   /** 日报附件影像仅对当前日报项目范围内的施工业务人员返回，URL 为短时签名地址。 */
@@ -159,12 +236,12 @@ export const constructionRouter = router({
     }));
   }),
 
-  summary: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+  summary: protectedProcedure.input(constructionReportFilterInput).query(async ({ ctx, input }) => {
     await assertConstructionAccess(ctx);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) return { total: 0, draft: 0, submitted: 0, approved: 0, locked: 0, averageProgressPercent: 0 };
-    const rows = await db.select({ status: constructionDailyReports.status, progressPercent: constructionDailyReports.progressPercent }).from(constructionDailyReports).where(eq(constructionDailyReports.projectId, input.projectId));
+    const rows = await db.select({ status: constructionDailyReports.status, progressPercent: constructionDailyReports.progressPercent }).from(constructionDailyReports).where(and(...getConstructionReportPredicates(input)));
     const total = rows.length;
     return {
       total,
@@ -174,6 +251,22 @@ export const constructionRouter = router({
       locked: rows.filter(row => row.status === "locked").length,
       averageProgressPercent: total ? Math.round(rows.reduce((sum, row) => sum + Number(row.progressPercent ?? 0), 0) / total * 100) / 100 : 0,
     };
+  }),
+
+  /** 批量打印始终重新从服务端读取当前筛选的授权范围，而非复用浏览器缓存行。 */
+  printReports: protectedProcedure.input(constructionReportFilterInput).query(async ({ ctx, input }) => {
+    await assertConstructionAccess(ctx, "print");
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    const db = await getDb();
+    if (!db) return [];
+    const rows = await db.select(constructionReportProjection)
+      .from(constructionDailyReports)
+      .leftJoin(users, eq(constructionDailyReports.createdBy, users.id))
+      .where(and(...getConstructionReportPredicates(input)))
+      .orderBy(desc(constructionDailyReports.reportDate), desc(constructionDailyReports.updatedAt))
+      .limit(251);
+    if (rows.length > 250) throw new TRPCError({ code: "BAD_REQUEST", message: "当前筛选结果超过 250 份日报，请缩小日期、管理员或关键词范围后再打印" });
+    return withSubmitterDisplayName(rows);
   }),
 
   /** 新日报可由获授权现场岗位创建；更新既有日报仅限超级管理员，防止普通人员重写历史现场记录。 */

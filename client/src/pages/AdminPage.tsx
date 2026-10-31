@@ -824,6 +824,18 @@ type DesktopRecordDetail = {
   onPrint?: () => void;
 };
 
+/** 仅在用户主动打开单份日报详情时申请短时影像URL，避免台账列表预取所有现场照片。 */
+function ConstructionReportEvidenceDetail({ projectId, reportId }: { projectId: number; reportId: number }) {
+  const evidence = trpc.construction.reportEvidence.useQuery(
+    { projectId, reportIds: [reportId] },
+    { enabled: projectId > 0 && reportId > 0, retry: false }
+  );
+  if (evidence.isLoading || evidence.isFetching) return <p className="text-sm text-slate-500">正在读取已授权的关联现场照片…</p>;
+  if (evidence.isError) return <p className="text-sm leading-6 text-amber-700">关联照片暂时无法读取，请关闭详情后刷新台账重试。</p>;
+  if (!evidence.data?.length) return <p className="text-sm leading-6 text-slate-500">该日报暂未关联现场照片。填报人员可在日报新建或编辑窗口中补充照片后再提交审核。</p>;
+  return <div className="grid gap-3 sm:grid-cols-2">{evidence.data.map((photo, index) => <ProtectedImagePreview key={photo.id} file={{ url: photo.url, fileName: photo.fileName }} title={`施工日报照片 ${index + 1}`} description="点击查看站内原图，不会下载照片。" className="block overflow-hidden rounded-lg border border-slate-200 bg-white p-2 hover:border-[#2d6b63]"><img className="h-40 w-full rounded object-cover" src={photo.url} alt={photo.description || `施工日报照片 ${index + 1}`} /><span className="mt-2 block text-xs leading-5 text-slate-600">{photo.description || "施工日报现场影像"} · {displayDate(photo.capturedAt)} · 点击预览</span></ProtectedImagePreview>)}</div>;
+}
+
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = {
   parentId: "",
   code: "",
@@ -2515,6 +2527,13 @@ export default function AdminPage({
   const [paymentReference, setPaymentReference] = useState("");
   const [constructionReportEditor, setConstructionReportEditor] =
     useState<ConstructionReportEditor | null>(null);
+  const [constructionReportFilter, setConstructionReportFilter] = useState(() => ({
+    dateFrom: toChinaDateInput(),
+    dateTo: toChinaDateInput(),
+    createdBy: "all",
+    keyword: "",
+  }));
+  const [isConstructionPrinting, setIsConstructionPrinting] = useState(false);
   const [desktopRecordDetail, setDesktopRecordDetail] =
     useState<DesktopRecordDetail | null>(null);
   const [purchasingOrderUploader, setPurchasingOrderUploader] = useState("all");
@@ -2583,6 +2602,19 @@ export default function AdminPage({
   const workspaceProjectInput = useMemo(
     () => ({ projectId: workspaceProjectId }),
     [workspaceProjectId]
+  );
+  const constructionReportFilterInput = useMemo(
+    () => ({
+      projectId: workspaceProjectId,
+      dateFrom: constructionReportFilter.dateFrom || undefined,
+      dateTo: constructionReportFilter.dateTo || undefined,
+      createdBy:
+        constructionReportFilter.createdBy === "all"
+          ? undefined
+          : Number(constructionReportFilter.createdBy),
+      keyword: constructionReportFilter.keyword.trim() || undefined,
+    }),
+    [constructionReportFilter, workspaceProjectId]
   );
   const machineCostWorkspaceInput = useMemo(
     () => ({
@@ -2812,50 +2844,17 @@ export default function AdminPage({
     }
   );
   const constructionDailyReports = trpc.construction.listReports.useQuery(
-    workspaceProjectInput,
+    constructionReportFilterInput,
     { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject }
   );
   const constructionDailySummary = trpc.construction.summary.useQuery(
-    workspaceProjectInput,
+    constructionReportFilterInput,
     { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject }
   );
-  const constructionReportEvidenceIds = useMemo(
-    () =>
-      (constructionDailyReports.data ?? [])
-        .map(report => Number(report.id))
-        .filter(Number.isInteger),
-    [constructionDailyReports.data]
-  );
-  const constructionReportEvidenceInput = useMemo(
-    () => ({
-      projectId: workspaceProjectId,
-      reportIds: constructionReportEvidenceIds.length
-        ? constructionReportEvidenceIds
-        : [0],
-    }),
-    [workspaceProjectId, constructionReportEvidenceIds]
-  );
-  const constructionReportEvidence = trpc.construction.reportEvidence.useQuery(
-    constructionReportEvidenceInput,
-    {
-      enabled:
-        canQuery &&
-        isConstruction &&
-        hasBusinessWorkspaceProject &&
-        constructionReportEvidenceIds.length > 0,
-      retry: false,
-    }
-  );
-  const constructionEvidenceByReport = useMemo(() => {
-    const grouped = new Map<
-      number,
-      NonNullable<typeof constructionReportEvidence.data>
-    >();
-    (constructionReportEvidence.data ?? []).forEach(item =>
-      grouped.set(item.reportId, [...(grouped.get(item.reportId) ?? []), item])
-    );
-    return grouped;
-  }, [constructionReportEvidence.data]);
+  const constructionReportSubmitters =
+    trpc.construction.reportSubmitterOptions.useQuery(workspaceProjectInput, {
+      enabled: canQuery && isConstruction && hasBusinessWorkspaceProject,
+    });
   const machineryLedger = trpc.machinery.listMachines.useQuery(
     workspaceProjectInput,
     { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject }
@@ -5931,6 +5930,7 @@ export default function AdminPage({
       await Promise.all([
         constructionDailyReports.refetch(),
         constructionDailySummary.refetch(),
+        constructionReportSubmitters.refetch(),
       ]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
@@ -13529,6 +13529,46 @@ export default function AdminPage({
     </Card>
   );
 
+  const printConstructionReports = async () => {
+    if (!hasBusinessWorkspaceProject) return;
+    setIsConstructionPrinting(true);
+    try {
+      const printableRows = await trpcUtils.construction.printReports.fetch(
+        constructionReportFilterInput
+      );
+      const projectName = selectedWorkspaceProject?.name ?? "当前项目";
+      const selectedSubmitter = constructionReportSubmitters.data?.find(
+        item => String(item.id) === constructionReportFilter.createdBy
+      )?.name ?? "全部管理员";
+      const filterText = [
+        `日期：${constructionReportFilter.dateFrom || "不限"} 至 ${constructionReportFilter.dateTo || "不限"}`,
+        `提交管理员：${selectedSubmitter}`,
+        `关键词：${constructionReportFilter.keyword.trim() || "全部"}`,
+      ].join("　|　");
+      const statusCounts = printableRows.reduce(
+        (counts, item) => ({
+          ...counts,
+          [item.status]: (counts[item.status] ?? 0) + 1,
+        }),
+        {} as Record<string, number>
+      );
+      const rows = printableRows
+        .map(
+          (item, index) =>
+            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(displayDate(item.reportDate))}</td><td>${escapePrintHtml(item.createdByName)}</td><td>${escapePrintHtml(item.workArea)}</td><td>${escapePrintHtml(CONSTRUCTION_WEATHER_LABELS[item.weather])}</td><td class="right">${escapePrintHtml(Number(item.progressPercent).toFixed(2))}%</td><td>${escapePrintHtml(getBusinessStatusLabel(item.status))}</td><td>${escapePrintHtml(item.workContent)}</td><td>${escapePrintHtml(item.safetyNotes || "—")}</td><td>${escapePrintHtml(item.issueNotes || item.reviewReply || "—")}</td></tr>`
+        )
+        .join("");
+      openA4LandscapePrintDocument({
+        title: "施工日报筛选明细表",
+        bodyHtml: `<h1>施工日报筛选明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　${escapePrintHtml(filterText)}</p><p class="sub">生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}　|　本表仅打印当前筛选、当前项目和当前账号已授权的施工日报</p><hr class="rule"><table><thead><tr><th style="width:4%">序号</th><th style="width:8%">日期</th><th style="width:9%">提交管理员</th><th style="width:10%">作业面</th><th style="width:5%">天气</th><th style="width:7%">进度</th><th style="width:7%">状态</th><th style="width:19%">施工内容</th><th style="width:15%">安全情况</th><th style="width:16%">问题 / 审核回复</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="center">当前筛选范围暂无施工日报</td></tr>'}<tr class="summary"><td colspan="10">合计：施工日报 ${printableRows.length} 份；待审核 ${statusCounts.submitted ?? 0} 份，已归档 ${statusCounts.locked ?? 0} 份，已退回 ${statusCounts.rejected ?? 0} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>复核人：________________</span></div>`,
+      });
+    } catch (error) {
+      toast.error(getUserFacingErrorMessage(error, "施工日报批量打印未生成，请检查筛选范围与打印权限"));
+    } finally {
+      setIsConstructionPrinting(false);
+    }
+  };
+
   const renderConstruction = () => {
     const rows = constructionDailyReports.data ?? [];
     const summary = constructionDailySummary.data;
@@ -13563,35 +13603,13 @@ export default function AdminPage({
             }
       );
     const showConstructionEvidence = (item: (typeof rows)[number]) => {
-      const evidence = constructionEvidenceByReport.get(Number(item.id)) ?? [];
       setDesktopRecordDetail({
         title: `施工日报关联影像 · ${item.workArea}`,
-        description: evidence.length
-          ? `以下 ${evidence.length} 张水印照片随日报一并提交，图片链接为短时签名地址，仅在当前项目与施工权限范围内可查看。`
-          : "该日报暂未关联现场影像；填报人员可在日报新建或编辑窗口中一次性补充照片后再提交审核。",
-        fields: evidence.length
-          ? evidence.map((photo, index) => ({
-              label: `照片 ${index + 1}`,
-              value: (
-                <ProtectedImagePreview
-                  file={{ url: photo.url }}
-                  title={`施工日报照片 ${index + 1}`}
-                  description="点击查看站内原图，不会下载照片。"
-                  className="block max-w-sm overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2 hover:border-[#2d6b63]"
-                >
-                  <img
-                    className="h-40 w-full rounded object-cover"
-                    src={photo.url}
-                    alt={photo.description || `施工日报照片 ${index + 1}`}
-                  />
-                  <span className="mt-2 block text-xs leading-5 text-slate-600">
-                    {photo.description || "施工日报现场影像"} ·{" "}
-                    {displayDate(photo.capturedAt)} · 点击预览
-                  </span>
-                </ProtectedImagePreview>
-              ),
-            }))
-          : [{ label: "关联状态", value: "尚无已归档照片" }],
+        description: "仅在打开本详情后读取当前日报的短时签名照片，仍受当前项目范围与施工读取权限校验。",
+        fields: [{
+          label: "关联现场照片",
+          value: <ConstructionReportEvidenceDetail projectId={workspaceProjectId} reportId={Number(item.id)} />,
+        }],
       });
     };
     return (
@@ -13619,6 +13637,18 @@ export default function AdminPage({
           "施工项目范围",
           "选择项目后加载日报、累计进度和待处理状态；未选择项目时不会请求或展示施工生产记录。"
         )}
+        {hasBusinessWorkspaceProject ? (
+          <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
+            <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(130px,1fr)_minmax(130px,1fr)_minmax(170px,1fr)_minmax(220px,2fr)_auto] lg:items-end">
+              <div><Label htmlFor="construction-report-date-from">日报开始日期</Label><Input id="construction-report-date-from" className="mt-1" type="date" value={constructionReportFilter.dateFrom} max={constructionReportFilter.dateTo || undefined} onChange={event => setConstructionReportFilter(current => ({ ...current, dateFrom: event.target.value }))} /></div>
+              <div><Label htmlFor="construction-report-date-to">日报结束日期</Label><Input id="construction-report-date-to" className="mt-1" type="date" value={constructionReportFilter.dateTo} min={constructionReportFilter.dateFrom || undefined} onChange={event => setConstructionReportFilter(current => ({ ...current, dateTo: event.target.value }))} /></div>
+              <div><Label htmlFor="construction-report-submitter">提交管理员</Label><Select value={constructionReportFilter.createdBy} onValueChange={createdBy => setConstructionReportFilter(current => ({ ...current, createdBy }))}><SelectTrigger id="construction-report-submitter" className="mt-1"><SelectValue placeholder="全部管理员" /></SelectTrigger><SelectContent><SelectItem value="all">全部管理员</SelectItem>{(constructionReportSubmitters.data ?? []).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label htmlFor="construction-report-keyword">关键字查询</Label><Input id="construction-report-keyword" className="mt-1" value={constructionReportFilter.keyword} maxLength={100} placeholder="作业面、施工内容、安全或问题" onChange={event => setConstructionReportFilter(current => ({ ...current, keyword: event.target.value }))} /></div>
+              <div className="flex flex-wrap items-center gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setConstructionReportFilter({ dateFrom: toChinaDateInput(), dateTo: toChinaDateInput(), createdBy: "all", keyword: "" })}>恢复当天</Button><Button type="button" size="sm" variant="outline" onClick={() => setConstructionReportFilter(current => ({ ...current, dateFrom: "", dateTo: "" }))}>不限日期</Button></div>
+              <div className="lg:col-span-5"><div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-white px-3 py-2.5"><p className="text-xs leading-5 text-slate-600">列表、统计和打印均按当前日期、提交管理员和关键字的服务端筛选结果生成；打印不包含现场照片或坐标。</p><CurrentFilterPrintActions disabled={!rows.length} printing={isConstructionPrinting} printLabel="批量打印当前筛选日报" onPrint={() => { void printConstructionReports(); }} /></div></div>
+            </CardContent>
+          </Card>
+        ) : null}
         {!hasBusinessWorkspaceProject ? (
           <EmptyState text="请先选择已授权项目，以读取真实施工日报。" />
         ) : constructionDailyReports.isLoading ||
@@ -13675,13 +13705,13 @@ export default function AdminPage({
                     Promise.all([
                       constructionDailyReports.refetch(),
                       constructionDailySummary.refetch(),
-                      constructionReportEvidence.refetch(),
+                      constructionReportSubmitters.refetch(),
                     ])
                   }
                   disabled={
                     constructionDailyReports.isFetching ||
                     constructionDailySummary.isFetching ||
-                    constructionReportEvidence.isFetching
+                    constructionReportSubmitters.isFetching
                   }
                 >
                   刷新台账
@@ -13689,11 +13719,14 @@ export default function AdminPage({
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1350px] text-xs">
+                  <Table className="min-w-[1480px] text-xs">
                     <TableHeader className="bg-[#edf1ed]">
                       <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
                         <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
                           日报日期
+                        </TableHead>
+                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                          提交管理员
                         </TableHead>
                         <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
                           作业面 / 内容
@@ -13725,6 +13758,9 @@ export default function AdminPage({
                             <TableCell className="px-4 py-3 text-slate-700">
                               {displayDate(item.reportDate)}
                             </TableCell>
+                            <TableCell className="px-4 py-3 text-slate-700">
+                              {item.createdByName || `管理员 #${item.createdBy}`}
+                            </TableCell>
                             <TableCell className="max-w-[280px] px-4 py-3">
                               <p className="font-semibold text-[#203c48]">
                                 {item.workArea}
@@ -13754,13 +13790,8 @@ export default function AdminPage({
                                 size="sm"
                                 variant="outline"
                                 onClick={() => showConstructionEvidence(item)}
-                                disabled={constructionReportEvidence.isFetching}
                               >
-                                照片{" "}
-                                {constructionEvidenceByReport.get(
-                                  Number(item.id)
-                                )?.length ?? 0}{" "}
-                                张
+                                查看照片
                               </Button>
                             </TableCell>
                             <TableCell className="px-4 py-3">
@@ -13854,7 +13885,7 @@ export default function AdminPage({
                       ) : (
                         <TableRow>
                           <TableCell
-                            colSpan={7}
+                            colSpan={8}
                             className="px-4 py-10 text-center text-slate-500"
                           >
                             当前项目尚无真实施工日报。请使用右上方“新建施工日报”录入现场记录。

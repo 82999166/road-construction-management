@@ -12,6 +12,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { MobileBottomNavigation } from "./components/MobileBottomNavigation";
 import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { AccessibilityPreferencesProvider } from "./contexts/AccessibilityPreferencesContext";
 import { useAuth } from "./_core/hooks/useAuth";
 import { useIsMobile } from "./hooks/useMobile";
 
@@ -148,12 +149,14 @@ function App() {
         defaultTheme="light"
         // switchable
       >
-        <TooltipProvider>
-          <div className="notranslate" translate="no">
-            <Toaster />
-            <Router />
-          </div>
-        </TooltipProvider>
+        <AccessibilityPreferencesProvider>
+          <TooltipProvider>
+            <div className="notranslate" translate="no">
+              <Toaster />
+              <Router />
+            </div>
+          </TooltipProvider>
+        </AccessibilityPreferencesProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

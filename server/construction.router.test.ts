@@ -44,13 +44,21 @@ function createAuthContext(): TrpcContext {
 }
 
 function createSelectDb(rows: unknown[]) {
+  const terminal: {
+    orderBy: ReturnType<typeof vi.fn>;
+    limit: ReturnType<typeof vi.fn>;
+    then: (resolve: (value: unknown[]) => unknown) => Promise<unknown>;
+  } = {
+    orderBy: vi.fn(),
+    limit: vi.fn(async () => rows),
+    then: resolve => Promise.resolve(rows).then(resolve),
+  };
+  terminal.orderBy.mockReturnValue(terminal);
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => rows),
-          limit: vi.fn(async () => rows),
-        })),
+        where: vi.fn(() => terminal),
+        leftJoin: vi.fn(() => ({ where: vi.fn(() => terminal) })),
       })),
     })),
   };
@@ -72,6 +80,56 @@ describe("施工日报 tRPC 路由", () => {
     await expect(constructionRouter.createCaller(createAuthContext()).listReports({ projectId: 10 })).resolves.toEqual([]);
     expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "read");
     expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+  });
+
+  it("列表只投影提交管理员显示名，并支持日期、管理员和关键词组合筛选", async () => {
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{
+      id: 71,
+      projectId: 10,
+      reportDate: new Date("2026-10-31T00:00:00.000Z"),
+      createdBy: 7,
+      createdByName: "现场管理员",
+      workArea: "K12+500",
+      weather: "sunny",
+      workContent: "完成碾压作业",
+      safetyNotes: null,
+      issueNotes: null,
+      progressPercent: "12.50",
+      status: "submitted",
+      reviewReply: null,
+      reviewedBy: null,
+      reviewedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]) as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).listReports({ projectId: 10, dateFrom: "2026-10-01", dateTo: "2026-10-31", createdBy: 7, keyword: "碾压" })).resolves.toEqual([expect.objectContaining({ createdBy: 7, createdByName: "现场管理员" })]);
+    await expect(constructionRouter.createCaller(createAuthContext()).listReports({ projectId: 10, dateFrom: "2026-11-01", dateTo: "2026-10-31" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("打印日报需单独校验print权限，并仅返回当前筛选的受控投影", async () => {
+    vi.mocked(getDb).mockResolvedValue(createSelectDb([{
+      id: 72,
+      projectId: 10,
+      reportDate: new Date(),
+      createdBy: 1,
+      createdByName: null,
+      workArea: "拌合站",
+      weather: "cloudy",
+      workContent: "完成试拌",
+      safetyNotes: null,
+      issueNotes: null,
+      progressPercent: "5.00",
+      status: "locked",
+      reviewReply: null,
+      reviewedBy: null,
+      reviewedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]) as never);
+
+    await expect(constructionRouter.createCaller(createAuthContext()).printReports({ projectId: 10 })).resolves.toEqual([expect.objectContaining({ createdByName: "管理员 #1" })]);
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "CONSTRUCTION", "print");
   });
 
   it("日报关联影像仅按日报来源编号返回当前项目内的短时签名照片", async () => {

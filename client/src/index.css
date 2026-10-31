@@ -43,6 +43,10 @@
 }
 
 :root {
+  --ui-font-scale: 1;
+  --ui-body-weight: 400;
+  --ui-emphasis-weight: 600;
+  --ui-control-min-height: 2.25rem;
   --primary: oklch(0.29 0.035 219);
   --primary-foreground: oklch(0.99 0.002 95);
   --sidebar-primary: oklch(0.83 0.13 87);
@@ -120,6 +124,7 @@
   body {
     @apply bg-background text-foreground;
     font-family: "Noto Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+    font-weight: var(--ui-body-weight);
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -143,6 +148,34 @@
     border-color: #cbd5e1;
     box-shadow: none;
   }
+}
+
+/* 个人辅助显示：不使用浏览器 zoom / transform，避免固定导航、弹窗与触控坐标失真。 */
+html[data-text-weight="bold"] {
+  --ui-body-weight: 600;
+  --ui-emphasis-weight: 700;
+}
+
+html[data-text-weight="bold"] body :is(p, span, label, input, textarea, select, button, th, td, dt, dd) {
+  font-weight: var(--ui-body-weight);
+}
+
+html[data-layout-scale="large"] {
+  --ui-font-scale: 1.125;
+  --ui-control-min-height: 2.75rem;
+  font-size: 112.5%;
+}
+
+html[data-layout-scale="large"] :is(button, [role="button"], input, select, textarea, [data-slot="select-trigger"], [data-slot="switch"]) {
+  min-height: var(--ui-control-min-height);
+}
+
+html[data-layout-scale="large"] .mobile-bottom-navigation {
+  min-height: calc(4.75rem + env(safe-area-inset-bottom));
+}
+
+html[data-layout-scale="large"] .mobile-viewport-shell {
+  padding-bottom: calc(7rem + env(safe-area-inset-bottom));
 }
 
 /* 参考项目指挥台的浅色工作画布：只作用于管理后台壳层，业务数据与组件契约不变。 */
@@ -262,6 +295,13 @@
 
 /* 劳务工资统计打印时移除移动端装饰与固定导航，保留项目、月份和业务台账正文。 */
 @media print {
+  html[data-text-weight],
+  html[data-layout-scale] {
+    font-size: 100% !important;
+    --ui-body-weight: 400 !important;
+    --ui-emphasis-weight: 600 !important;
+  }
+
   body {
     background: #fff !important;
   }

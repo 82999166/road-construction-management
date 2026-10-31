@@ -500,14 +500,30 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(source, 'grid grid-cols-1 gap-3 sm:grid-cols-2');
   });
 
-  it("在 PC 施工日报台账中显示关联照片数量并提供受控预览入口", () => {
+  it("在 PC 施工日报台账中提供按单条读取的受控照片预览入口", () => {
     const source = ADMIN_PAGE_SOURCE;
 
     expectSourceToContain(source, "trpc.construction.reportEvidence.useQuery");
-    expectSourceToContain(source, "constructionEvidenceByReport");
-    expectSourceToContain(source, '照片{" "}{constructionEvidenceByReport');
+    expectSourceToContain(source, "ConstructionReportEvidenceDetail");
+    expectSourceToContain(source, "仅在用户主动打开单份日报详情时申请短时影像URL");
+    expectSourceToContain(source, "查看照片");
     expectSourceToContain(source, "施工日报、现场影像与审核台账");
     expectSourceToContain(source, "施工日报关联影像");
+  });
+
+  it("在 PC 施工日报台账中按日期、提交管理员和关键字服务端筛选，并按当前筛选批量打印", () => {
+    const source = ADMIN_PAGE_SOURCE;
+
+    expectSourceToContain(source, "constructionReportFilterInput");
+    expectSourceToContain(source, "日报开始日期");
+    expectSourceToContain(source, "日报结束日期");
+    expectSourceToContain(source, "提交管理员");
+    expectSourceToContain(source, "关键字查询");
+    expectSourceToContain(source, "trpc.construction.reportSubmitterOptions.useQuery");
+    expectSourceToContain(source, "trpcUtils.construction.printReports.fetch");
+    expectSourceToContain(source, "批量打印当前筛选日报");
+    expectSourceToContain(source, "施工日报筛选明细表");
+    expectSourceToContain(source, "openA4LandscapePrintDocument");
   });
 
   it("移除各业务页顶部重复台账，仅保留工作区中的统一主表格和行内详情流程", () => {
