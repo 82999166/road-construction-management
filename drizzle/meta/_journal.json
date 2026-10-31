@@ -575,6 +575,20 @@
       "when": 1792205386964,
       "tag": "0081_fantastic_hellfire_club",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "5",
+      "when": 1792547038907,
+      "tag": "0082_clever_sage",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "5",
+      "when": 1793451364224,
+      "tag": "0083_glorious_flatman",
+      "breakpoints": true
     }
   ]
 }

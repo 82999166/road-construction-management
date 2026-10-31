@@ -15,6 +15,7 @@ import {
   dieselPriceAlertRules,
   dieselRefuelRecords,
   employeeInsurancePolicies,
+  employeePayrollAdvances,
   employeeProfiles,
   evidenceRecords,
   financialRecords,
@@ -125,6 +126,7 @@ import {
 import {
   decryptSecret,
   encryptSecret,
+  fingerprintSecret,
   maskSecret,
 } from "../services/secretVault";
 import { SUPERVISOR_REVIEW_AUTO_APPROVE_SETTING_KEY } from "../services/supervisorReview";
@@ -392,6 +394,7 @@ const employeeProfileInput = z
     laborWorkerId: z.number().int().positive().nullable().optional(),
     projectId: z.number().int().positive().nullable().optional(),
     employeeType: z.enum(["management", "operator", "construction_worker"]),
+    tradeName: z.string().trim().max(128).nullable().optional(),
     teamName: z.string().trim().max(128).nullable().optional(),
     employmentStatus: z.enum(["active", "suspended", "left"]),
     joinedAt: z.string().date().nullable().optional(),
@@ -404,6 +407,8 @@ const employeeProfileInput = z
       .regex(/^[0-9+\-\s()]{7,24}$/, "请输入有效手机号")
       .nullable()
       .optional(),
+    bankAccount: z.string().trim().regex(/^\d{8,32}$/, "请输入有效银行卡号").nullable().optional(),
+    bankName: z.string().trim().max(128).nullable().optional(),
     remarks: z.string().trim().max(500).nullable().optional(),
   })
   .superRefine((value, ctx) => {
@@ -420,6 +425,14 @@ const employeeProfileInput = z
         message: "离职日期不得早于入职日期",
       });
   });
+
+const employeePayrollAdvanceInput = z.object({
+  employeeProfileId: z.number().int().positive(),
+  advanceDate: z.string().date(),
+  amount: z.number().positive().max(999999999999.99),
+  status: z.enum(["draft", "approved", "deducted", "void"]).default("draft"),
+  remarks: z.string().trim().max(500).nullable().optional(),
+});
 
 const employeeInsuranceInput = z
   .object({
@@ -1598,6 +1611,7 @@ export const adminRouter = router({
             entryDate: laborWorkers.entryDate,
             phoneEncrypted: laborWorkers.phoneEncrypted,
             bankAccountEncrypted: laborWorkers.bankAccountEncrypted,
+            bankName: laborWorkers.bankName,
           })
           .from(laborWorkers),
         db.select({ id: projects.id, name: projects.name }).from(projects),
@@ -1605,6 +1619,8 @@ export const adminRouter = router({
           .select({
             userId: userProfiles.userId,
             phoneMasked: userProfiles.phoneMasked,
+            bankAccountEncrypted: userProfiles.bankAccountEncrypted,
+            bankName: userProfiles.bankName,
             positionId: userProfiles.positionId,
           })
           .from(userProfiles),
@@ -1698,7 +1714,8 @@ export const adminRouter = router({
         userId: number | null,
         workerId: number | null,
         baseSalary: string | number | null,
-        salaryBasis: string | null
+        salaryBasis: string | null,
+        profileTradeName: string | null = null
       ) => {
         const workerAttendance = workerId
           ? (attendanceByWorker.get(workerId) ?? [])
@@ -1719,10 +1736,13 @@ export const adminRouter = router({
           contactPhoneMasked: phoneMasked,
           bankAccountMasked: worker?.bankAccountEncrypted
             ? maskSecret(decryptSecret(worker.bankAccountEncrypted))
+            : userProfile?.bankAccountEncrypted
+              ? maskSecret(decryptSecret(userProfile.bankAccountEncrypted))
             : null,
-          tradeName: userProfile?.positionId
+          bankName: worker?.bankName ?? userProfile?.bankName ?? null,
+          tradeName: profileTradeName || (userProfile?.positionId
             ? (positionNameById.get(userProfile.positionId) ?? null)
-            : (worker?.teamName ?? null),
+            : (worker?.teamName ?? null)),
           baseSalary,
           attendanceDays: workerAttendance.length,
           workHours: workerAttendance.reduce(
@@ -1789,7 +1809,8 @@ export const adminRouter = router({
             profile.userId ?? null,
             profile.laborWorkerId ?? null,
             profile.baseSalary,
-            profile.salaryBasis
+            profile.salaryBasis,
+            profile.tradeName
           ),
           profileComplete: true,
         } as const;
@@ -1851,6 +1872,42 @@ export const adminRouter = router({
         left.displayName.localeCompare(right.displayName, "zh-CN")
       );
     }),
+    compensationDetails: protectedProcedure
+      .input(z.object({ employeeProfileId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db) return { payroll: [], dailyWage: [], advances: [] };
+        const [profile] = await db
+          .select({ id: employeeProfiles.id, laborWorkerId: employeeProfiles.laborWorkerId })
+          .from(employeeProfiles)
+          .where(eq(employeeProfiles.id, input.employeeProfileId))
+          .limit(1);
+        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+        const workerId = profile.laborWorkerId;
+        const [payroll, dailyWage, advances] = await Promise.all([
+          workerId
+            ? db.select({ id: payrollStatements.id, period: payrollStatements.period, payableAmount: payrollStatements.payableAmount, deductionAmount: payrollStatements.deductionAmount, actualAmount: payrollStatements.actualAmount, status: payrollStatements.status, paidAt: payrollStatements.paidAt }).from(payrollStatements).where(eq(payrollStatements.workerId, workerId)).orderBy(desc(payrollStatements.period))
+            : Promise.resolve([]),
+          workerId
+            ? db.select({ id: temporaryDailyWageSettlements.id, settlementDate: temporaryDailyWageSettlements.settlementDate, payableAmount: temporaryDailyWageSettlements.payableAmount, actualAmount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status, paidAt: temporaryDailyWageSettlements.paidAt }).from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.workerId, workerId)).orderBy(desc(temporaryDailyWageSettlements.settlementDate))
+            : Promise.resolve([]),
+          db.select({ id: employeePayrollAdvances.id, advanceDate: employeePayrollAdvances.advanceDate, amount: employeePayrollAdvances.amount, status: employeePayrollAdvances.status, remarks: employeePayrollAdvances.remarks, createdAt: employeePayrollAdvances.createdAt }).from(employeePayrollAdvances).where(eq(employeePayrollAdvances.employeeProfileId, input.employeeProfileId)).orderBy(desc(employeePayrollAdvances.advanceDate)),
+        ]);
+        return { payroll, dailyWage, advances };
+      }),
+    saveAdvance: protectedProcedure
+      .input(employeePayrollAdvanceInput)
+      .mutation(async ({ ctx, input }) => {
+        const admin = await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        const [profile] = await db.select({ id: employeeProfiles.id, laborWorkerId: employeeProfiles.laborWorkerId, projectId: employeeProfiles.projectId }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
+        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+        const [created] = await db.insert(employeePayrollAdvances).values({ employeeProfileId: profile.id, laborWorkerId: profile.laborWorkerId, projectId: profile.projectId, advanceDate: new Date(`${input.advanceDate}T00:00:00Z`), amount: String(input.amount), status: input.status, remarks: input.remarks ?? null, createdBy: admin.id });
+        await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: "create_payroll_advance", targetType: "employee_profile", targetId: String(profile.id), summary: "新增员工工资预支记录" });
+        return { success: true, id: created.insertId };
+      }),
     saveProfile: protectedProcedure
       .input(employeeProfileInput)
       .mutation(async ({ ctx, input }) => {
@@ -1861,6 +1918,9 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        const normalizedPhoneNumber = input.phoneNumber
+          ? input.phoneNumber.replace(/[\s\-()]/g, "")
+          : input.phoneNumber;
         if (input.userId) {
           const [user] = await db
             .select({ id: users.id })
@@ -1890,6 +1950,18 @@ export const adminRouter = router({
               message: "施工队工人的归属项目必须与劳务实名档案一致",
             });
         }
+        if (normalizedPhoneNumber) {
+          const phoneFingerprint = fingerprintSecret(normalizedPhoneNumber);
+          const [duplicateWorker, duplicateProfile] = await Promise.all([
+            db.select({ id: laborWorkers.id }).from(laborWorkers).where(eq(laborWorkers.phoneFingerprint, phoneFingerprint)).limit(1),
+            db.select({ userId: userProfiles.userId }).from(userProfiles).where(eq(userProfiles.phoneFingerprint, phoneFingerprint)).limit(1),
+          ]);
+          if (
+            (duplicateWorker[0] && duplicateWorker[0].id !== input.laborWorkerId) ||
+            (duplicateProfile[0] && duplicateProfile[0].userId !== input.userId)
+          )
+            throw new TRPCError({ code: "CONFLICT", message: "该手机号已被其他员工使用，请更换手机号" });
+        }
         if (input.projectId) {
           const [project] = await db
             .select({ id: projects.id, status: projects.status })
@@ -1907,6 +1979,7 @@ export const adminRouter = router({
           laborWorkerId: input.laborWorkerId ?? null,
           projectId: input.projectId ?? null,
           employeeType: input.employeeType,
+          tradeName: input.tradeName ?? null,
           teamName: input.teamName ?? null,
           employmentStatus: input.employmentStatus,
           joinedAt: input.joinedAt
@@ -1937,23 +2010,62 @@ export const adminRouter = router({
             .where(eq(employeeProfiles.id, input.id));
         } else await db.insert(employeeProfiles).values(values);
         if (input.laborWorkerId) {
+          const laborWorkerSensitiveValues = {
+            ...(input.phoneNumber !== undefined
+              ? {
+                  phoneEncrypted: normalizedPhoneNumber
+                    ? encryptSecret(normalizedPhoneNumber)
+                    : null,
+                  phoneFingerprint: normalizedPhoneNumber
+                    ? fingerprintSecret(normalizedPhoneNumber)
+                    : null,
+                }
+              : {}),
+            ...(input.bankAccount !== undefined
+              ? {
+                  bankAccountEncrypted: input.bankAccount
+                    ? encryptSecret(input.bankAccount)
+                    : null,
+                  bankName: input.bankName ?? null,
+                }
+              : {}),
+          };
+          if (Object.keys(laborWorkerSensitiveValues).length) {
           await db
             .update(laborWorkers)
-            .set({
-              phoneEncrypted: input.phoneNumber
-                ? encryptSecret(input.phoneNumber)
-                : null,
-            })
+            .set(laborWorkerSensitiveValues)
             .where(eq(laborWorkers.id, input.laborWorkerId));
+          }
         } else if (input.userId) {
+          const userProfileSensitiveValues = {
+            ...(input.phoneNumber !== undefined
+              ? {
+                  phoneMasked: normalizedPhoneNumber
+                    ? maskSecret(normalizedPhoneNumber)
+                    : null,
+                  phoneEncrypted: normalizedPhoneNumber
+                    ? encryptSecret(normalizedPhoneNumber)
+                    : null,
+                  phoneFingerprint: normalizedPhoneNumber
+                    ? fingerprintSecret(normalizedPhoneNumber)
+                    : null,
+                }
+              : {}),
+            ...(input.bankAccount !== undefined
+              ? {
+                  bankAccountEncrypted: input.bankAccount
+                    ? encryptSecret(input.bankAccount)
+                    : null,
+                  bankName: input.bankName ?? null,
+                }
+              : {}),
+          };
+          if (Object.keys(userProfileSensitiveValues).length) {
           await db
             .update(userProfiles)
-            .set({
-              phoneMasked: input.phoneNumber
-                ? maskSecret(input.phoneNumber)
-                : null,
-            })
+            .set(userProfileSensitiveValues)
             .where(eq(userProfiles.userId, input.userId));
+          }
         }
         await db.insert(auditLogs).values({
           userId: admin.id,

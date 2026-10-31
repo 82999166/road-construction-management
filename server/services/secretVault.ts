@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 
 const VERSION_PREFIX = "v1";
 
@@ -39,4 +39,16 @@ export function decryptSecret(cipherText: string): string {
 export function maskSecret(plainText: string): string {
   if (plainText.length <= 4) return "****";
   return `${"*".repeat(Math.min(12, plainText.length - 4))}${plainText.slice(-4)}`;
+}
+
+/**
+ * 仅用于服务端敏感值的等值比对。使用从根密钥派生的 HMAC，避免手机号等低熵值被
+ * 普通哈希或明文索引反查；原文仍只保存在 AES-GCM 密文中。
+ */
+export function fingerprintSecret(plainText: string): string {
+  const normalized = plainText.trim();
+  if (!normalized) throw new Error("敏感配置内容不能为空");
+  return createHmac("sha256", getEncryptionKey())
+    .update(normalized, "utf8")
+    .digest("hex");
 }

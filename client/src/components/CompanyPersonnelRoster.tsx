@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -63,6 +64,7 @@ export type CompanyPersonnelRosterRow = {
   latestActualAmount: string | number | null;
   latestPayrollStatus: string | null;
   bankAccountMasked: string | null;
+  bankName?: string | null;
 };
 
 type Props = {
@@ -129,14 +131,19 @@ export default function CompanyPersonnelRoster({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({
     teamName: "",
+    tradeName: "",
     projectId: "",
     employmentStatus: "active" as "active" | "suspended" | "left",
     joinedAt: "",
     salaryBasis: "monthly" as "monthly" | "daily" | "hourly" | "piecework",
     baseSalary: "",
     phoneNumber: "",
+    clearPhoneNumber: false,
+    bankAccount: "",
+    bankName: "",
     remarks: "",
   });
+  const [advanceDraft, setAdvanceDraft] = useState({ advanceDate: new Date().toISOString().slice(0, 10), amount: "", remarks: "" });
   const saveProfile = trpc.admin.employee.saveProfile.useMutation({
     onSuccess: async () => {
       toast.success("员工档案已保存");
@@ -145,9 +152,22 @@ export default function CompanyPersonnelRoster({
     },
     onError: error => toast.error(error.message || "员工档案保存失败"),
   });
+  const compensationQuery = trpc.admin.employee.compensationDetails.useQuery(
+    { employeeProfileId: selectedRow?.profileId ?? 0 },
+    { enabled: Boolean(selectedRow?.profileId) }
+  );
+  const saveAdvance = trpc.admin.employee.saveAdvance.useMutation({
+    onSuccess: async () => {
+      toast.success("工资预支已保存");
+      setAdvanceDraft(current => ({ ...current, amount: "", remarks: "" }));
+      await compensationQuery.refetch();
+    },
+    onError: error => toast.error(error.message || "工资预支保存失败"),
+  });
   const beginEdit = (row: CompanyPersonnelRosterRow) => {
     setDraft({
       teamName: row.teamName ?? "",
+      tradeName: row.tradeName ?? "",
       projectId: row.projectId ? String(row.projectId) : "",
       employmentStatus:
         row.employmentStatus === "pending" ? "active" : row.employmentStatus,
@@ -155,6 +175,9 @@ export default function CompanyPersonnelRoster({
       salaryBasis: row.salaryBasis ?? "monthly",
       baseSalary: row.baseSalary == null ? "" : String(row.baseSalary),
       phoneNumber: "",
+      clearPhoneNumber: false,
+      bankAccount: "",
+      bankName: row.bankName ?? "",
       remarks: "",
     });
     setEditing(true);
@@ -433,7 +456,7 @@ export default function CompanyPersonnelRoster({
                 <div className="rounded-lg bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">银行卡（脱敏）</p>
                   <p className="mt-1 font-medium">
-                    {selectedRow.bankAccountMasked || "未登记"}
+                    {selectedRow.bankAccountMasked || "未登记"}{selectedRow.bankName ? ` · ${selectedRow.bankName}` : ""}
                   </p>
                 </div>
                 <div className="rounded-lg bg-slate-50 p-3">
@@ -516,6 +539,29 @@ export default function CompanyPersonnelRoster({
                   ；金额以审核工资条为准。
                 </p>
               </section>
+              <section className="rounded-xl border border-[#dce7e1] p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-semibold text-[#203c48]">工资结算明细与工资预支</h3>
+                  <Badge variant="outline">仅超级管理员可维护</Badge>
+                </div>
+                {compensationQuery.isLoading ? <p className="mt-3 text-sm text-slate-500">正在读取工资台账…</p> : (
+                  <div className="mt-3 space-y-3 text-sm">
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="font-medium">工资结算明细</p>
+                      {compensationQuery.data?.payroll.length || compensationQuery.data?.dailyWage.length ? (
+                        <div className="mt-2 space-y-1 text-xs text-slate-600">
+                          {[...(compensationQuery.data?.payroll ?? []).map(item => ({ key: `p${item.id}`, date: item.period, label: "工资条", amount: item.actualAmount, status: item.status })), ...(compensationQuery.data?.dailyWage ?? []).map(item => ({ key: `d${item.id}`, date: String(item.settlementDate), label: "临时日结", amount: item.actualAmount, status: item.status }))].slice(0, 8).map(item => <div key={item.key} className="flex justify-between gap-2"><span>{item.date} · {item.label}</span><span>实发 ¥{item.amount} · {item.status}</span></div>)}
+                        </div>
+                      ) : <p className="mt-2 text-xs text-slate-500">暂无已关联工资结算记录</p>}
+                    </div>
+                    <div className="rounded-lg border border-amber-100 bg-amber-50/60 p-3">
+                      <p className="font-medium text-amber-900">工资预支</p>
+                      <div className="mt-2 space-y-1 text-xs text-slate-600">{(compensationQuery.data?.advances ?? []).slice(0, 6).map(item => <div key={item.id} className="flex justify-between gap-2"><span>{String(item.advanceDate)} · {item.status}</span><span>¥{item.amount}</span></div>)}{!compensationQuery.data?.advances.length && <p>暂无预支记录</p>}</div>
+                      {selectedRow.profileId ? <div className="mt-3 grid gap-2 sm:grid-cols-[150px_150px_1fr_auto]"><Input type="date" value={advanceDraft.advanceDate} onChange={event => setAdvanceDraft(current => ({ ...current, advanceDate: event.target.value }))} /><Input type="number" min="0.01" step="0.01" placeholder="预支金额" value={advanceDraft.amount} onChange={event => setAdvanceDraft(current => ({ ...current, amount: event.target.value }))} /><Input placeholder="备注" value={advanceDraft.remarks} onChange={event => setAdvanceDraft(current => ({ ...current, remarks: event.target.value }))} /><Button type="button" size="sm" disabled={!advanceDraft.amount || saveAdvance.isPending} onClick={() => saveAdvance.mutate({ employeeProfileId: selectedRow.profileId!, advanceDate: advanceDraft.advanceDate, amount: Number(advanceDraft.amount), status: "draft", remarks: advanceDraft.remarks.trim() || null })}>新增预支</Button></div> : null}
+                    </div>
+                  </div>
+                )}
+              </section>
               <div className="flex justify-end gap-2">
                 {selectedRow.profileId ? (
                   <Button type="button" onClick={() => beginEdit(selectedRow)}>
@@ -545,12 +591,14 @@ export default function CompanyPersonnelRoster({
               onSubmit={event => {
                 event.preventDefault();
                 if (!selectedRow.profileId) return;
+                if (draft.clearPhoneNumber && !window.confirm("确认清空该员工已登记的手机号吗？此操作将移除该员工的联系方式。")) return;
                 saveProfile.mutate({
                   id: selectedRow.profileId,
                   userId: selectedRow.userId,
                   laborWorkerId: selectedRow.laborWorkerId,
                   projectId: draft.projectId ? Number(draft.projectId) : null,
                   employeeType: selectedRow.employeeType,
+                  tradeName: draft.tradeName.trim() || null,
                   teamName: draft.teamName.trim() || null,
                   employmentStatus: draft.employmentStatus,
                   joinedAt: draft.joinedAt || null,
@@ -559,7 +607,11 @@ export default function CompanyPersonnelRoster({
                   baseSalary: draft.baseSalary
                     ? Number(draft.baseSalary)
                     : null,
-                  phoneNumber: draft.phoneNumber.trim() || null,
+                  phoneNumber: draft.clearPhoneNumber
+                    ? null
+                    : draft.phoneNumber.trim() || undefined,
+                  bankAccount: draft.bankAccount.trim() || undefined,
+                  bankName: draft.bankName.trim() || null,
                   remarks: draft.remarks.trim() || null,
                 });
               }}
@@ -578,6 +630,10 @@ export default function CompanyPersonnelRoster({
                     }))
                   }
                 />
+              </label>
+              <label className="grid gap-1 text-sm">
+                工种
+                <Input value={draft.tradeName} onChange={event => setDraft(current => ({ ...current, tradeName: event.target.value }))} placeholder="如：测量员、挖机司机" />
               </label>
               <label className="grid gap-1 text-sm">
                 班组
@@ -669,6 +725,7 @@ export default function CompanyPersonnelRoster({
                   inputMode="tel"
                   autoComplete="off"
                   value={draft.phoneNumber}
+                  disabled={draft.clearPhoneNumber}
                   onChange={event =>
                     setDraft(current => ({
                       ...current,
@@ -677,6 +734,29 @@ export default function CompanyPersonnelRoster({
                   }
                   placeholder="请输入手机号"
                 />
+                {selectedRow.contactPhoneMasked ? (
+                  <label className="mt-1 flex items-center gap-2 text-xs text-rose-700">
+                    <Checkbox
+                      checked={draft.clearPhoneNumber}
+                      onCheckedChange={checked =>
+                        setDraft(current => ({
+                          ...current,
+                          clearPhoneNumber: Boolean(checked),
+                          phoneNumber: checked ? "" : current.phoneNumber,
+                        }))
+                      }
+                    />
+                    清空当前已登记手机号（保存时二次确认）
+                  </label>
+                ) : null}
+              </label>
+              <label className="grid gap-1 text-sm">
+                银行卡号（新增或修改）
+                <Input inputMode="numeric" autoComplete="off" value={draft.bankAccount} onChange={event => setDraft(current => ({ ...current, bankAccount: event.target.value }))} placeholder="请输入银行卡号" />
+              </label>
+              <label className="grid gap-1 text-sm">
+                开户行
+                <Input value={draft.bankName} onChange={event => setDraft(current => ({ ...current, bankName: event.target.value }))} placeholder="如：中国建设银行" />
               </label>
               <label className="grid gap-1 text-sm sm:col-span-2">
                 备注

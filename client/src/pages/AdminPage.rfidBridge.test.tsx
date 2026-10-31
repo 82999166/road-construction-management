@@ -1,9 +1,17 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+const readSource = (path: Parameters<typeof readFileSync>[0]) =>
+  readFileSync(path, "utf8")
+    .replace(/\s+/g, " ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .replace(/,\s*}/g, " }");
 
 describe("管理端 PC uTrust 正式写卡", () => {
   it("生成桥接任务后不展示可编辑正式载荷，只允许本机完成写入回读确认", () => {
-    const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
+    const source = readSource(
+      new URL("./AdminPage.tsx", import.meta.url)
+    ).replace(/\s+/g, " ");
     expect(source).toContain('executionMode: "pc_bridge"');
     expect(source).toContain("PC 受控车辆卡写入");
     expect(source).toContain("http://127.0.0.1:47601/api/write-vehicle-card");
@@ -12,26 +20,52 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v12"');
-    expect(source).toContain('const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20260904-firstsetup-a"');
+    expect(source).toContain(
+      'const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v12"'
+    );
+    expect(source).toContain(
+      'const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20260904-firstsetup-a"'
+    );
     expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
-    expect(source).toContain("healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION");
-    expect(source).toContain("healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID");
+    expect(source).toContain(
+      "healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION"
+    );
+    expect(source).toContain(
+      "healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID"
+    );
     expect(source).toContain("bridge_write_version_mismatch");
-    expect(source).toContain("当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作");
-    expect(source).toContain("本机正式写卡器源码未能加载或编译：当前卡没有开始写入");
-    expect(source).toContain("正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入");
+    expect(source).toContain(
+      "当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作"
+    );
+    expect(source).toContain(
+      "本机正式写卡器源码未能加载或编译：当前卡没有开始写入"
+    );
+    expect(source).toContain(
+      "正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入"
+    );
     expect(source).toContain("本机调用正式写卡器失败：当前卡未通过写入确认");
     expect(source).toContain("本机写卡器返回结果不完整：当前卡未通过写入确认");
-    expect(source).toContain("车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。");
-    expect(source).toContain("window.requestAnimationFrame(() => setRfidWritePreview(null))");
-    expect(source).toContain("trpc.transport.recoverRfidCardConfirmation.useMutation()");
-    expect(source).toContain('fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"');
+    expect(source).toContain(
+      "车辆卡 ${result.jobNo || rfidWritePreview.jobNo} 已完成写入、回读校验并启用。"
+    );
+    expect(source).toContain(
+      "window.requestAnimationFrame(() => setRfidWritePreview(null))"
+    );
+    expect(source).toContain(
+      "trpc.transport.recoverRfidCardConfirmation.useMutation()"
+    );
+    expect(source).toContain(
+      'fetch("http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card"'
+    );
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
-    expect(source).toContain('const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v13-20261016_47c0eab8.zip"');
+    expect(source).toContain(
+      'const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v13-20261016_47c0eab8.zip"'
+    );
     expect(source).toContain("安装写卡桥接.cmd");
     expect(source).toContain("下载一键安装包");
-    expect(source).toContain('window.open(RFID_FIRST_INSTALL_PACKAGE_URL, "_blank", "noopener,noreferrer")');
+    expect(source).toContain(
+      'window.open(RFID_FIRST_INSTALL_PACKAGE_URL, "_blank", "noopener,noreferrer")'
+    );
   });
 });

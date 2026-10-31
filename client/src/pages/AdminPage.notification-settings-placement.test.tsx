@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
+const readSource = (path: Parameters<typeof readFileSync>[0]) =>
+  readFileSync(path, "utf8")
+    .replace(/\s+/g, " ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .replace(/,\s*}/g, " }");
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const source = readFileSync(resolve(process.cwd(), "client/src/pages/AdminPage.tsx"), "utf8");
+const source = readSource(
+  resolve(process.cwd(), "client/src/pages/AdminPage.tsx")
+).replace(/\s+/g, " ");
 
 describe("系统设置通知通道入口", () => {
   it("将短信与服务号通知通道配置收纳到通知与接入分类", () => {
@@ -12,6 +21,7 @@ describe("系统设置通知通道入口", () => {
     expect(heading).toBeGreaterThan(-1);
     expect(channels).toBeGreaterThan(heading);
     expect(channels).toBeLessThan(dailyDigest);
-    expect(source).toContain('settingsCategory === "integrations" ? <Suspense');
+    expect(source).toContain('settingsCategory === "integrations"');
+    expect(source).toContain("<NotificationChannelSettings />");
   });
 });

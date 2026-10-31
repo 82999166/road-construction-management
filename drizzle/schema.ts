@@ -115,6 +115,10 @@ export const userProfiles = mysqlTable(
     userId: int("userId").notNull(),
     employeeNo: varchar("employeeNo", { length: 64 }),
     phoneMasked: varchar("phoneMasked", { length: 32 }),
+    phoneEncrypted: text("phoneEncrypted"),
+    phoneFingerprint: varchar("phoneFingerprint", { length: 64 }),
+    bankAccountEncrypted: text("bankAccountEncrypted"),
+    bankName: varchar("bankName", { length: 128 }),
     organizationId: int("organizationId"),
     positionId: int("positionId"),
     status: mysqlEnum("status", ["pending", "active", "disabled"]).default("pending").notNull(),
@@ -123,6 +127,7 @@ export const userProfiles = mysqlTable(
   },
   table => ({
     userUnique: uniqueIndex("user_profiles_user_unique").on(table.userId),
+    phoneFingerprintUnique: uniqueIndex("user_profiles_phone_fingerprint_unique").on(table.phoneFingerprint),
   }),
 );
 
@@ -720,6 +725,7 @@ export const laborWorkers = mysqlTable(
     realName: varchar("realName", { length: 64 }).notNull(),
     identityNoEncrypted: text("identityNoEncrypted"),
     phoneEncrypted: text("phoneEncrypted"),
+    phoneFingerprint: varchar("phoneFingerprint", { length: 64 }),
     bankAccountEncrypted: text("bankAccountEncrypted"),
     bankName: varchar("bankName", { length: 128 }),
     /** 实名资料由劳资管理人员人工核验后的状态，不替代身份证密文与证照档案。 */
@@ -734,7 +740,7 @@ export const laborWorkers = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectIndex: index("labor_workers_project_index").on(table.projectId) }),
+  table => ({ projectIndex: index("labor_workers_project_index").on(table.projectId), phoneFingerprintUnique: uniqueIndex("labor_workers_phone_fingerprint_unique").on(table.phoneFingerprint) }),
 );
 
 /** 考勤与工时记录，为工资核算提供可追溯来源。 */
@@ -878,6 +884,7 @@ export const employeeProfiles = mysqlTable(
     laborWorkerId: int("laborWorkerId"),
     projectId: int("projectId"),
     employeeType: mysqlEnum("employeeType", ["management", "operator", "construction_worker"]).notNull(),
+    tradeName: varchar("tradeName", { length: 128 }),
     teamName: varchar("teamName", { length: 128 }),
     employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).default("active").notNull(),
     joinedAt: date("joinedAt"),
@@ -889,6 +896,25 @@ export const employeeProfiles = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({ userIndex: index("employee_profiles_user_index").on(table.userId), workerIndex: index("employee_profiles_worker_index").on(table.laborWorkerId), projectTypeIndex: index("employee_profiles_project_type_index").on(table.projectId, table.employeeType, table.employmentStatus) }),
+);
+
+/** 员工工资预支台账。金额只进入劳资业务台账，不在档案详情回显银行卡原值。 */
+export const employeePayrollAdvances = mysqlTable(
+  "employee_payroll_advances",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeProfileId: int("employeeProfileId").notNull(),
+    laborWorkerId: int("laborWorkerId"),
+    projectId: int("projectId"),
+    advanceDate: date("advanceDate").notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["draft", "approved", "deducted", "void"]).default("draft").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({ profileDateIndex: index("employee_payroll_advances_profile_date_index").on(table.employeeProfileId, table.advanceDate, table.status), workerIndex: index("employee_payroll_advances_worker_index").on(table.laborWorkerId) }),
 );
 
 /** 员工保险台账：按保单留存购买日期与到期日期，供后台到期预警和人事审查使用。 */
