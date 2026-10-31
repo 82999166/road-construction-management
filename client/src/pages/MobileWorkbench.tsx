@@ -256,7 +256,7 @@ export default function MobileWorkbench() {
 
   return (
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
-      <div className="mx-auto min-h-screen max-w-xl overflow-hidden bg-[#fdf7ee] shadow-[0_0_50px_rgba(74,42,29,.12)]">
+      <div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl overflow-hidden bg-[#fdf7ee] shadow-[0_0_50px_rgba(74,42,29,.12)]">
         <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-9 pt-6 text-[#fff7ea]">
           <div className="pointer-events-none absolute -right-14 -top-14 h-44 w-44 rounded-full bg-[#c9854a]/20 blur-2xl" />
           <div className="relative flex items-center justify-between">
@@ -304,7 +304,7 @@ export default function MobileWorkbench() {
           {isManagementUser ? <section className="grid grid-cols-2 gap-3"><button type="button" className="rounded-2xl border border-[#dfc5aa] bg-[#fff7ec] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)]" onClick={() => navigate("/tools")}><Calculator className="h-5 w-5 text-[#a45d2f]" /><p className="mt-3 text-sm font-semibold text-[#5b3b2e]">工具知识</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">材料估算与税费利润测算</p></button><button type="button" className="rounded-2xl border border-[#d6e4dc] bg-[#f3faf6] p-4 text-left shadow-[0_6px_18px_rgba(71,42,30,.05)]" onClick={() => navigate("/help?guide=mobile")}><BookOpen className="h-5 w-5 text-[#39745a]" /><p className="mt-3 text-sm font-semibold text-[#345643]">使用教程</p><p className="mt-1 text-xs leading-5 text-[#708d7e]">查看移动端操作说明</p></button></section> : null}
         </main>
 
-        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><LayoutDashboard className="h-5 w-5" /><span className="text-[10px] font-medium">工作台</span></button><button disabled={!isOnline} className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566] disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
+        <nav className="mobile-bottom-navigation fixed right-0 bottom-0 left-0 z-20 flex w-full max-w-none items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><LayoutDashboard className="h-5 w-5" /><span className="text-[10px] font-medium">工作台</span></button><button disabled={!isOnline} className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566] disabled:opacity-50" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
     </div>
   );

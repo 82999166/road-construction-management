@@ -23,4 +23,22 @@ describe("移动端施工日报关联影像", () => {
     expect(source).toContain("onClick={printCurrentReports}");
     expect(source).not.toContain("onClick={() => window.print()}");
   });
+
+  it("分别提供后置相机和手机相册入口，并将相册照片压缩后再生成水印", () => {
+    const source = readFileSync(new URL("./MobileConstructionPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('accept="image/*" capture="environment"');
+    expect(source).toContain("拍摄现场照片");
+    expect(source).toContain("从手机相册选择");
+    expect(source).toContain("normalizeMobileImage(file, { maxEdge: 1920, quality: 0.84 })");
+    expect(source).toContain("单次最多 12 张");
+  });
+
+  it("日报主体已保存但照片归档失败时保留编辑状态和已选照片，以便现场人员直接重试", () => {
+    const source = readFileSync(new URL("./MobileConstructionPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("setEditingId(result.id);");
+    expect(source).toContain("日报已保存，照片尚未归档");
+    expect(source).toContain("removePendingEvidence");
+  });
 });

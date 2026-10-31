@@ -1818,6 +1818,8 @@ export const inventoryTransactions = mysqlTable(
     projectId: int("projectId").notNull(),
     requestId: bigint("requestId", { mode: "number" }),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
+    /** 入库、领用或退库的采购/验收凭证；文件本体只保存于对象存储。 */
+    evidenceId: bigint("evidenceId", { mode: "number" }),
     transactionNo: varchar("transactionNo", { length: 64 }).notNull(),
     transactionType: mysqlEnum("transactionType", ["inbound", "outbound", "return"]).notNull(),
     itemName: varchar("itemName", { length: 200 }).notNull(),
@@ -1833,6 +1835,7 @@ export const inventoryTransactions = mysqlTable(
   table => ({
     transactionNoUnique: uniqueIndex("inventory_transactions_no_unique").on(table.transactionNo),
     projectItemIndex: index("inventory_transactions_project_item_index").on(table.projectId, table.itemName, table.unit),
+    evidenceIndex: index("inventory_transactions_evidence_index").on(table.evidenceId),
   }),
 );
 

@@ -138,7 +138,7 @@ export default function MobileSubcontractPage() {
   }
 
   return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
-    <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-28 shadow-[0_0_50px_rgba(74,42,29,.12)]">
+    <div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-28 shadow-[0_0_50px_rgba(74,42,29,.12)]">
       <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-6 pt-5 text-[#fff7ea]">
         <div className="pointer-events-none absolute inset-0 opacity-[0.12] [background-image:linear-gradient(rgba(255,238,215,.32)_1px,transparent_1px),linear-gradient(90deg,rgba(255,238,215,.32)_1px,transparent_1px)] [background-size:24px_24px]" />
         <div className="relative flex items-center justify-between">

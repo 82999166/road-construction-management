@@ -76,7 +76,7 @@ export default function MobileProfilePage() {
   return (
     <MobileAccessGate isAuthenticated={isAuthenticated} isLoading={loading || workbench.isLoading} authLoadingTimedOut={authLoadingTimedOut} loadingText="正在加载个人授权信息…" title="个人中心" description="请先通过企业统一身份登录后查看您的岗位和数据范围。" Icon={UserRound} onRetry={() => Promise.all([refresh(), workbench.refetch(), officialBinding.refetch()])}>
       <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
-        <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] shadow-[0_0_50px_rgba(74,42,29,.12)]">
+        <div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl bg-[#fdf7ee] shadow-[0_0_50px_rgba(74,42,29,.12)]">
           <header className="bg-[#3a2117] px-5 pb-8 pt-6 text-[#fff7ea]"><button className="inline-flex items-center gap-1 text-xs text-[#e8cfb2]" onClick={() => navigate("/mobile")}><ArrowLeft className="h-4 w-4" />返回工作台</button><div className="mt-7 flex items-center gap-4"><div className="grid h-16 w-16 place-items-center rounded-[24px] bg-[#c9854a]"><HardHat className="h-8 w-8" /></div><div><p className="text-xs text-[#e8cfb2]">企业统一身份</p><h1 className="mt-1 text-2xl font-semibold">{user?.name ?? "项目成员"}</h1></div></div></header>
           <main className="space-y-4 px-5 py-6">
             {bindingResult === "bound" && <p className="rounded-xl bg-[#e7f4e7] px-3 py-2 text-xs leading-5 text-[#35643a]">公众号通知身份已绑定成功，后续审核、运输和项目提醒将发送到您的微信。</p>}

@@ -537,6 +537,8 @@ const inventoryInput = z.object({
   projectId: z.number().int().positive(),
   requestId: z.number().int().positive().nullable().optional(),
   purchaseOrderId: z.number().int().positive().nullable().optional(),
+  /** 可选的入库验收、送货或收发凭证；服务端再校验项目、来源与有效状态。 */
+  evidenceId: z.number().int().positive().nullable().optional(),
   transactionType: z.enum(["inbound", "outbound", "return"]),
   itemName: z.string().trim().min(1, "请填写物料名称").max(200),
   unit: z.string().trim().min(1, "请填写计量单位").max(32),
@@ -1295,6 +1297,18 @@ export const purchasingRouter = router({
     const db = await getDb();
     if (!db) return [];
     const rows = await db.select().from(inventoryTransactions).where(eq(inventoryTransactions.projectId, input.projectId)).orderBy(desc(inventoryTransactions.occurredAt));
+    const evidenceIds = Array.from(new Set(rows.map(row => row.evidenceId).filter((id): id is number => Number.isInteger(id))));
+    const evidenceRows = evidenceIds.length
+      ? await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType, status: evidenceRecords.status, fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName }).from(evidenceRecords).where(inArray(evidenceRecords.id, evidenceIds))
+      : [];
+    const evidenceById = new Map(evidenceRows.filter(row => row.projectId === input.projectId && row.sourceType === "purchase" && row.status === "active").map(row => [row.id, row]));
+    const transactions = await Promise.all(rows.map(async row => {
+      const evidence = row.evidenceId ? evidenceById.get(row.evidenceId) : undefined;
+      return {
+        ...row,
+        evidence: evidence ? { id: evidence.id, fileName: evidence.fileName, url: await storageGetSignedUrl(evidence.fileKey) } : null,
+      };
+    }));
     const summary = new Map<string, { itemName: string; unit: string; balanceQuantity: number; totalAmount: number }>();
     for (const row of rows) {
       const key = `${row.itemName}::${row.unit}`;
@@ -1304,7 +1318,7 @@ export const purchasingRouter = router({
       current.totalAmount += direction * Number(row.amount);
       summary.set(key, current);
     }
-    return { transactions: rows, balances: Array.from(summary.values()).map(item => ({ ...item, balanceQuantity: Math.round(item.balanceQuantity * 1000) / 1000, totalAmount: roundMoney(item.totalAmount) })) };
+    return { transactions, balances: Array.from(summary.values()).map(item => ({ ...item, balanceQuantity: Math.round(item.balanceQuantity * 1000) / 1000, totalAmount: roundMoney(item.totalAmount) })) };
   }),
 
   /** 入库、领用、退库都以不可变流水记录；库存余额永远从服务端流水汇总得出。 */
@@ -1317,11 +1331,17 @@ export const purchasingRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     if (input.requestId) await getScopedPurchaseRequest(ctx, input.requestId, input.projectId);
     if (input.purchaseOrderId) await getScopedPurchaseOrder(ctx, input.purchaseOrderId, input.projectId);
+    if (input.evidenceId) {
+      const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+      if (!evidence || evidence.projectId !== input.projectId || evidence.sourceType !== "purchase" || evidence.status !== "active") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "入库凭证不存在、已失效或不属于当前项目，请重新上传或选择" });
+      }
+    }
     const amount = roundMoney(input.quantity * input.unitCost);
     await db.transaction(async tx => {
-      await tx.insert(inventoryTransactions).values({ projectId: input.projectId, requestId: input.requestId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, transactionNo: createBusinessNo("INV"), transactionType: input.transactionType, itemName: input.itemName, unit: input.unit, quantity: String(input.quantity), unitCost: String(roundMoney(input.unitCost)), amount: String(amount), occurredAt: new Date(input.occurredAt), operatorId: user.id, remarks: input.remarks ?? null });
+      await tx.insert(inventoryTransactions).values({ projectId: input.projectId, requestId: input.requestId ?? null, purchaseOrderId: input.purchaseOrderId ?? null, evidenceId: input.evidenceId ?? null, transactionNo: createBusinessNo("INV"), transactionType: input.transactionType, itemName: input.itemName, unit: input.unit, quantity: String(input.quantity), unitCost: String(roundMoney(input.unitCost)), amount: String(amount), occurredAt: new Date(input.occurredAt), operatorId: user.id, remarks: input.remarks ?? null });
       if (input.transactionType === "inbound" && input.requestId) await tx.update(purchaseRequests).set({ status: "stocked", stockedBy: user.id, stockedAt: new Date() }).where(eq(purchaseRequests.id, input.requestId));
-      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.itemName, summary: `登记库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用" : "退库"}：${input.itemName}` });
+      await tx.insert(auditLogs).values({ userId: user.id, module: "purchasing", action: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.itemName, summary: `登记库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用" : "退库"}：${input.itemName}${input.evidenceId ? "（已关联受控凭证）" : ""}` });
     });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, projectId: input.projectId, module: "purchasing", eventCode: `inventory_${input.transactionType}`, targetType: "inventory_transaction", targetId: input.purchaseOrderId ? String(input.purchaseOrderId) : `${input.transactionType}:${input.itemName}`, title: `库存${input.transactionType === "inbound" ? "入库" : input.transactionType === "outbound" ? "领用出库" : "退库"}已登记`, content: "一笔采购仓储收发记录已登记，请进入系统查看受控台账。", deepLink: "/mobile/purchasing" }).catch(() => undefined);
     return { success: true, amount };

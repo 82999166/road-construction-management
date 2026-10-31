@@ -238,7 +238,7 @@ export default function MobileDieselPage() {
   }
   const data = overview.data;
   const selectedProjectName = data?.projects.find(project => project.id === projectId)?.name ?? "—";
-  return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]"><div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-10 shadow-[0_0_50px_rgba(74,42,29,.12)]">
+  return <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]"><div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-10 shadow-[0_0_50px_rgba(74,42,29,.12)]">
     <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-6 pt-5 text-[#fff7ea]"><div className="pointer-events-none absolute -right-10 -top-10 h-36 w-36 rounded-full bg-[#d99855]/20 blur-2xl" /><div className="relative flex items-center justify-between"><Button size="icon" variant="ghost" className="rounded-full text-white hover:bg-white/10 hover:text-white" onClick={() => navigate(MOBILE_DIESEL_BACK_PATH)}><ArrowLeft className="h-5 w-5" /></Button><div className="text-center"><p className="text-sm font-semibold">柴油管理</p><p className="mt-0.5 text-[11px] text-[#e8cfb2]">供油台账 · 扣油核对</p></div><Fuel className="h-5 w-5 text-[#f0bd7d]" /></div><p className="relative mt-5 text-xs leading-5 text-[#e8cfb2]">台账和领用登记均严格按项目范围、柴油细分权限与水印现场影像执行；金额由服务端按有效指导价或实际油价计算。</p></header>
     <main className="space-y-4 px-5 py-5">
       {!data?.projects.length ? <Card className="border-dashed border-[#e4cdb6] bg-[#fffaf4]"><CardContent className="p-7 text-center"><Fuel className="mx-auto h-8 w-8 text-[#b96932]" /><h2 className="mt-3 font-semibold">暂无可查看项目</h2><p className="mt-2 text-xs leading-5 text-[#8f7566]">请联系管理员为当前账号配置项目范围；柴油权限不会自动扩大项目数据范围。</p></CardContent></Card> : <>

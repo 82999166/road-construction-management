@@ -45,7 +45,7 @@ describe("现场影像受控删除", () => {
   });
 
   it("允许提交人删除未关联业务单据的照片，并保留审计记录", async () => {
-    const db = createDeleteDb([[baseEvidence], [], [], [], [], [], [], [], [], [{ id: 1, lastSequence: 0, lastHash: "9".repeat(64) }]]);
+    const db = createDeleteDb([[baseEvidence], [], [], [], [], [], [], [], [], [], [{ id: 1, lastSequence: 0, lastHash: "9".repeat(64) }]]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28, deletionReason: "重复上传，保留正确影像" })).resolves.toEqual({ success: true });
@@ -62,6 +62,15 @@ describe("现场影像受控删除", () => {
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28, deletionReason: "关联业务单据的影像不可删除" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不能删除") });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("拒绝删除已关联库存收发流水的入库凭证", async () => {
+    // 查询顺序：影像本身、考勤、机械成本、柴油、运输、采购订单、库存流水。
+    const db = createDeleteDb([[baseEvidence], [], [], [], [], [], [{ id: 1 }], [], [], []]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(evidenceRouter.createCaller(createContext()).delete({ id: 28, deletionReason: "库存流水关联凭证不可删除" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("库存") });
     expect(db.delete).not.toHaveBeenCalled();
   });
 });

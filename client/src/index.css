@@ -176,6 +176,47 @@
   }
 }
 
+/*
+ * 移动业务页面的内容壳只应在桌面上模拟手机宽度。微信翻译页、部分国产系统 WebView
+ * 会把可视视口错误报告为 900px 左右，若只依赖 max-width:639px 就会把 576px 内容留在左侧。
+ * 触摸设备统一占满视口；桌面端仍保留居中预览宽度。overflow-x:clip 仅拦截意外宽度，
+ * 不用于承载任何可横向滚动的业务表格。
+ */
+@media (max-width: 639px), (pointer: coarse) and (max-width: 1024px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-width: 0;
+    overflow-x: clip;
+  }
+
+  .mobile-viewport-shell {
+    width: 100%;
+    max-width: none;
+    margin-right: 0;
+    margin-left: 0;
+    box-shadow: none;
+    padding-right: env(safe-area-inset-right);
+    padding-left: env(safe-area-inset-left);
+  }
+
+  .mobile-bottom-navigation {
+    right: 0;
+    left: 0;
+    width: 100%;
+    max-width: none;
+    transform: none;
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .mobile-viewport-shell [data-slot="dialog-content"] {
+    width: calc(100vw - 1.5rem);
+    max-width: calc(100vw - 1.5rem);
+  }
+}
+
 @layer components {
   /**
    * Custom container utility that centers content and adds responsive padding.

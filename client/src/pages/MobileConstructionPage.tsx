@@ -10,10 +10,11 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
+import { normalizeMobileImage } from "@/lib/mobileImageUpload";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
-import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, ImagePlus, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound } from "lucide-react";
+import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, ImagePlus, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound, X } from "lucide-react";
 import React, { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -98,6 +99,7 @@ function createWatermarkedImage(file: File, watermarkLines: string[], template: 
         canvas.toBlob(blob => {
           URL.revokeObjectURL(objectUrl);
           if (!blob) return reject(new Error("水印影像生成失败"));
+          if (blob.size > 8 * 1024 * 1024) return reject(new Error("水印照片超过 8MB，请在相册中裁剪后重新选择"));
           const name = file.name.replace(/\.(jpe?g|png)$/i, "") || "construction-photo";
           resolve(new File([blob], `${name}-watermark.jpg`, { type: "image/jpeg", lastModified: Date.now() }));
         }, "image/jpeg", 0.9);
@@ -203,7 +205,12 @@ export default function MobileConstructionPage() {
         }
         toast.success(files.length ? `施工日报已保存，${files.length} 张水印照片已关联本日报` : (editingId ? "施工日报已更新" : "施工日报已保存为草稿"));
       } catch (error) {
-        toast.error(`日报已保存，但照片处理失败：${getUserFacingErrorMessage(error, "请检查照片后重试")}`);
+        // 日报主体已由服务端保存。保留照片和弹窗，转入编辑态后可直接再次提交归档，
+        // 避免网络、定位或个别 HEIC 解码失败时让现场人员重新填写整份日报。
+        setEditingId(result.id);
+        toast.error(`日报已保存，照片尚未归档：${getUserFacingErrorMessage(error, "请检查照片后重试")}`);
+        await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
+        return;
       }
       setDialogOpen(false);
       setEditingId(null);
@@ -286,17 +293,31 @@ export default function MobileConstructionPage() {
     setDialogOpen(true);
   }
 
-  function handleEvidenceFiles(event: ChangeEvent<HTMLInputElement>) {
+  async function handleEvidenceFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.target.files ?? []);
-    if (!selected.length) return;
-    if (selected.some(file => !["image/jpeg", "image/png"].includes(file.type))) return toast.error("仅支持 JPG 或 PNG 格式照片");
-    if (selected.some(file => file.size > 8 * 1024 * 1024)) return toast.error("单张照片不能超过 8MB");
-    const combined = [...pendingEvidenceFiles, ...selected].slice(0, 12);
-    if (combined.length < pendingEvidenceFiles.length + selected.length) toast.warning("单次最多连续添加 12 张照片，超出部分未加入");
-    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
-    setPendingEvidenceFiles(combined);
-    setPendingEvidencePreviews(combined.map(file => URL.createObjectURL(file)));
     event.target.value = "";
+    if (!selected.length) return;
+    const availableSlots = Math.max(0, 12 - pendingEvidenceFiles.length);
+    if (!availableSlots) return toast.warning("最多关联 12 张现场照片，请先移除不需要的照片");
+    const accepted = selected.slice(0, availableSlots);
+    if (accepted.length < selected.length) toast.warning("最多关联 12 张现场照片，超出部分未加入");
+    try {
+      const normalized = await Promise.all(accepted.map(file => normalizeMobileImage(file, { maxEdge: 1920, quality: 0.84 })));
+      const combined = [...pendingEvidenceFiles, ...normalized];
+      pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+      setPendingEvidenceFiles(combined);
+      setPendingEvidencePreviews(combined.map(file => URL.createObjectURL(file)));
+      toast.success(`已添加 ${normalized.length} 张照片，保存日报后自动生成水印并归档`);
+    } catch (error) {
+      toast.error(getUserFacingErrorMessage(error, "照片处理失败，请重新拍摄或从相册选择"));
+    }
+  }
+
+  function removePendingEvidence(index: number) {
+    const nextFiles = pendingEvidenceFiles.filter((_, currentIndex) => currentIndex !== index);
+    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+    setPendingEvidenceFiles(nextFiles);
+    setPendingEvidencePreviews(nextFiles.map(file => URL.createObjectURL(file)));
   }
 
   function submitDraft() {
@@ -333,7 +354,7 @@ export default function MobileConstructionPage() {
   const isBusy = projectOptions.isLoading || reports.isLoading || summary.isLoading;
   return (
     <div className="min-h-screen bg-[#f8f1e7] text-[#3b2118]">
-      <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(74,42,29,.12)]">
+      <div className="mobile-viewport-shell mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-24 shadow-[0_0_50px_rgba(71,42,29,.12)]">
         <header className="bg-[#3a2117] px-5 pb-7 pt-5 text-[#fff7ea]">
           <div className="flex items-center justify-between"><button aria-label="返回移动工作台" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={() => navigate("/mobile")}><ArrowLeft className="h-5 w-5" /></button><div className="text-center"><p className="text-sm font-semibold">施工现场</p><p className="mt-0.5 text-xs text-[#e8cfb2]">日报 · 进度 · 安全问题</p></div><button aria-label="打印当前施工日报" className="grid h-10 w-10 place-items-center rounded-full bg-white/10" onClick={printCurrentReports}><Printer className="h-5 w-5" /></button></div>
           <div className="mt-6"><Label htmlFor="construction-project" className="text-xs text-[#e8cfb2]">当前项目</Label><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger id="construction-project" className="mt-1 border-white/15 bg-white/10 text-[#fff7ea]"><SelectValue placeholder="请选择已授权项目" /></SelectTrigger><SelectContent>{projectOptions.data?.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} · {project.name}</SelectItem>)}</SelectContent></Select></div>
@@ -355,11 +376,11 @@ export default function MobileConstructionPage() {
           </section>
         </main>
 
-        <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-xl -translate-x-1/2 items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><HardHat className="h-5 w-5" /><span className="text-[10px] font-medium">施工</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
+        <nav className="mobile-bottom-navigation fixed right-0 bottom-0 left-0 z-20 flex w-full max-w-none items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><HardHat className="h-5 w-5" /><span className="text-[10px] font-medium">施工</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-h-[92vh] overflow-y-auto">
+          <DialogContent className="max-h-[92dvh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]">
           <DialogHeader>
             <DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle>
             <DialogDescription>先保存日报与本次照片，再由日报卡片点击“提交主管审核”。照片将自动关联本日报，无须跳转或反复返回填写页面。</DialogDescription>
@@ -374,7 +395,7 @@ export default function MobileConstructionPage() {
             <div><Label htmlFor="report-content">当日施工内容</Label><Textarea id="report-content" value={draft.workContent} maxLength={8000} placeholder="填写人员、工序、产出或实际施工情况。" onChange={event => setDraft(current => ({ ...current, workContent: event.target.value }))} /></div>
             <div><Label htmlFor="report-safety">安全情况（可选）</Label><Textarea id="report-safety" value={draft.safetyNotes} maxLength={1000} placeholder="不得填写个人敏感信息。" onChange={event => setDraft(current => ({ ...current, safetyNotes: event.target.value }))} /></div>
             <div><Label htmlFor="report-issues">质量 / 协调问题（可选）</Label><Textarea id="report-issues" value={draft.issueNotes} maxLength={1000} placeholder="不得填写个人敏感信息；现场照片将统一固化管理员、项目、定位、日期、时间和天气水印。" onChange={event => setDraft(current => ({ ...current, issueNotes: event.target.value }))} /></div>
-            <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3"><div className="flex items-center justify-between gap-3"><div><Label>现场水印照片（可连续添加）</Label><p className="mt-1 text-[11px] leading-4 text-[#80685b]">保存日报时会逐张生成水印并自动关联本日报；之后直接在日报卡提交主管审核。</p></div>{pendingEvidenceFiles.length ? <span className="rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {pendingEvidenceFiles.length}/12 张</span> : null}</div><label className="mt-3 flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/jpeg,image/png" capture="environment" onChange={handleEvidenceFiles} /><ImagePlus className="h-6 w-6 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">拍摄或选择照片</span></label>{pendingEvidencePreviews.length ? <div className="mt-3 grid grid-cols-4 gap-2">{pendingEvidencePreviews.map((url, index) => <img key={`${url}-${index}`} src={url} alt={`待关联日报照片 ${index + 1}`} className="aspect-square w-full rounded-lg object-cover" />)}</div> : null}</div>
+            <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3"><div className="flex items-center justify-between gap-3"><div><Label>现场水印照片（可连续添加）</Label><p className="mt-1 text-[11px] leading-4 text-[#80685b]">支持相机直拍和从手机相册选择；照片会压缩为 JPG 后在保存日报时生成水印并关联，单次最多 12 张。</p></div>{pendingEvidenceFiles.length ? <span className="shrink-0 rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {pendingEvidenceFiles.length}/12 张</span> : null}</div><div className="mt-3 grid grid-cols-2 gap-2"><label className="flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/*" capture="environment" onChange={event => { void handleEvidenceFiles(event); }} /><Camera className="h-5 w-5 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">拍摄现场照片</span></label><label className="flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/*" onChange={event => { void handleEvidenceFiles(event); }} /><ImagePlus className="h-5 w-5 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">从手机相册选择</span></label></div>{pendingEvidencePreviews.length ? <div className="mt-3 grid grid-cols-4 gap-2">{pendingEvidencePreviews.map((url, index) => <div key={`${url}-${index}`} className="relative"><img src={url} alt={`待关联日报照片 ${index + 1}`} className="aspect-square w-full rounded-lg object-cover" /><button aria-label={`移除照片 ${index + 1}`} type="button" className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-[#6d3421] text-white shadow" onClick={() => removePendingEvidence(index)}><X className="h-3 w-3" /></button></div>)}</div> : null}</div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>

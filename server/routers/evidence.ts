@@ -4,7 +4,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY, type EvidenceWatermarkTemplate } from "../../shared/watermarkTemplate";
-import { attendanceRecords, auditLogs, dieselRefuelRecords, evidenceRecords, financialInvoices, financialRecords, machineCostRecords, measurementTakeoffEvidences, projects, purchaseOrders, systemSettings, transportTrips } from "../../drizzle/schema";
+import { attendanceRecords, auditLogs, dieselRefuelRecords, evidenceRecords, financialInvoices, financialRecords, inventoryTransactions, machineCostRecords, measurementTakeoffEvidences, projects, purchaseOrders, systemSettings, transportTrips } from "../../drizzle/schema";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
@@ -110,13 +110,39 @@ async function assertEvidenceAccess(ctx: Parameters<typeof requireAuthenticatedU
 }
 
 /**
+ * 施工日报的现场照片是施工业务的从属凭证。若账号没有独立“影像取证”入口，
+ * 但已具备施工模块和现场岗位授权，仍允许它在已有施工项目范围内生成日报水印照片。
+ * 其他取证类型继续必须使用 EVIDENCE 授权，避免扩大通用影像采集范围。
+ */
+async function assertConstructionSitePhotoAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  await assertDepartmentBusinessAccess(ctx, "CONSTRUCTION");
+  const roles = await getEffectiveRoleCodes(ctx);
+  if (!roles.includes("ALL") && !roles.some(role => ["PROJECT_MANAGER", "CONSTRUCTION_MANAGER", "SAFETY_MANAGER"].includes(role))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位未获施工日报现场照片上传授权" });
+  }
+}
+
+async function assertEvidenceUploadAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0], sourceType: z.infer<typeof evidenceSourceSchema>) {
+  try {
+    await assertEvidenceAccess(ctx);
+  } catch (error) {
+    if (sourceType !== "site_photo") throw error;
+    await assertConstructionSitePhotoAccess(ctx);
+  }
+}
+
+/**
  * 水印影像取证路由。
  * 文件字节保存在对象存储，数据库仅保存可审计的文件键、时间、坐标和业务关联元数据。
  */
 export const evidenceRouter = router({
   /** 已发布的采集连接器运行状态，供移动端在发起浏览器 API 前给出明确提示。 */
   captureConfig: protectedProcedure.query(async ({ ctx }) => {
-    await assertEvidenceAccess(ctx);
+    try {
+      await assertEvidenceAccess(ctx);
+    } catch (error) {
+      await assertConstructionSitePhotoAccess(ctx).catch(() => { throw error; });
+    }
     const db = await getDb();
     if (!db) return { camera: { provider: "browser" as const, enabled: true }, location: { provider: "browser" as const, enabled: true, required: false }, watermark: { ...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, fields: [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields] } };
     return getCaptureConnectorConfig(db);
@@ -175,7 +201,7 @@ export const evidenceRouter = router({
 
   upload: protectedProcedure.input(evidenceUploadInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertEvidenceAccess(ctx);
+    await assertEvidenceUploadAccess(ctx, input.sourceType);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
@@ -230,12 +256,13 @@ export const evidenceRouter = router({
       db.select({ id: dieselRefuelRecords.id }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.evidenceId, evidence.id)).limit(1),
       db.select({ id: transportTrips.id }).from(transportTrips).where(eq(transportTrips.evidenceId, evidence.id)).limit(1),
       db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.evidenceId, evidence.id)).limit(1),
+      db.select({ id: inventoryTransactions.id }).from(inventoryTransactions).where(eq(inventoryTransactions.evidenceId, evidence.id)).limit(1),
       db.select({ id: measurementTakeoffEvidences.takeoffId }).from(measurementTakeoffEvidences).where(eq(measurementTakeoffEvidences.evidenceId, evidence.id)).limit(1),
       db.select({ id: financialRecords.id }).from(financialRecords).where(eq(financialRecords.evidenceId, evidence.id)).limit(1),
       db.select({ id: financialInvoices.id }).from(financialInvoices).where(eq(financialInvoices.evidenceId, evidence.id)).limit(1),
     ]);
     if (dependencies.some(rows => rows.length > 0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "该影像已关联考勤、成本、运输、采购、计量或财务单据，不能删除；请保留作为业务审计凭证" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "该影像已关联考勤、成本、运输、采购、库存、计量或财务单据，不能删除；请保留作为业务审计凭证" });
     }
 
     await db.transaction(async tx => {
