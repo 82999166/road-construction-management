@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import express from "express";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -11,16 +12,28 @@ import { ENV } from "./_core/env";
 import { registerStorageProxy } from "./_core/storageProxy";
 import { storagePut } from "./storage";
 
+type StorageRouteRequest = { params: Record<string, string | string[]> };
+type StorageRouteResponse = {
+  set: ReturnType<typeof vi.fn>;
+  status: ReturnType<typeof vi.fn>;
+  send: ReturnType<typeof vi.fn>;
+  redirect?: ReturnType<typeof vi.fn>;
+};
+
 describe("存储代理影像读取", () => {
   afterEach(() => {
     ENV.selfHostStorageDir = "";
     vi.restoreAllMocks();
   });
 
-  it("在应用域名回传已签名影像字节，不将移动浏览器重定向到对象存储域名", async () => {
+  it("可直接挂载到Express 5实例而不会因旧通配符语法启动失败", () => {
+    expect(() => registerStorageProxy(express())).not.toThrow();
+  });
+
+  it("使用Express 5命名通配符并将分段路径还原为对象键", async () => {
     const get = vi.fn();
     registerStorageProxy({ get } as never);
-    const handler = get.mock.calls[0]?.[1] as (request: { params: Record<string, string> }, response: { set: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn>; redirect: ReturnType<typeof vi.fn> }) => Promise<void>;
+    const handler = get.mock.calls[0]?.[1] as (request: StorageRouteRequest, response: StorageRouteResponse) => Promise<void>;
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://object.example/evidence.jpg" }), { status: 200, headers: { "content-type": "application/json" } }))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/jpeg", "content-length": "3" } }));
@@ -31,8 +44,9 @@ describe("存储代理影像读取", () => {
       redirect: vi.fn(),
     };
 
-    await handler({ params: { "0": "evidence/project/photo.jpg" } }, response);
+    await handler({ params: { key: ["evidence", "project", "photo.jpg"] } }, response);
 
+    expect(get).toHaveBeenCalledWith("/manus-storage/*key", expect.any(Function));
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(response.set).toHaveBeenCalledWith("Content-Type", "image/jpeg");
     expect(response.set).toHaveBeenCalledWith("Content-Length", "3");
@@ -48,14 +62,14 @@ describe("存储代理影像读取", () => {
 
     const get = vi.fn();
     registerStorageProxy({ get } as never);
-    const handler = get.mock.calls[0]?.[1] as (request: { params: Record<string, string> }, response: { set: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn> }) => Promise<void>;
+    const handler = get.mock.calls[0]?.[1] as (request: StorageRouteRequest, response: StorageRouteResponse) => Promise<void>;
     const response = {
       set: vi.fn(),
       status: vi.fn().mockReturnThis(),
       send: vi.fn(),
     };
 
-    await handler({ params: { "0": written.key } }, response);
+    await handler({ params: { key: written.key.split("/") } }, response);
 
     expect(written.url).toBe(`/manus-storage/${written.key}`);
     expect(response.set).toHaveBeenCalledWith("Content-Type", "image/jpeg");
@@ -69,14 +83,14 @@ describe("存储代理影像读取", () => {
     ENV.forgeApiKey = "";
     const get = vi.fn();
     registerStorageProxy({ get } as never);
-    const handler = get.mock.calls[0]?.[1] as (request: { params: Record<string, string> }, response: { set: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn> }) => Promise<void>;
+    const handler = get.mock.calls[0]?.[1] as (request: StorageRouteRequest, response: StorageRouteResponse) => Promise<void>;
     const response = {
       set: vi.fn(),
       status: vi.fn().mockReturnThis(),
       send: vi.fn(),
     };
 
-    await handler({ params: { "0": "../outside.jpg" } }, response);
+    await handler({ params: { key: ["..", "outside.jpg"] } }, response);
 
     expect(response.status).toHaveBeenCalledWith(404);
     expect(response.send).toHaveBeenCalledWith("Storage object unavailable");
@@ -88,7 +102,7 @@ describe("存储代理影像读取", () => {
     ENV.forgeApiKey = "test-forge-key";
     const get = vi.fn();
     registerStorageProxy({ get } as never);
-    const handler = get.mock.calls[0]?.[1] as (request: { params: Record<string, string> }, response: { set: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn>; redirect: ReturnType<typeof vi.fn> }) => Promise<void>;
+    const handler = get.mock.calls[0]?.[1] as (request: StorageRouteRequest, response: StorageRouteResponse) => Promise<void>;
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ url: "https://object.example/legacy.jpg" }), { status: 200, headers: { "content-type": "application/json" } }))
       .mockResolvedValueOnce(new Response(new Uint8Array([4, 5, 6]), { status: 200, headers: { "content-type": "image/jpeg", "content-length": "3" } }));
@@ -99,7 +113,7 @@ describe("存储代理影像读取", () => {
       redirect: vi.fn(),
     };
 
-    await handler({ params: { "0": "legacy/photo.jpg" } }, response);
+    await handler({ params: { key: ["legacy", "photo.jpg"] } }, response);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(response.set).toHaveBeenCalledWith("Content-Type", "image/jpeg");

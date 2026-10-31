@@ -17,8 +17,13 @@ function resolveSelfHostStoragePath(key: string) {
 }
 
 export function registerStorageProxy(app: Express) {
-  app.get("/manus-storage/*", async (req, res) => {
-    const key = (req.params as Record<string, string>)[0];
+  /**
+   * Express 5 要求通配符具名，且会将通配部分按路径段返回数组；重新拼回
+   * 原始对象键后再进入既有的路径规范化与越界保护流程。
+   */
+  app.get("/manus-storage/*key", async (req, res) => {
+    const capturedKey = (req.params as Record<string, string | string[]>).key;
+    const key = Array.isArray(capturedKey) ? capturedKey.join("/") : capturedKey;
     if (!key) {
       res.status(400).send("Missing storage key");
       return;
