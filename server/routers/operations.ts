@@ -1596,13 +1596,14 @@ export const machineryRouter = router({
     await assertMachineryAccess(ctx);
     const { db, machine } = await getScopedMachine(ctx, input.machineId, input.projectId);
     const range = getMonthRange(input.period);
-    const [monthlyStatements, dailyOperations, costRows, maintenanceRows, refuelRows, partsPurchaseRows] = await Promise.all([
+    const [monthlyStatements, dailyOperations, costRows, maintenanceRows, refuelRows, partsPurchaseRows, leaseRules] = await Promise.all([
       db.select().from(machineMonthlyStatements).where(and(eq(machineMonthlyStatements.machineId, input.machineId), eq(machineMonthlyStatements.projectId, input.projectId))).orderBy(desc(machineMonthlyStatements.period)),
       db.select().from(machineDailyOperations).where(and(eq(machineDailyOperations.machineId, input.machineId), eq(machineDailyOperations.projectId, input.projectId), gte(machineDailyOperations.occurredOn, range.start), lt(machineDailyOperations.occurredOn, range.endExclusive))).orderBy(desc(machineDailyOperations.occurredOn)),
       db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, input.machineId), eq(machineCostRecords.projectId, input.projectId), ne(machineCostRecords.status, "void"), gte(machineCostRecords.occurredAt, range.start), lt(machineCostRecords.occurredAt, range.endExclusive))),
       db.select().from(assetMaintenanceRecords).where(and(eq(assetMaintenanceRecords.assetType, "machine"), eq(assetMaintenanceRecords.assetId, input.machineId), eq(assetMaintenanceRecords.projectId, input.projectId), ne(assetMaintenanceRecords.status, "void"), gte(assetMaintenanceRecords.occurredAt, range.start), lt(assetMaintenanceRecords.occurredAt, range.endExclusive))),
       db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.assetType, "machine"), eq(dieselRefuelRecords.machineId, input.machineId), eq(dieselRefuelRecords.projectId, input.projectId), ne(dieselRefuelRecords.status, "void"), gte(dieselRefuelRecords.refueledAt, range.start), lt(dieselRefuelRecords.refueledAt, range.endExclusive))),
       db.select().from(purchaseOrders).where(and(eq(purchaseOrders.assetType, "machine"), eq(purchaseOrders.assetId, input.machineId), eq(purchaseOrders.projectId, input.projectId), eq(purchaseOrders.status, "closed"), gte(purchaseOrders.orderedAt, range.start), lt(purchaseOrders.orderedAt, range.endExclusive))),
+      db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, input.machineId), eq(machineLeaseRules.projectId, input.projectId), eq(machineLeaseRules.status, "active"))).orderBy(desc(machineLeaseRules.effectiveFrom)),
     ]);
     const dayKey = (value: Date | string) => new Date(value).toISOString().slice(0, 10);
     type DailyAggregate = { date: string; operation: (typeof dailyOperations)[number] | null; repairAmount: number; maintenanceAmount: number; partsAmount: number; fuelLiters: number; fuelAmount: number; otherExpenseAmount: number; sourceCounts: { cost: number; maintenance: number; refuel: number; partsPurchase: number } };
@@ -1650,7 +1651,26 @@ export const machineryRouter = router({
       const totalExpense = roundMoney(driverWageAmount + item.repairAmount + item.maintenanceAmount + item.partsAmount + item.fuelAmount + item.otherExpenseAmount);
       return { ...item, outputAmount, driverWageAmount, totalExpense, netIncome: roundMoney(outputAmount - totalExpense), shiftCount: activeOperation ? Number(activeOperation.shiftCount) : 0, shiftRate: activeOperation ? Number(activeOperation.shiftRate) : 0, shiftAmount: activeOperation ? Number(activeOperation.shiftAmount) : 0, workHours: activeOperation ? Number(activeOperation.workHours) : 0, overtimeHours: activeOperation ? Number(activeOperation.overtimeHours) : 0, overtimeHourlyRate: activeOperation ? Number(activeOperation.overtimeHourlyRate) : 0, overtimeAmount: activeOperation ? Number(activeOperation.overtimeAmount) : 0, driverName: activeOperation?.driverNameSnapshot ?? null, operationStatus: item.operation?.status ?? null, remarks: item.operation?.remarks ?? null };
     }).sort((left, right) => right.date.localeCompare(left.date));
-    return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), daily, partsPurchases: partsPurchaseRows.map(item => ({ id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status })) };
+    const activeRule = leaseRules.find(rule => new Date(rule.effectiveFrom).getTime() < range.endExclusive.getTime() && (!rule.effectiveTo || new Date(rule.effectiveTo).getTime() >= range.start.getTime())) ?? null;
+    const periodDays = Math.round((range.endExclusive.getTime() - range.start.getTime()) / 86_400_000);
+    const activeOperationDays = daily.filter(item => item.operationStatus && item.operationStatus !== "void").length;
+    const overtimeHours = roundMoney(daily.reduce((sum, item) => sum + item.overtimeHours, 0));
+    const overtimeOperationAmount = roundMoney(daily.reduce((sum, item) => sum + item.overtimeAmount, 0));
+    const overtimeCostRecordAmount = roundMoney(costRows.filter(item => item.costType === "overtime").reduce((sum, item) => sum + Number(item.amount), 0));
+    const rental = activeRule ? {
+      billingType: activeRule.billingType,
+      monthlyRate: activeRule.billingType === "monthly" ? Number(activeRule.rate) : null,
+      /** 月租按本自然月实际天数折算，仅为日成本查看口径，不改变合同或结算。 */
+      dailyRate: activeRule.billingType === "monthly" ? roundMoney(Number(activeRule.rate) / periodDays) : activeRule.billingType === "daily" ? Number(activeRule.rate) : null,
+      hourlyRate: activeRule.billingType === "hourly" ? Number(activeRule.rate) : null,
+      shiftRate: activeRule.billingType === "shift" ? Number(activeRule.rate) : null,
+      overtimeHourlyRate: Number(activeRule.overtimeHourlyRate),
+      effectiveFrom: activeRule.effectiveFrom,
+      effectiveTo: activeRule.effectiveTo,
+      activeOperationDays,
+      accruedRental: activeRule.billingType === "monthly" ? Number(activeRule.rate) : activeRule.billingType === "daily" ? roundMoney(Number(activeRule.rate) * activeOperationDays) : null,
+    } : null;
+    return { machine: { id: machine.id, name: machine.name, code: machine.code, model: machine.model }, period: input.period, monthly: monthlyStatements.map(item => ({ ...item, totalOutput: Number(item.totalOutput), driverTotalWage: Number(item.driverTotalWage), repairAmount: Number(item.repairAmount), fuelAmount: Number(item.fuelAmount), fuelLiters: Number(item.fuelLiters), otherExpenseAmount: 0, netIncome: roundMoney(Number(item.totalOutput) - Number(item.driverTotalWage) - Number(item.repairAmount) - Number(item.fuelAmount)) })), rental, overtime: { hours: overtimeHours, operationAmount: overtimeOperationAmount, costRecordAmount: overtimeCostRecordAmount }, daily, partsPurchases: partsPurchaseRows.map(item => ({ id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status })) };
   }),
 
   /** 保存单机日作业；已提交、审核或结算记录禁止直接修改。 */

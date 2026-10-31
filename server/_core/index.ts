@@ -6,6 +6,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { registerIdentityRecoveryRoute } from "../identityRecovery";
 import { registerOfficialAccountBindingRoutes } from "../officialAccountBinding";
 import { registerDailyProjectDigestHeartbeatRoute } from "../dailyProjectDigestHeartbeat";
+import { registerPayrollGenerationHeartbeatRoute } from "../payrollGenerationHeartbeat";
 import { registerProjectRiskHeartbeatRoute } from "../projectRiskHeartbeat";
 import { registerLocalRfidBridgeRoutes } from "../localRfidBridge";
 import { registerStorageProxy } from "./storageProxy";
@@ -51,6 +52,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerOfficialAccountBindingRoutes(app);
   registerDailyProjectDigestHeartbeatRoute(app);
+  registerPayrollGenerationHeartbeatRoute(app);
   registerProjectRiskHeartbeatRoute(app);
   registerLocalRfidBridgeRoutes(app);
   /**

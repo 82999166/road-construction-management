@@ -70,4 +70,15 @@ describe("移动端机械会计月度明细", () => {
     expect(source).not.toContain("保存加班草稿");
     expect(source).not.toContain("台班与加班记录已保存为草稿");
   });
+
+  it("在单机详情展示合同月租、日租折算与加班费用且不重复相加", () => {
+    const source = readFileSync(new URL("./MobileMachineryPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("本机合同与加班费用");
+    expect(source).toContain("合同月租");
+    expect(source).toContain("日租费用");
+    expect(source).toContain("本期加班费");
+    expect(source).toContain("独立加班成本");
+    expect(source).toContain("不与日作业重复相加");
+  });
 });

@@ -17963,6 +17963,32 @@ export default function AdminPage({
                             月度收益以已保存会计快照为准；日度收益来自日作业记录，油料优先读取柴油领用台账，避免与历史油料成本重复计算。
                           </p>
                         </div>
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                          <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
+                            <p className="text-xs text-slate-500">合同月租</p>
+                            <p className="mt-1 font-semibold text-[#203c48]">
+                              {machineAnalysis.data.rental?.monthlyRate == null ? "—" : `¥${displayMoney(machineAnalysis.data.rental.monthlyRate)}`}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">{machineAnalysis.data.rental?.billingType === "monthly" ? "当前生效月租合同" : "非月租合同不换算"}</p>
+                          </div>
+                          <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
+                            <p className="text-xs text-slate-500">日租费用</p>
+                            <p className="mt-1 font-semibold text-[#203c48]">
+                              {machineAnalysis.data.rental?.dailyRate == null ? "—" : `¥${displayMoney(machineAnalysis.data.rental.dailyRate)} / 天`}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">月租按当月自然日折算，仅供日成本查看</p>
+                          </div>
+                          <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
+                            <p className="text-xs text-slate-500">本期日作业加班费</p>
+                            <p className="mt-1 font-semibold text-[#8a4b25]">¥{displayMoney(machineAnalysis.data.overtime.operationAmount)}</p>
+                            <p className="mt-1 text-xs text-slate-500">{machineAnalysis.data.overtime.hours} 小时 × 当日记录费率</p>
+                          </div>
+                          <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
+                            <p className="text-xs text-slate-500">独立加班成本</p>
+                            <p className="mt-1 font-semibold text-[#8a4b25]">¥{displayMoney(machineAnalysis.data.overtime.costRecordAmount)}</p>
+                            <p className="mt-1 text-xs text-slate-500">成本台账单列，不与日作业加班重复相加</p>
+                          </div>
+                        </div>
                         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
                           <Table className="min-w-[940px] text-xs">
                             <TableHeader className="bg-[#edf1ed]">

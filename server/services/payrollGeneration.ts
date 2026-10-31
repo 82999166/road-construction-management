@@ -1,0 +1,333 @@
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  attendanceRecords,
+  auditLogs,
+  employeeProfiles,
+  laborWorkers,
+  payrollGenerationRuns,
+  payrollGenerationSchedules,
+  payrollStatements,
+  projects,
+} from "../../drizzle/schema";
+import { calculateEmployeePayrollAccrual } from "../../shared/domain";
+import { getDb } from "../db";
+import { chinaBusinessDate, chinaBusinessMonth } from "./chinaBusinessTime";
+import { decryptSecret, maskSecret } from "./secretVault";
+
+export const PAYROLL_GENERATION_SCOPE_KEY = "company-monthly-payroll-draft";
+
+export type PayrollAccrualPreview = {
+  period: string;
+  asOfDate: string;
+  eligibleStartDate: string | null;
+  eligibleEndDate: string | null;
+  confirmedAttendanceDays: number;
+  lockedAttendanceDays: number;
+  normalHours: number;
+  overtimeHours: number;
+  calculable: boolean;
+  payableAmount: number | null;
+  calculationLabel: string;
+  blockedReason: string | null;
+  existingPayroll: { id: number; status: string; payableAmount: number; actualAmount: number } | null;
+  approvedAdvanceAmount: number;
+};
+
+type EmployeeProfileForAccrual = {
+  id: number;
+  laborWorkerId: number | null;
+  projectId: number | null;
+  employmentStatus: "active" | "suspended" | "left";
+  joinedAt: Date | string | null;
+  leftAt: Date | string | null;
+  salaryBasis: "monthly" | "daily" | "hourly" | "piecework";
+  baseSalary: string | number | null;
+};
+
+type AttendanceForAccrual = {
+  attendanceDate: Date | string;
+  workHours: string | number;
+  overtimeHours: string | number;
+  status: "draft" | "confirmed" | "locked";
+};
+
+function assertPayrollPeriod(period: string) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new Error("工资期间格式必须为 YYYY-MM");
+}
+
+function dateKey(value: Date | string | null | undefined) {
+  if (!value) return null;
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  return chinaBusinessDate(value);
+}
+
+function clampEligibleRange(profile: EmployeeProfileForAccrual, period: string, asOfDate: string) {
+  const periodStart = `${period}-01`;
+  const [year, month] = period.split("-").map(Number);
+  const periodEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  const joinedAt = dateKey(profile.joinedAt);
+  const leftAt = dateKey(profile.leftAt);
+  const start = [periodStart, joinedAt].filter((value): value is string => Boolean(value)).sort().at(-1) ?? periodStart;
+  const end = [periodEnd, asOfDate, leftAt].filter((value): value is string => Boolean(value)).sort()[0] ?? asOfDate;
+  return start > end ? null : { start, end };
+}
+
+export function buildPayrollAccrualPreview(params: {
+  profile: EmployeeProfileForAccrual;
+  period: string;
+  asOfDate: string;
+  attendanceRows: AttendanceForAccrual[];
+  existingPayroll?: { id: number; status: string; payableAmount: string | number; actualAmount: string | number } | null;
+  approvedAdvanceAmount?: number;
+}): PayrollAccrualPreview {
+  assertPayrollPeriod(params.period);
+  const range = clampEligibleRange(params.profile, params.period, params.asOfDate);
+  const inRange = range
+    ? params.attendanceRows.filter(row => {
+        const attendanceDate = dateKey(row.attendanceDate);
+        return Boolean(attendanceDate && attendanceDate >= range.start && attendanceDate <= range.end);
+      })
+    : [];
+  const eligibleAttendance = inRange.filter(row => row.status === "confirmed" || row.status === "locked");
+  const confirmedAttendanceDays = eligibleAttendance.length;
+  const lockedAttendanceDays = eligibleAttendance.filter(row => row.status === "locked").length;
+  const normalHours = eligibleAttendance.reduce((sum, row) => sum + Number(row.workHours), 0);
+  const overtimeHours = eligibleAttendance.reduce((sum, row) => sum + Number(row.overtimeHours), 0);
+  const existingPayroll = params.existingPayroll
+    ? {
+        id: params.existingPayroll.id,
+        status: params.existingPayroll.status,
+        payableAmount: Number(params.existingPayroll.payableAmount),
+        actualAmount: Number(params.existingPayroll.actualAmount),
+      }
+    : null;
+
+  if (!params.profile.laborWorkerId || !params.profile.projectId) {
+    return {
+      period: params.period,
+      asOfDate: params.asOfDate,
+      eligibleStartDate: range?.start ?? null,
+      eligibleEndDate: range?.end ?? null,
+      confirmedAttendanceDays,
+      lockedAttendanceDays,
+      normalHours,
+      overtimeHours,
+      calculable: false,
+      payableAmount: null,
+      calculationLabel: "—",
+      blockedReason: "该员工尚未关联统一劳务工资主体或项目，不能自动生成工资条",
+      existingPayroll,
+      approvedAdvanceAmount: params.approvedAdvanceAmount ?? 0,
+    };
+  }
+  if (params.profile.employmentStatus !== "active" && !range) {
+    return {
+      period: params.period,
+      asOfDate: params.asOfDate,
+      eligibleStartDate: null,
+      eligibleEndDate: null,
+      confirmedAttendanceDays: 0,
+      lockedAttendanceDays: 0,
+      normalHours: 0,
+      overtimeHours: 0,
+      calculable: false,
+      payableAmount: null,
+      calculationLabel: "—",
+      blockedReason: "该员工在所选工资期间无有效在职日期",
+      existingPayroll,
+      approvedAdvanceAmount: params.approvedAdvanceAmount ?? 0,
+    };
+  }
+  if (!confirmedAttendanceDays) {
+    return {
+      period: params.period,
+      asOfDate: params.asOfDate,
+      eligibleStartDate: range?.start ?? null,
+      eligibleEndDate: range?.end ?? null,
+      confirmedAttendanceDays,
+      lockedAttendanceDays,
+      normalHours,
+      overtimeHours,
+      calculable: false,
+      payableAmount: null,
+      calculationLabel: "—",
+      blockedReason: "所选期间暂无已确认或已锁定考勤，不能自动生成工资条",
+      existingPayroll,
+      approvedAdvanceAmount: params.approvedAdvanceAmount ?? 0,
+    };
+  }
+  const calculation = calculateEmployeePayrollAccrual({
+    salaryBasis: params.profile.salaryBasis,
+    baseSalary: params.profile.baseSalary === null ? null : Number(params.profile.baseSalary),
+    confirmedAttendanceDays,
+    normalHours,
+    overtimeHours,
+  });
+  return {
+    period: params.period,
+    asOfDate: params.asOfDate,
+    eligibleStartDate: range?.start ?? null,
+    eligibleEndDate: range?.end ?? null,
+    confirmedAttendanceDays,
+    lockedAttendanceDays,
+    normalHours,
+    overtimeHours,
+    ...calculation,
+    existingPayroll,
+    approvedAdvanceAmount: params.approvedAdvanceAmount ?? 0,
+  };
+}
+
+async function getProfileAccrualData(profile: EmployeeProfileForAccrual, period: string, asOfDate: string) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  if (!profile.laborWorkerId || !profile.projectId) return buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows: [] });
+  const [attendanceRows, existingRows] = await Promise.all([
+    db.select({ attendanceDate: attendanceRecords.attendanceDate, workHours: attendanceRecords.workHours, overtimeHours: attendanceRecords.overtimeHours, status: attendanceRecords.status })
+      .from(attendanceRecords)
+      .where(and(eq(attendanceRecords.workerId, profile.laborWorkerId), eq(attendanceRecords.projectId, profile.projectId))),
+    db.select({ id: payrollStatements.id, status: payrollStatements.status, payableAmount: payrollStatements.payableAmount, actualAmount: payrollStatements.actualAmount })
+      .from(payrollStatements)
+      .where(and(eq(payrollStatements.workerId, profile.laborWorkerId), eq(payrollStatements.projectId, profile.projectId), eq(payrollStatements.period, period)))
+      .limit(1),
+  ]);
+  return buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows, existingPayroll: existingRows[0] ?? null });
+}
+
+/** 单人员详情使用：数据按人员、期间按需读取，避免花名册全量扫描用于工资核算。 */
+export async function getEmployeePayrollAccrualPreview(employeeProfileId: number, period = chinaBusinessMonth(new Date()), asOfDate = chinaBusinessDate(new Date())) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const [profile] = await db.select({
+    id: employeeProfiles.id,
+    laborWorkerId: employeeProfiles.laborWorkerId,
+    projectId: employeeProfiles.projectId,
+    employmentStatus: employeeProfiles.employmentStatus,
+    joinedAt: employeeProfiles.joinedAt,
+    leftAt: employeeProfiles.leftAt,
+    salaryBasis: employeeProfiles.salaryBasis,
+    baseSalary: employeeProfiles.baseSalary,
+  }).from(employeeProfiles).where(eq(employeeProfiles.id, employeeProfileId)).limit(1);
+  if (!profile) throw new Error("employee_profile_not_found");
+  return getProfileAccrualData(profile, period, asOfDate);
+}
+
+export async function generatePayrollDraftForEmployeeProfile(input: { employeeProfileId: number; period: string; actorUserId: number; source: "manual" | "schedule" }) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const [profile] = await db.select({
+    id: employeeProfiles.id,
+    laborWorkerId: employeeProfiles.laborWorkerId,
+    projectId: employeeProfiles.projectId,
+    employmentStatus: employeeProfiles.employmentStatus,
+    joinedAt: employeeProfiles.joinedAt,
+    leftAt: employeeProfiles.leftAt,
+    salaryBasis: employeeProfiles.salaryBasis,
+    baseSalary: employeeProfiles.baseSalary,
+  }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
+  if (!profile) throw new Error("employee_profile_not_found");
+  const asOfDate = `${input.period}-${new Date(Date.UTC(Number(input.period.slice(0, 4)), Number(input.period.slice(5, 7)), 0)).getUTCDate().toString().padStart(2, "0")}`;
+  const preview = await getProfileAccrualData(profile, input.period, asOfDate);
+  if (preview.existingPayroll) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
+  if (!preview.calculable || preview.payableAmount === null) return { status: "blocked" as const, reason: preview.blockedReason ?? "工资核算条件未满足", preview };
+  const [worker] = await db.select({ bankAccountEncrypted: laborWorkers.bankAccountEncrypted }).from(laborWorkers).where(eq(laborWorkers.id, profile.laborWorkerId!)).limit(1);
+  const bankAccountMasked = worker?.bankAccountEncrypted ? maskSecret(decryptSecret(worker.bankAccountEncrypted)) : null;
+  try {
+    await db.insert(payrollStatements).values({
+      workerId: profile.laborWorkerId!,
+      projectId: profile.projectId!,
+      period: input.period,
+      payableAmount: String(preview.payableAmount),
+      deductionAmount: "0",
+      actualAmount: String(preview.payableAmount),
+      bankAccountMasked,
+      status: "draft",
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "";
+    if (/duplicate|unique/i.test(code)) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
+    throw error;
+  }
+  await db.insert(auditLogs).values({
+    userId: input.actorUserId,
+    module: "labor",
+    action: input.source === "schedule" ? "auto_generate_payroll_draft" : "generate_payroll_draft",
+    targetType: "payroll_statement",
+    targetId: `${profile.laborWorkerId}-${input.period}`,
+    summary: `${input.period} 根据已确认考勤生成工资草稿；需经会计审核和财务发放确认`,
+  });
+  return { status: "created" as const, preview };
+}
+
+/** 全项目批量生成仅创建草稿；已存在工资条、缺少考勤或计件数据均不会覆盖或写入零金额。 */
+export async function generatePayrollDraftsForProject(input: { projectId: number; period: string; actorUserId: number; source: "manual" | "schedule" }) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const profiles = await db.select({ id: employeeProfiles.id }).from(employeeProfiles).where(and(eq(employeeProfiles.projectId, input.projectId), eq(employeeProfiles.employmentStatus, "active")));
+  let createdCount = 0;
+  let skippedCount = 0;
+  let blockedCount = 0;
+  for (const profile of profiles) {
+    const result = await generatePayrollDraftForEmployeeProfile({ ...input, employeeProfileId: profile.id });
+    if (result.status === "created") createdCount += 1;
+    else if (result.status === "skipped") skippedCount += 1;
+    else blockedCount += 1;
+  }
+  return { projectId: input.projectId, period: input.period, createdCount, skippedCount, blockedCount };
+}
+
+export async function runScheduledPayrollDraftGeneration(scheduleId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const [schedule] = await db.select().from(payrollGenerationSchedules).where(eq(payrollGenerationSchedules.id, scheduleId)).limit(1);
+  if (!schedule || !schedule.enabled) return { status: "ignored" as const, period: chinaBusinessMonth(new Date()) };
+  const now = new Date();
+  const currentPeriod = chinaBusinessMonth(now);
+  const [year, month] = currentPeriod.split("-").map(Number);
+  const targetPeriod = month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, "0")}`;
+  const actorUserId = schedule.updatedBy ?? schedule.createdBy;
+  if (!actorUserId) throw new Error("payroll_schedule_missing_actor");
+  const activeProjects = await db.select({ id: projects.id }).from(projects).where(eq(projects.status, "active"));
+  let createdCount = 0;
+  let skippedCount = 0;
+  let blockedCount = 0;
+  let failedCount = 0;
+  for (const project of activeProjects) {
+    try {
+      const result = await generatePayrollDraftsForProject({ projectId: project.id, period: targetPeriod, actorUserId, source: "schedule" });
+      createdCount += result.createdCount;
+      skippedCount += result.skippedCount;
+      blockedCount += result.blockedCount;
+      await db.insert(payrollGenerationRuns).values({
+        scheduleId: schedule.id,
+        projectId: project.id,
+        period: targetPeriod,
+        status: result.blockedCount ? "partial" : "completed",
+        createdCount: result.createdCount,
+        skippedCount: result.skippedCount,
+        blockedCount: result.blockedCount,
+        summaryJson: JSON.stringify(result),
+        completedAt: new Date(),
+      }).onDuplicateKeyUpdate({ set: { status: result.blockedCount ? "partial" : "completed", createdCount: result.createdCount, skippedCount: result.skippedCount, blockedCount: result.blockedCount, summaryJson: JSON.stringify(result), completedAt: new Date() } });
+    } catch {
+      failedCount += 1;
+    }
+  }
+  const summary = { period: targetPeriod, projectCount: activeProjects.length, createdCount, skippedCount, blockedCount, failedCount };
+  await db.update(payrollGenerationSchedules).set({ lastAttemptedAt: now, lastSuccessfulPeriod: failedCount ? schedule.lastSuccessfulPeriod : targetPeriod, lastResultJson: JSON.stringify(summary) }).where(eq(payrollGenerationSchedules.id, schedule.id));
+  return { status: failedCount ? "partial" as const : "completed" as const, ...summary };
+}
+
+export async function runScheduledPayrollDraftGenerationForHeartbeatTask(taskUid: string) {
+  const db = await getDb();
+  if (!db) throw new Error("database_unavailable");
+  const [schedule] = await db.select().from(payrollGenerationSchedules).where(and(eq(payrollGenerationSchedules.scheduleCronTaskUid, taskUid), eq(payrollGenerationSchedules.enabled, true))).limit(1);
+  if (!schedule) return { status: "ignored" as const, reason: "orphan_or_disabled" };
+  return runScheduledPayrollDraftGeneration(schedule.id);
+}
+
+export function buildMonthlyPayrollGenerationCron(generationDay: number, generationHour: number, generationMinute: number) {
+  if (!Number.isInteger(generationDay) || generationDay < 1 || generationDay > 28) throw new Error("工资生成日期必须为每月 1—28 日");
+  if (!Number.isInteger(generationHour) || generationHour < 0 || generationHour > 23 || !Number.isInteger(generationMinute) || generationMinute < 0 || generationMinute > 59) throw new Error("工资生成时间无效");
+  return `0 ${generationMinute} ${(generationHour + 16) % 24} ${generationDay} * *`;
+}

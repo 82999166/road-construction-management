@@ -34,4 +34,12 @@ describe("CompanyPersonnelRoster", () => {
     expect(source).toContain("手机号（新增或修改）");
     expect(source).not.toContain("decryptSecret");
   });
+
+  it("展示入职、确认打卡、截至日应计工资，并提供受控工资草稿和月度自动生成入口", () => {
+    expect(source).toContain("截至当日工资费用");
+    expect(source).toContain("已确认打卡 / 考勤");
+    expect(source).toContain("生成工资草稿");
+    expect(source).toContain("启用每月自动生成");
+    expect(source).toContain("不自动扣减");
+  });
 });

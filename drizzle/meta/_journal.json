@@ -603,6 +603,13 @@
       "when": 1793460590775,
       "tag": "0085_clammy_spencer_smythe",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "5",
+      "when": 1793462496360,
+      "tag": "0086_gorgeous_silverclaw",
+      "breakpoints": true
     }
   ]
 }

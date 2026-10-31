@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
+import { parse as parseCookie } from "cookie";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -32,6 +33,7 @@ import {
   outsourceContracts,
   positions,
   payrollStatements,
+  payrollGenerationSchedules,
   purchaseOrders,
   purchaseRequests,
   projects,
@@ -52,6 +54,7 @@ import {
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
 import { calculateTheoreticalVolume } from "../../shared/domain";
+import { COOKIE_NAME } from "../../shared/const";
 import {
   normalizeEvidenceWatermarkTemplate,
   WATERMARK_TEMPLATE_SETTING_KEY,
@@ -146,6 +149,13 @@ import {
   normalizeLocalManagerUsername,
 } from "../localAuth";
 import { storageGetSignedUrl } from "../storage";
+import { createHeartbeatJob, listHeartbeatJobs, updateHeartbeatJob } from "../_core/heartbeat";
+import {
+  buildMonthlyPayrollGenerationCron,
+  generatePayrollDraftForEmployeeProfile,
+  getEmployeePayrollAccrualPreview,
+  PAYROLL_GENERATION_SCOPE_KEY,
+} from "../services/payrollGeneration";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -1873,11 +1883,15 @@ export const adminRouter = router({
       );
     }),
     compensationDetails: protectedProcedure
-      .input(z.object({ employeeProfileId: z.number().int().positive() }))
+      .input(z.object({
+        employeeProfileId: z.number().int().positive(),
+        period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+        asOfDate: z.string().date().optional(),
+      }))
       .query(async ({ ctx, input }) => {
         await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) return { payroll: [], dailyWage: [], advances: [] };
+        if (!db) return { payroll: [], dailyWage: [], advances: [], accrual: null };
         const [profile] = await db
           .select({ id: employeeProfiles.id, laborWorkerId: employeeProfiles.laborWorkerId })
           .from(employeeProfiles)
@@ -1885,7 +1899,9 @@ export const adminRouter = router({
           .limit(1);
         if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
         const workerId = profile.laborWorkerId;
-        const [payroll, dailyWage, advances] = await Promise.all([
+        const period = input.period ?? chinaBusinessMonth(new Date());
+        const asOfDate = input.asOfDate ?? chinaBusinessDate(new Date());
+        const [payroll, dailyWage, advances, accrual] = await Promise.all([
           workerId
             ? db.select({ id: payrollStatements.id, period: payrollStatements.period, payableAmount: payrollStatements.payableAmount, deductionAmount: payrollStatements.deductionAmount, actualAmount: payrollStatements.actualAmount, status: payrollStatements.status, paidAt: payrollStatements.paidAt }).from(payrollStatements).where(eq(payrollStatements.workerId, workerId)).orderBy(desc(payrollStatements.period))
             : Promise.resolve([]),
@@ -1893,8 +1909,78 @@ export const adminRouter = router({
             ? db.select({ id: temporaryDailyWageSettlements.id, settlementDate: temporaryDailyWageSettlements.settlementDate, payableAmount: temporaryDailyWageSettlements.payableAmount, actualAmount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status, paidAt: temporaryDailyWageSettlements.paidAt }).from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.workerId, workerId)).orderBy(desc(temporaryDailyWageSettlements.settlementDate))
             : Promise.resolve([]),
           db.select({ id: employeePayrollAdvances.id, advanceDate: employeePayrollAdvances.advanceDate, amount: employeePayrollAdvances.amount, status: employeePayrollAdvances.status, remarks: employeePayrollAdvances.remarks, createdAt: employeePayrollAdvances.createdAt }).from(employeePayrollAdvances).where(eq(employeePayrollAdvances.employeeProfileId, input.employeeProfileId)).orderBy(desc(employeePayrollAdvances.advanceDate)),
+          getEmployeePayrollAccrualPreview(input.employeeProfileId, period, asOfDate),
         ]);
-        return { payroll, dailyWage, advances };
+        const approvedAdvanceAmount = advances
+          .filter(item => item.status === "approved" && chinaBusinessDate(item.advanceDate) <= asOfDate)
+          .reduce((sum, item) => sum + Number(item.amount), 0);
+        return { payroll, dailyWage, advances, accrual: { ...accrual, approvedAdvanceAmount } };
+      }),
+    generatePayrollDraft: protectedProcedure
+      .input(z.object({ employeeProfileId: z.number().int().positive(), period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }))
+      .mutation(async ({ ctx, input }) => {
+        const admin = await assertSuperAdmin(ctx);
+        const result = await generatePayrollDraftForEmployeeProfile({ ...input, actorUserId: admin.id, source: "manual" });
+        if (result.status === "blocked") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: result.reason });
+        }
+        return result;
+      }),
+    getPayrollGenerationSchedule: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return null;
+      const [schedule] = await db.select().from(payrollGenerationSchedules).where(eq(payrollGenerationSchedules.scopeKey, PAYROLL_GENERATION_SCOPE_KEY)).limit(1);
+      return schedule ?? {
+        enabled: false,
+        timezone: "Asia/Shanghai",
+        generationDay: 1,
+        generationHour: 9,
+        generationMinute: 5,
+        scheduleCronTaskUid: null,
+        lastAttemptedAt: null,
+        lastSuccessfulPeriod: null,
+        lastResultJson: null,
+      };
+    }),
+    savePayrollGenerationSchedule: protectedProcedure
+      .input(z.object({ enabled: z.boolean(), generationDay: z.number().int().min(1).max(28).default(1), generationHour: z.number().int().min(0).max(23).default(9), generationMinute: z.number().int().min(0).max(59).default(5) }))
+      .mutation(async ({ ctx, input }) => {
+        const admin = await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        const [existing] = await db.select().from(payrollGenerationSchedules).where(eq(payrollGenerationSchedules.scopeKey, PAYROLL_GENERATION_SCOPE_KEY)).limit(1);
+        let taskUid = existing?.scheduleCronTaskUid ?? null;
+        const sessionValue = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+        const sessionToken = decodeURIComponent(sessionValue);
+        if (input.enabled) {
+          if (process.env.NODE_ENV !== "production") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "请先发布本版本到正式站点，再启用每月自动工资草稿任务" });
+          }
+          const cron = buildMonthlyPayrollGenerationCron(input.generationDay, input.generationHour, input.generationMinute);
+          if (taskUid) {
+            await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿", enable: true }, sessionToken);
+          } else {
+            try {
+              const created = await createHeartbeatJob({ name: "monthly-payroll-draft-generation", cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿" }, sessionToken);
+              taskUid = created.taskUid;
+            } catch (error) {
+              if (!(error instanceof Error) || !error.message.includes("already_exists")) throw error;
+              const jobs = await listHeartbeatJobs(sessionToken, { page: 1, pageSize: 100 });
+              const matched = jobs.jobs.find(job => job.name === "monthly-payroll-draft-generation" && job.callbackPath === "/api/scheduled/monthly-payroll-draft-generation");
+              if (!matched) throw new TRPCError({ code: "CONFLICT", message: "工资草稿定时任务已存在但未读取到任务标识，请刷新后重试" });
+              taskUid = matched.taskUid;
+              await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿", enable: true }, sessionToken);
+            }
+          }
+        } else if (taskUid) {
+          await updateHeartbeatJob(taskUid, { enable: false }, sessionToken);
+        }
+        const values = { enabled: input.enabled, timezone: "Asia/Shanghai", generationDay: input.generationDay, generationHour: input.generationHour, generationMinute: input.generationMinute, scheduleCronTaskUid: taskUid, updatedBy: admin.id };
+        if (existing) await db.update(payrollGenerationSchedules).set(values).where(eq(payrollGenerationSchedules.id, existing.id));
+        else await db.insert(payrollGenerationSchedules).values({ scopeKey: PAYROLL_GENERATION_SCOPE_KEY, ...values, createdBy: admin.id });
+        await db.insert(auditLogs).values({ userId: admin.id, module: "labor", action: "save_payroll_generation_schedule", targetType: "payroll_generation_schedule", targetId: PAYROLL_GENERATION_SCOPE_KEY, summary: input.enabled ? `启用每月 ${input.generationDay} 日 ${String(input.generationHour).padStart(2, "0")}:${String(input.generationMinute).padStart(2, "0")} 自动生成上月工资草稿` : "停用每月自动工资草稿生成" });
+        return { success: true, taskUid };
       }),
     saveAdvance: protectedProcedure
       .input(employeePayrollAdvanceInput)

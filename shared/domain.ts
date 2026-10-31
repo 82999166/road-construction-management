@@ -405,6 +405,63 @@ export function calculatePayrollAmounts(params: { payableAmount: number; deducti
 }
 
 /**
+ * 员工工资应计预览。
+ *
+ * 此函数只根据已确认/锁定的考勤生成“待审核草稿”的应发预览，绝不代表实际付款。
+ * 月薪暂采用项目既有会计模板相同的 30 天折算口径；计件制没有经过验收的数量来源，
+ * 必须阻断自动制单，由劳资人员先维护计件结算依据。
+ */
+export function calculateEmployeePayrollAccrual(params: {
+  salaryBasis: "monthly" | "daily" | "hourly" | "piecework" | null;
+  baseSalary: number | null;
+  confirmedAttendanceDays: number;
+  normalHours: number;
+  overtimeHours: number;
+}): {
+  calculable: boolean;
+  payableAmount: number | null;
+  calculationLabel: string;
+  blockedReason: string | null;
+} {
+  const { salaryBasis, baseSalary, confirmedAttendanceDays, normalHours, overtimeHours } = params;
+  if (!salaryBasis) {
+    return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "未维护计薪口径" };
+  }
+  if (baseSalary === null || !Number.isFinite(baseSalary) || baseSalary < 0) {
+    return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "未维护有效基础薪资/单价" };
+  }
+  if (![confirmedAttendanceDays, normalHours, overtimeHours].every(value => Number.isFinite(value) && value >= 0)) {
+    throw new ConstructionDomainError("INVALID_PARAMETER", "考勤天数和工时必须为有效的非负数");
+  }
+  if (salaryBasis === "piecework") {
+    return { calculable: false, payableAmount: null, calculationLabel: "计件需验收数量", blockedReason: "计件工资尚未关联经审核的工程量/验收数量，不能自动生成工资条" };
+  }
+  if (salaryBasis === "monthly") {
+    return {
+      calculable: true,
+      payableAmount: roundMoney((baseSalary / 30) * confirmedAttendanceDays),
+      calculationLabel: `月薪 ¥${roundMoney(baseSalary)} ÷ 30 天 × ${confirmedAttendanceDays} 天已确认考勤`,
+      blockedReason: null,
+    };
+  }
+  if (salaryBasis === "daily") {
+    return {
+      calculable: true,
+      payableAmount: roundMoney(baseSalary * confirmedAttendanceDays),
+      calculationLabel: `日薪 ¥${roundMoney(baseSalary)} × ${confirmedAttendanceDays} 天已确认考勤`,
+      blockedReason: null,
+    };
+  }
+  const billableHours = normalHours + overtimeHours;
+  return {
+    calculable: true,
+    payableAmount: roundMoney(baseSalary * billableHours),
+    calculationLabel: `时薪 ¥${roundMoney(baseSalary)} × ${roundMoney(billableHours)} 小时已确认工时（含 ${roundMoney(overtimeHours)} 小时加班）`,
+    blockedReason: null,
+  };
+}
+
+/**
  * 工资审核属于会计职责。ALL 仅代表经过系统级管理员认证的应急管理身份，
  * 不能被普通财务负责人或劳资管理员角色替代。
  */

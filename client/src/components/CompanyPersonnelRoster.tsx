@@ -129,6 +129,7 @@ export default function CompanyPersonnelRoster({
   const [selectedRow, setSelectedRow] =
     useState<CompanyPersonnelRosterRow | null>(null);
   const [editing, setEditing] = useState(false);
+  const [payrollPeriod, setPayrollPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [draft, setDraft] = useState({
     teamName: "",
     tradeName: "",
@@ -153,9 +154,25 @@ export default function CompanyPersonnelRoster({
     onError: error => toast.error(error.message || "员工档案保存失败"),
   });
   const compensationQuery = trpc.admin.employee.compensationDetails.useQuery(
-    { employeeProfileId: selectedRow?.profileId ?? 0 },
+    { employeeProfileId: selectedRow?.profileId ?? 0, period: payrollPeriod },
     { enabled: Boolean(selectedRow?.profileId) }
   );
+  const payrollScheduleQuery = trpc.admin.employee.getPayrollGenerationSchedule.useQuery();
+  const generatePayrollDraft = trpc.admin.employee.generatePayrollDraft.useMutation({
+    onSuccess: async result => {
+      toast.success(result.status === "created" ? "工资草稿已生成，待会计审核和财务发放确认" : "该期间已有工资条，未重复生成");
+      await compensationQuery.refetch();
+      await onSaved?.();
+    },
+    onError: error => toast.error(error.message || "工资草稿生成失败"),
+  });
+  const savePayrollSchedule = trpc.admin.employee.savePayrollGenerationSchedule.useMutation({
+    onSuccess: async () => {
+      toast.success("每月自动工资草稿设置已保存");
+      await payrollScheduleQuery.refetch();
+    },
+    onError: error => toast.error(error.message || "自动工资草稿设置失败"),
+  });
   const saveAdvance = trpc.admin.employee.saveAdvance.useMutation({
     onSuccess: async () => {
       toast.success("工资预支已保存");
@@ -538,6 +555,31 @@ export default function CompanyPersonnelRoster({
                   {selectedRow.latestActualAmount ?? "—"}
                   ；金额以审核工资条为准。
                 </p>
+              </section>
+              <section className="rounded-xl border border-[#c9ded7] bg-[#f8fcfb] p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3 className="font-semibold text-[#203c48]">截至当日工资费用</h3>
+                    <p className="mt-1 text-xs text-slate-500">只按已确认/已锁定的考勤预估，不等同发放金额。</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input aria-label="工资核算期间" type="month" className="h-8 w-[142px] bg-white text-xs" value={payrollPeriod} onChange={event => setPayrollPeriod(event.target.value)} />
+                    {selectedRow.profileId ? <Button size="sm" variant="outline" disabled={generatePayrollDraft.isPending || !compensationQuery.data?.accrual?.calculable || Boolean(compensationQuery.data?.accrual?.existingPayroll)} onClick={() => generatePayrollDraft.mutate({ employeeProfileId: selectedRow.profileId!, period: payrollPeriod })}>{generatePayrollDraft.isPending ? "生成中…" : "生成工资草稿"}</Button> : null}
+                  </div>
+                </div>
+                {compensationQuery.isLoading ? <p className="mt-3 text-sm text-slate-500">正在按期间核算考勤与工资…</p> : compensationQuery.data?.accrual ? (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                    <div className="rounded-lg bg-white p-2.5"><p className="text-xs text-slate-500">入职 / 参与区间</p><p className="mt-1 text-sm font-semibold">{selectedRow.joinedAt ? displayDate(selectedRow.joinedAt) : "未登记"}</p><p className="mt-0.5 text-xs text-slate-500">{compensationQuery.data.accrual.eligibleStartDate ?? "—"} 至 {compensationQuery.data.accrual.eligibleEndDate ?? "—"}</p></div>
+                    <div className="rounded-lg bg-white p-2.5"><p className="text-xs text-slate-500">已确认打卡 / 考勤</p><p className="mt-1 text-lg font-semibold">{compensationQuery.data.accrual.confirmedAttendanceDays} 天</p><p className="mt-0.5 text-xs text-slate-500">其中锁定 {compensationQuery.data.accrual.lockedAttendanceDays} 天</p></div>
+                    <div className="rounded-lg bg-white p-2.5"><p className="text-xs text-slate-500">截至核算日应发</p><p className="mt-1 text-lg font-semibold text-[#205d4e]">{compensationQuery.data.accrual.payableAmount == null ? "待补全" : `¥${compensationQuery.data.accrual.payableAmount.toFixed(2)}`}</p><p className="mt-0.5 text-xs text-slate-500">截至 {compensationQuery.data.accrual.asOfDate}</p></div>
+                    <div className="rounded-lg bg-white p-2.5"><p className="text-xs text-slate-500">已批准预支（提示）</p><p className="mt-1 text-lg font-semibold text-amber-700">¥{compensationQuery.data.accrual.approvedAdvanceAmount.toFixed(2)}</p><p className="mt-0.5 text-xs text-slate-500">不自动扣减，需复核后录入</p></div>
+                  </div>
+                ) : <p className="mt-3 text-sm text-slate-500">请先关联统一员工档案后核算。</p>}
+                {compensationQuery.data?.accrual ? <p className="mt-3 text-xs text-slate-600">{compensationQuery.data.accrual.blockedReason || compensationQuery.data.accrual.calculationLabel}{compensationQuery.data.accrual.existingPayroll ? `；当前期间已有${compensationQuery.data.accrual.existingPayroll.status}工资条，禁止重复生成。` : ""}</p> : null}
+                <div className="mt-3 flex flex-col gap-2 border-t border-[#dce7e1] pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-slate-500">月度自动草稿：每月 {payrollScheduleQuery.data?.generationDay ?? 1} 日 {String(payrollScheduleQuery.data?.generationHour ?? 9).padStart(2, "0")}:{String(payrollScheduleQuery.data?.generationMinute ?? 5).padStart(2, "0")}（中国标准时间）为上月生成草稿；不会自动审核、扣预支或付款。</p>
+                  <Button type="button" size="sm" variant={payrollScheduleQuery.data?.enabled ? "outline" : "default"} disabled={savePayrollSchedule.isPending} onClick={() => savePayrollSchedule.mutate({ enabled: !payrollScheduleQuery.data?.enabled, generationDay: payrollScheduleQuery.data?.generationDay ?? 1, generationHour: payrollScheduleQuery.data?.generationHour ?? 9, generationMinute: payrollScheduleQuery.data?.generationMinute ?? 5 })}>{savePayrollSchedule.isPending ? "正在设置…" : payrollScheduleQuery.data?.enabled ? "停用自动生成" : "启用每月自动生成"}</Button>
+                </div>
               </section>
               <section className="rounded-xl border border-[#dce7e1] p-3">
                 <div className="flex items-center justify-between gap-2">

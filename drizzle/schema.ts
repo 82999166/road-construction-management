@@ -848,6 +848,59 @@ export const payrollStatements = mysqlTable(
   }),
 );
 
+/**
+ * 公司级月度工资草稿生成调度。回调仅按平台签发的 task UID 定位本配置，
+ * 不能信任请求体内的期间、人员或项目字段。
+ */
+export const payrollGenerationSchedules = mysqlTable(
+  "payroll_generation_schedules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    scopeKey: varchar("scopeKey", { length: 64 }).notNull(),
+    enabled: boolean("enabled").default(false).notNull(),
+    timezone: varchar("timezone", { length: 64 }).default("Asia/Shanghai").notNull(),
+    /** 每月第几天为上一个自然月生成工资草稿，默认次月 1 日。 */
+    generationDay: int("generationDay").default(1).notNull(),
+    generationHour: int("generationHour").default(9).notNull(),
+    generationMinute: int("generationMinute").default(5).notNull(),
+    scheduleCronTaskUid: varchar("scheduleCronTaskUid", { length: 65 }),
+    lastAttemptedAt: datetime("lastAttemptedAt"),
+    lastSuccessfulPeriod: varchar("lastSuccessfulPeriod", { length: 7 }),
+    lastResultJson: text("lastResultJson"),
+    createdBy: int("createdBy"),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scopeKeyUnique: uniqueIndex("payroll_generation_schedules_scope_unique").on(table.scopeKey),
+    cronTaskUidIndex: index("payroll_generation_schedules_task_uid_index").on(table.scheduleCronTaskUid),
+  }),
+);
+
+/** 每项目、每期间仅保存一份工资生成运行审计，抵抗 Heartbeat 的重试与并发重放。 */
+export const payrollGenerationRuns = mysqlTable(
+  "payroll_generation_runs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    scheduleId: int("scheduleId").notNull(),
+    projectId: int("projectId").notNull(),
+    period: varchar("period", { length: 7 }).notNull(),
+    status: mysqlEnum("status", ["completed", "partial", "skipped", "failed"]).notNull(),
+    createdCount: int("createdCount").default(0).notNull(),
+    skippedCount: int("skippedCount").default(0).notNull(),
+    blockedCount: int("blockedCount").default(0).notNull(),
+    summaryJson: text("summaryJson").notNull(),
+    completedAt: datetime("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    scheduleProjectPeriodUnique: uniqueIndex("payroll_generation_runs_schedule_project_period_unique").on(table.scheduleId, table.projectId, table.period),
+    schedulePeriodIndex: index("payroll_generation_runs_schedule_period_index").on(table.scheduleId, table.period),
+  }),
+);
+
 /** 临时人员按日结算：审核通过不代表付款，只有登记实际付款后才结算完毕。 */
 export const temporaryDailyWageSettlements = mysqlTable(
   "temporary_daily_wage_settlements",

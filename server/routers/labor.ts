@@ -815,6 +815,20 @@ export const laborRouter = router({
         .set({ status: "reviewing", submittedBy: user.id, submittedAt: new Date(), accountantId: null, reviewedAt: null })
         .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
       assertConditionalPayrollWrite(updateResult);
+      const periodStart = toBusinessDate(`${payroll.period}-01`);
+      const [year, month] = payroll.period.split("-").map(Number);
+      const periodEndExclusive = new Date(Date.UTC(year, month, 1));
+      // 草稿期间允许劳资核对并修订考勤；一经提交审核，纳入本工资条的已确认考勤即锁定，
+      // 防止审批与付款阶段的应发金额被事后悄然改变。
+      await db.update(attendanceRecords)
+        .set({ status: "locked" })
+        .where(and(
+          eq(attendanceRecords.workerId, payroll.workerId),
+          eq(attendanceRecords.projectId, payroll.projectId),
+          eq(attendanceRecords.status, "confirmed"),
+          gte(attendanceRecords.attendanceDate, periodStart),
+          lt(attendanceRecords.attendanceDate, periodEndExclusive),
+        ));
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "submit_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条提交会计审核` });
       try {
         const messageResult = await createInAppMessage({
