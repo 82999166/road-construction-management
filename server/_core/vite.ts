@@ -25,7 +25,8 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
-  app.use("*", async (req, res, next) => {
+  // Express 5 的通配符必须具名；花括号版本同时匹配根路径和所有前端路由。
+  app.use("/{*splat}", async (req, res, next) => {
     const url = req.originalUrl;
 
     try {
@@ -82,7 +83,7 @@ export function serveStatic(app: Express) {
   }));
 
   // SPA 路由回退仅用于页面路径；缺失分包必须保持 404，不能回退为 HTML 200。
-  app.use("*", (req, res) => {
+  app.use("/{*splat}", (req, res) => {
     if (req.path.startsWith("/assets/")) {
       res.status(404).setHeader("Cache-Control", "no-store").end();
       return;
