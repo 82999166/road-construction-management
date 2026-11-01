@@ -1,0 +1,7 @@
+悦信云智管写卡桥接首次安装包 v14
+
+文件：utrust-bridge-first-install-v14-20261101.zip
+SHA-256：c63be7824a5ab0a9d7343d0c4125dd8bb7f6893b800717ee5073fae0e14c8c34
+
+修复：双击启动器改用独立 -File 提权辅助脚本，兼容下载目录含中文、空格或括号的 Windows PowerShell 5.1 环境。
+安装说明：解压后双击 Install-Yuexin-RFID-Bridge.cmd，并在 Windows 权限窗口选择“是”。

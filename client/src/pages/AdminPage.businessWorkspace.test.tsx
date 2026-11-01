@@ -111,6 +111,14 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(source, "costName: machineCostForm.costName.trim()");
   });
 
+  it("在 PC 运输管理中提供独立的阶梯运价设置入口，避免只显示路线而无法维护合同价格", () => {
+    const source = ADMIN_PAGE_SOURCE;
+
+    expectSourceToContain(source, "const TransportFreightRuleManager = lazy(");
+    expectSourceToContain(source, '<TransportFreightRuleManager projectId={workspaceProjectId} />');
+    expectSourceToContain(source, '<TransportRouteConfigurationEditor projectId={workspaceProjectId} />');
+  });
+
   it("超级管理后台登记加班时移除台班字段并自动关联机械驾驶员", () => {
     const source = ADMIN_PAGE_SOURCE;
 

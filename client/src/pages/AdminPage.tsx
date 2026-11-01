@@ -156,6 +156,11 @@ const TransportRouteConfigurationEditor = lazy(() =>
     default: module.TransportRouteConfigurationEditor,
   }))
 );
+const TransportFreightRuleManager = lazy(() =>
+  import("@/components/TransportFreightRuleManager").then(module => ({
+    default: module.TransportFreightRuleManager,
+  }))
+);
 const TransportVehicleSettlementManager = lazy(
   () => import("@/components/TransportVehicleSettlementManager")
 );
@@ -222,7 +227,7 @@ const DailyWagePaymentDialog = lazy(() =>
   }))
 );
 const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v13-20261016_47c0eab8.zip";
+  "/manus-storage/utrust-bridge-first-install-v14-20261101_50ccee1b.zip";
 const PayrollPaymentDialog = lazy(() =>
   import("@/components/PayrollPaymentDialog").then(module => ({
     default: module.PayrollPaymentDialog,
@@ -18416,6 +18421,13 @@ export default function AdminPage({
         {!hasBusinessWorkspaceProject ? (
           <EmptyState text="请先选择已授权项目，以配置装卸土点、运输路线和安全规则。" />
         ) : (
+          <Suspense
+            fallback={<EmptyState text="正在加载装卸土点与运输路线配置…" />}
+          >
+            <TransportFreightRuleManager projectId={workspaceProjectId} />
+          </Suspense>
+        )}
+        {!hasBusinessWorkspaceProject ? null : (
           <Suspense
             fallback={<EmptyState text="正在加载装卸土点与运输路线配置…" />}
           >

@@ -192,6 +192,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
   it("首次安装脚本必须仅保存非敏感本机配置、检查 Windows 环境并注册当前用户登录自启动", () => {
     const installer = readFileSync(new URL("../desktop-bridge/install-utrust-bridge.ps1", import.meta.url), "utf8");
     const doubleClickLauncher = readFileSync(new URL("../desktop-bridge/安装写卡桥接.cmd", import.meta.url), "utf8");
+    const elevationLauncher = readFileSync(new URL("../desktop-bridge/elevate-utrust-installer.ps1", import.meta.url), "utf8");
     const packer = readFileSync(new URL("../scripts/package-utrust-first-install.mjs", import.meta.url), "utf8");
     expect(installer).toContain('$PSVersionTable.PSVersion.Major -lt 5');
     expect(installer).toContain('System32\\winscard.dll');
@@ -202,13 +203,18 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(installer).toContain("tokenPersisted = $false");
     expect(installer).not.toContain("bridgeToken =");
     expect(doubleClickLauncher).toContain("install-utrust-bridge.ps1");
-    expect(doubleClickLauncher).toContain("-Verb RunAs");
+    expect(doubleClickLauncher).toContain("elevate-utrust-installer.ps1");
+    expect(doubleClickLauncher).toContain("-File \"%LAUNCHER%\"");
+    expect(doubleClickLauncher).not.toContain("$args[0]");
+    expect(elevationLauncher).toContain("Join-Path $PSScriptRoot \"install-utrust-bridge.ps1\"");
+    expect(elevationLauncher).toContain("-Verb RunAs");
+    expect(elevationLauncher).toContain("$quotedScriptPath");
     expect(doubleClickLauncher).toContain("-ExecutionPolicy Bypass");
     expect(doubleClickLauncher).not.toContain("bridgeToken");
-    for (const requiredFile of ["安装写卡桥接.cmd", "install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
+    for (const requiredFile of ["安装写卡桥接.cmd", "elevate-utrust-installer.ps1", "install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
       expect(packer).toContain(`"${requiredFile}"`);
     }
-    expect(packer).toContain("utrust-first-install-v13");
+    expect(packer).toContain("utrust-first-install-v14");
     expect(packer).toContain("utf8Bom");
     expect(packer).toContain('import { fileURLToPath } from "node:url"');
     expect(packer).toContain("dirname(fileURLToPath(import.meta.url))");

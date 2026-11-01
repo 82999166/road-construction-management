@@ -60,7 +60,7 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
     expect(source).toContain(
-      'const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v13-20261016_47c0eab8.zip"'
+      'const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v14-20261101_50ccee1b.zip"'
     );
     expect(source).toContain("安装写卡桥接.cmd");
     expect(source).toContain("下载一键安装包");
