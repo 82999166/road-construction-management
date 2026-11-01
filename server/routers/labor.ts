@@ -674,15 +674,10 @@ export const laborRouter = router({
       const approved = input.decision === "approved"; await db.update(temporaryDailyWageSettlements).set({ status: approved ? "approved" : "draft", reviewedBy: user.id, reviewedAt: new Date() }).where(and(eq(temporaryDailyWageSettlements.id, settlement.id), eq(temporaryDailyWageSettlements.status, "reviewing")));
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: approved ? "approve_daily_wage" : "return_daily_wage", targetType: "temporary_daily_wage", targetId: String(settlement.id), summary: `${settlement.settlementDate} 临时日结${approved ? "审核通过" : "退回草稿"}` }); return { success: true, status: approved ? "approved" as const : "draft" as const };
     }),
-    pay: protectedProcedure.input(z.object({ id: z.number().int().positive(), paidAt: z.coerce.date(), paymentReference: z.string().trim().max(64).optional().nullable() })).mutation(async ({ ctx, input }) => {
-      const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
-      if (!roleCodes.includes("ALL") && !roleCodes.includes("ACCOUNTANT") && !roleCodes.includes("FINANCE_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结付款登记仅限会计或财务负责人" });
-      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-      const settlement = (await db.select().from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.id, input.id)).limit(1))[0];
-      if (!settlement) throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" }); await assertProjectInCurrentScope(ctx, settlement.projectId);
-      if (settlement.status !== "approved") throw new TRPCError({ code: "CONFLICT", message: "仅审核通过的临时日结可登记付款" });
-      await db.update(temporaryDailyWageSettlements).set({ status: "paid", paidBy: user.id, paidAt: input.paidAt, paymentReference: input.paymentReference || null }).where(and(eq(temporaryDailyWageSettlements.id, settlement.id), eq(temporaryDailyWageSettlements.status, "approved")));
-      await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "pay_daily_wage", targetType: "temporary_daily_wage", targetId: String(settlement.id), summary: `${settlement.settlementDate} 临时日结登记付款` }); return { success: true, status: "paid" as const };
+    /** @deprecated 实际付款必须走 settlementPayment.record，确保每笔均有关联凭证和余额校验。 */
+    pay: protectedProcedure.input(z.object({ id: z.number().int().positive(), paidAt: z.coerce.date(), paymentReference: z.string().trim().max(64).optional().nullable() })).mutation(async ({ ctx }) => {
+      requireAuthenticatedUser(ctx);
+      throw new TRPCError({ code: "BAD_REQUEST", message: "临时日结实际付款已统一至PC财务台账，请上传本次付款凭证后分笔登记" });
     }),
     /** 普通工资报表只返回开户行与脱敏卡号，按人员分类供 PC 后台生成多工作表 Excel。 */
     exportWorkbookData: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), period: payrollPeriodSchema.optional() })).query(async ({ ctx, input }) => {
@@ -900,54 +895,12 @@ export const laborRouter = router({
         return { success: true, status: isApproved ? "approved" : "draft" };
       }),
 
-    /**
-     * 由财务负责人确认外部资金已完成发放。系统只保存付款凭证引用，不发起银行转账，
-     * 以保证资金执行与系统台账确认之间具有可追溯且不越权的边界。
-     */
+    /** @deprecated 兼容接口已封存，实际发放必须关联独立付款凭证。 */
     pay: protectedProcedure
       .input(z.object({ id: z.number().int().positive(), paymentReference: z.string().trim().min(4, "请填写付款凭证号或资金流水号").max(64) }))
-      .mutation(async ({ ctx, input }) => {
-        const user = requireAuthenticatedUser(ctx);
-        const roleCodes = await assertLaborBusinessAccess(ctx);
-        if (!canPayPayroll(roleCodes)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "工资发放确认仅限财务负责人办理" });
-        }
-        const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-        const rows = await db.select().from(payrollStatements).where(eq(payrollStatements.id, input.id)).limit(1);
-        const payroll = rows[0];
-        if (!payroll) throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
-        await assertProjectInCurrentScope(ctx, payroll.projectId);
-        try {
-          assertPayrollStatusTransition(payroll.status, "paid");
-        } catch {
-          throw new TRPCError({ code: "CONFLICT", message: "仅审核通过的工资条可以确认发放" });
-        }
-        const paidAt = new Date();
-        const updateResult = await db.update(payrollStatements)
-          .set({ status: "paid", paidAt, paymentReference: input.paymentReference })
-          .where(and(eq(payrollStatements.id, payroll.id), eq(payrollStatements.status, payroll.status)));
-        assertConditionalPayrollWrite(updateResult);
-        await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "pay_payroll", targetType: "payroll_statement", targetId: String(payroll.id), summary: `${payroll.period} 工资条已确认发放，付款凭证：${input.paymentReference}` });
-        const recipientUserId = payroll.submittedBy ?? user.id;
-        try {
-          const messageResult = await createInAppMessage({
-            eventCode: "PAYROLL_PAID",
-            idempotencyKey: `payroll-paid:${payroll.id}:${paidAt.getTime()}`,
-            recipientUserId,
-            title: "工资条已确认发放",
-            content: `${payroll.period} 工资条已完成发放确认，请在系统内查看处理记录。`,
-            deepLink: "/mobile/labor",
-          });
-          if (!messageResult.created && messageResult.reason === "database_unavailable") {
-            await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_unavailable", targetType: "payroll_statement", targetId: String(payroll.id), summary: "工资发放结论未能写入站内消息：数据库暂不可用" });
-          }
-        } catch (error) {
-          await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "notification_failed", targetType: "payroll_statement", targetId: String(payroll.id), summary: `工资发放结论消息写入失败：${error instanceof Error ? error.message.slice(0, 180) : "未知错误"}` });
-        }
-        // 公众号不传递金额、人员身份、银行卡或付款凭证，仅提醒责任人在受控页面查看结果。
-        void notifyOfficialAccountBusinessEventSafely({ userId: user.id, recipientUserIds: [recipientUserId], module: "labor", eventCode: "payroll_paid", targetType: "payroll_statement", targetId: String(payroll.id), title: "工资条已确认发放", content: "工资条已完成发放确认，请进入系统查看受控处理记录。", deepLink: "/mobile/labor" }).catch(() => undefined);
-        return { success: true, status: "paid" as const, paidAt };
+      .mutation(async ({ ctx }) => {
+        requireAuthenticatedUser(ctx);
+        throw new TRPCError({ code: "BAD_REQUEST", message: "工资实际发放已统一至PC财务台账，请上传本次付款凭证后分笔登记" });
       }),
 
     /** 工资条可在支付前由会计或财务负责人作废，原因只保存于受控审计和站内业务记录。 */

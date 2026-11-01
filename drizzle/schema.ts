@@ -834,7 +834,8 @@ export const payrollStatements = mysqlTable(
     deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
     actualAmount: decimal("actualAmount", { precision: 16, scale: 2 }).notNull(),
     bankAccountMasked: varchar("bankAccountMasked", { length: 64 }),
-    status: mysqlEnum("status", ["draft", "reviewing", "approved", "paid", "void"]).default("draft").notNull(),
+    /** 审核通过后的工资可分笔发放；partial 仅表示存在真实付款明细，不代表已结清。 */
+    status: mysqlEnum("status", ["draft", "reviewing", "approved", "partial", "paid", "void"]).default("draft").notNull(),
     /** 工资条提交审核时记录责任人；历史数据允许为空，避免破坏既有归档记录。 */
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
@@ -917,7 +918,8 @@ export const temporaryDailyWageSettlements = mysqlTable(
     deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
     actualAmount: decimal("actualAmount", { precision: 16, scale: 2 }).notNull(),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "reviewing", "approved", "paid", "void"]).default("draft").notNull(),
+    /** 临时日结与月度工资使用相同的分笔付款语义。 */
+    status: mysqlEnum("status", ["draft", "reviewing", "approved", "partial", "paid", "void"]).default("draft").notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     reviewedBy: int("reviewedBy"),
@@ -975,6 +977,27 @@ export const employeePayrollAdvances = mysqlTable(
   table => ({ profileDateIndex: index("employee_payroll_advances_profile_date_index").on(table.employeeProfileId, table.advanceDate, table.status), workerIndex: index("employee_payroll_advances_worker_index").on(table.laborWorkerId) }),
 );
 
+/** 一笔工资预支可明确分配至一张或多张工资条；仅 active 分配参与余额与扣款计算。 */
+export const employeePayrollAdvanceAllocations = mysqlTable(
+  "employee_payroll_advance_allocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    advanceId: bigint("advanceId", { mode: "number" }).notNull(),
+    payrollStatementId: bigint("payrollStatementId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    allocatedBy: int("allocatedBy").notNull(),
+    allocatedAt: datetime("allocatedAt").notNull(),
+    reversedBy: int("reversedBy"),
+    reversedAt: datetime("reversedAt"),
+    reversalReason: varchar("reversalReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    advanceIndex: index("employee_payroll_advance_allocations_advance_index").on(table.advanceId, table.status),
+    payrollIndex: index("employee_payroll_advance_allocations_payroll_index").on(table.payrollStatementId, table.status),
+  }),
+);
 /** 员工保险台账：按保单留存购买日期与到期日期，供后台到期预警和人事审查使用。 */
 export const employeeInsurancePolicies = mysqlTable(
   "employee_insurance_policies",
@@ -984,6 +1007,10 @@ export const employeeInsurancePolicies = mysqlTable(
     insuranceType: mysqlEnum("insuranceType", ["work_injury", "accident", "medical", "employer_liability", "other"]).notNull(),
     providerName: varchar("providerName", { length: 128 }),
     policyReference: varchar("policyReference", { length: 128 }),
+    /** 文件由受控证据库保存；续保新增记录，不覆盖历史保单与附件。 */
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    premiumAmount: decimal("premiumAmount", { precision: 16, scale: 2 }),
+    coverageAmount: decimal("coverageAmount", { precision: 16, scale: 2 }),
     purchasedAt: date("purchasedAt").notNull(),
     expiresAt: date("expiresAt").notNull(),
     status: mysqlEnum("status", ["active", "expired", "cancelled"]).default("active").notNull(),
@@ -991,7 +1018,10 @@ export const employeeInsurancePolicies = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ profileExpiryIndex: index("employee_insurance_policies_profile_expiry_index").on(table.employeeProfileId, table.expiresAt, table.status) }),
+  table => ({
+    profileExpiryIndex: index("employee_insurance_policies_profile_expiry_index").on(table.employeeProfileId, table.expiresAt, table.status),
+    evidenceIndex: index("employee_insurance_policies_evidence_index").on(table.evidenceId),
+  }),
 );
 
 /** 公司自有与外租机械统一台账。 */
@@ -1151,7 +1181,8 @@ export const machinePaymentSettlements = mysqlTable(
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    /** approved 为金额已核定待付款，partial 为已登记部分实际付款。 */
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "void"]).default("draft").notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),
@@ -1351,6 +1382,56 @@ export const transportVehicleLeaseRules = mysqlTable(
   table => ({ vehicleStatusIndex: index("transport_vehicle_lease_rules_vehicle_status_index").on(table.vehicleId, table.status) }),
 );
 
+/** 车辆/车主的默认收款资料。账号按业务要求明文维护，但只对运输、会计、财务授权范围可见。 */
+export const transportVehiclePayeeAccounts = mysqlTable(
+  "transport_vehicle_payee_accounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    payeeName: varchar("payeeName", { length: 128 }).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).notNull(),
+    accountName: varchar("accountName", { length: 128 }),
+    accountNo: varchar("accountNo", { length: 160 }),
+    isDefault: boolean("isDefault").default(false).notNull(),
+    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    remarks: varchar("remarks", { length: 500 }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    vehicleStatusIndex: index("transport_vehicle_payee_accounts_vehicle_status_index").on(table.vehicleId, table.status),
+    vehicleDefaultIndex: index("transport_vehicle_payee_accounts_vehicle_default_index").on(table.vehicleId, table.isDefault),
+  }),
+);
+/** 日租、小时租、台班外租车辆的实际使用/出勤依据；月租在有效合同月内按周期结算。 */
+export const transportVehicleUsageRecords = mysqlTable(
+  "transport_vehicle_usage_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    usageDate: date("usageDate").notNull(),
+    usageType: mysqlEnum("usageType", ["daily", "hourly", "shift"]).notNull(),
+    quantity: decimal("quantity", { precision: 12, scale: 2 }).notNull(),
+    description: varchar("description", { length: 500 }).notNull(),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    /** 被结算后锁定，作废结算单时由受控事务释放。 */
+    settlementId: bigint("settlementId", { mode: "number" }),
+    status: mysqlEnum("status", ["confirmed", "void"]).default("confirmed").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    voidedBy: int("voidedBy"),
+    voidedAt: datetime("voidedAt"),
+    voidReason: varchar("voidReason", { length: 500 }),
+  },
+  table => ({
+    vehicleDateIndex: index("transport_vehicle_usage_records_vehicle_date_index").on(table.vehicleId, table.usageDate, table.status),
+    projectDateIndex: index("transport_vehicle_usage_records_project_date_index").on(table.projectId, table.usageDate, table.status),
+    settlementIndex: index("transport_vehicle_usage_records_settlement_index").on(table.settlementId),
+  }),
+);
 /** 项目柴油指导单价；项目部供油按生效规则取价，历史领用保留单价快照。 */
 export const dieselGuidelinePrices = mysqlTable(
   "diesel_guideline_prices",
@@ -1693,10 +1774,17 @@ export const transportVehicleSettlements = mysqlTable(
     vehicleId: int("vehicleId").notNull(),
     periodStart: date("periodStart").notNull(),
     periodEnd: date("periodEnd").notNull(),
+    /** 按趟、外租使用/租赁或经审核的调整结算；历史单据默认兼容 trip。 */
+    settlementKind: mysqlEnum("settlementKind", ["trip", "lease", "adjustment"]).default("trip").notNull(),
+    basisDescription: varchar("basisDescription", { length: 500 }),
     tripCount: int("tripCount").notNull(),
     totalVolumeCubicMeters: decimal("totalVolumeCubicMeters", { precision: 14, scale: 3 }).default("0").notNull(),
     grossFreightAmount: decimal("grossFreightAmount", { precision: 16, scale: 2 }).notNull(),
     fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    /** 车辆配件、维修等经审核资产费用扣款，与柴油扣款分列保留。 */
+    assetDeductionAmount: decimal("assetDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    /** 前期待收补款在本期运费中抵扣；原始补款与本次抵扣均通过独立分配表可追溯。 */
+    carryForwardDeductionAmount: decimal("carryForwardDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
     netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
     payeeName: varchar("payeeName", { length: 128 }).notNull(),
     /** 人工付款需要原文账户信息以便制作银行导入表；仅受运输/财务权限和项目范围保护。 */
@@ -1705,7 +1793,8 @@ export const transportVehicleSettlements = mysqlTable(
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    /** receivable 表示扣款超过本期应付，offset 表示已在后期抵扣；均不产生负数付款。 */
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "receivable", "offset", "void"]).default("draft").notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),
@@ -1747,6 +1836,63 @@ export const transportVehicleSettlementItems = mysqlTable(
   }),
 );
 
+/**
+ * 实际资金收付的唯一事实来源。每笔记录关联具体结算单、付款凭证与财务流水；
+ * 业务主单的应付额不会被当作现金流重复入账。
+ */
+export const settlementPaymentRecords = mysqlTable(
+  "settlement_payment_records",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    settlementType: mysqlEnum("settlementType", ["transport_vehicle", "machine", "payroll", "daily_wage"]).notNull(),
+    settlementId: bigint("settlementId", { mode: "number" }).notNull(),
+    direction: mysqlEnum("direction", ["expense", "income"]).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    paymentDate: date("paymentDate").notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).notNull(),
+    payeeNameSnapshot: varchar("payeeNameSnapshot", { length: 128 }).notNull(),
+    payeeAccountSnapshot: varchar("payeeAccountSnapshot", { length: 160 }),
+    paymentReference: varchar("paymentReference", { length: 128 }),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    remarks: varchar("remarks", { length: 500 }),
+    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    paidBy: int("paidBy").notNull(),
+    paidAt: datetime("paidAt").notNull(),
+    reversedBy: int("reversedBy"),
+    reversedAt: datetime("reversedAt"),
+    reversalReason: varchar("reversalReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    settlementIndex: index("settlement_payment_records_settlement_index").on(table.settlementType, table.settlementId, table.status),
+    projectDateIndex: index("settlement_payment_records_project_date_index").on(table.projectId, table.paymentDate, table.status),
+    evidenceIndex: index("settlement_payment_records_evidence_index").on(table.evidenceId),
+  }),
+);
+/** 车辆待收补款用于后期结算抵扣的分配记录；不覆盖原始油料或运输金额。 */
+export const transportVehicleCarryForwardOffsets = mysqlTable(
+  "transport_vehicle_carry_forward_offsets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    projectId: int("projectId").notNull(),
+    vehicleId: int("vehicleId").notNull(),
+    sourceSettlementId: bigint("sourceSettlementId", { mode: "number" }).notNull(),
+    targetSettlementId: bigint("targetSettlementId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
+    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    reversedBy: int("reversedBy"),
+    reversedAt: datetime("reversedAt"),
+    reversalReason: varchar("reversalReason", { length: 500 }),
+  },
+  table => ({
+    sourceIndex: index("transport_vehicle_carry_offsets_source_index").on(table.sourceSettlementId, table.status),
+    targetIndex: index("transport_vehicle_carry_offsets_target_index").on(table.targetSettlementId, table.status),
+    vehicleIndex: index("transport_vehicle_carry_offsets_vehicle_index").on(table.vehicleId, table.status),
+  }),
+);
 /** 装土与卸土刷卡原子事件；设备重传和乱序均留痕并进入人工复核。 */
 export const transportCardEvents = mysqlTable(
   "transport_card_events",

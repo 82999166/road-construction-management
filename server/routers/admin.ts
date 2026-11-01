@@ -53,7 +53,7 @@ import {
   users,
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
-import { calculateTheoreticalVolume } from "../../shared/domain";
+import { assertCertificateFileSignature, calculateTheoreticalVolume } from "../../shared/domain";
 import { COOKIE_NAME } from "../../shared/const";
 import {
   normalizeEvidenceWatermarkTemplate,
@@ -149,7 +149,7 @@ import {
   isValidLocalManagerUsername,
   normalizeLocalManagerUsername,
 } from "../localAuth";
-import { storageGetSignedUrl } from "../storage";
+import { storageGetSignedUrl, storagePut } from "../storage";
 import { createHeartbeatJob, listHeartbeatJobs, updateHeartbeatJob } from "../_core/heartbeat";
 import {
   buildMonthlyPayrollGenerationCron,
@@ -458,6 +458,9 @@ const employeeInsuranceInput = z
     ]),
     providerName: z.string().trim().max(128).nullable().optional(),
     policyReference: z.string().trim().max(128).nullable().optional(),
+    evidenceId: z.number().int().positive().nullable().optional(),
+    premiumAmount: z.number().min(0).max(999999999999.99).nullable().optional(),
+    coverageAmount: z.number().min(0).max(999999999999.99).nullable().optional(),
     purchasedAt: z.string().date(),
     expiresAt: z.string().date(),
     status: z.enum(["active", "expired", "cancelled"]),
@@ -467,6 +470,13 @@ const employeeInsuranceInput = z
     message: "保险到期日期不得早于购买日期",
     path: ["expiresAt"],
   });
+
+const employeeInsurancePolicyUploadInput = z.object({
+  employeeProfileId: z.number().int().positive(),
+  fileName: z.string().trim().min(1).max(200),
+  mimeType: z.enum(["image/jpeg", "image/png", "application/pdf"]),
+  base64Data: z.string().min(16).max(22_000_000),
+});
 
 const assetMaintenanceInput = z.object({
   id: z.number().int().positive().optional(),
@@ -1616,6 +1626,10 @@ export const adminRouter = router({
             .from(employeeInsurancePolicies)
             .where(eq(employeeInsurancePolicies.employeeProfileId, profile.id))
             .orderBy(desc(employeeInsurancePolicies.expiresAt));
+          const policyViews = await Promise.all(policies.map(async policy => {
+            const [evidence] = policy.evidenceId ? await db.select({ fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, policy.evidenceId)).limit(1) : [];
+            return { ...policy, evidence: evidence?.status === "active" ? { fileName: evidence.fileName || "保单附件", url: await storageGetSignedUrl(evidence.fileKey) } : null };
+          }));
           const today = new Date().toISOString().slice(0, 10);
           const expiringCutoff = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
             .toISOString()
@@ -1640,7 +1654,7 @@ export const adminRouter = router({
             displayName: user?.name ?? worker?.realName ?? "未命名员工",
             localUsername: null,
             laborTeamName: worker?.teamName ?? null,
-            policies,
+            policies: policyViews,
             insuranceStatus,
           };
         })
@@ -2229,6 +2243,25 @@ export const adminRouter = router({
         });
         return { success: true };
       }),
+    uploadInsurancePolicy: protectedProcedure
+      .input(employeeInsurancePolicyUploadInput)
+      .mutation(async ({ ctx, input }) => {
+        const admin = await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        const [profile] = await db.select({ id: employeeProfiles.id, projectId: employeeProfiles.projectId }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
+        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在，不能上传保单" });
+        const encoded = input.base64Data.includes(",") ? input.base64Data.slice(input.base64Data.indexOf(",") + 1) : input.base64Data;
+        if (!/^[A-Za-z0-9+/\s]*={0,2}$/.test(encoded)) throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件编码无效" });
+        const bytes = Buffer.from(encoded.replace(/\s/g, ""), "base64");
+        if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件不能为空且不能超过 15MB" });
+        try { assertCertificateFileSignature(bytes, input.mimeType); } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件内容与声明格式不一致" }); }
+        const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_").slice(-160) || "insurance-policy";
+        const stored = await storagePut(`employee-insurance/${profile.id}/${Date.now()}-${safeFileName}`, bytes, input.mimeType);
+        const [created] = await db.insert(evidenceRecords).values({ projectId: profile.projectId ?? null, sourceType: "employee_insurance_policy", sourceId: String(profile.id), fileKey: stored.key, fileName: safeFileName, mimeType: input.mimeType, contentSha256: createHash("sha256").update(bytes).digest("hex"), contentBytes: bytes.length, capturedAt: new Date(), status: "active", uploadedBy: admin.id }).$returningId();
+        await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: "upload_employee_insurance_policy", targetType: "employee_insurance_policy", targetId: String(profile.id), summary: "上传员工保单受控附件" });
+        return { success: true, evidenceId: created?.id ?? 0, fileName: safeFileName };
+      }),
     saveInsurance: protectedProcedure
       .input(employeeInsuranceInput)
       .mutation(async ({ ctx, input }) => {
@@ -2240,7 +2273,7 @@ export const adminRouter = router({
             message: "数据库连接暂不可用",
           });
         const [profile] = await db
-          .select({ id: employeeProfiles.id })
+          .select({ id: employeeProfiles.id, projectId: employeeProfiles.projectId })
           .from(employeeProfiles)
           .where(eq(employeeProfiles.id, input.employeeProfileId))
           .limit(1);
@@ -2249,11 +2282,20 @@ export const adminRouter = router({
             code: "BAD_REQUEST",
             message: "请先建立有效员工档案",
           });
+        if (input.evidenceId) {
+          const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType, sourceId: evidenceRecords.sourceId, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
+          if (!evidence || evidence.status !== "active" || evidence.sourceType !== "employee_insurance_policy" || evidence.sourceId !== String(profile.id) || evidence.projectId !== (profile.projectId ?? null)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件不存在、已失效或不属于当前员工档案" });
+          }
+        }
         const values = {
           employeeProfileId: input.employeeProfileId,
           insuranceType: input.insuranceType,
           providerName: input.providerName ?? null,
           policyReference: input.policyReference ?? null,
+          evidenceId: input.evidenceId ?? null,
+          premiumAmount: input.premiumAmount === null || input.premiumAmount === undefined ? null : String(input.premiumAmount),
+          coverageAmount: input.coverageAmount === null || input.coverageAmount === undefined ? null : String(input.coverageAmount),
           purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`),
           expiresAt: new Date(`${input.expiresAt}T00:00:00Z`),
           status: input.status,

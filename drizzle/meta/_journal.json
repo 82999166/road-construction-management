@@ -624,6 +624,20 @@
       "when": 1793514290025,
       "tag": "0088_special_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "5",
+      "when": 1793546419112,
+      "tag": "0089_dizzy_ezekiel_stane",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "5",
+      "when": 1793548168693,
+      "tag": "0090_watery_bullseye",
+      "breakpoints": true
     }
   ]
 }

@@ -218,7 +218,9 @@ export function assertPurchaseOrderStatusTransition(from: keyof typeof PURCHASE_
 export const PAYROLL_STATUS_TRANSITIONS = {
   draft: ["reviewing", "void"],
   reviewing: ["approved", "draft", "void"],
-  approved: ["paid", "void"],
+  approved: ["partial", "paid", "void"],
+  /** 已实际发放任意款项后，只能由付款明细继续补足，不能回退或作废。 */
+  partial: ["paid"],
   paid: [],
   void: [],
 } as const;

@@ -8,6 +8,7 @@ describe("服务号业务通知覆盖", () => {
     const finance = read("./routers/finance.ts");
     const admin = read("./routers/admin.ts");
     const labor = read("./routers/labor.ts");
+    const settlementPayments = read("./routers/settlementPayments.ts");
     const operations = read("./routers/operations.ts");
     const subcontract = read("./routers/subcontract.ts");
     const contracts = read("./routers/contracts.ts");
@@ -17,7 +18,9 @@ describe("服务号业务通知覆盖", () => {
     expect(finance).toContain("inventory_${input.transactionType}");
     expect(admin).toContain("diesel_refuel_recorded");
     expect(admin).toContain("diesel_price_alert");
-    expect(labor).toContain("payroll_paid");
+    expect(labor).toContain("payroll_submitted");
+    expect(settlementPayments).toContain("payroll_paid");
+    expect(settlementPayments).toContain("daily_wage_paid");
     expect(operations).toContain("transport_plate_photo_ticket_submitted");
     expect(operations).toContain("machine_cost_");
     expect(subcontract).toContain("subcontract_${input.targetStatus}");

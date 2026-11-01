@@ -20,6 +20,7 @@ import { dailyDigestRouter } from "./routers/dailyDigest";
 import { broadcastRouter } from "./routers/broadcast";
 import { projectRiskRouter } from "./routers/projectRisk";
 import { locationRouter } from "./routers/location";
+import { settlementPaymentRouter } from "./routers/settlementPayments";
 import { z } from "zod";
 
 /**
@@ -97,6 +98,7 @@ export const appRouter = router({
   diesel: dieselRouter,
   projectRisk: projectRiskRouter,
   location: locationRouter,
+  settlementPayment: settlementPaymentRouter,
 });
 
 export type AppRouter = typeof appRouter;

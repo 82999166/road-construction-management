@@ -289,7 +289,7 @@ describe("labor tRPC 路由", () => {
     expect(financeRows[0]?.paymentReference).toBe("PAY-202607-0001");
   });
 
-  it("工资发放只允许财务负责人确认，并保留最小化通知和公众号安全投递", async () => {
+  it("旧工资一次性发放接口已封存，任何岗位均须改走带凭证的统一付款台账", async () => {
     const payroll = { id: 8, projectId: 10, period: "2026-07", status: "approved", submittedBy: 7 };
     const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
     const insertValues = vi.fn(async () => undefined);
@@ -300,16 +300,14 @@ describe("labor tRPC 路由", () => {
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "工资实际发放已统一至PC财务台账，请上传本次付款凭证后分笔登记" });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
-    vi.mocked(notifyOfficialAccountBusinessEventSafely).mockResolvedValueOnce([]);
-    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).resolves.toMatchObject({ success: true, status: "paid" });
-
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "paid", paymentReference: "PAY-202607-0001" }));
-    expect(vi.mocked(createInAppMessage)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "PAYROLL_PAID", recipientUserId: 7, deepLink: "/mobile/labor" }));
-    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "payroll_paid", targetType: "payroll_statement", targetId: "8", deepLink: "/mobile/labor" }));
-    expect(insertValues).toHaveBeenCalled();
+    await expect(laborRouter.createCaller(createAuthContext()).payroll.pay({ id: 8, paymentReference: "PAY-202607-0001" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(vi.mocked(createInAppMessage)).not.toHaveBeenCalled();
+    expect(vi.mocked(notifyOfficialAccountBusinessEventSafely)).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("工资条只能在发放确认前由会计或财务负责人作废，已发放记录保持终态锁定", async () => {

@@ -3,13 +3,13 @@ import { MOBILE_LABOR_BOTTOM_NAVIGATION, canApprovePayrollFromMobile, canPayPayr
 
 /** 移动端操作按钮只做体验层收敛，后端仍执行岗位和工资状态机的最终校验。 */
 describe("劳务工资移动端权限与导航", () => {
-  it("将支付、作废按钮限制到相应岗位，并始终跳转至移动端个人中心", () => {
+  it("将付款收口到PC凭证台账、限制作废岗位，并始终跳转至移动端个人中心", () => {
     expect(canSubmitPayrollFromMobile(["LABOR_MANAGER"])).toBe(true);
     expect(canSubmitPayrollFromMobile(["ACCOUNTANT"])).toBe(false);
     expect(canApprovePayrollFromMobile(["ACCOUNTANT"])).toBe(true);
     expect(canApprovePayrollFromMobile(["LABOR_MANAGER"])).toBe(false);
-    expect(canPayPayrollFromMobile(["FINANCE_MANAGER"])).toBe(true);
-    expect(canPayPayrollFromMobile(["ACCOUNTANT"])).toBe(false);
+    expect(canPayPayrollFromMobile(["FINANCE_MANAGER"])).toBe(false);
+    expect(canPayPayrollFromMobile(["ALL"])).toBe(false);
     expect(canVoidPayrollFromMobile(["ACCOUNTANT"])).toBe(true);
     expect(canVoidPayrollFromMobile(["LABOR_MANAGER"])).toBe(false);
     expect(MOBILE_LABOR_BOTTOM_NAVIGATION.profile).toBe("/mobile/profile");
@@ -19,7 +19,8 @@ describe("劳务工资移动端权限与导航", () => {
     expect(getMobilePayrollActions("draft", ["LABOR_MANAGER"])).toEqual({ submit: true, approve: false, pay: false, void: false });
     expect(getMobilePayrollActions("reviewing", ["LABOR_MANAGER"])).toEqual({ submit: false, approve: false, pay: false, void: false });
     expect(getMobilePayrollActions("reviewing", ["ACCOUNTANT"])).toEqual({ submit: false, approve: true, pay: false, void: true });
-    expect(getMobilePayrollActions("approved", ["FINANCE_MANAGER"])).toEqual({ submit: false, approve: false, pay: true, void: true });
+    expect(getMobilePayrollActions("approved", ["FINANCE_MANAGER"])).toEqual({ submit: false, approve: false, pay: false, void: true });
+    expect(getMobilePayrollActions("partial", ["FINANCE_MANAGER"])).toEqual({ submit: false, approve: false, pay: false, void: false });
     expect(getMobilePayrollActions("paid", ["ALL"])).toEqual({ submit: false, approve: false, pay: false, void: false });
   });
 });

@@ -10,7 +10,7 @@ describe("车辆运输结算中文化与日期展示", () => {
     expect(source).toContain("const settlementStatusDisplay");
     expect(source).toContain("{settlementStatusDisplay(item.status)}");
     expect(source).not.toContain("{settlementStatusLabel[item.status] ?? item.status}");
-    expect(source).toContain('item.status === "approved"');
+    expect(source).toContain('["approved", "partial", "receivable"].includes(item.status)');
   });
 
   it("以统一中国日期格式展示结算期间和付款日期", () => {

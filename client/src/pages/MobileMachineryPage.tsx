@@ -145,11 +145,12 @@ function getMonthlyStatementStatus(status: "draft" | "submitted" | "approved" | 
 }
 
 /** 机械付款仅在PC财务台账办理；手机端只显示状态和付款日期，避免现场端误操作。 */
-function getMachinePaymentStatus(status: "draft" | "submitted" | "approved" | "paid" | "void") {
+function getMachinePaymentStatus(status: "draft" | "submitted" | "approved" | "partial" | "paid" | "void") {
   const dictionary = {
     draft: { label: "付款草稿", className: "bg-[#f8ead8] text-[#94603a]" },
     submitted: { label: "待会计审核", className: "bg-[#e6eef2] text-[#4d6f82]" },
     approved: { label: "待付款", className: "bg-[#fff0cf] text-[#95621f]" },
+    partial: { label: "部分付款", className: "bg-[#fff0cf] text-[#95621f]" },
     paid: { label: "已付款", className: "bg-[#e2f0ed] text-[#3e746a]" },
     void: { label: "已作废", className: "bg-[#eee8e2] text-[#857365]" },
   } as const;

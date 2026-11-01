@@ -116,6 +116,7 @@ import {
   Sparkles,
   Truck,
   UsersRound,
+  WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -221,16 +222,11 @@ const LaborPayrollHeadline = lazy(() =>
     default: module.LaborPayrollHeadline,
   }))
 );
-const DailyWagePaymentDialog = lazy(() =>
-  import("@/components/DailyWagePaymentDialog").then(module => ({
-    default: module.DailyWagePaymentDialog,
-  }))
-);
 const RFID_FIRST_INSTALL_PACKAGE_URL =
   "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip";
-const PayrollPaymentDialog = lazy(() =>
-  import("@/components/PayrollPaymentDialog").then(module => ({
-    default: module.PayrollPaymentDialog,
+const SettlementPaymentDialog = lazy(() =>
+  import("@/components/SettlementPaymentDialog").then(module => ({
+    default: module.SettlementPaymentDialog,
   }))
 );
 
@@ -544,6 +540,9 @@ type EmployeeInsuranceForm = {
     | "other";
   providerName: string;
   policyReference: string;
+  evidenceId?: number;
+  premiumAmount: string;
+  coverageAmount: string;
   purchasedAt: string;
   expiresAt: string;
   status: "active" | "expired" | "cancelled";
@@ -1028,6 +1027,9 @@ const EMPTY_EMPLOYEE_INSURANCE_FORM: EmployeeInsuranceForm = {
   insuranceType: "work_injury",
   providerName: "",
   policyReference: "",
+  evidenceId: undefined,
+  premiumAmount: "",
+  coverageAmount: "",
   purchasedAt: "",
   expiresAt: "",
   status: "active",
@@ -2401,10 +2403,6 @@ export default function AdminPage({
     id: number;
     workerName: string;
   } | null>(null);
-  const [dailyWagePaymentForm, setDailyWagePaymentForm] = useState({
-    paidAt: toLocalDateInput(),
-    paymentReference: "",
-  });
   const [subcontractTeamFilter, setSubcontractTeamFilter] = useState("all");
   const [subcontractStatusFilter, setSubcontractStatusFilter] = useState("all");
   const [subcontractTeamForm, setSubcontractTeamForm] =
@@ -2531,7 +2529,6 @@ export default function AdminPage({
   const [selectedBroadcastId, setSelectedBroadcastId] = useState<number>();
   const [payrollPaymentTarget, setPayrollPaymentTarget] =
     useState<PayrollPaymentTarget | null>(null);
-  const [paymentReference, setPaymentReference] = useState("");
   const [constructionReportEditor, setConstructionReportEditor] =
     useState<ConstructionReportEditor | null>(null);
   const [constructionReportFilter, setConstructionReportFilter] = useState(() => ({
@@ -2570,6 +2567,10 @@ export default function AdminPage({
     ownership: "all",
     status: "all",
   });
+  const [vehicleSettlementFocus, setVehicleSettlementFocus] = useState<{
+    id: number;
+    requestId: number;
+  } | null>(null);
   useEffect(() => {
     if (evidenceWatermarkTemplate.data?.template)
       setWatermarkTemplateForm({
@@ -3753,6 +3754,8 @@ export default function AdminPage({
     useState<EmployeeInsuranceForm>(EMPTY_EMPLOYEE_INSURANCE_FORM);
   const [employeeInsuranceDialogOpen, setEmployeeInsuranceDialogOpen] =
     useState(false);
+  const [employeeInsurancePolicyFile, setEmployeeInsurancePolicyFile] =
+    useState<File | null>(null);
   const [assetMaintenanceForm, setAssetMaintenanceForm] =
     useState<AssetMaintenanceForm>(EMPTY_ASSET_MAINTENANCE_FORM);
   const [assetMaintenanceDialogOpen, setAssetMaintenanceDialogOpen] =
@@ -4624,10 +4627,13 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
+  const uploadEmployeeInsurancePolicy =
+    trpc.admin.employee.uploadInsurancePolicy.useMutation();
   const saveEmployeeInsurance = trpc.admin.employee.saveInsurance.useMutation({
     onSuccess: async () => {
       toast.success("员工保险台账已保存，到期状态已刷新");
       setEmployeeInsuranceForm(EMPTY_EMPLOYEE_INSURANCE_FORM);
+      setEmployeeInsurancePolicyFile(null);
       setEmployeeInsuranceDialogOpen(false);
       await Promise.all([employeeProfiles.refetch(), audits.refetch()]);
     },
@@ -5956,15 +5962,6 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
-  const payPayroll = trpc.labor.payroll.pay.useMutation({
-    onSuccess: async () => {
-      toast.success("工资条已确认发放");
-      setPayrollPaymentTarget(null);
-      setPaymentReference("");
-      await trpcUtils.labor.payroll.list.invalidate();
-    },
-    onError: error => toast.error(getUserFacingErrorMessage(error)),
-  });
   const submitDailyWage = trpc.labor.dailyWage.submit.useMutation({
     onSuccess: async () => {
       toast.success("临时日结已提交会计/财务审核");
@@ -5980,21 +5977,6 @@ export default function AdminPage({
           : "临时日结已退回草稿，可修改后重新提交"
       );
       await trpcUtils.labor.dailyWage.list.invalidate();
-    },
-    onError: error => toast.error(getUserFacingErrorMessage(error)),
-  });
-  const payDailyWage = trpc.labor.dailyWage.pay.useMutation({
-    onSuccess: async () => {
-      toast.success("临时日结已登记实际付款并完成结算");
-      setDailyWagePaymentTarget(null);
-      setDailyWagePaymentForm({
-        paidAt: toLocalDateInput(),
-        paymentReference: "",
-      });
-      await Promise.all([
-        trpcUtils.labor.dailyWage.list.invalidate(),
-        trpcUtils.labor.payroll.list.invalidate(),
-      ]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
@@ -7512,6 +7494,28 @@ export default function AdminPage({
             value: `¥${displayMoney(vehicleMaintenanceAmountById.get(item.id) ?? 0)}`,
           },
           {
+            label: "单车结算",
+            value: (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setVehicleLedgerFilter(current => ({
+                    ...current,
+                    projectId: String(item.projectId),
+                  }));
+                  setVehicleSettlementFocus({
+                    id: item.id,
+                    requestId: Date.now(),
+                  });
+                  setDesktopRecordDetail(null);
+                }}
+              >
+                <WalletCards className="mr-1.5 h-4 w-4" />
+                结算 / 收款资料
+              </Button>
+            ),
+          },
+          {
             label: "调度状态",
             value: (
               <Badge className={vehicleStatusClass[item.status]}>
@@ -7570,6 +7574,7 @@ export default function AdminPage({
             vehicles={rows.filter(
               item => item.projectId === settlementProjectId
             )}
+            focusVehicle={vehicleSettlementFocus}
           />
         ) : (
           <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
@@ -9328,6 +9333,16 @@ export default function AdminPage({
                                     ? `到期 ${toLocalDateInput(new Date(profile.policies[0].expiresAt))}`
                                     : "—"}
                                 </p>
+                                {profile.policies[0]?.evidence?.url ? (
+                                  <a
+                                    href={profile.policies[0].evidence.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-1 inline-block text-xs text-[#176b87] hover:underline"
+                                  >
+                                    查看保单附件
+                                  </a>
+                                ) : null}
                               </TableCell>
                               <TableCell className="px-3 py-2.5">
                                 <BusinessStatusBadge
@@ -9997,8 +10012,10 @@ export default function AdminPage({
             open={employeeInsuranceDialogOpen}
             onOpenChange={open => {
               setEmployeeInsuranceDialogOpen(open);
-              if (!open)
+              if (!open) {
                 setEmployeeInsuranceForm(EMPTY_EMPLOYEE_INSURANCE_FORM);
+                setEmployeeInsurancePolicyFile(null);
+              }
             }}
           >
             <DialogContent className="sm:max-w-3xl xl:max-w-4xl">
@@ -10010,22 +10027,61 @@ export default function AdminPage({
               </DialogHeader>
               <form
                 className="space-y-4"
-                onSubmit={event => {
+                onSubmit={async event => {
                   event.preventDefault();
-                  saveEmployeeInsurance.mutate({
-                    id: employeeInsuranceForm.id,
-                    employeeProfileId: Number(
-                      employeeInsuranceForm.employeeProfileId
-                    ),
-                    insuranceType: employeeInsuranceForm.insuranceType,
-                    providerName: employeeInsuranceForm.providerName || null,
-                    policyReference:
-                      employeeInsuranceForm.policyReference || null,
-                    purchasedAt: employeeInsuranceForm.purchasedAt,
-                    expiresAt: employeeInsuranceForm.expiresAt,
-                    status: employeeInsuranceForm.status,
-                    remarks: employeeInsuranceForm.remarks || null,
-                  });
+                  try {
+                    let evidenceId = employeeInsuranceForm.evidenceId ?? null;
+                    if (employeeInsurancePolicyFile) {
+                      if (![
+                        "image/jpeg",
+                        "image/png",
+                        "application/pdf",
+                      ].includes(employeeInsurancePolicyFile.type)) {
+                        toast.error("保单仅支持 JPG、PNG 或 PDF 文件");
+                        return;
+                      }
+                      const uploaded =
+                        await uploadEmployeeInsurancePolicy.mutateAsync({
+                          employeeProfileId: Number(
+                            employeeInsuranceForm.employeeProfileId
+                          ),
+                          fileName: employeeInsurancePolicyFile.name,
+                          mimeType: employeeInsurancePolicyFile.type as
+                            | "image/jpeg"
+                            | "image/png"
+                            | "application/pdf",
+                          base64Data: await readImageAsBase64(
+                            employeeInsurancePolicyFile
+                          ),
+                        });
+                      evidenceId = uploaded.evidenceId;
+                    }
+                    saveEmployeeInsurance.mutate({
+                      id: employeeInsuranceForm.id,
+                      employeeProfileId: Number(
+                        employeeInsuranceForm.employeeProfileId
+                      ),
+                      insuranceType: employeeInsuranceForm.insuranceType,
+                      providerName: employeeInsuranceForm.providerName || null,
+                      policyReference:
+                        employeeInsuranceForm.policyReference || null,
+                      evidenceId,
+                      premiumAmount: employeeInsuranceForm.premiumAmount
+                        ? Number(employeeInsuranceForm.premiumAmount)
+                        : null,
+                      coverageAmount: employeeInsuranceForm.coverageAmount
+                        ? Number(employeeInsuranceForm.coverageAmount)
+                        : null,
+                      purchasedAt: employeeInsuranceForm.purchasedAt,
+                      expiresAt: employeeInsuranceForm.expiresAt,
+                      status: employeeInsuranceForm.status,
+                      remarks: employeeInsuranceForm.remarks || null,
+                    });
+                  } catch (error) {
+                    toast.error(
+                      getUserFacingErrorMessage(error, "保单附件上传失败，请重试")
+                    );
+                  }
                 }}
               >
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -10096,6 +10152,36 @@ export default function AdminPage({
                       }
                     />
                   </Field>
+                  <Field label="本期保费（元，可选）">
+                    <Input
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={employeeInsuranceForm.premiumAmount}
+                      onChange={event =>
+                        setEmployeeInsuranceForm(current => ({
+                          ...current,
+                          premiumAmount: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                  <Field label="保险保额（元，可选）">
+                    <Input
+                      inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      type="number"
+                      value={employeeInsuranceForm.coverageAmount}
+                      onChange={event =>
+                        setEmployeeInsuranceForm(current => ({
+                          ...current,
+                          coverageAmount: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
                   <Field label="购买日期">
                     <Input
                       type="date"
@@ -10121,6 +10207,29 @@ export default function AdminPage({
                     />
                   </Field>
                 </div>
+                <Field label="保单附件（JPG / PNG / PDF，可选）">
+                  <Input
+                    type="file"
+                    accept="image/jpeg,image/png,application/pdf"
+                    onChange={event =>
+                      setEmployeeInsurancePolicyFile(
+                        event.target.files?.[0] ?? null
+                      )
+                    }
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    文件最大 15MB；保存时先校验格式并受控归档。续保请新增保险记录，历史保单不会被覆盖。
+                  </p>
+                  {employeeInsurancePolicyFile ? (
+                    <p className="mt-1 text-xs font-medium text-[#467067]">
+                      已选择：{employeeInsurancePolicyFile.name}
+                    </p>
+                  ) : employeeInsuranceForm.evidenceId ? (
+                    <p className="mt-1 text-xs text-[#467067]">
+                      当前记录已有受控保单附件；重新选择文件会更新本记录关联。
+                    </p>
+                  ) : null}
+                </Field>
                 <Field label="备注">
                   <Textarea
                     value={employeeInsuranceForm.remarks}
@@ -16797,7 +16906,6 @@ export default function AdminPage({
               paymentListPending={payrollPaymentListExport.isFetching}
               submitPending={submitDailyWage.isPending}
               reviewPending={reviewDailyWage.isPending}
-              payPending={payDailyWage.isPending}
               formatMoney={displayMoney}
               displayDate={displayDate}
               toBusinessDateInput={toBusinessDateInput}
@@ -16948,10 +17056,6 @@ export default function AdminPage({
                   id: item.id,
                   workerName: item.workerName,
                 });
-                setDailyWagePaymentForm({
-                  paidAt: toLocalDateInput(),
-                  paymentReference: "",
-                });
               }}
             />
             <PayrollStatementLedger
@@ -17025,6 +17129,13 @@ export default function AdminPage({
                       value: item.paymentReference || "尚未发放",
                     },
                   ],
+                })
+              }
+              onRegisterPayment={item =>
+                setPayrollPaymentTarget({
+                  id: item.id,
+                  workerName: item.workerName,
+                  period: item.period,
                 })
               }
             />
@@ -17160,52 +17271,51 @@ export default function AdminPage({
             </div>
           </>
         ) : null}
-        <DailyWagePaymentDialog
-          target={dailyWagePaymentTarget}
-          paidAt={dailyWagePaymentForm.paidAt}
-          paymentReference={dailyWagePaymentForm.paymentReference}
-          pending={payDailyWage.isPending}
-          onClose={() => {
-            setDailyWagePaymentTarget(null);
-            setDailyWagePaymentForm({
-              paidAt: toLocalDateInput(),
-              paymentReference: "",
-            });
+        <SettlementPaymentDialog
+          open={Boolean(dailyWagePaymentTarget)}
+          onOpenChange={open => {
+            if (!open) setDailyWagePaymentTarget(null);
           }}
-          onPaidAtChange={paidAt =>
-            setDailyWagePaymentForm(current => ({ ...current, paidAt }))
+          projectId={workspaceProjectId ?? 0}
+          settlementType="daily_wage"
+          target={
+            dailyWagePaymentTarget
+              ? {
+                  id: dailyWagePaymentTarget.id,
+                  label: `临时日结 · ${dailyWagePaymentTarget.workerName}`,
+                  payeeName: dailyWagePaymentTarget.workerName,
+                }
+              : null
           }
-          onPaymentReferenceChange={paymentReference =>
-            setDailyWagePaymentForm(current => ({
-              ...current,
-              paymentReference,
-            }))
-          }
-          onConfirm={() => {
-            if (!dailyWagePaymentTarget) return;
-            payDailyWage.mutate({
-              id: dailyWagePaymentTarget.id,
-              paidAt: new Date(`${dailyWagePaymentForm.paidAt}T00:00:00.000Z`),
-              paymentReference:
-                dailyWagePaymentForm.paymentReference.trim() || null,
-            });
+          onCompleted={async () => {
+            await Promise.all([
+              trpcUtils.labor.dailyWage.list.invalidate(),
+              trpcUtils.labor.payroll.list.invalidate(),
+              trpcUtils.labor.summary.invalidate(),
+            ]);
           }}
         />
-        <PayrollPaymentDialog
-          target={payrollPaymentTarget}
-          paymentReference={paymentReference}
-          pending={payPayroll.isPending}
-          onClose={() => {
-            setPayrollPaymentTarget(null);
-            setPaymentReference("");
+        <SettlementPaymentDialog
+          open={Boolean(payrollPaymentTarget)}
+          onOpenChange={open => {
+            if (!open) setPayrollPaymentTarget(null);
           }}
-          onPaymentReferenceChange={setPaymentReference}
-          onConfirm={() => {
-            if (!payrollPaymentTarget) return;
-            payPayroll.mutate({
-              id: payrollPaymentTarget.id,
-              paymentReference: paymentReference.trim(),
-            });
+          projectId={workspaceProjectId ?? 0}
+          settlementType="payroll"
+          target={
+            payrollPaymentTarget
+              ? {
+                  id: payrollPaymentTarget.id,
+                  label: `${payrollPaymentTarget.period} 工资 · ${payrollPaymentTarget.workerName}`,
+                  payeeName: payrollPaymentTarget.workerName,
+                }
+              : null
+          }
+          onCompleted={async () => {
+            await Promise.all([
+              trpcUtils.labor.payroll.list.invalidate(),
+              trpcUtils.labor.summary.invalidate(),
+            ]);
           }}
         />
       </LaborWorkspaceShell>

@@ -116,11 +116,12 @@ function getAttendanceDeviceLabel() {
 }
 
 /** 根据工资单状态生成简洁、可读的巧克力主题状态样式。 */
-function getPayrollStatus(status: "draft" | "reviewing" | "approved" | "paid" | "void") {
+function getPayrollStatus(status: "draft" | "reviewing" | "approved" | "partial" | "paid" | "void") {
   const dictionary = {
     draft: { label: "草稿", className: "bg-[#f7ead8] text-[#8a542e]" },
     reviewing: { label: "待会计审核", className: "bg-[#f9e6bd] text-[#9c6425]" },
     approved: { label: "已审核", className: "bg-[#e5f1e3] text-[#47744d]" },
+    partial: { label: "部分发放", className: "bg-[#fff0cf] text-[#95621f]" },
     paid: { label: "已发放", className: "bg-[#e2f0ed] text-[#3e746a]" },
     void: { label: "已作废", className: "bg-[#eee8e2] text-[#857365]" },
   } as const;
@@ -144,9 +145,10 @@ export const MOBILE_LABOR_BOTTOM_NAVIGATION = {
   profile: "/mobile/profile",
 } as const;
 
-/** 前端仅收敛可见操作；服务端仍会按照岗位权限和工资状态机进行最终校验。 */
+/** 实际资金发放必须由PC财务台账上传每笔凭证；移动端只展示受控状态。 */
 export function canPayPayrollFromMobile(roleCodes: readonly string[]) {
-  return roleCodes.includes("ALL") || roleCodes.includes("FINANCE_MANAGER");
+  void roleCodes;
+  return false;
 }
 
 /** 工资草稿只允许劳资负责人或系统级应急角色提交至会计审核。 */
@@ -165,11 +167,11 @@ export function canVoidPayrollFromMobile(roleCodes: readonly string[]) {
 }
 
 /** 将工资状态和服务端投影的岗位代码收敛为页面可见操作，避免 UI 与接口权限规则漂移。 */
-export function getMobilePayrollActions(status: "draft" | "reviewing" | "approved" | "paid" | "void", roleCodes: readonly string[]) {
+export function getMobilePayrollActions(status: "draft" | "reviewing" | "approved" | "partial" | "paid" | "void", roleCodes: readonly string[]) {
   return {
     submit: status === "draft" && canSubmitPayrollFromMobile(roleCodes),
     approve: status === "reviewing" && canApprovePayrollFromMobile(roleCodes),
-    pay: status === "approved" && canPayPayrollFromMobile(roleCodes),
+    pay: false,
     void: ["draft", "reviewing", "approved"].includes(status) && canVoidPayrollFromMobile(roleCodes),
   };
 }
@@ -206,10 +208,8 @@ export default function MobileLaborPage() {
   const [workerDialogOpen, setWorkerDialogOpen] = useState(false);
   const [attendanceDialogOpen, setAttendanceDialogOpen] = useState(false);
   const [payrollDialogOpen, setPayrollDialogOpen] = useState(false);
-  const [payrollPaymentDialogOpen, setPayrollPaymentDialogOpen] = useState(false);
   const [payrollVoidDialogOpen, setPayrollVoidDialogOpen] = useState(false);
   const [dailyWageDialogOpen, setDailyWageDialogOpen] = useState(false);
-  const [dailyWagePaymentDialogOpen, setDailyWagePaymentDialogOpen] = useState(false);
   const [certificateDialogOpen, setCertificateDialogOpen] = useState(false);
   const [helpDialogOpen, setHelpDialogOpen] = useState(false);
   const [editingWorkerId, setEditingWorkerId] = useState<number | null>(null);
@@ -219,11 +219,9 @@ export default function MobileLaborPage() {
   const [attendanceInitialDraft, setAttendanceInitialDraft] = useState({ workerId: "", attendanceDate: getTodayText(), workHours: "8", overtimeHours: "0", note: "" });
   const [payrollDraft, setPayrollDraft] = useState({ workerId: "", payableAmount: "", deductionAmount: "0" });
   const [payrollInitialDraft, setPayrollInitialDraft] = useState({ workerId: "", payableAmount: "", deductionAmount: "0" });
-  const [payrollPaymentDraft, setPayrollPaymentDraft] = useState({ id: 0, paymentReference: "" });
   const [payrollVoidDraft, setPayrollVoidDraft] = useState({ id: 0, reason: "" });
   const [dailyWageDraft, setDailyWageDraft] = useState({ workerId: "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" });
   const [dailyWageInitialDraft, setDailyWageInitialDraft] = useState({ workerId: "", settlementDate: getTodayText(), payableAmount: "", deductionAmount: "0", remarks: "" });
-  const [dailyWagePaymentDraft, setDailyWagePaymentDraft] = useState({ id: 0, paidAt: getTodayText(), paymentReference: "" });
   const [certificateWorker, setCertificateWorker] = useState<{ id: number; realName: string } | null>(null);
   const [certificateName, setCertificateName] = useState("");
   const [certificateFile, setCertificateFile] = useState<File | null>(null);
@@ -433,16 +431,6 @@ export default function MobileLaborPage() {
     },
     onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
-  /** 发放确认只记录外部资金系统的凭证引用，不会从页面或服务器直接发起银行转账。 */
-  const payPayroll = trpc.labor.payroll.pay.useMutation({
-    onSuccess: async () => {
-      toast.success("工资条已确认发放");
-      setPayrollPaymentDialogOpen(false);
-      setPayrollPaymentDraft({ id: 0, paymentReference: "" });
-      await Promise.all([utils.labor.payroll.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
-    },
-    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
-  });
   /** 作废必须说明原因；页面只负责采集，服务端负责终态和权限拦截。 */
   const voidPayroll = trpc.labor.payroll.void.useMutation({
     onSuccess: async () => {
@@ -476,15 +464,6 @@ export default function MobileLaborPage() {
     },
     onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
   });
-  const payDailyWage = trpc.labor.dailyWage.pay.useMutation({
-    onSuccess: async () => {
-      toast.success("实际付款日期已登记，临时日结已完成结算");
-      setDailyWagePaymentDialogOpen(false);
-      setDailyWagePaymentDraft({ id: 0, paidAt: getTodayText(), paymentReference: "" });
-      await Promise.all([utils.labor.dailyWage.list.invalidate(), utils.labor.summary.invalidate(), utils.mobile.workbench.invalidate()]);
-    },
-    onError: error => toast.error(getUserFacingErrorMessage(error, "劳务工资操作未完成，请稍后重试")),
-  });
   /** 证照本体仅上传至对象存储，台账只保留受权限控制的元数据与安全访问地址。 */
   const uploadCertificate = trpc.labor.certificates.upload.useMutation({
     onSuccess: async () => {
@@ -500,7 +479,6 @@ export default function MobileLaborPage() {
   const activeRoleCodes = workbench.data?.user?.roleCodes ?? [];
   const canSubmitPayroll = canSubmitPayrollFromMobile(activeRoleCodes);
   const canApprovePayroll = canApprovePayrollFromMobile(activeRoleCodes);
-  const canPayPayroll = canPayPayrollFromMobile(activeRoleCodes);
   const canVoidPayroll = canVoidPayrollFromMobile(activeRoleCodes);
   const canManageDailyWage = activeRoleCodes.includes("ALL") || activeRoleCodes.includes("LABOR_MANAGER") || activeRoleCodes.includes("PROJECT_MANAGER");
   const canReviewDailyWage = activeRoleCodes.includes("ALL") || activeRoleCodes.includes("ACCOUNTANT") || activeRoleCodes.includes("FINANCE_MANAGER");
@@ -751,7 +729,7 @@ export default function MobileLaborPage() {
 
               <TabsContent value="payroll" className="mt-4 space-y-3">
                 <div className="flex items-center justify-between print:hidden"><div><h2 className="text-base font-semibold">{period} 工资条</h2><p className="mt-0.5 text-xs text-[#8f7566]">会计审核后方可进入发放流程</p></div><Button size="sm" className="bg-[#a85f30] text-white hover:bg-[#8e4b22]" onClick={openPayrollDialog}><Plus className="mr-1 h-4 w-4" />核算工资</Button></div>
-                <Card className="border border-[#ead2b8] bg-[#fff8ef] shadow-none"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[#6d3421]">临时日结</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">劳资负责人或项目经理录入并提交；会计/财务审核、退回草稿或登记实际付款日期。付款后为最终结算，不可作废。</p></div>{canManageDailyWage ? <Button size="sm" className="shrink-0 bg-[#6d3421] hover:bg-[#542516]" onClick={openDailyWageDialog}><Plus className="mr-1 h-4 w-4" />录入日结</Button> : null}</div><div className="mt-3 space-y-2">{!dailyWages.data?.length && !dailyWages.isLoading ? <p className="rounded-lg bg-white px-3 py-2 text-xs text-[#8f7566]">当前项目暂无临时日结记录。</p> : null}{dailyWages.data?.map(item => <div key={item.id} className="rounded-lg bg-white px-3 py-2 text-xs"><div className="flex items-start justify-between gap-3"><div><p className="font-medium text-[#5c3422]">{item.workerName}{item.teamName ? ` · ${item.teamName}` : ""}</p><p className="mt-1 text-[#8f7566]">{formatDate(item.settlementDate)} · 应发 {formatMoney(item.payableAmount)} · 扣款 {formatMoney(item.deductionAmount)} · 实发 {formatMoney(item.actualAmount)}</p>{item.paidAt ? <p className="mt-1 text-[#3e746a]">实际付款：{formatDate(item.paidAt)}</p> : null}</div><span className={`rounded-full px-2 py-1 ${item.status === "paid" ? "bg-emerald-50 text-emerald-700" : item.status === "approved" ? "bg-[#e5f1e3] text-[#47744d]" : item.status === "reviewing" ? "bg-[#f9e6bd] text-[#9c6425]" : "bg-[#f6eadb] text-[#81512e]"}`}>{item.status === "draft" ? "草稿" : item.status === "reviewing" ? "待审核" : item.status === "approved" ? "已审核" : "已付款"}</span></div>{(canManageDailyWage || canReviewDailyWage) ? <div className="mt-2 flex flex-wrap justify-end gap-2">{item.status === "draft" && canManageDailyWage ? <Button size="sm" variant="outline" className="h-8" disabled={submitDailyWage.isPending} onClick={() => submitDailyWage.mutate({ id: item.id })}>提交审核</Button> : null}{item.status === "reviewing" && canReviewDailyWage ? <><Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700" disabled={reviewDailyWage.isPending} onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "returned" })}>退回草稿</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={reviewDailyWage.isPending} onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "approved" })}>审核通过</Button></> : null}{item.status === "approved" && canReviewDailyWage ? <Button size="sm" className="h-8 bg-[#3e746a] text-white hover:bg-[#315f57]" disabled={payDailyWage.isPending} onClick={() => { setDailyWagePaymentDraft({ id: item.id, paidAt: getTodayText(), paymentReference: "" }); setDailyWagePaymentDialogOpen(true); }}>登记付款</Button> : null}</div> : null}</div>)}</div></CardContent></Card>
+                <Card className="border border-[#ead2b8] bg-[#fff8ef] shadow-none"><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[#6d3421]">临时日结</p><p className="mt-1 text-xs leading-5 text-[#8f7566]">劳资负责人或项目经理录入并提交；会计/财务审核后，由PC财务台账上传付款凭证并分笔登记。付款后为最终结算，不可作废。</p></div>{canManageDailyWage ? <Button size="sm" className="shrink-0 bg-[#6d3421] hover:bg-[#542516]" onClick={openDailyWageDialog}><Plus className="mr-1 h-4 w-4" />录入日结</Button> : null}</div><div className="mt-3 space-y-2">{!dailyWages.data?.length && !dailyWages.isLoading ? <p className="rounded-lg bg-white px-3 py-2 text-xs text-[#8f7566]">当前项目暂无临时日结记录。</p> : null}{dailyWages.data?.map(item => <div key={item.id} className="rounded-lg bg-white px-3 py-2 text-xs"><div className="flex items-start justify-between gap-3"><div><p className="font-medium text-[#5c3422]">{item.workerName}{item.teamName ? ` · ${item.teamName}` : ""}</p><p className="mt-1 text-[#8f7566]">{formatDate(item.settlementDate)} · 应发 {formatMoney(item.payableAmount)} · 扣款 {formatMoney(item.deductionAmount)} · 实发 {formatMoney(item.actualAmount)}</p>{item.paidAt ? <p className="mt-1 text-[#3e746a]">实际付款：{formatDate(item.paidAt)}</p> : null}</div><span className={`rounded-full px-2 py-1 ${item.status === "paid" ? "bg-emerald-50 text-emerald-700" : item.status === "approved" ? "bg-[#e5f1e3] text-[#47744d]" : item.status === "reviewing" ? "bg-[#f9e6bd] text-[#9c6425]" : "bg-[#f6eadb] text-[#81512e]"}`}>{item.status === "draft" ? "草稿" : item.status === "reviewing" ? "待审核" : item.status === "approved" ? "已审核" : "已付款"}</span></div>{(canManageDailyWage || canReviewDailyWage) ? <div className="mt-2 flex flex-wrap justify-end gap-2">{item.status === "draft" && canManageDailyWage ? <Button size="sm" variant="outline" className="h-8" disabled={submitDailyWage.isPending} onClick={() => submitDailyWage.mutate({ id: item.id })}>提交审核</Button> : null}{item.status === "reviewing" && canReviewDailyWage ? <><Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700" disabled={reviewDailyWage.isPending} onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "returned" })}>退回草稿</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={reviewDailyWage.isPending} onClick={() => reviewDailyWage.mutate({ id: item.id, decision: "approved" })}>审核通过</Button></> : null}{item.status === "approved" && canReviewDailyWage ? <p className="self-center text-[11px] text-[#3e746a]">请在 PC 财务台账上传凭证后分笔登记付款</p> : null}</div> : null}</div>)}</div></CardContent></Card>
                 {!payroll.data?.length && !payroll.isLoading ? <div className="rounded-2xl bg-white p-6 text-center text-sm text-[#8f7566]">当前结算期间尚未生成工资条。</div> : null}
                 {payroll.data?.map(statement => {
                   const status = getPayrollStatus(statement.status);
@@ -771,7 +749,6 @@ export default function MobileLaborPage() {
                         {hasAction ? <div className="mt-3 flex flex-wrap justify-end gap-2 print:hidden">
                           {payrollActions.submit ? <Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={submitPayroll.isPending} onClick={() => submitPayroll.mutate({ id: statement.id })}>提交审核 <ChevronRight className="ml-1 h-3.5 w-3.5" /></Button> : null}
                           {payrollActions.approve ? <><Button size="sm" variant="outline" className="h-8 border-[#dfc5ad] text-[#87502d] hover:bg-[#fbefe0]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "returned" })}>退回</Button><Button size="sm" className="h-8 bg-[#4d7954] text-white hover:bg-[#3d6644]" disabled={approvePayroll.isPending} onClick={() => approvePayroll.mutate({ id: statement.id, decision: "approved" })}><BadgeCheck className="mr-1 h-3.5 w-3.5" />审核通过</Button></> : null}
-                          {payrollActions.pay ? <Button size="sm" className="h-8 bg-[#3e746a] text-white hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { setPayrollPaymentDraft({ id: statement.id, paymentReference: "" }); setPayrollPaymentDialogOpen(true); }}>确认发放</Button> : null}
                           {payrollActions.void ? <Button size="sm" variant="outline" className="h-8 border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800" disabled={voidPayroll.isPending} onClick={() => { setPayrollVoidDraft({ id: statement.id, reason: "" }); setPayrollVoidDialogOpen(true); }}><Ban className="mr-1 h-3.5 w-3.5" />作废</Button> : null}
                         </div> : null}
                       </CardContent>
@@ -799,19 +776,11 @@ export default function MobileLaborPage() {
       </Dialog>
 
       <Dialog open={dailyWageDialogOpen} onOpenChange={open => { if (open) setDailyWageDialogOpen(true); else requestDailyWageClose(resetDailyWageForm); }}>
-        <DialogContent className="max-h-[88dvh] overflow-y-auto border-[#ead9c8] bg-[#fffaf2] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:max-w-md"><DialogHeader><DialogTitle>录入临时日结</DialogTitle><DialogDescription>当天录入后提交会计/财务审核；审核通过不等于付款，实际付款日期登记后才完成结算。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>临时日结人员</Label><Select value={dailyWageDraft.workerId} onValueChange={value => setDailyWageDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择已授权项目下临时人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.workerCategory === "temporary_daily" && worker.attendanceStatus !== "left").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-3 gap-3"><div className="grid gap-1.5"><Label>日结日期</Label><Input type="date" value={dailyWageDraft.settlementDate} onChange={event => setDailyWageDraft(current => ({ ...current, settlementDate: event.target.value }))} /></div><div className="grid gap-1.5"><Label>应发金额</Label><Input inputMode="decimal" value={dailyWageDraft.payableAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, payableAmount: event.target.value }))} /></div><div className="grid gap-1.5"><Label>扣款</Label><Input inputMode="decimal" value={dailyWageDraft.deductionAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, deductionAmount: event.target.value }))} /></div></div><div className="grid gap-1.5"><Label>备注（可选）</Label><Textarea maxLength={500} value={dailyWageDraft.remarks} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => requestDailyWageClose(resetDailyWageForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveDailyWageLocalDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={saveDailyWage.isPending} onClick={submitDailyWageForm}>{saveDailyWage.isPending ? "保存中…" : "保存日结草稿"}</Button></DialogFooter></DialogContent>
-      </Dialog>
-
-      <Dialog open={dailyWagePaymentDialogOpen} onOpenChange={setDailyWagePaymentDialogOpen}>
-        <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>登记临时日结付款</DialogTitle><DialogDescription>无需上传转账记录；实际付款日期为必填，付款参考说明可选。保存后进入最终已付款状态，不能作废或回写。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>实际付款日期</Label><Input type="date" value={dailyWagePaymentDraft.paidAt} onChange={event => setDailyWagePaymentDraft(current => ({ ...current, paidAt: event.target.value }))} /></div><div className="grid gap-1.5"><Label>付款参考说明（可选）</Label><Input maxLength={64} value={dailyWagePaymentDraft.paymentReference} placeholder="如银行流水号或付款批次" onChange={event => setDailyWagePaymentDraft(current => ({ ...current, paymentReference: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setDailyWagePaymentDialogOpen(false)}>取消</Button><Button className="bg-[#3e746a] hover:bg-[#315f57]" disabled={!dailyWagePaymentDraft.id || !dailyWagePaymentDraft.paidAt || payDailyWage.isPending} onClick={() => payDailyWage.mutate({ id: dailyWagePaymentDraft.id, paidAt: new Date(`${dailyWagePaymentDraft.paidAt}T00:00:00.000Z`), paymentReference: dailyWagePaymentDraft.paymentReference.trim() || null })}>确认已付款</Button></DialogFooter></DialogContent>
+        <DialogContent className="max-h-[88dvh] overflow-y-auto border-[#ead9c8] bg-[#fffaf2] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:max-w-md"><DialogHeader><DialogTitle>录入临时日结</DialogTitle><DialogDescription>当天录入后提交会计/财务审核；审核通过不等于付款，实际付款须由PC财务台账上传凭证并分笔登记后才完成结算。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>临时日结人员</Label><Select value={dailyWageDraft.workerId} onValueChange={value => setDailyWageDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择已授权项目下临时人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.workerCategory === "temporary_daily" && worker.attendanceStatus !== "left").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-3 gap-3"><div className="grid gap-1.5"><Label>日结日期</Label><Input type="date" value={dailyWageDraft.settlementDate} onChange={event => setDailyWageDraft(current => ({ ...current, settlementDate: event.target.value }))} /></div><div className="grid gap-1.5"><Label>应发金额</Label><Input inputMode="decimal" value={dailyWageDraft.payableAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, payableAmount: event.target.value }))} /></div><div className="grid gap-1.5"><Label>扣款</Label><Input inputMode="decimal" value={dailyWageDraft.deductionAmount} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, deductionAmount: event.target.value }))} /></div></div><div className="grid gap-1.5"><Label>备注（可选）</Label><Textarea maxLength={500} value={dailyWageDraft.remarks} onFocus={event => event.currentTarget.scrollIntoView({ behavior: "smooth", block: "center" })} onChange={event => setDailyWageDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => requestDailyWageClose(resetDailyWageForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveDailyWageLocalDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={saveDailyWage.isPending} onClick={submitDailyWageForm}>{saveDailyWage.isPending ? "保存中…" : "保存日结草稿"}</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={payrollDialogOpen} onOpenChange={open => { if (open) setPayrollDialogOpen(true); else requestPayrollClose(resetPayrollForm); }}>
         <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>核算 {period} 工资</DialogTitle><DialogDescription>实发金额将由服务端按“应发金额 − 扣款金额”计算，保存后仍需提交会计审核。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid gap-1.5"><Label>劳务人员</Label><Select value={payrollDraft.workerId} onValueChange={value => setPayrollDraft(current => ({ ...current, workerId: value }))}><SelectTrigger><SelectValue placeholder="选择劳务人员" /></SelectTrigger><SelectContent>{workers.data?.filter(worker => worker.attendanceStatus !== "left").map(worker => <SelectItem key={worker.id} value={String(worker.id)}>{worker.realName}{worker.teamName ? ` · ${worker.teamName}` : ""}</SelectItem>)}</SelectContent></Select></div><div className="grid grid-cols-2 gap-3"><div className="grid gap-1.5"><Label htmlFor="payable-amount">应发金额（元）</Label><Input id="payable-amount" type="number" min="0" step="0.01" value={payrollDraft.payableAmount} onChange={event => setPayrollDraft(current => ({ ...current, payableAmount: event.target.value }))} /></div><div className="grid gap-1.5"><Label htmlFor="deduction-amount">扣款金额（元）</Label><Input id="deduction-amount" type="number" min="0" step="0.01" value={payrollDraft.deductionAmount} onChange={event => setPayrollDraft(current => ({ ...current, deductionAmount: event.target.value }))} /></div></div><div className="rounded-xl bg-[#f6eadb] px-3 py-2 text-xs text-[#80543c]"><Landmark className="mr-1 inline h-3.5 w-3.5" />工资条将关联当前加密保存的银行卡尾号；如需变更银行卡，请先维护人员档案。</div></div><DialogFooter><Button variant="outline" onClick={() => requestPayrollClose(resetPayrollForm)}>取消</Button><Button variant="secondary" onClick={() => { try { savePayrollLocalDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#a85f30] hover:bg-[#8e4b22]" disabled={savePayroll.isPending} onClick={submitPayrollForm}>{savePayroll.isPending ? "核算中…" : "保存工资草稿"}</Button></DialogFooter></DialogContent>
-      </Dialog>
-
-      <Dialog open={payrollPaymentDialogOpen} onOpenChange={setPayrollPaymentDialogOpen}>
-        <DialogContent className="border-[#ead9c8] bg-[#fffaf2] sm:max-w-md"><DialogHeader><DialogTitle>确认工资发放</DialogTitle><DialogDescription>请先在外部资金系统完成支付，再录入付款凭证号确认台账；本系统不会直接发起银行转账。</DialogDescription></DialogHeader><div className="grid gap-2 py-2"><Label htmlFor="payroll-payment-reference">付款凭证号或资金流水号</Label><Input id="payroll-payment-reference" value={payrollPaymentDraft.paymentReference} onChange={event => setPayrollPaymentDraft(current => ({ ...current, paymentReference: event.target.value }))} placeholder="例如：PAY-202607-0001" /></div><DialogFooter><Button variant="outline" onClick={() => setPayrollPaymentDialogOpen(false)}>取消</Button><Button className="bg-[#3e746a] hover:bg-[#315f57]" disabled={payPayroll.isPending} onClick={() => { if (!payrollPaymentDraft.paymentReference.trim()) return toast.error("请填写付款凭证号或资金流水号"); payPayroll.mutate({ id: payrollPaymentDraft.id, paymentReference: payrollPaymentDraft.paymentReference.trim() }); }}>确认已发放</Button></DialogFooter></DialogContent>
       </Dialog>
 
       <Dialog open={payrollVoidDialogOpen} onOpenChange={setPayrollVoidDialogOpen}>
