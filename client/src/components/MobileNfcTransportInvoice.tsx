@@ -46,10 +46,10 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   const [successResult, setSuccessResult] = useState<{ stage: "in_transit" | "completed"; tripNo: string; singleScanClosed: boolean; vehiclePlateNo: string | null; dailyVehicleTripOrdinal: number | null } | null>(null);
   const [operationError, setOperationError] = useState("");
   const [readerState, setReaderState] = useState<"checking" | "ready" | "unsupported" | "blocked" | "waiting">("checking");
-  const [scanAttempt, setScanAttempt] = useState(0);
   const [speechStatus, setSpeechStatus] = useState("");
   const scanTokenRef = useRef("");
   const automaticUnloadTokenRef = useRef("");
+  const scanControllerRef = useRef<AbortController | null>(null);
 
   const announce = (message: string) => {
     if (!("speechSynthesis" in window)) {
@@ -96,6 +96,56 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     window.setTimeout(() => announce("语音测试正常，刷卡发票成功后将自动播报。"), 60);
   };
 
+  /**
+   * Chrome 要求 NDEFReader.scan() 直接由点击等用户手势触发；不能在弹窗打开后的副作用中自动调用。
+   * 正式车辆卡直接触碰时，Android 会先按卡内 HTTPS 链接打开本页；此按钮用于已在页面内继续刷卡的场景。
+   */
+  const startNfcScan = () => {
+    const Reader = (window as NdefReaderWindow).NDEFReader;
+    if (!Reader) {
+      setReaderState("unsupported");
+      setScanStatus("当前浏览器不支持页面内读卡；请使用 Android Chrome，或直接触碰车辆卡通过安全链接打开本页。");
+      return;
+    }
+    scanControllerRef.current?.abort();
+    const controller = new AbortController();
+    scanControllerRef.current = controller;
+    const reader = new Reader();
+    const onReading = (event: NdefReadingEvent) => {
+      const nextToken = event.message.records.map(getNfcToken).find(Boolean) || "";
+      if (!nextToken) {
+        setOperationError("未读取到有效车辆卡入口。请确认使用的是已完成正式写入的车辆卡，不要使用测试卡或空白卡。");
+        setScanStatus("当前卡不是有效车辆卡，请更换已正式写入的车辆卡后重试。");
+        return;
+      }
+      if (nextToken === scanTokenRef.current) {
+        void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
+        setScanStatus("已重新读取车辆卡，正在刷新车辆与在途状态…");
+        return;
+      }
+      scanTokenRef.current = nextToken;
+      setToken(nextToken);
+      setRoutePresetId("");
+      setSuccessResult(null);
+      setOperationError("");
+      setScanStatus("车辆卡已读取，正在核验车辆身份与当前在途状态…");
+      void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
+    };
+    reader.addEventListener("reading", onReading);
+    setReaderState("checking");
+    setScanStatus("正在请求 Android Chrome 的 NFC 权限，请在系统提示中允许…");
+    // 必须保持在按钮点击调用栈内，不能挪入 useEffect 或等待异步操作后再执行。
+    void reader.scan({ signal: controller.signal }).then(() => {
+      if (controller.signal.aborted) return;
+      setReaderState("ready");
+      setScanStatus("页面内读卡已启动，请将已启用的车辆卡贴近手机。");
+    }).catch(() => {
+      if (controller.signal.aborted) return;
+      setReaderState("blocked");
+      setScanStatus("无法启动页面内读卡。请确认使用 Android Chrome、手机 NFC 已开启，并在系统提示中允许 NFC 权限；也可直接触碰车辆卡打开安全链接。");
+    });
+  };
+
   const preview = trpc.transport.previewMobileNfcInvoice.useQuery({ token }, { enabled: open && Boolean(token), retry: false });
   const issue = trpc.transport.confirmMobileNfcInvoice.useMutation({
     onSuccess: async result => {
@@ -132,6 +182,8 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     if (!open) return;
     scanTokenRef.current = "";
     automaticUnloadTokenRef.current = "";
+    scanControllerRef.current?.abort();
+    scanControllerRef.current = null;
     setToken(initialToken?.trim() || "");
     setRoutePresetId("");
     setSuccessResult(null);
@@ -149,7 +201,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
       setToken("");
       setRoutePresetId("");
       setSpeechStatus("");
-      setScanStatus("本次开票已完成，请贴下一张已启用车辆卡…");
+      setScanStatus("本次开票已完成。可继续贴下一张卡；若页面内读卡尚未启动，请先点击“开始读取车辆卡”。");
     }, 3_000);
     return () => window.clearTimeout(resetTimer);
   }, [open, successResult]);
@@ -163,34 +215,14 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
       return;
     }
     setReaderState("waiting");
-    const controller = new AbortController();
-    const reader = new Reader();
-    const onReading = (event: NdefReadingEvent) => {
-      const nextToken = event.message.records.map(getNfcToken).find(Boolean) || "";
-      if (!nextToken) return;
-      if (nextToken === scanTokenRef.current) {
-        void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
-        setScanStatus("已重新读取车辆卡，正在刷新车辆与在途状态…");
-        return;
-      }
-      scanTokenRef.current = nextToken;
-      setToken(nextToken);
-      setRoutePresetId("");
-      setSuccessResult(null);
-      setOperationError("");
-      setScanStatus("车辆卡已读取，正在核验车辆身份与当前在途状态…");
-      void utils.transport.previewMobileNfcInvoice.invalidate({ token: nextToken });
+    setScanStatus(initialToken
+      ? "已从车辆卡安全链接读取车辆信息；如需继续在页面内读下一张卡，请点击“开始读取车辆卡”。"
+      : "请点击“开始读取车辆卡”后再贴卡；首次会由 Android Chrome 请求 NFC 权限。");
+    return () => {
+      scanControllerRef.current?.abort();
+      scanControllerRef.current = null;
     };
-    reader.addEventListener("reading", onReading);
-    void reader.scan({ signal: controller.signal }).then(() => {
-      setReaderState("ready");
-      setScanStatus("页面内读卡已启动，请将已启用的车辆卡贴近手机。若 10 秒无反应，可点“重新启动读卡”。");
-    }).catch(() => {
-      setReaderState("blocked");
-      setScanStatus("无法启动页面内读卡；请使用 Android Chrome 并允许 NFC 权限，或直接触碰车辆卡通过安全链接打开本页。");
-    });
-    return () => controller.abort();
-  }, [open, scanAttempt, utils.transport.previewMobileNfcInvoice]);
+  }, [initialToken, open]);
 
   useEffect(() => {
     if (!preview.data?.routes?.length || preview.data.activeTrip) return;
@@ -260,7 +292,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
       <DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]">
         <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />{unloadOnlyAutoClose ? "正在确认卸土刷卡" : "刷 NFC 卡发票"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
-          <p className="text-xs leading-5 text-[#38677a]">页面已打开时会自动等待车辆卡。将已启用的卡贴近手机即可读取车辆信息；无需点击开始扫描。</p>
+          <p className="text-xs leading-5 text-[#38677a]">页面内读取车辆卡前，请先点击“开始读取车辆卡”。已写入 HTTPS 安全链接的车辆卡也可直接触碰手机，由 Android 自动打开本页。</p>
           <Button type="button" variant="outline" size="sm" className="w-full border-[#a9ccd9] bg-white text-[#24546b]" onClick={testSpeech}>
             <Volume2 className="mr-1 h-4 w-4" />测试语音播报（不提交发票）
           </Button>
@@ -285,9 +317,9 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
                   <p className="mt-1 text-[11px] text-[#658495]">{readerState === "ready" ? "已启动 Android Chrome 页面内读卡。" : readerState === "unsupported" ? "当前浏览器不支持 Web NFC 页面内读取。" : readerState === "blocked" ? "NFC 权限未授权或被浏览器拦截。" : "正在检查 NFC 能力…"}</p>
                 </div>
               </div>
-              {(readerState === "blocked" || readerState === "ready") ? (
-                <Button type="button" variant="outline" size="sm" className="mt-3 w-full border-[#a9ccd9] text-[#24546b]" onClick={() => { setToken(""); setRoutePresetId(""); setOperationError(""); scanTokenRef.current = ""; setScanAttempt(value => value + 1); }}>
-                  <RotateCw className="mr-1 h-3.5 w-3.5" />重新启动读卡
+              {readerState !== "unsupported" ? (
+                <Button type="button" variant="outline" size="sm" className="mt-3 w-full border-[#a9ccd9] text-[#24546b]" onClick={() => { setToken(""); setRoutePresetId(""); setOperationError(""); scanTokenRef.current = ""; startNfcScan(); }}>
+                  <RotateCw className="mr-1 h-3.5 w-3.5" />{readerState === "ready" ? "重新启动读卡" : "开始读取车辆卡"}
                 </Button>
               ) : null}
               {preview.isLoading ? <p className="mt-2 text-xs text-[#658495]">正在核验卡片签名…</p> : null}

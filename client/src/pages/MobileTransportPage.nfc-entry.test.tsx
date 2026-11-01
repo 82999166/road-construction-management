@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("移动端运输 NFC 入口收敛", () => {
-  it("不再展示手机首次发卡，保留已签发卡的自动读卡开票入口", () => {
+  it("不再展示手机首次发卡，保留已签发车辆卡的安全深链开票入口", () => {
     const source = readFileSync(new URL("./MobileTransportPage.tsx", import.meta.url), "utf8");
     expect(source).not.toContain('import { MobileNfcCardIssuer }');
     expect(source).not.toContain("<MobileNfcCardIssuer");
@@ -42,6 +42,9 @@ describe("移动端运输 NFC 入口收敛", () => {
     expect(quickActions).toBeLessThan(ledger);
     expect(source).toContain('aria-label="新建 NFC 刷卡发票"');
     expect(source).toContain('aria-label="新建拍照车牌发票"');
+    expect(source).toContain("打开后点击开始读取 · 再贴车辆卡");
+    expect(source).toContain("点击“开始读取车辆卡”再贴卡");
+    expect(source).not.toContain("打开后直接贴卡 · 自动读取车辆");
     expect(source).toContain("处理待刷 NFC 票据");
     expect(source).not.toContain('onClick={() => window.print()}');
   });

@@ -2,9 +2,25 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("手机刷 NFC 卡发票", () => {
-  it("页面打开即监听车辆卡，读取后选择路线并保存开票", () => {
+  it("由用户点击启动Android Chrome页面内读卡，读取后选择路线并保存开票", () => {
     const source = readFileSync(new URL("./MobileNfcTransportInvoice.tsx", import.meta.url), "utf8");
+    const startNfcScanStart = source.indexOf("const startNfcScan = () => {");
+    const nfcPreviewStart = source.indexOf("const preview =", startNfcScanStart);
+    const scanCallIndex = source.indexOf("reader.scan({ signal: controller.signal })");
+    expect(source).toContain("const startNfcScan = () => {");
     expect(source).toContain("reader.scan({ signal: controller.signal })");
+    expect(source.match(/reader\.scan\(\{ signal: controller\.signal \}\)/g)).toHaveLength(1);
+    expect(startNfcScanStart).toBeGreaterThan(-1);
+    expect(nfcPreviewStart).toBeGreaterThan(startNfcScanStart);
+    expect(scanCallIndex).toBeGreaterThan(startNfcScanStart);
+    expect(scanCallIndex).toBeLessThan(nfcPreviewStart);
+    expect(source).toContain("Chrome 要求 NDEFReader.scan() 直接由点击等用户手势触发");
+    expect(source).toContain("startNfcScan();");
+    expect(source).toContain("开始读取车辆卡");
+    expect(source).toContain("页面内读取车辆卡前，请先点击“开始读取车辆卡”");
+    expect(source).toContain("已写入 HTTPS 安全链接的车辆卡也可直接触碰手机");
+    expect(source).toContain("若页面内读卡尚未启动，请先点击“开始读取车辆卡”");
+    expect(source).not.toContain("无需点击开始扫描");
     expect(source).toContain("请将已启用的车辆卡贴近手机");
     expect(source).toContain("previewMobileNfcInvoice");
     expect(source).toContain("confirmMobileNfcInvoice");
@@ -32,14 +48,14 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("已重新读取车辆卡，正在刷新车辆与在途状态");
     expect(source).toContain("utils.transport.previewMobileNfcInvoice.invalidate");
     expect(source).not.toContain("if (!open || initialToken) return");
-    expect(source).toContain("本次开票已完成，请贴下一张已启用车辆卡");
+    expect(source).toContain("本次开票已完成。可继续贴下一张卡；若页面内读卡尚未启动，请先点击“开始读取车辆卡”");
     expect(source).toContain("}, 3_000)");
     expect(source).toContain("setToken(\"\")");
     expect(source).toContain("setRoutePresetId(\"\")");
     expect(source).toContain("当前浏览器不支持页面内读卡");
     expect(source).toContain("已启动 Android Chrome 页面内读卡");
     expect(source).toContain("重新启动读卡");
-    expect(source).toContain("scanAttempt");
+    expect(source).not.toContain("scanAttempt");
     expect(source).toContain("卸土点中文详细地址尚未完成地图定位校验");
     expect(source).toContain("装卸土点与运输路线配置");
     expect(source).toContain("补录详细地址");

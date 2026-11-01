@@ -55,7 +55,7 @@ describe("移动端运输刷卡票据", () => {
     expect(source).toContain("卸土成功");
     expect(source).toContain("MobileNfcTransportInvoice");
     expect(source).toContain("刷 NFC 发票");
-    expect(source).toContain("自动读取车辆");
+    expect(source).toContain("打开后点击开始读取 · 再贴车辆卡");
     expect(source).toContain("if (!nfcLinkToken || nfcLinkReaderDeviceCode || nfcLinkDialogOpenedRef.current) return;");
     expect(source).toContain("if (!nfcLinkToken || !nfcLinkReaderDeviceCode || nfcLinkScanStartedRef.current) return;");
   });
