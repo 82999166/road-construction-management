@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTestTemplateParams, createAliyunSmsClient, extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
+import { buildTestTemplateParams, createAliyunSmsClient, evaluateAliyunTemplateVariableContract, extractAliyunLegacyDollarVariables, extractAliyunTemplateVariables, extractSafeAliyunSmsErrorCode, getSmsEventModule, normalizeSmsEventTemplates, selectSmsEventTemplate } from "./smsNotifier";
 
 describe("业务事件短信模板配置", () => {
   it("仅保留受支持事件、去除重复项，并允许先保存未填写编码的待审核条目", () => {
@@ -36,6 +36,20 @@ describe("业务事件短信模板配置", () => {
   it("运输装土和卸土测试样例包含车辆当日阶段车次，供审核后的模板显示第几车", () => {
     expect(buildTestTemplateParams("transport_load_completed")).toMatchObject({ vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1" });
     expect(buildTestTemplateParams("transport_unload_completed")).toMatchObject({ vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1" });
+  });
+
+  it("仅将阿里云 ${name} 识别为可替换变量，并明确识别不会替换的旧式 $name$ 写法", () => {
+    const content = "【湖南悦信建筑】车辆 ${vehicle} 本次刷卡未完成，请联系现场管理员处理，时间 ${time}。";
+    expect(extractAliyunTemplateVariables(content)).toEqual(["time", "vehicle"]);
+    expect(extractAliyunLegacyDollarVariables("车辆 $vehicle$ 本次刷卡未完成，时间 $time$。")).toEqual(["time", "vehicle"]);
+    expect(extractAliyunTemplateVariables("车辆 $vehicle$，时间 $time$。")).toEqual([]);
+  });
+
+  it("允许模板按需选用车牌和时间，并阻止旧式或系统无法提供的变量", () => {
+    expect(evaluateAliyunTemplateVariableContract("transport_scan_exception", "车辆 ${vehicle} 本次刷卡未完成，时间 ${time}。")).toMatchObject({ verified: true, variables: ["time", "vehicle"], unsupportedVariables: [], legacyDollarVariables: [] });
+    expect(evaluateAliyunTemplateVariableContract("transport_load_completed", "车辆 ${vehicle} 装土完成。")).toMatchObject({ verified: true, unusedEventVariables: ["place", "time", "tripOrdinal"] });
+    expect(evaluateAliyunTemplateVariableContract("transport_scan_exception", "车辆 $vehicle$ 本次刷卡未完成，时间 $time$。")).toMatchObject({ verified: false, legacyDollarVariables: ["time", "vehicle"] });
+    expect(evaluateAliyunTemplateVariableContract("transport_scan_exception", "车辆 ${vehicle}，地点 ${place}。")).toMatchObject({ verified: false, unsupportedVariables: ["place"] });
   });
 
   it("仅保留阿里云 SDK 的短错误码，不回显异常消息或敏感请求字段", () => {

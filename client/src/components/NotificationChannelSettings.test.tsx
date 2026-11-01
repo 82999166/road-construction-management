@@ -16,6 +16,10 @@ describe("短信与服务号通知通道设置", () => {
     expect(source).toContain("确认发送测试短信");
     expect(source).toContain("每 60 秒限发一次");
     expect(source).toContain("inspectAliyunSmsNotificationReadiness");
+    expect(source).toContain("inspectAliyunSmsTemplateVariables");
+    expect(source).toContain("模板变量实查");
+    expect(source).toContain("核验当前模板变量");
+    expect(source).toContain("发现无效旧写法");
     expect(source).toContain("sendAliyunSmsNotificationTest");
     expect(source).toContain("transport_load_completed");
     expect(source).toContain("tripOrdinal（该车当日第几车）");

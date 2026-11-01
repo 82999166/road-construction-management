@@ -103,6 +103,7 @@ import {
 import {
   formatChinaSmsTime,
   inspectAliyunSmsReadiness,
+  inspectAliyunSmsTemplateVariableContract,
   notifyAliyunSmsSafely,
   sendAliyunSmsTest,
 } from "../services/smsNotifier";
@@ -5596,6 +5597,25 @@ export const adminRouter = router({
         return {
           ready: result.ready,
           reason: result.reason,
+          message: messageByReason[result.reason],
+        };
+      }),
+    inspectAliyunSmsTemplateVariables: protectedProcedure
+      .input(z.object({ eventCode: smsEventCode }))
+      .query(async ({ ctx, input }) => {
+        await assertSuperAdmin(ctx);
+        const result = await inspectAliyunSmsTemplateVariableContract(input.eventCode);
+        const messageByReason: Record<typeof result.reason, string> = {
+          verified: "阿里云已审核通过，模板变量与当前业务事件完全一致。",
+          configuration_not_ready: "当前事件尚未完成可发送配置，无法实查阿里云模板。",
+          provider_rejected: "阿里云未返回可用模板详情，请检查模板编码和RAM读取权限。",
+          template_not_approved: "该模板尚未审核通过，暂不可作为业务短信模板。",
+          template_content_unavailable: "阿里云未返回模板正文，无法验证变量。",
+          variable_contract_invalid: "模板变量与当前事件不一致，请按提示在阿里云新建或更新审核模板。",
+          provider_request_failed: "查询阿里云模板失败，请检查网络、密钥权限和服务商状态。",
+        };
+        return {
+          ...result,
           message: messageByReason[result.reason],
         };
       }),

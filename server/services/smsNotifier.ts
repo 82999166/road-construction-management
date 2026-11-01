@@ -16,6 +16,14 @@ export type SmsEventCode = (typeof SMS_EVENT_CODES)[number];
 export type SmsEventTemplate = { eventCode: SmsEventCode; templateCode: string; enabled: boolean };
 export type SmsNotificationModule = "transport" | "diesel";
 export type SmsReadinessReason = "ready" | "database_unavailable" | "disabled" | "provider_not_aliyun" | "module_disabled" | "template_unavailable" | "credentials_incomplete" | "configuration_invalid";
+export type SmsTemplateVerificationReason =
+  | "verified"
+  | "configuration_not_ready"
+  | "provider_rejected"
+  | "template_not_approved"
+  | "template_content_unavailable"
+  | "variable_contract_invalid"
+  | "provider_request_failed";
 
 const SMS_SETTING_KEYS = [
   "SMS_NOTIFICATION_ENABLED",
@@ -155,6 +163,102 @@ export function buildTestTemplateParams(eventCode: SmsEventCode): Record<string,
   if (eventCode === "diesel_refuel_completed") return { vehicle: "湘A12345", quantity: "100", amount: "100.00", time };
   if (eventCode === "transport_scan_exception") return { vehicle: "湘A12345", time };
   return { vehicle: "湘A12345", place: "测试运输现场", tripOrdinal: "1", time };
+}
+
+/**
+ * 阿里云模板变量只能写成 ${name}。本函数只返回变量名，绝不向前端回传模板正文。
+ * 例如 $vehicle$ 不会被阿里云当作变量，仍会原样出现在收件短信中。
+ */
+export function extractAliyunTemplateVariables(templateContent: string) {
+  const variables = new Set<string>();
+  templateContent.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, variable: string) => {
+    variables.add(variable);
+    return _match;
+  });
+  return Array.from(variables).sort();
+}
+
+/** 识别最常见的旧式 $vehicle$ 写法，仅返回变量名以保护已审核模板正文。 */
+export function extractAliyunLegacyDollarVariables(templateContent: string) {
+  const variables = new Set<string>();
+  templateContent.replace(/\$([A-Za-z_][A-Za-z0-9_]*)\$/g, (_match, variable: string) => {
+    variables.add(variable);
+    return _match;
+  });
+  return Array.from(variables).sort();
+}
+
+/**
+ * 系统可提供的变量允许模板按需选用；只有模板要求系统未提供的变量，或使用旧式 $name$
+ * 占位符时才阻止发送。这样“只显示车牌和时间”的合规模板不会被误判。
+ */
+export function evaluateAliyunTemplateVariableContract(eventCode: SmsEventCode, templateContent: string) {
+  const expectedVariables = Object.keys(buildTestTemplateParams(eventCode)).sort();
+  const variables = extractAliyunTemplateVariables(templateContent);
+  const legacyDollarVariables = extractAliyunLegacyDollarVariables(templateContent);
+  const unusedEventVariables = expectedVariables.filter(variable => !variables.includes(variable));
+  const unsupportedVariables = variables.filter(variable => !expectedVariables.includes(variable));
+  return {
+    expectedVariables,
+    variables,
+    unusedEventVariables,
+    unsupportedVariables,
+    legacyDollarVariables,
+    verified: !legacyDollarVariables.length && !unsupportedVariables.length,
+  };
+}
+
+/**
+ * 只允许超级管理员主动核验当前已发布模板的审核与变量契约。
+ * 返回内容不含模板正文、模板编码、签名、密钥、收件人及服务商异常详情。
+ */
+export async function inspectAliyunSmsTemplateVariableContract(eventCode: SmsEventCode) {
+  const resolution = await resolveAliyunSmsDispatch(eventCode, getSmsEventModule(eventCode));
+  const expectedVariables = Object.keys(buildTestTemplateParams(eventCode)).sort();
+  const base = { eventCode, expectedVariables };
+  if (!resolution.ready) {
+    return {
+      ...base,
+      verified: false,
+      reason: "configuration_not_ready" as const,
+      providerCode: null,
+      templateStatus: null,
+      variables: [] as string[],
+      unusedEventVariables: expectedVariables,
+      unsupportedVariables: [] as string[],
+      legacyDollarVariables: [] as string[],
+    };
+  }
+  try {
+    const client = createAliyunSmsClient(resolution.configuration.accessKeyId, resolution.configuration.accessKeySecret);
+    const response = await client.getSmsTemplate(new DysmsapiSdk.GetSmsTemplateRequest({ templateCode: resolution.configuration.templateCode }));
+    const body = response.body;
+    const providerCode = typeof body?.code === "string" ? extractSafeAliyunSmsErrorCode({ code: body.code }) : "UNKNOWN";
+    const templateStatus = typeof body?.templateStatus === "string" ? body.templateStatus : null;
+    if (providerCode !== "OK") {
+      return { ...base, verified: false, reason: "provider_rejected" as const, providerCode, templateStatus, variables: [] as string[], unusedEventVariables: expectedVariables, unsupportedVariables: [] as string[], legacyDollarVariables: [] as string[] };
+    }
+    if (templateStatus !== "1") {
+      return { ...base, verified: false, reason: "template_not_approved" as const, providerCode, templateStatus, variables: [] as string[], unusedEventVariables: expectedVariables, unsupportedVariables: [] as string[], legacyDollarVariables: [] as string[] };
+    }
+    if (typeof body?.templateContent !== "string" || !body.templateContent.trim()) {
+      return { ...base, verified: false, reason: "template_content_unavailable" as const, providerCode, templateStatus, variables: [] as string[], unusedEventVariables: expectedVariables, unsupportedVariables: [] as string[], legacyDollarVariables: [] as string[] };
+    }
+    const evaluation = evaluateAliyunTemplateVariableContract(eventCode, body.templateContent);
+    return {
+      ...base,
+      verified: evaluation.verified,
+      reason: evaluation.verified ? "verified" as const : "variable_contract_invalid" as const,
+      providerCode,
+      templateStatus,
+      variables: evaluation.variables,
+      unusedEventVariables: evaluation.unusedEventVariables,
+      unsupportedVariables: evaluation.unsupportedVariables,
+      legacyDollarVariables: evaluation.legacyDollarVariables,
+    };
+  } catch (error) {
+    return { ...base, verified: false, reason: "provider_request_failed" as const, providerCode: extractSafeAliyunSmsErrorCode(error), templateStatus: null, variables: [] as string[], unusedEventVariables: expectedVariables, unsupportedVariables: [] as string[], legacyDollarVariables: [] as string[] };
+  }
 }
 
 async function writeSmsTestAudit(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, input: { userId: number; action: string; eventCode: SmsEventCode; summary: string }) {
