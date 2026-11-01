@@ -3835,9 +3835,9 @@ export default function AdminPage({
   const [wechatBindingActionTarget, setWechatBindingActionTarget] =
     useState<WechatBindingActionTarget | null>(null);
   const [departmentScopeForm, setDepartmentScopeForm] = useState<{
-    organizationId: string;
+    scopeTarget: string;
     module: DepartmentModuleCode | "";
-  }>({ organizationId: "", module: "" });
+  }>({ scopeTarget: "", module: "" });
   const [settingForm, setSettingForm] =
     useState<SettingForm>(EMPTY_SETTING_FORM);
   const [
@@ -5342,8 +5342,8 @@ export default function AdminPage({
     });
   const saveDepartmentScope = trpc.admin.department.saveScope.useMutation({
     onSuccess: async () => {
-      toast.success("部门业务范围已保存，相关人员下次请求将按新范围校验");
-      setDepartmentScopeForm({ organizationId: "", module: "" });
+      toast.success("项目或部门业务范围已保存，相关人员下次请求将按新范围校验");
+      setDepartmentScopeForm({ scopeTarget: "", module: "" });
       await departmentScopes.refetch();
     },
   });
@@ -6063,9 +6063,14 @@ export default function AdminPage({
       ),
     [organizations.data]
   );
+  const departmentScopeProjects = useMemo(
+    () => (projects.data ?? []).filter(project => project.status !== "archived"),
+    [projects.data]
+  );
   const departmentScopePickerState = getDepartmentScopePickerState(
-    organizations.isLoading,
-    departmentNodes.length
+    organizations.isLoading || projects.isLoading,
+    departmentNodes.length,
+    departmentScopeProjects.length
   );
   const organizationNameById = useMemo(
     () => new Map((organizations.data ?? []).map(item => [item.id, item.name])),
@@ -10832,22 +10837,22 @@ export default function AdminPage({
           <Card className="border-[#d8e3e0] shadow-sm">
             <CardHeader className="border-b border-slate-100 pb-3">
               <p className="text-xs font-semibold tracking-wide text-[#467067]">
-                菜单可见性 · 部门层级
+                菜单可见性 · 项目与部门范围
               </p>
-              <CardTitle className="mt-1 text-base">部门可办理业务</CardTitle>
+              <CardTitle className="mt-1 text-base">项目或部门可办理业务</CardTitle>
               <CardDescription className="mt-1">
-                为部门或项目部启用业务模块后，已获该部门角色授权的人员才会看到对应菜单。此处只控制菜单/模块范围，不代替角色操作权限。
+                已有项目可直接配置业务菜单，无需先建立组织节点；部门/项目部配置继续保留。人员仍须同时具备该项目或部门范围内的角色授权，此处不增加数据范围或操作权限。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 pt-4">
               <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
                 <Select
-                  value={departmentScopeForm.organizationId}
+                  value={departmentScopeForm.scopeTarget}
                   disabled={departmentScopePickerState.disabled}
                   onValueChange={value =>
                     setDepartmentScopeForm({
                       ...departmentScopeForm,
-                      organizationId: value,
+                      scopeTarget: value,
                     })
                   }
                 >
@@ -10857,9 +10862,21 @@ export default function AdminPage({
                     />
                   </SelectTrigger>
                   <SelectContent>
+                    {departmentScopeProjects.map(project => (
+                      <SelectItem
+                        key={`project:${project.id}`}
+                        value={`project:${project.id}`}
+                      >
+                        项目 · {project.name}
+                        {project.code ? `（${project.code}）` : ""}
+                      </SelectItem>
+                    ))}
                     {departmentNodes.map(node => (
-                      <SelectItem key={node.id} value={String(node.id)}>
-                        {node.name}
+                      <SelectItem
+                        key={`organization:${node.id}`}
+                        value={`organization:${node.id}`}
+                      >
+                        部门 · {node.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -10886,16 +10903,23 @@ export default function AdminPage({
                 </Select>
                 <Button
                   disabled={
-                    !departmentScopeForm.organizationId ||
+                    !departmentScopeForm.scopeTarget ||
                     !departmentScopeForm.module ||
                     saveDepartmentScope.isPending
                   }
                   onClick={() => {
-                    if (departmentScopeForm.module)
+                    const [scopeType, rawScopeId] =
+                      departmentScopeForm.scopeTarget.split(":");
+                    const scopeId = Number(rawScopeId);
+                    if (
+                      departmentScopeForm.module &&
+                      (scopeType === "organization" || scopeType === "project") &&
+                      Number.isSafeInteger(scopeId) &&
+                      scopeId > 0
+                    )
                       saveDepartmentScope.mutate({
-                        organizationId: Number(
-                          departmentScopeForm.organizationId
-                        ),
+                        scopeType,
+                        scopeId,
                         module: departmentScopeForm.module,
                         status: "active",
                       });
@@ -10904,14 +10928,14 @@ export default function AdminPage({
                   启用业务
                 </Button>
               </div>
-              {departmentScopePickerState.needsOrganizationSetup ? (
+              {departmentScopePickerState.needsScopeSetup ? (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-amber-200 bg-amber-50/70 p-3">
                   <div>
                     <p className="text-sm font-medium text-amber-950">
-                      尚无可选择的部门或项目部
+                      尚无可选择的项目或部门范围
                     </p>
                     <p className="mt-1 text-xs leading-5 text-amber-800">
-                      请先建立启用的部门或项目部节点。
+                      请先建立未归档项目，或建立启用的部门/项目部节点。
                     </p>
                   </div>
                   <Button
@@ -10920,7 +10944,7 @@ export default function AdminPage({
                     className="border-amber-300 bg-white text-amber-950 hover:bg-amber-100"
                     onClick={() => setLocation("/admin/organization")}
                   >
-                    建立组织节点
+                    建立项目或组织节点
                   </Button>
                 </div>
               ) : null}
@@ -10937,7 +10961,7 @@ export default function AdminPage({
                       >
                         <div>
                           <p className="text-sm font-medium text-slate-800">
-                            {scope.organizationName} ·{" "}
+                            {scope.scopeType === "project" ? "项目" : "部门"} · {scope.scopeName} ·{" "}
                             {module?.name ?? scope.module}
                           </p>
                           <p className="mt-0.5 text-xs text-slate-500">
@@ -10952,7 +10976,8 @@ export default function AdminPage({
                             disabled={saveDepartmentScope.isPending}
                             onClick={() =>
                               saveDepartmentScope.mutate({
-                                organizationId: scope.organizationId,
+                                scopeType: scope.scopeType,
+                                scopeId: scope.scopeId,
                                 module: scope.module,
                                 status:
                                   scope.status === "active"
@@ -10971,8 +10996,8 @@ export default function AdminPage({
                               setMasterDataDeleteTarget({
                                 resource: "department_scope",
                                 id: scope.id,
-                                label: `${scope.organizationName} · ${module?.name ?? scope.module}`,
-                                description: `确认删除“${scope.organizationName}”的“${module?.name ?? scope.module}”业务范围？删除后该部门不再拥有该模块入口，可重新启用创建。`,
+                                label: `${scope.scopeType === "project" ? "项目" : "部门"} · ${scope.scopeName} · ${module?.name ?? scope.module}`,
+                                description: `确认删除“${scope.scopeName}”的“${module?.name ?? scope.module}”业务范围？删除后该${scope.scopeType === "project" ? "项目" : "部门"}不再拥有该模块入口，可重新启用创建。`,
                               })
                             }
                           >
@@ -10984,7 +11009,7 @@ export default function AdminPage({
                   })}
                 </div>
               ) : (
-                <EmptyState text="尚未配置部门可办理业务。请先建立部门节点，再按实际职责启用业务模块。" />
+                <EmptyState text="尚未配置项目或部门可办理业务。请选择已有项目或部门，再按实际职责启用业务模块。" />
               )}
             </CardContent>
           </Card>

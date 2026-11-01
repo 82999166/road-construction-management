@@ -96,14 +96,26 @@ describe("后台安全通知", () => {
   });
 
   it("超级管理员可为有效部门启用标准业务模块并写入审计", async () => {
-    const db = createAdminDb([[{ id: 22, type: "department" }], []]);
+    const db = createAdminDb([[{ id: 22, type: "department", status: "active" }], []]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ organizationId: 22, module: "LABOR", status: "active" })).resolves.toEqual({ success: true });
+    await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ scopeType: "organization", scopeId: 22, module: "LABOR", status: "active" })).resolves.toEqual({ success: true });
 
     expect(db.insertedValues).toEqual(expect.arrayContaining([
       expect.objectContaining({ organizationId: 22, module: "LABOR", status: "active", configuredBy: 1 }),
-      expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "22:LABOR" }),
+      expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "organization:22:LABOR" }),
+    ]));
+  });
+
+  it("超级管理员可直接为已有未归档项目启用业务模块，不要求先建立组织节点", async () => {
+    const db = createAdminDb([[{ id: 88, status: "active" }], []]);
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ scopeType: "project", scopeId: 88, module: "CONSTRUCTION", status: "active" })).resolves.toEqual({ success: true });
+
+    expect(db.insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ organizationId: null, projectId: 88, module: "CONSTRUCTION", status: "active", configuredBy: 1 }),
+      expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "project:88:CONSTRUCTION" }),
     ]));
   });
 

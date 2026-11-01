@@ -617,6 +617,13 @@
       "when": 1793499843777,
       "tag": "0087_shiny_iron_man",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "5",
+      "when": 1793514290025,
+      "tag": "0088_special_banshee",
+      "breakpoints": true
     }
   ]
 }

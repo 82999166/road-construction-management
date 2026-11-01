@@ -12,9 +12,29 @@ export function isInlineBroadcastDeliveryExpanded(selectedBroadcastId: number | 
   return selectedBroadcastId === broadcastId;
 }
 
-/** 权限页组织范围选择须区分加载中、尚未建节点和可正常选择三种状态。 */
-export function getDepartmentScopePickerState(isLoading: boolean, nodeCount: number) {
-  if (isLoading) return { disabled: true, placeholder: "正在加载组织节点…", needsOrganizationSetup: false };
-  if (nodeCount === 0) return { disabled: true, placeholder: "暂无部门或项目部", needsOrganizationSetup: true };
-  return { disabled: false, placeholder: "选择部门或项目部", needsOrganizationSetup: false };
+/** 权限页范围选择须区分加载中、尚未建立任何项目/组织范围和可正常选择三种状态。 */
+export function getDepartmentScopePickerState(
+  isLoading: boolean,
+  organizationCount: number,
+  projectCount = 0
+) {
+  if (isLoading) {
+    return {
+      disabled: true,
+      placeholder: "正在加载项目与组织节点…",
+      needsScopeSetup: false,
+    };
+  }
+  if (organizationCount + projectCount === 0) {
+    return {
+      disabled: true,
+      placeholder: "暂无项目或部门范围",
+      needsScopeSetup: true,
+    };
+  }
+  return {
+    disabled: false,
+    placeholder: "选择已有项目或部门/项目部",
+    needsScopeSetup: false,
+  };
 }

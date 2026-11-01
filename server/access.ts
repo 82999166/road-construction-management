@@ -204,6 +204,71 @@ async function getProjectScopedRoleAssignments(
     );
 }
 
+/**
+ * 项目直接授权已有角色菜单是历史兼容基线；未配置项目范围时完全保持旧行为。
+ * 一旦项目存在任一业务范围记录，该项目以启用模块为白名单；白名单仍只能收紧既有角色菜单，
+ * 绝不能通过菜单配置给用户增加项目、角色或具体操作权限。
+ */
+async function getProjectScopedModuleRows(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  assignments: Array<{ projectId: number | null; roleCode: string }>,
+  detailedModulesByRole: ReadonlyMap<string, ReadonlySet<DepartmentBusinessModule>>,
+  userSpecificModuleCodes: readonly DepartmentBusinessModule[],
+) {
+  const projectIds = Array.from(
+    new Set(
+      assignments
+        .map(assignment => assignment.projectId)
+        .filter((projectId): projectId is number => Number.isInteger(projectId))
+    )
+  );
+  if (!projectIds.length) return [] as Array<{ projectId: number; roleCode: string; module: DepartmentBusinessModule }>;
+
+  const configuredRows = await db
+    .select({
+      projectId: departmentBusinessScopes.projectId,
+      module: departmentBusinessScopes.module,
+      status: departmentBusinessScopes.status,
+    })
+    .from(departmentBusinessScopes)
+    .where(inArray(departmentBusinessScopes.projectId, projectIds));
+  const statusByProjectAndModule = new Map<string, "active" | "disabled">();
+  const configuredProjectIds = new Set<number>();
+  for (const row of configuredRows) {
+    if (row.projectId !== null) {
+      configuredProjectIds.add(row.projectId);
+      statusByProjectAndModule.set(
+        `${row.projectId}:${row.module}`,
+        row.status
+      );
+    }
+  }
+
+  const result: Array<{
+    projectId: number;
+    roleCode: string;
+    module: DepartmentBusinessModule;
+  }> = [];
+  for (const assignment of assignments) {
+    const projectId = assignment.projectId;
+    if (typeof projectId !== "number" || !Number.isInteger(projectId)) continue;
+    const candidateModules = new Set<DepartmentBusinessModule>([
+      ...getRoleDepartmentModules(assignment.roleCode),
+      ...Array.from(detailedModulesByRole.get(assignment.roleCode) ?? []),
+      ...userSpecificModuleCodes,
+    ]);
+    for (const module of Array.from(candidateModules)) {
+      // 未配置项目级开关时保持既有直接项目授权；已配置时必须显式启用当前模块。
+      if (
+        configuredProjectIds.has(projectId) &&
+        statusByProjectAndModule.get(`${projectId}:${module}`) !== "active"
+      ) continue;
+      result.push({ projectId, roleCode: assignment.roleCode, module });
+    }
+  }
+  return result;
+}
+
 /** 将角色授权记录安全收敛为项目与组织数据范围；空集合始终表示无数据访问权。 */
 function toDataScope(userId: number, rows: Array<{ projectId: number | null; organizationId: number | null }>, hasAllProjects = false): DataScope {
   return {
@@ -368,12 +433,14 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   const projectScopedRows = await getProjectScopedRoleAssignments(db, user.id, now);
   const detailedModulesByRole = await getRoleDetailedMenuModulesByRole(db, [...rows.map(row => row.roleCode), ...projectScopedRows.map(row => row.roleCode)]);
   const authorizedRows = rows.filter(row => canRoleHandleModuleWithDetailedPermission(row.roleCode, row.module as DepartmentBusinessModule, detailedModulesByRole));
-  const projectModuleCodes = projectScopedRows.flatMap(row => Array.from(new Set([
-    ...getRoleDepartmentModules(row.roleCode),
-    ...Array.from(detailedModulesByRole.get(row.roleCode) ?? []),
-  ])));
   // 用户专属权限只能复用其既有的直接项目范围，不能在无项目角色授权时凭空扩大数据边界。
   const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
+  const projectModuleRows = await getProjectScopedModuleRows(
+    db,
+    projectScopedRows,
+    detailedModulesByRole,
+    userSpecificModuleCodes
+  );
   const departmentMap = new Map<number, { id: number; name: string; type: "department" | "project_department" }>();
   for (const row of authorizedRows) {
     // 查询条件已限制为两类部门节点；显式保护让未来扩展组织枚举时仍不会放宽部门边界。
@@ -383,7 +450,10 @@ export async function getCurrentDepartmentAccess(ctx: TrpcContext) {
   }
   return {
     departments: Array.from(departmentMap.values()),
-    moduleCodes: Array.from(new Set([...authorizedRows.map(row => row.module), ...projectModuleCodes, ...userSpecificModuleCodes])) as DepartmentBusinessModule[],
+    moduleCodes: Array.from(new Set([
+      ...authorizedRows.map(row => row.module),
+      ...projectModuleRows.map(row => row.module),
+    ])) as DepartmentBusinessModule[],
     hasAllDepartments: false,
   };
 }
@@ -433,8 +503,14 @@ async function getCurrentDepartmentModuleDataScope(ctx: TrpcContext, module: Dep
   const detailedModulesByRole = await getRoleDetailedMenuModulesByRole(db, [...rows.map(row => row.roleCode), ...projectScopedRows.map(row => row.roleCode)]);
   const departmentScopedRows = rows.filter(row => canRoleHandleModuleWithDetailedPermission(row.roleCode, row.module as DepartmentBusinessModule, detailedModulesByRole));
   const userSpecificModuleCodes = projectScopedRows.length > 0 ? await getUserSpecificMenuModulesForUser(db, user.id) : [];
-  const directProjectRows = projectScopedRows
-    .filter(row => getRoleDepartmentModules(row.roleCode).includes(module) || detailedModulesByRole.get(row.roleCode)?.has(module) || userSpecificModuleCodes.includes(module))
+  const projectModuleRows = await getProjectScopedModuleRows(
+    db,
+    projectScopedRows,
+    detailedModulesByRole,
+    userSpecificModuleCodes
+  );
+  const directProjectRows = projectModuleRows
+    .filter(row => row.module === module)
     .map(row => ({ projectId: row.projectId, organizationId: null }));
   return toDataScope(user.id, [...departmentScopedRows, ...directProjectRows]);
 }

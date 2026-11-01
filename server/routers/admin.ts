@@ -492,9 +492,10 @@ const roleInput = z.object({
   status: z.enum(["active", "disabled"]).default("active"),
 });
 
-/** 部门业务范围配置仅允许使用系统定义的业务模块编码。 */
+/** 部门或已有项目的业务范围配置仅允许使用系统定义的业务模块编码。 */
 const departmentBusinessScopeInput = z.object({
-  organizationId: z.number().int().positive(),
+  scopeType: z.enum(["organization", "project"]),
+  scopeId: z.number().int().positive(),
   module: z.enum([
     "CONSTRUCTION",
     "LABOR",
@@ -1195,13 +1196,14 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
-      const rows = await db
+      const organizationRows = await db
         .select({
           id: departmentBusinessScopes.id,
           organizationId: organizations.id,
           organizationCode: organizations.code,
           organizationName: organizations.name,
           organizationType: organizations.type,
+          projectId: departmentBusinessScopes.projectId,
           module: departmentBusinessScopes.module,
           status: departmentBusinessScopes.status,
           updatedAt: departmentBusinessScopes.updatedAt,
@@ -1216,10 +1218,47 @@ export const adminRouter = router({
           organizations.id,
           departmentBusinessScopes.module
         );
-      return rows.filter(
+      const validOrganizationRows = organizationRows.filter(
         row =>
           row.organizationType === "department" ||
           row.organizationType === "project_department"
+      );
+      const projectRows = await db
+        .select({
+          id: departmentBusinessScopes.id,
+          projectId: projects.id,
+          projectCode: projects.code,
+          projectName: projects.name,
+          projectStatus: projects.status,
+          module: departmentBusinessScopes.module,
+          status: departmentBusinessScopes.status,
+          updatedAt: departmentBusinessScopes.updatedAt,
+        })
+        .from(departmentBusinessScopes)
+        .innerJoin(projects, eq(departmentBusinessScopes.projectId, projects.id))
+        .orderBy(projects.sortOrder, projects.id, departmentBusinessScopes.module);
+      return [
+        ...validOrganizationRows.map(row => ({
+          ...row,
+          scopeType: "organization" as const,
+          scopeId: row.organizationId,
+          scopeName: row.organizationName,
+          scopeCode: row.organizationCode,
+          scopeStatus: "active" as const,
+        })),
+        ...projectRows.map(row => ({
+          ...row,
+          scopeType: "project" as const,
+          scopeId: row.projectId,
+          scopeName: row.projectName,
+          scopeCode: row.projectCode,
+          scopeStatus: row.projectStatus,
+        })),
+      ].sort(
+        (left, right) =>
+          left.scopeType.localeCompare(right.scopeType) ||
+          left.scopeName.localeCompare(right.scopeName, "zh-CN") ||
+          left.module.localeCompare(right.module)
       );
     }),
     saveScope: protectedProcedure
@@ -1228,20 +1267,36 @@ export const adminRouter = router({
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
         if (!db) throw new Error("数据库连接暂不可用");
-        const [department] = await db
-          .select({ id: organizations.id, type: organizations.type })
-          .from(organizations)
-          .where(eq(organizations.id, input.organizationId))
-          .limit(1);
-        if (
-          !department ||
-          (department.type !== "department" &&
-            department.type !== "project_department")
-        ) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "请选择有效的部门或项目部节点配置业务范围",
-          });
+        const isOrganizationScope = input.scopeType === "organization";
+        if (isOrganizationScope) {
+          const [department] = await db
+            .select({ id: organizations.id, type: organizations.type, status: organizations.status })
+            .from(organizations)
+            .where(eq(organizations.id, input.scopeId))
+            .limit(1);
+          if (
+            !department ||
+            department.status !== "active" ||
+            (department.type !== "department" &&
+              department.type !== "project_department")
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "请选择启用中的有效部门或项目部节点配置业务范围",
+            });
+          }
+        } else {
+          const [project] = await db
+            .select({ id: projects.id, status: projects.status })
+            .from(projects)
+            .where(eq(projects.id, input.scopeId))
+            .limit(1);
+          if (!project || project.status === "archived") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "请选择未归档的有效项目配置业务范围",
+            });
+          }
         }
         const currentScopes = await db
           .select({
@@ -1250,7 +1305,9 @@ export const adminRouter = router({
           })
           .from(departmentBusinessScopes)
           .where(
-            eq(departmentBusinessScopes.organizationId, input.organizationId)
+            isOrganizationScope
+              ? eq(departmentBusinessScopes.organizationId, input.scopeId)
+              : eq(departmentBusinessScopes.projectId, input.scopeId)
           );
         const existing = currentScopes.find(
           item => item.module === input.module
@@ -1263,7 +1320,13 @@ export const adminRouter = router({
         } else {
           await db
             .insert(departmentBusinessScopes)
-            .values({ ...input, configuredBy: admin.id });
+            .values({
+              organizationId: isOrganizationScope ? input.scopeId : null,
+              projectId: isOrganizationScope ? null : input.scopeId,
+              module: input.module,
+              status: input.status,
+              configuredBy: admin.id,
+            });
         }
         await db.insert(auditLogs).values({
           userId: admin.id,
@@ -1273,8 +1336,8 @@ export const adminRouter = router({
               ? "enable_business_scope"
               : "disable_business_scope",
           targetType: "department_business_scope",
-          targetId: `${input.organizationId}:${input.module}`,
-          summary: `维护部门业务范围：${input.module}`,
+          targetId: `${input.scopeType}:${input.scopeId}:${input.module}`,
+          summary: `维护${input.scopeType === "project" ? "项目" : "部门"}业务范围：${input.module}`,
         });
         return { success: true };
       }),
@@ -3833,6 +3896,11 @@ export const adminRouter = router({
               .select({ id: userRoleAssignments.id })
               .from(userRoleAssignments)
               .where(eq(userRoleAssignments.projectId, input.id))
+              .limit(1),
+            db
+              .select({ id: departmentBusinessScopes.id })
+              .from(departmentBusinessScopes)
+              .where(eq(departmentBusinessScopes.projectId, input.id))
               .limit(1),
             db
               .select({ id: constructionDailyReports.id })

@@ -215,14 +215,16 @@ export const userRoleAssignments = mysqlTable(
 );
 
 /**
- * 部门可办理的业务模块。人员仍通过角色授权表关联到部门与项目范围，
- * 本表则决定该部门整体可以进入哪些业务域；两层授权取交集后才允许办理业务。
+ * 部门或具体项目可办理的业务模块。人员仍通过角色授权表关联到部门与项目范围，
+ * 本表决定组织范围或已显式授权项目整体可以进入哪些业务域；两层授权取交集后才允许办理业务。
+ * 历史组织范围记录保持 organizationId，项目范围记录只使用 projectId，二者不可同时为空。
  */
 export const departmentBusinessScopes = mysqlTable(
   "department_business_scopes",
   {
     id: int("id").autoincrement().primaryKey(),
-    organizationId: int("organizationId").notNull(),
+    organizationId: int("organizationId"),
+    projectId: int("projectId"),
     module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"]).notNull(),
     status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
     configuredBy: int("configuredBy"),
@@ -232,6 +234,8 @@ export const departmentBusinessScopes = mysqlTable(
   table => ({
     departmentModuleUnique: uniqueIndex("department_business_scopes_unique").on(table.organizationId, table.module),
     organizationIndex: index("department_business_scopes_organization_index").on(table.organizationId),
+    projectModuleUnique: uniqueIndex("department_business_scopes_project_module_unique").on(table.projectId, table.module),
+    projectIndex: index("department_business_scopes_project_index").on(table.projectId),
   }),
 );
 

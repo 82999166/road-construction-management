@@ -216,13 +216,55 @@ describe("后台与项目范围访问控制", () => {
       [{ projectId: 101, roleCode: "LOGISTICS_MANAGER" }],
       [],
       [],
+      [],
       [{ projectId: 101, roleCode: "LOGISTICS_MANAGER" }],
+      [],
+      [],
+      [],
     ) as never);
 
     await expect(getDepartmentModuleDataScope(createContext(), "PURCHASING")).resolves.toMatchObject({
       hasAllProjects: false,
       projectIds: [101],
       organizationIds: [],
+    });
+  });
+
+  it("项目菜单白名单只能收紧已有项目角色授权，不能漏出旧模块或向项目增加新模块", async () => {
+    const result = (rows: unknown[]) =>
+      Object.assign(Promise.resolve(rows), { limit: vi.fn(async () => rows) });
+    const db = {
+      select: vi.fn((fields?: Record<string, unknown>) => {
+        let rows: unknown[] = [];
+        if (fields && "roleId" in fields && "projectId" in fields) {
+          rows = [{ projectId: 101, roleId: 9, roleCode: "LOGISTICS_MANAGER" }];
+        } else if (
+          fields &&
+          "projectId" in fields &&
+          "module" in fields &&
+          "status" in fields &&
+          !("organizationName" in fields)
+        ) {
+          rows = [
+            { projectId: 101, module: "PURCHASING", status: "disabled" },
+            { projectId: 101, module: "CONSTRUCTION", status: "active" },
+          ];
+        }
+        const chain = { innerJoin: vi.fn(), where: vi.fn(() => result(rows)) };
+        chain.innerJoin.mockReturnValue(chain);
+        return { from: vi.fn(() => chain) };
+      }),
+    };
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(getCurrentDepartmentAccess(createContext())).resolves.toEqual({
+      departments: [],
+      moduleCodes: [],
+      hasAllDepartments: false,
+    });
+    await expect(assertDepartmentBusinessAccess(createContext(), "PURCHASING")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "当前账号所属部门未获授权办理“采购仓储”业务",
     });
   });
 
