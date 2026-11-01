@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 /** fileURLToPath 在 Windows 正确移除 file:///D:/ 前缀，避免首装包漏掉中文文件名。 */
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = join(projectRoot, "desktop-bridge");
-const stagingRoot = join("/tmp", "utrust-first-install-v14");
+const stagingRoot = join("/tmp", "utrust-first-install-v15");
 const outputRoot = process.env.UTRUST_PACKAGE_OUTPUT_DIR || "/home/ubuntu/webdev-static-assets";
-const outputFile = join(outputRoot, "utrust-bridge-first-install-v14-20261101.zip");
+const outputFile = join(outputRoot, "utrust-bridge-first-install-v15-20261101.zip");
 const files = [
   "安装写卡桥接.cmd",
   "elevate-utrust-installer.ps1",
@@ -40,15 +40,21 @@ for (const { sourceName, archiveName } of packagedFiles) {
   if (!existsSync(sourcePath)) throw new Error(`首次安装包缺少受控文件：${sourceName}`);
   const destinationPath = join(stagingRoot, archiveName);
   let bytes = readFileSync(sourcePath);
-  if (sourceName.endsWith(".ps1")) {
+  if (sourceName.endsWith(".cmd")) {
+    const text = bytes.toString("utf8");
+    if (!/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text)) {
+      throw new Error("Windows CMD 启动器只能包含 ASCII 字符，避免旧版 cmd.exe 编码解析失败");
+    }
+    bytes = Buffer.from(text.replace(/\r?\n/g, "\r\n"), "ascii");
+  } else if (sourceName.endsWith(".ps1")) {
     if (bytes.subarray(0, 3).equals(utf8Bom)) bytes = bytes.subarray(3);
     bytes = Buffer.concat([utf8Bom, bytes]);
   }
   writeFileSync(destinationPath, bytes);
 }
 const manifest = Object.fromEntries(packagedFiles.map(({ archiveName }) => [archiveName, sha256(readFileSync(join(stagingRoot, archiveName)))]));
-writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v14", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
-writeFileSync(join(stagingRoot, readmeFileName), "推荐：解压后双击“Install-Yuexin-RFID-Bridge.cmd”，并在系统权限窗口选择“是”。此版本已修复中文、空格或括号下载目录下的管理员提权路径解析问题。如需使用 PowerShell，请以管理员身份打开后运行：.\\install-utrust-bridge.ps1。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
+writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v15", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
+writeFileSync(join(stagingRoot, readmeFileName), "推荐：解压后双击“Install-Yuexin-RFID-Bridge.cmd”，并在系统权限窗口选择“是”。本版本将 CMD 启动器固定为 ASCII 和 Windows CRLF 换行，并以绝对路径调用 PowerShell，兼容中文、空格或括号下载目录。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
 mkdirSync(outputRoot, { recursive: true });
 rmSync(outputFile, { force: true });
 /**

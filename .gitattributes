@@ -1,0 +1,3 @@
+# Windows CMD launchers require native CRLF line endings. Git's whitespace checker
+# otherwise reports each required carriage return as trailing whitespace on Linux.
+desktop-bridge/*.cmd text eol=crlf -whitespace

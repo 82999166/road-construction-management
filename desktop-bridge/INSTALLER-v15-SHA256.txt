@@ -1,0 +1,3 @@
+文件：utrust-bridge-first-install-v15-20261101.zip
+SHA-256：2db1bed2c2af4ef2a0a177f6c9d1ff510c17d3ac839b0ca36cc34471ba9625fa
+说明：Install-Yuexin-RFID-Bridge.cmd 已强制为纯 ASCII 和 Windows CRLF 换行，并通过 %SystemRoot% 的绝对路径调用 PowerShell；用于解决部分 Windows cmd.exe 在 UTF-8 中文启动器或 Unix 换行下出现命令截断、PowerShell 未识别的问题。

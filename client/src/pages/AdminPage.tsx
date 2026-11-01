@@ -227,7 +227,7 @@ const DailyWagePaymentDialog = lazy(() =>
   }))
 );
 const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v14-20261101_50ccee1b.zip";
+  "/manus-storage/utrust-bridge-first-install-v15-20261101_51ac96ea.zip";
 const PayrollPaymentDialog = lazy(() =>
   import("@/components/PayrollPaymentDialog").then(module => ({
     default: module.PayrollPaymentDialog,

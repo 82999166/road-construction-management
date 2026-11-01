@@ -192,6 +192,7 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
   it("首次安装脚本必须仅保存非敏感本机配置、检查 Windows 环境并注册当前用户登录自启动", () => {
     const installer = readFileSync(new URL("../desktop-bridge/install-utrust-bridge.ps1", import.meta.url), "utf8");
     const doubleClickLauncher = readFileSync(new URL("../desktop-bridge/安装写卡桥接.cmd", import.meta.url), "utf8");
+    const doubleClickLauncherBytes = readFileSync(new URL("../desktop-bridge/安装写卡桥接.cmd", import.meta.url));
     const elevationLauncher = readFileSync(new URL("../desktop-bridge/elevate-utrust-installer.ps1", import.meta.url), "utf8");
     const packer = readFileSync(new URL("../scripts/package-utrust-first-install.mjs", import.meta.url), "utf8");
     expect(installer).toContain('$PSVersionTable.PSVersion.Major -lt 5');
@@ -205,7 +206,13 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(doubleClickLauncher).toContain("install-utrust-bridge.ps1");
     expect(doubleClickLauncher).toContain("elevate-utrust-installer.ps1");
     expect(doubleClickLauncher).toContain("-File \"%LAUNCHER%\"");
+    expect(doubleClickLauncher).toContain('%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(doubleClickLauncher).not.toContain("$args[0]");
+    expect(doubleClickLauncher).not.toContain("powershell.exe -NoProfile");
+    expect([...doubleClickLauncherBytes].every(byte => byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126))).toBe(true);
+    expect(doubleClickLauncherBytes.includes(Buffer.from("\r\n"))).toBe(true);
+    expect(doubleClickLauncherBytes.includes(Buffer.from("\n"))).toBe(true);
+    expect(doubleClickLauncherBytes.toString("ascii").includes("\n") && !doubleClickLauncherBytes.toString("ascii").includes("\r\n")).toBe(false);
     expect(elevationLauncher).toContain("Join-Path $PSScriptRoot \"install-utrust-bridge.ps1\"");
     expect(elevationLauncher).toContain("-Verb RunAs");
     expect(elevationLauncher).toContain("$quotedScriptPath");
@@ -214,8 +221,10 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     for (const requiredFile of ["安装写卡桥接.cmd", "elevate-utrust-installer.ps1", "install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
       expect(packer).toContain(`"${requiredFile}"`);
     }
-    expect(packer).toContain("utrust-first-install-v14");
+    expect(packer).toContain("utrust-first-install-v15");
     expect(packer).toContain("utf8Bom");
+    expect(packer).toContain("Windows CMD 启动器只能包含 ASCII 字符");
+    expect(packer).toContain('text.replace(/\\r?\\n/g, "\\r\\n")');
     expect(packer).toContain('import { fileURLToPath } from "node:url"');
     expect(packer).toContain("dirname(fileURLToPath(import.meta.url))");
     expect(packer).not.toContain("dirname(new URL(import.meta.url).pathname)");

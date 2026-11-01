@@ -1,41 +1,46 @@
 @echo off
-setlocal EnableExtensions
-title 悦信云智管 - 写卡桥接安装
+setlocal DisableDelayedExpansion
+title Yuexin RFID Bridge Setup
 
 set "LAUNCHER=%~dp0elevate-utrust-installer.ps1"
-set "SCRIPT=%~dp0install-utrust-bridge.ps1"
+set "INSTALLER=%~dp0install-utrust-bridge.ps1"
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+if not exist "%POWERSHELL_EXE%" (
+  echo Windows PowerShell was not found.
+  echo Please contact the system administrator.
+  pause
+  exit /b 2
+)
+
 if not exist "%LAUNCHER%" (
-  echo.
-  echo 未找到管理员启动脚本：elevate-utrust-installer.ps1
-  echo 请重新解压完整安装包后再运行。
-  echo.
+  echo Missing elevate-utrust-installer.ps1.
+  echo Extract the complete ZIP package, then run this file again.
   pause
-  exit /b 1
+  exit /b 2
 )
-if not exist "%SCRIPT%" (
-  echo.
-  echo 未找到安装脚本：install-utrust-bridge.ps1
-  echo 请确保本文件与安装脚本位于同一解压目录后再运行。
-  echo.
+
+if not exist "%INSTALLER%" (
+  echo Missing install-utrust-bridge.ps1.
+  echo Keep this launcher and the installer in the same extracted folder.
   pause
-  exit /b 1
+  exit /b 2
 )
 
 echo.
-echo 正在请求管理员权限安装悦信云智管写卡桥接，请在弹出的系统窗口选择“是”。
-echo 安装完成后，本窗口会显示安装结果。
+echo Requesting administrator permission for the Yuexin RFID bridge.
+echo Select Yes in the Windows permission dialog.
 echo.
 
-rem 用 -File 启动独立辅助脚本，而非用 -Command 传递下载目录路径。
-rem 这可兼容含中文、空格或括号的下载目录，避免 PowerShell 5.1 将路径当作命令解析。
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
+"%POWERSHELL_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%"
 set "RESULT=%ERRORLEVEL%"
 
 echo.
 if "%RESULT%"=="0" (
-  echo 安装已完成。请返回悦信云智管后台，刷新“运输管理 - 车辆射频卡”页面后继续操作。
+  echo Installation completed. Return to Yuexin Cloud Management and refresh the RFID card page.
 ) else (
-  echo 安装未完成，退出代码：%RESULT%。请确认已在系统弹窗中选择“是”，并将本窗口截图发送给管理员。
+  echo Installation did not complete. Exit code: %RESULT%.
+  echo Capture this window and send it to the administrator.
 )
 echo.
 pause
