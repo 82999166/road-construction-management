@@ -10,15 +10,16 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatChinaDate, formatChinaDateTime, toDeviceDateInput, toDeviceDateTimeInput } from "@/lib/businessTime";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
 import { AlertTriangle, ArrowLeft, Bell, Camera, CircleCheck, CircleHelp, FileText, HardHat, LayoutDashboard, LocateFixed, MapPin, Pencil, Plus, Printer, RefreshCw, Route, Settings2, ShieldCheck, Truck, UserRound } from "lucide-react";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "../../../shared/watermarkTemplate";
 import { getSafeCardValidationReason } from "../../../shared/domain";
 import { Component, lazy, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 
 const MobileNfcTransportInvoice = lazy(() => import("@/components/MobileNfcTransportInvoice").then(module => ({ default: module.MobileNfcTransportInvoice })));
@@ -163,6 +164,9 @@ type TripDraft = {
   endLongitude: number | null;
 };
 
+/** 设备草稿仅包含可恢复的非敏感运单文字、数值与枚举；不包含影像、凭证编号或定位。 */
+type TripLocalDraft = Pick<TripDraft, "routePresetId" | "freightRuleId" | "loadSiteId" | "unloadSiteId" | "tripNo" | "startAt" | "endAt" | "actualDistanceKm" | "volumeCubicMeters" | "weightTons"> & { mode: TripDraft["invoiceMode"]; vehicleId: string };
+
 function createTripDraft(freightRuleId = "", invoiceMode: TripDraft["invoiceMode"] = "nfc_card"): TripDraft {
   return { invoiceMode, routePresetId: "", freightRuleId, loadSiteId: "", unloadSiteId: "", tripNo: "", startAt: toDeviceDateTimeInput(), endAt: "", actualDistanceKm: "", volumeCubicMeters: "", weightTons: "", evidenceId: "", startLatitude: null, startLongitude: null, endLatitude: null, endLongitude: null };
 }
@@ -173,7 +177,7 @@ const EMPTY_TRANSPORT_SITE_DRAFT: TransportSiteDraft = { siteType: "load", name:
 /** 移动端运输调度：原始坐标、影像编号与业务数据进入服务端后统一核验和计算。 */
 export default function MobileTransportPage() {
   const { user, isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const { isSuperAdmin } = useManagementPermissions();
   const [projectId, setProjectId] = useState<number | undefined>();
@@ -235,6 +239,66 @@ export default function MobileTransportPage() {
   const projectOptions = trpc.transport.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => { if (!projectId && projectOptions.data?.length) setProjectId(projectOptions.data[0].id); }, [projectId, projectOptions.data]);
   const selectedProjectId = projectId ?? 0;
+  const tripDraftKey = `transport-trip:${selectedProjectId || "pending"}:new`;
+  const toTripLocalDraft = (draft: TripDraft, selectedVehicleId: number | undefined): TripLocalDraft => ({
+    mode: draft.invoiceMode,
+    routePresetId: draft.routePresetId,
+    freightRuleId: draft.freightRuleId,
+    loadSiteId: draft.loadSiteId,
+    unloadSiteId: draft.unloadSiteId,
+    tripNo: draft.tripNo,
+    startAt: draft.startAt,
+    endAt: draft.endAt,
+    actualDistanceKm: draft.actualDistanceKm,
+    volumeCubicMeters: draft.volumeCubicMeters,
+    weightTons: draft.weightTons,
+    vehicleId: selectedVehicleId ? String(selectedVehicleId) : "",
+  });
+  const [tripInitialLocalDraft, setTripInitialLocalDraft] = useState<TripLocalDraft>(() => toTripLocalDraft(createTripDraft(), undefined));
+  const [tripDraftRestored, setTripDraftRestored] = useState(false);
+  const tripRestoreAttemptedRef = useRef("");
+  const tripLocalDraft = useMemo(() => toTripLocalDraft(tripDraft, vehicleId), [tripDraft, vehicleId]);
+  // 默认路线、开票方式和自动时间在打开表单时已记录为基线，避免默认值误报为未提交输入。
+  const tripDraftDirty = tripDialogOpen && (tripDraftRestored || JSON.stringify(tripLocalDraft) !== JSON.stringify(tripInitialLocalDraft) || Boolean(platePhotoFile));
+  function clearPendingTripMedia() {
+    stopPlateCamera();
+    if (platePhotoPreview) URL.revokeObjectURL(platePhotoPreview);
+    setPlatePhotoPreview(null);
+    setPlatePhotoFile(null);
+  }
+  function closeTripForm() {
+    clearPendingTripMedia();
+    setTripDialogOpen(false);
+    setTripDraft(createTripDraft());
+    setTripDraftRestored(false);
+    tripRestoreAttemptedRef.current = "";
+  }
+  function saveTripLocalDraft() {
+    if (!hasMobileDraftContent(tripLocalDraft, ["mode", "startAt"])) {
+      clearMobileDraft(tripDraftKey);
+      return true;
+    }
+    return saveMobileDraft(tripDraftKey, tripLocalDraft);
+  }
+  const { requestClose: requestTripClose } = useMobileFormProtection({
+    id: "mobile-transport-trip-form",
+    label: platePhotoFile ? "运输运单（已拍照片需重新拍摄）" : "运输运单",
+    isDirty: tripDraftDirty,
+    saveDraft: () => { if (!saveTripLocalDraft()) throw new Error("本机草稿保存失败"); clearPendingTripMedia(); },
+    discard: () => { clearMobileDraft(tripDraftKey); closeTripForm(); },
+  });
+  useEffect(() => {
+    if (!tripDialogOpen || tripRestoreAttemptedRef.current === tripDraftKey) return;
+    tripRestoreAttemptedRef.current = tripDraftKey;
+    const saved = readMobileDraft<TripLocalDraft>(tripDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value, ["mode", "startAt"])) return;
+    const { vehicleId: savedVehicleId, mode, ...savedTrip } = saved.value;
+    setTripDraft(current => ({ ...current, ...savedTrip, ...(mode ? { invoiceMode: mode } : {}) }));
+    const numericVehicleId = Number(savedVehicleId);
+    if (Number.isInteger(numericVehicleId) && numericVehicleId > 0) setVehicleId(numericVehicleId);
+    setTripDraftRestored(true);
+    toast.info("已恢复这台设备上未提交的运单文字草稿；照片、凭证和定位需重新获取。");
+  }, [tripDialogOpen, tripDraftKey]);
   const projectInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const tripsInput = useMemo(() => ({ projectId: selectedProjectId, date: workDate }), [selectedProjectId, workDate]);
   const vehicles = trpc.transport.listVehicles.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
@@ -405,7 +469,7 @@ export default function MobileTransportPage() {
   const saveRule = trpc.transport.saveFreightRule.useMutation({ onSuccess: async () => { toast.success("阶梯运价规则已保存"); setRuleDialogOpen(false); await utils.transport.listFreightRules.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
   const saveSite = trpc.transport.saveSite.useMutation({ onSuccess: async () => { toast.success("运输现场地点已保存"); setSiteDialogOpen(false); await utils.transport.listSites.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
   const saveRoutePreset = trpc.transport.saveRoutePreset.useMutation({ onSuccess: async () => { toast.success("运输路线已保存，发票将自动带入公里数和运价"); setRouteDialogOpen(false); await utils.transport.listRoutePresets.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
-  const saveTrip = trpc.transport.saveTrip.useMutation({ onSuccess: async data => { const receiptText = formatVehicleStageReceipt(data.vehiclePlateNo, data.dailyVehicleTripOrdinal, "load"); toast.success(tripDraft.invoiceMode === "plate_photo" ? `${receiptText ?? "发票成功"}！${data.tripNo || "运单号已自动生成"}` : data.anomalies.length ? `运输票据已保存，发现 ${data.anomalies.length} 项待核验提示` : `运输票据已保存，系统核算 ${formatMoney(data.amount)}`); setTripDialogOpen(false); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); if (startLoadAfterTripSave) { setStartLoadAfterTripSave(false); toast.info("装土票据已生成，请在“刷卡票据”中选择该票据完成装土刷卡。"); setTicketDialogOpen(true); } }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
+  const saveTrip = trpc.transport.saveTrip.useMutation({ onSuccess: async data => { const receiptText = formatVehicleStageReceipt(data.vehiclePlateNo, data.dailyVehicleTripOrdinal, "load"); toast.success(tripDraft.invoiceMode === "plate_photo" ? `${receiptText ?? "发票成功"}！${data.tripNo || "运单号已自动生成"}` : data.anomalies.length ? `运输票据已保存，发现 ${data.anomalies.length} 项待核验提示` : `运输票据已保存，系统核算 ${formatMoney(data.amount)}`); clearMobileDraft(tripDraftKey); closeTripForm(); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); if (startLoadAfterTripSave) { setStartLoadAfterTripSave(false); toast.info("装土票据已生成，请在“刷卡票据”中选择该票据完成装土刷卡。"); setTicketDialogOpen(true); } }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
   const transitionTrip = trpc.transport.transitionTrip.useMutation({ onSuccess: async () => { toast.success("趟次状态已更新"); await Promise.all([utils.transport.listTrips.invalidate(), utils.transport.dailySummary.invalidate()]); }, onError: error => toast.error(getUserFacingErrorMessage(error, "运输操作未完成，请稍后重试")) });
   const recordLoadEvent = trpc.transport.recordLoadEvent.useMutation({
     onSuccess: async result => {
@@ -518,12 +582,13 @@ export default function MobileTransportPage() {
 
   function openTripDialog(startLoadAfterSave = false, invoiceMode: TripDraft["invoiceMode"] = "nfc_card") {
     const defaultRoute = routePresets.data?.find(route => route.status === "active" && route.isDefault) ?? routePresets.data?.find(route => route.status === "active");
-    stopPlateCamera();
-    if (platePhotoPreview) URL.revokeObjectURL(platePhotoPreview);
-    setPlatePhotoFile(null);
-    setPlatePhotoPreview(null);
+    clearPendingTripMedia();
     setPlateVehicleSearch("");
-    setTripDraft({ ...createTripDraft(defaultRoute ? String(defaultRoute.freightRuleId) : "", invoiceMode), routePresetId: defaultRoute ? String(defaultRoute.id) : "", loadSiteId: defaultRoute ? String(defaultRoute.loadSiteId) : "", unloadSiteId: defaultRoute ? String(defaultRoute.unloadSiteId) : "", actualDistanceKm: defaultRoute ? String(defaultRoute.presetDistanceKm) : "" });
+    const nextDraft = { ...createTripDraft(defaultRoute ? String(defaultRoute.freightRuleId) : "", invoiceMode), routePresetId: defaultRoute ? String(defaultRoute.id) : "", loadSiteId: defaultRoute ? String(defaultRoute.loadSiteId) : "", unloadSiteId: defaultRoute ? String(defaultRoute.unloadSiteId) : "", actualDistanceKm: defaultRoute ? String(defaultRoute.presetDistanceKm) : "" };
+    setTripDraft(nextDraft);
+    setTripInitialLocalDraft(toTripLocalDraft(nextDraft, vehicleId));
+    setTripDraftRestored(false);
+    tripRestoreAttemptedRef.current = "";
     setStartLoadAfterTripSave(startLoadAfterSave);
     setGpsStatus("正在准备定位…");
     setTripDialogOpen(true);
@@ -624,7 +689,7 @@ export default function MobileTransportPage() {
     <Dialog open={routeDialogOpen} onOpenChange={setRouteDialogOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>设置运输路线</DialogTitle><p className="text-sm text-muted-foreground">可连续添加多条装土点 → 卸土点路线；发票仅需选择其中一条启用路线。</p></DialogHeader>{(!activeLoadSites.length || !activeUnloadSites.length || !freightRules.data?.some(rule => rule.status === "active")) ? <div className="my-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><p>请先完成基础配置：装土点、卸土点和一条生效阶梯运价。</p><div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setSiteDialogOpen(true)}>新增装卸土点</Button><Button type="button" size="sm" variant="outline" onClick={() => setRuleDialogOpen(true)}>配置阶梯运价</Button></div></div> : null}<div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><Field label="装土点"><Select value={routeDraft.loadSiteId} onValueChange={value => setRouteDraft(current => ({ ...current, loadSiteId: value }))}><SelectTrigger><SelectValue placeholder="选择装土点" /></SelectTrigger><SelectContent>{activeLoadSites.map(site => <SelectItem key={site.id} value={String(site.id)}>{site.name}</SelectItem>)}</SelectContent></Select></Field><Field label="卸土点"><Select value={routeDraft.unloadSiteId} onValueChange={value => setRouteDraft(current => ({ ...current, unloadSiteId: value }))}><SelectTrigger><SelectValue placeholder="选择卸土点" /></SelectTrigger><SelectContent>{activeUnloadSites.map(site => <SelectItem key={site.id} value={String(site.id)}>{site.name}</SelectItem>)}</SelectContent></Select></Field></div><Field label="生效阶梯运价"><Select value={routeDraft.freightRuleId} onValueChange={value => setRouteDraft(current => ({ ...current, freightRuleId: value }))}><SelectTrigger><SelectValue placeholder="选择有效运价" /></SelectTrigger><SelectContent>{freightRules.data?.filter(rule => rule.status === "active").map(rule => <SelectItem key={rule.id} value={String(rule.id)}>{rule.materialName || "通用"} · 0–{rule.startDistanceKm} km {formatMoney(rule.basePricePerUnit)}/方，每 {rule.stepMeters} m +{formatMoney(rule.stepIncreasePerUnit)}/方</SelectItem>)}</SelectContent></Select></Field><Field label="预设公里数"><Input type="number" min="0.001" step="0.001" value={routeDraft.presetDistanceKm} placeholder="例如 6.5" onChange={event => setRouteDraft(current => ({ ...current, presetDistanceKm: event.target.value }))} /></Field><p className="rounded-xl bg-[#f9eddf] p-3 text-xs leading-5 text-[#80543d]">保存后可继续新增下一条路线。系统禁止同一项目重复配置相同装土点和卸土点组合，并在发票时锁定本路线公里数和有效运价。</p>{routePresets.data?.length ? <div className="space-y-1 rounded-xl bg-[#fcf8f2] p-3 text-xs text-[#765a49]">{routePresets.data.map(item => <p key={item.id}>{activeLoadSites.find(site => site.id === item.loadSiteId)?.name || `装土点 #${item.loadSiteId}`} → {activeUnloadSites.find(site => site.id === item.unloadSiteId)?.name || `卸土点 #${item.unloadSiteId}`} · {item.presetDistanceKm} km · {item.status === "active" ? "启用" : "停用"}</p>)}</div> : null}</div><DialogFooter><Button variant="outline" onClick={() => setRouteDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveRoutePreset.isPending} onClick={submitRoutePreset}>{saveRoutePreset.isPending ? "正在保存…" : "保存并继续添加"}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={vehicleDialogOpen} onOpenChange={setVehicleDialogOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>{editingVehicleId ? "维护车辆档案" : "录入渣土车辆"}</DialogTitle></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><Field label="车牌号"><Input value={vehicleDraft.plateNo} maxLength={32} onChange={event => setVehicleDraft(current => ({ ...current, plateNo: event.target.value }))} /></Field><Field label="资源性质"><Select value={vehicleDraft.ownership} onValueChange={value => setVehicleDraft(current => ({ ...current, ownership: value as VehicleDraft["ownership"] }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="owned">公司自有</SelectItem><SelectItem value="leased">外租车辆</SelectItem><SelectItem value="trip_settlement">渣土车（按趟结算）</SelectItem></SelectContent></Select></Field></div><Field label={vehicleDraft.ownership === "trip_settlement" ? "车主/车队（可选）" : "车主/单位"}><Input value={vehicleDraft.ownerName} maxLength={128} onChange={event => setVehicleDraft(current => ({ ...current, ownerName: event.target.value }))} /></Field>{vehicleDraft.ownership === "trip_settlement" ? <p className="rounded-xl bg-[#e7f1e5] p-3 text-xs leading-5 text-[#3f6845]">按趟结算渣土车不建立租赁日期、租金或租赁成本；运费只按有效运输趟次、路线运价和柴油扣款计算。</p> : null}<div className="grid grid-cols-2 gap-3"><Field label="司机用户 ID"><Input inputMode="numeric" value={vehicleDraft.driverUserId} placeholder="可选" onChange={event => setVehicleDraft(current => ({ ...current, driverUserId: event.target.value }))} /></Field><Field label="司机姓名"><Input value={vehicleDraft.driverName} placeholder="实际驾驶员姓名" onChange={event => setVehicleDraft(current => ({ ...current, driverName: event.target.value }))} /></Field><Field label="司机手机号"><Input inputMode="tel" value={vehicleDraft.driverPhone} placeholder="11 位手机号" onChange={event => setVehicleDraft(current => ({ ...current, driverPhone: event.target.value }))} /></Field><Field label="车辆状态"><Select value={vehicleDraft.status} onValueChange={value => setVehicleDraft(current => ({ ...current, status: value as typeof current.status }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">可调度</SelectItem><SelectItem value="suspended">暂缓</SelectItem><SelectItem value="disabled">停用</SelectItem></SelectContent></Select></Field></div><Field label="货厢尺寸（米）"><div className="grid grid-cols-3 gap-2"><Input type="number" min="0" placeholder="长" value={vehicleDraft.boxLengthMeters} onChange={event => setVehicleDraft(current => ({ ...current, boxLengthMeters: event.target.value }))} /><Input type="number" min="0" placeholder="宽" value={vehicleDraft.boxWidthMeters} onChange={event => setVehicleDraft(current => ({ ...current, boxWidthMeters: event.target.value }))} /><Input type="number" min="0" placeholder="高" value={vehicleDraft.boxHeightMeters} onChange={event => setVehicleDraft(current => ({ ...current, boxHeightMeters: event.target.value }))} /></div></Field><div className="grid grid-cols-2 gap-3"><Field label="装载系数"><Input type="number" min="0" max="1.5" step="0.01" value={vehicleDraft.loadFactor} onChange={event => setVehicleDraft(current => ({ ...current, loadFactor: event.target.value }))} /></Field><Field label="核载吨位"><Input type="number" min="0" value={vehicleDraft.payloadTons} placeholder="可选" onChange={event => setVehicleDraft(current => ({ ...current, payloadTons: event.target.value }))} /></Field></div></div><DialogFooter><Button variant="outline" onClick={() => setVehicleDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveVehicle.isPending} onClick={submitVehicle}>{saveVehicle.isPending ? "正在保存…" : "保存车辆"}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>配置阶梯运价</DialogTitle></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><Field label="物料名称"><Input value={ruleDraft.materialName} placeholder="可选" onChange={event => setRuleDraft(current => ({ ...current, materialName: event.target.value }))} /></Field><Field label="结算单位"><Select value={ruleDraft.settlementUnit} onValueChange={value => setRuleDraft(current => ({ ...current, settlementUnit: value as typeof current.settlementUnit }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cubic_meter">立方米</SelectItem><SelectItem value="ton">吨</SelectItem><SelectItem value="trip">趟</SelectItem></SelectContent></Select></Field></div><div className="grid grid-cols-2 gap-3"><Field label="起步里程（km）"><Input type="number" min="0" value={ruleDraft.startDistanceKm} onChange={event => setRuleDraft(current => ({ ...current, startDistanceKm: event.target.value }))} /></Field><Field label="基础单价"><Input type="number" min="0" value={ruleDraft.basePricePerUnit} onChange={event => setRuleDraft(current => ({ ...current, basePricePerUnit: event.target.value }))} /></Field></div><div className="grid grid-cols-2 gap-3"><Field label="递增步长（米）"><Input type="number" min="1" value={ruleDraft.stepMeters} onChange={event => setRuleDraft(current => ({ ...current, stepMeters: event.target.value }))} /></Field><Field label="每步增价"><Input type="number" min="0" value={ruleDraft.stepIncreasePerUnit} onChange={event => setRuleDraft(current => ({ ...current, stepIncreasePerUnit: event.target.value }))} /></Field></div><div className="grid grid-cols-2 gap-3"><Field label="生效日期"><Input type="date" value={ruleDraft.effectiveFrom} onChange={event => setRuleDraft(current => ({ ...current, effectiveFrom: event.target.value }))} /></Field><Field label="截止日期"><Input type="date" value={ruleDraft.effectiveTo} onChange={event => setRuleDraft(current => ({ ...current, effectiveTo: event.target.value }))} /></Field></div></div><DialogFooter><Button variant="outline" onClick={() => setRuleDialogOpen(false)}>取消</Button><Button className="bg-[#9a5128] hover:bg-[#7e3d1c]" disabled={saveRule.isPending} onClick={submitRule}>{saveRule.isPending ? "正在保存…" : "保存运价"}</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={tripDialogOpen} onOpenChange={open => { if (!open) { stopPlateCamera(); if (platePhotoPreview) URL.revokeObjectURL(platePhotoPreview); setPlatePhotoPreview(null); setPlatePhotoFile(null); } setTripDialogOpen(open); }}>
+    <Dialog open={tripDialogOpen} onOpenChange={open => { if (open) setTripDialogOpen(true); else requestTripClose(closeTripForm); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>{tripDraft.invoiceMode === "nfc_card" ? "刷 NFC 卡发票" : "拍照车牌发票"}</DialogTitle></DialogHeader>
         <div className="grid gap-3 py-2">
@@ -636,7 +701,7 @@ export default function MobileTransportPage() {
           {tripDraft.invoiceMode === "plate_photo" ? <Field label="车牌直拍凭证">{plateCameraOpen ? <div className="overflow-hidden rounded-xl border border-[#79a57f] bg-[#18301d]"><video ref={plateCameraVideoRef} className="aspect-[4/3] w-full bg-black object-cover" autoPlay playsInline muted /><div className="grid grid-cols-2 gap-2 p-2"><Button type="button" variant="outline" className="border-[#c9dec9] bg-white text-[#47754d]" onClick={stopPlateCamera}>取消拍照</Button><Button type="button" className="bg-[#47754d] text-white hover:bg-[#39623e]" onClick={capturePlatePhoto}><Camera className="mr-1 h-4 w-4" />确认拍照</Button></div></div> : <Button type="button" variant="outline" className="h-11 w-full border-dashed border-[#79a57f] bg-[#f4fbf1] text-[#47754d] hover:bg-[#e7f1e5]" onClick={() => void startPlateCamera()}><Camera className="mr-2 h-4 w-4" />拍清车牌后上传</Button>}<p className="mt-1 text-[11px] leading-5 text-[#6c816d]">仅支持后置相机现场直拍；请让完整车牌清晰、无遮挡地处于照片中心。系统不提供相册选择，照片将自动写入项目、时间、定位、操作人与防伪编号。</p>{platePhotoPreview ? <div className="mt-2"><img src={platePhotoPreview} alt="待归档车牌直拍预览" className="max-h-48 w-full rounded-lg border border-[#c6ddc5] object-cover" /><Button type="button" variant="ghost" size="sm" className="mt-1 h-7 px-2 text-xs text-[#47754d]" onClick={() => void startPlateCamera()}><Camera className="mr-1 h-3.5 w-3.5" />重新拍摄</Button></div> : null}</Field> : <Field label="现场影像编号"><Input inputMode="numeric" value={tripDraft.evidenceId} placeholder="可选，先在水印相机上传后填写编号" onChange={event => setTripDraft(current => ({ ...current, evidenceId: event.target.value }))} /></Field>}
           <div className="rounded-xl bg-[#f9eddf] p-3 text-xs leading-5 text-[#80543d]"><div className="flex items-start gap-2"><LocateFixed className="mt-0.5 h-4 w-4 shrink-0" /><p>{gpsStatus}</p></div><p className="mt-2">{tripDraft.invoiceMode === "nfc_card" ? "保存后将立即进入所选装土点刷卡。卸土点刷卡成功后，系统按已锁定的地点、里程、方量与有效运价自动核算运费并发送通知。" : "直拍车牌票据保存后，系统锁定地点、里程、方量、运价和影像，直接进入主管核验，核验通过后才可结算。"}</p></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setTripDialogOpen(false)}>取消</Button><Button className={tripDraft.invoiceMode === "nfc_card" ? "bg-[#9a5128] hover:bg-[#7e3d1c]" : "bg-[#47754d] hover:bg-[#39623e]"} disabled={saveTrip.isPending || evidenceUpload.isPending || plateCameraOpen || !vehicleId || !tripDraft.routePresetId || (tripDraft.invoiceMode === "plate_photo" && !platePhotoFile)} onClick={() => void submitTrip()}>{saveTrip.isPending || evidenceUpload.isPending ? "正在归档…" : tripDraft.invoiceMode === "nfc_card" ? "保存票据并刷卡" : "发票"}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => requestTripClose(closeTripForm)}>取消</Button><Button variant="secondary" onClick={() => { if (saveTripLocalDraft()) toast.success("运单文字内容已保存到本机草稿；照片、凭证和定位不会保存"); else toast.error("本机草稿保存失败，请检查设备存储权限"); }}>保存本机草稿</Button><Button className={tripDraft.invoiceMode === "nfc_card" ? "bg-[#9a5128] hover:bg-[#7e3d1c]" : "bg-[#47754d] hover:bg-[#39623e]"} disabled={saveTrip.isPending || evidenceUpload.isPending || plateCameraOpen || !vehicleId || !tripDraft.routePresetId || (tripDraft.invoiceMode === "plate_photo" && !platePhotoFile)} onClick={() => void submitTrip()}>{saveTrip.isPending || evidenceUpload.isPending ? "正在归档…" : tripDraft.invoiceMode === "nfc_card" ? "保存票据并刷卡" : "发票"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={ticketDialogOpen} onOpenChange={open => { setTicketDialogOpen(open); if (!open) setTicketTripId(null); }}>

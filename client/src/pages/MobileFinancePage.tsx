@@ -6,14 +6,15 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { MobileFinanceAdjustmentPanel } from "@/components/MobileFinanceAdjustmentPanel";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { formatChinaDate, formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, CircleHelp, FilePlus2, HardHat, Printer, ReceiptText, WalletCards } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 
 /** 资金金额在移动端只用于阅读；项目利润和待收待付都以服务端汇总为准。 */
@@ -22,6 +23,7 @@ function currentPeriod() { return toChinaMonthInput(); }
 function currentDate() { return toChinaDateInput(); }
 function invoiceTypeLabel(type: string) { return ({ vat_special: "增值税专票", vat_normal: "增值税普票", electronic: "电子发票", receipt: "收据", other: "其他票据" } as Record<string, string>)[type] ?? "其他票据"; }
 function invoiceStatusLabel(status: string) { return ({ issued: "待认证", verified: "已认证", void: "已作废", red_flushed: "已红冲" } as Record<string, string>)[status] ?? "待处理"; }
+function hasMeaningfulDraftChange(current: object, initial: object) { return JSON.stringify(current) !== JSON.stringify(initial) && hasMobileDraftContent(current as Record<string, unknown>); }
 
 /** 财务成本页面始终回到移动工作台，不跳转到 PC 管理后台。 */
 export const MOBILE_FINANCE_BACK_PATH = "/mobile";
@@ -29,18 +31,69 @@ export const MOBILE_FINANCE_BACK_PATH = "/mobile";
 /** 财务成本移动端：真实收支原始流水和按项目期间的汇总结果统一展示。 */
 export default function MobileFinancePage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const [projectId, setProjectId] = useState<number>();
   const [period, setPeriod] = useState(currentPeriod);
   const [recordOpen, setRecordOpen] = useState(false);
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [draft, setDraft] = useState({ direction: "expense" as "income" | "expense", category: "", amount: "", occurredAt: toDeviceDateTimeInput(), settlementStatus: "unpaid" as "unpaid" | "partial" | "paid" | "void", remarks: "" });
+  const [recordInitialDraft, setRecordInitialDraft] = useState({ direction: "expense" as "income" | "expense", category: "", amount: "", occurredAt: toDeviceDateTimeInput(), settlementStatus: "unpaid" as "unpaid" | "partial" | "paid" | "void", remarks: "" });
   const [invoiceDraft, setInvoiceDraft] = useState({ invoiceNo: "", invoiceCode: "", counterpartyName: "", invoiceType: "vat_special" as "vat_special" | "vat_normal" | "electronic" | "receipt" | "other", direction: "expense" as "income" | "expense", amount: "", allocatedAmount: "", taxAmount: "", taxRate: "0.09", issuedAt: currentDate(), allocationPurpose: "expense_deduction" as "expense_deduction" | "reimbursement" | "income_collection" | "reference_only", verificationReference: "", evidenceId: null as number | null, evidenceFileName: "" });
   const projects = trpc.finance.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   const workbench = trpc.mobile.workbench.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => { if (!projectId && projects.data?.[0]) setProjectId(projects.data[0].id); }, [projectId, projects.data]);
   const selectedProjectId = projectId ?? 0;
+  /** 收支流水草稿仅保留非凭证业务字段；结算/支付状态和一切发票、附件、证据字段均不写入设备。 */
+  const recordDraftKey = `finance-record:${selectedProjectId || "pending"}`;
+  const recordLocalDraft = useMemo(() => ({
+    direction: draft.direction,
+    category: draft.category,
+    amount: draft.amount,
+    occurredAt: draft.occurredAt,
+    remarks: draft.remarks,
+  }), [draft]);
+  const recordInitialLocalDraft = useMemo(() => ({
+    direction: recordInitialDraft.direction,
+    category: recordInitialDraft.category,
+    amount: recordInitialDraft.amount,
+    occurredAt: recordInitialDraft.occurredAt,
+    remarks: recordInitialDraft.remarks,
+  }), [recordInitialDraft]);
+  const recordDraftDirty = recordOpen && hasMeaningfulDraftChange(recordLocalDraft, recordInitialLocalDraft);
+  function createEmptyRecordDraft() {
+    return { direction: "expense" as "income" | "expense", category: "", amount: "", occurredAt: toDeviceDateTimeInput(), settlementStatus: "unpaid" as "unpaid" | "partial" | "paid" | "void", remarks: "" };
+  }
+  function resetRecordForm() {
+    const initial = createEmptyRecordDraft();
+    setRecordOpen(false);
+    setDraft(initial);
+    setRecordInitialDraft(initial);
+  }
+  function saveRecordLocalDraft() {
+    if (!recordDraftDirty) {
+      toast.info("暂无需要保存的收支流水修改");
+      return;
+    }
+    if (!saveMobileDraft(recordDraftKey, recordLocalDraft)) throw new Error("本机草稿保存失败");
+    toast.success("收支流水已保存到本机草稿；未提交、未生成凭证或支付记录");
+  }
+  const { requestClose: requestRecordClose } = useMobileFormProtection({
+    id: "finance-record-form",
+    label: "收支流水",
+    isDirty: recordDraftDirty,
+    saveDraft: saveRecordLocalDraft,
+    discard: () => { clearMobileDraft(recordDraftKey); resetRecordForm(); },
+  });
+  function openRecordDialog() {
+    const initial = createEmptyRecordDraft();
+    const saved = readMobileDraft<typeof recordLocalDraft>(recordDraftKey);
+    const restored = saved && hasMobileDraftContent(saved.value) ? { ...initial, ...saved.value } : initial;
+    setRecordInitialDraft(initial);
+    setDraft(restored);
+    setRecordOpen(true);
+    if (saved && hasMobileDraftContent(saved.value)) toast.info("已恢复这台设备上未提交的收支流水草稿；结算状态及支付、发票、附件和凭证信息不会保存在本机。");
+  }
   const input = useMemo(() => ({ projectId: selectedProjectId, period }), [selectedProjectId, period]);
   const periodOptions = useMemo(() => Array.from({ length: 24 }, (_, offset) => {
     const date = new Date();
@@ -56,7 +109,7 @@ export default function MobileFinancePage() {
   const activeProjectName = projects.data?.find(project => project.id === selectedProjectId)?.name ?? "—";
   /** 会话未完成时工作台摘要可能尚无用户对象；门禁会在下方接管渲染。 */
   const roleCodes = workbench.data?.user?.roleCodes ?? [];
-  const save = trpc.finance.saveRecord.useMutation({ onSuccess: async () => { toast.success("资金流水已登记"); setRecordOpen(false); await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
+  const save = trpc.finance.saveRecord.useMutation({ onSuccess: async () => { toast.success("资金流水已登记"); clearMobileDraft(recordDraftKey); resetRecordForm(); await Promise.all([utils.finance.listRecords.invalidate(), utils.finance.summary.invalidate()]); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
   const saveInvoice = trpc.finance.saveInvoice.useMutation({ onSuccess: async () => { toast.success("发票原件与项目分摊已登记，待会计认证"); setInvoiceOpen(false); setInvoiceDraft({ invoiceNo: "", invoiceCode: "", counterpartyName: "", invoiceType: "vat_special", direction: "expense", amount: "", allocatedAmount: "", taxAmount: "", taxRate: "0.09", issuedAt: currentDate(), allocationPurpose: "expense_deduction", verificationReference: "", evidenceId: null, evidenceFileName: "" }); await utils.finance.listInvoices.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
   const uploadInvoiceEvidence = trpc.finance.uploadInvoiceEvidence.useMutation({ onSuccess: result => { setInvoiceDraft(current => ({ ...current, evidenceId: result.evidenceId, evidenceFileName: result.fileName })); toast.success("发票原件已归档，可继续登记项目分摊"); }, onError: error => toast.error(getUserFacingErrorMessage(error, "财务操作未完成，请稍后重试")) });
   function submit() {
@@ -94,13 +147,13 @@ export default function MobileFinancePage() {
       {!projects.data?.length ? <Card className="border-0"><CardContent className="p-8 text-center"><HardHat className="mx-auto h-8 w-8 text-[#ad6335]" /><h2 className="mt-3 font-semibold">暂无授权项目</h2><p className="mt-2 text-xs text-[#765544]">请联系管理员配置财务成本的数据权限。</p></CardContent></Card> : <>
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_108px] gap-2 print:hidden"><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="h-11 min-w-0 border-[#e9d8c6] bg-white"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent>{projects.data.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Select value={period} onValueChange={setPeriod}><SelectTrigger className="h-11 min-w-0 border-[#e9d8c6] bg-white px-2 text-xs"><SelectValue /></SelectTrigger><SelectContent>{periodOptions.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div>
         <section className="grid grid-cols-2 gap-3"><FinanceMetric label="确认收入" value={formatMoney(summary.data?.incomeAmount)} tone="text-emerald-700" /><FinanceMetric label="本期支出" value={formatMoney(summary.data?.expenseAmount)} tone="text-rose-700" /><FinanceMetric label="项目利润" value={formatMoney(summary.data?.profitAmount)} tone="text-teal-700" /><FinanceMetric label="待收/待付" value={`${formatMoney(summary.data?.receivableAmount)} / ${formatMoney(summary.data?.payableAmount)}`} tone="text-amber-700" /><FinanceMetric label="现金流入" value={formatMoney(summary.data?.cashInflowAmount)} tone="text-sky-700" /><FinanceMetric label="现金流出" value={formatMoney(summary.data?.cashOutflowAmount)} tone="text-orange-700" /><FinanceMetric label="净现金流" value={formatMoney(summary.data?.netCashFlowAmount)} tone="text-violet-700" /></section>
-        <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="font-semibold">{period} 项目现金流</p><p className="text-xs text-[#7d563d]">流入 {formatMoney(summary.data?.cashInflowAmount)}　流出 {formatMoney(summary.data?.cashOutflowAmount)}</p></div><div className="flex gap-1"><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={printFinanceSummary}><Printer className="h-4 w-4" />打印汇总</Button>{!invoiceCapabilities.data?.readOnly ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" onClick={() => setRecordOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />登记</Button> : null}</div></section>
+        <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="font-semibold">{period} 项目现金流</p><p className="text-xs text-[#7d563d]">流入 {formatMoney(summary.data?.cashInflowAmount)}　流出 {formatMoney(summary.data?.cashOutflowAmount)}</p></div><div className="flex gap-1"><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={printFinanceSummary}><Printer className="h-4 w-4" />打印汇总</Button>{!invoiceCapabilities.data?.readOnly ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" onClick={openRecordDialog}><FilePlus2 className="mr-1 h-4 w-4" />登记</Button> : null}</div></section>
         <section className="space-y-3 rounded-2xl border border-[#e5cfb7] bg-[#fffaf4] p-4 print:hidden"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><ReceiptText className="h-4 w-4 text-[#8b3f20]" /><h2 className="font-semibold">发票原件与项目分摊</h2></div><p className="mt-1 text-xs text-[#7d563d]">同一原件全公司唯一，项目只登记合法分摊；认证、作废与红冲仍由会计或财务负责人按服务端状态机办理。</p></div>{invoiceCapabilities.data?.canMaintain ? <Button size="sm" className="shrink-0 bg-[#6d3421] hover:bg-[#542516]" onClick={() => setInvoiceOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />登记分摊</Button> : null}</div><div className="grid grid-cols-2 gap-2 rounded-xl bg-white p-3 text-xs"><div><p className="text-[#8f7566]">有效分摊金额</p><p className="mt-1 font-semibold text-[#3b2118]">{formatMoney(invoices.data?.summary.totalAmount)}</p></div><div><p className="text-[#8f7566]">待验真/认证金额</p><p className="mt-1 font-semibold text-amber-700">{formatMoney(invoices.data?.summary.pendingAmount)}</p></div></div>{invoices.isLoading ? <p className="py-3 text-center text-xs text-[#8f7566]">正在读取发票分摊台账…</p> : invoices.data?.invoices.length ? <div className="space-y-2">{invoices.data.invoices.map(invoice => <div key={invoice.id} className="flex items-center justify-between gap-3 rounded-xl border border-[#ead9c7] bg-white px-3 py-2.5"><div className="min-w-0"><p className="truncate text-sm font-medium">{invoice.invoiceNo} · {invoice.counterpartyName}</p><p className="mt-1 text-[11px] text-[#8f7566]">{invoiceTypeLabel(invoice.invoiceType)} · 分摊 {formatMoney(invoice.allocatedAmount)} · {invoice.issuedAt ? formatChinaDate(invoice.issuedAt) : "—"}</p></div><div className="shrink-0 text-right"><p className="text-[11px] text-[#94603a]">{invoice.allocationStatus === "legacy_review" ? "历史重复待复核" : invoice.original?.verificationStatus === "external_verified" ? "外部验真" : invoice.original?.verificationStatus === "manual_verified" ? "人工核验" : invoiceStatusLabel(invoice.status)}</p></div></div>)}</div> : <p className="rounded-xl border border-dashed border-[#e3cbb4] px-4 py-5 text-center text-xs text-[#8f7566]">当前期间暂无发票分摊台账。具备财务维护权限的人员可登记真实原件和项目分摊。</p>}</section>
         <section className="space-y-3">{records.data?.length ? records.data.map(record => <Card key={record.id} className="border-0 shadow-sm"><CardContent className="flex items-center gap-3 p-4"><div className={`grid h-10 w-10 place-items-center rounded-full ${record.direction === "income" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{record.direction === "income" ? <ArrowDownRight className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}</div><div className="min-w-0 flex-1"><p className="truncate font-semibold">{record.category}</p><p className="mt-1 text-xs text-[#8f7566]">{formatChinaDateTime(record.occurredAt)}　{record.settlementStatus === "paid" ? "已结清" : record.settlementStatus === "partial" ? "部分结清" : record.settlementStatus === "void" ? "已作废" : "未结清"}</p></div><p className={record.direction === "income" ? "font-semibold text-emerald-700" : "font-semibold text-rose-700"}>{record.direction === "income" ? "+" : "-"}{formatMoney(record.amount)}</p></CardContent></Card>) : <Card className="border-dashed border-[#e3cbb4] bg-[#fffaf4]"><CardContent className="p-7 text-center text-sm text-[#8f7566]">当前期间暂无真实资金流水。</CardContent></Card>}</section>
         <MobileFinanceAdjustmentPanel projectId={selectedProjectId} roleCodes={roleCodes} records={records.data ?? []} />
       </>}
     </main>
-    <Dialog open={recordOpen} onOpenChange={setRecordOpen}>
+    <Dialog open={recordOpen} onOpenChange={open => { if (open) setRecordOpen(true); else requestRecordClose(resetRecordForm); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl">
         <DialogHeader><DialogTitle>登记资金流水</DialogTitle></DialogHeader>
         <div className="space-y-3">
@@ -113,7 +166,7 @@ export default function MobileFinancePage() {
           <div><Label>发生时间</Label><Input className="mt-1" type="datetime-local" value={draft.occurredAt} onChange={event => setDraft(current => ({ ...current, occurredAt: event.target.value }))} /></div>
           <div><Label>备注</Label><Input className="mt-1" value={draft.remarks} onChange={event => setDraft(current => ({ ...current, remarks: event.target.value }))} /></div>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setRecordOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submit} disabled={save.isPending}>登记</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => requestRecordClose(resetRecordForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveRecordLocalDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submit} disabled={save.isPending}>登记</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={invoiceOpen} onOpenChange={setInvoiceOpen}><DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>登记发票原件与项目分摊</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">同一发票原件全局唯一。请先归档原件，再填写本项目实际分摊；系统会拒绝跨项目超额报销或抵扣。</p><div className="grid grid-cols-2 gap-2"><div><Label>发票号码</Label><Input className="mt-1" value={invoiceDraft.invoiceNo} onChange={event => setInvoiceDraft(current => ({ ...current, invoiceNo: event.target.value }))} /></div><div><Label>发票代码（可选）</Label><Input className="mt-1" value={invoiceDraft.invoiceCode} onChange={event => setInvoiceDraft(current => ({ ...current, invoiceCode: event.target.value }))} /></div></div><div><Label>购销方名称</Label><Input className="mt-1" value={invoiceDraft.counterpartyName} onChange={event => setInvoiceDraft(current => ({ ...current, counterpartyName: event.target.value }))} /></div><div className="grid grid-cols-2 gap-2"><div><Label>票据类型</Label><Select value={invoiceDraft.invoiceType} onValueChange={value => setInvoiceDraft(current => ({ ...current, invoiceType: value as typeof current.invoiceType }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vat_special">增值税专票</SelectItem><SelectItem value="vat_normal">增值税普票</SelectItem><SelectItem value="electronic">电子发票</SelectItem><SelectItem value="receipt">收据</SelectItem><SelectItem value="other">其他票据</SelectItem></SelectContent></Select></div><div><Label>收支方向</Label><Select value={invoiceDraft.direction} onValueChange={value => setInvoiceDraft(current => ({ ...current, direction: value as "income" | "expense" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="expense">成本/支出</SelectItem><SelectItem value="income">收入</SelectItem></SelectContent></Select></div></div><div className="grid grid-cols-3 gap-2"><div><Label>原件价税合计</Label><Input className="mt-1" inputMode="decimal" value={invoiceDraft.amount} onChange={event => setInvoiceDraft(current => ({ ...current, amount: event.target.value }))} /></div><div><Label>本项目分摊</Label><Input className="mt-1" inputMode="decimal" placeholder="默认全额" value={invoiceDraft.allocatedAmount} onChange={event => setInvoiceDraft(current => ({ ...current, allocatedAmount: event.target.value }))} /></div><div><Label>税额</Label><Input className="mt-1" inputMode="decimal" value={invoiceDraft.taxAmount} onChange={event => setInvoiceDraft(current => ({ ...current, taxAmount: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-2"><div><Label>税率（小数）</Label><Input className="mt-1" inputMode="decimal" value={invoiceDraft.taxRate} onChange={event => setInvoiceDraft(current => ({ ...current, taxRate: event.target.value }))} /></div><div><Label>分摊用途</Label><Select value={invoiceDraft.allocationPurpose} onValueChange={value => setInvoiceDraft(current => ({ ...current, allocationPurpose: value as typeof current.allocationPurpose }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="expense_deduction">成本抵扣</SelectItem><SelectItem value="reimbursement">费用报销</SelectItem><SelectItem value="income_collection">收入收款</SelectItem><SelectItem value="reference_only">仅备查</SelectItem></SelectContent></Select></div></div><div><Label>开票日期</Label><Input className="mt-1" type="date" value={invoiceDraft.issuedAt} onChange={event => setInvoiceDraft(current => ({ ...current, issuedAt: event.target.value }))} /></div><div><Label>验真/认证参考号（可选）</Label><Input className="mt-1" value={invoiceDraft.verificationReference} onChange={event => setInvoiceDraft(current => ({ ...current, verificationReference: event.target.value }))} /></div><div><Label>发票原件（电子发票必传）</Label><Input className="mt-1" type="file" accept="application/pdf,image/jpeg,image/png" disabled={uploadInvoiceEvidence.isPending} onChange={event => { void uploadInvoiceOriginal(event.target.files?.[0] ?? null); event.currentTarget.value = ""; }} /><p className="mt-1 text-[11px] text-[#8f7566]">{invoiceDraft.evidenceFileName ? `已归档：${invoiceDraft.evidenceFileName}` : "支持 PDF、JPG、PNG；原件不在页面展示经纬度等无关信息。"}</p></div></div><DialogFooter><Button variant="outline" onClick={() => setInvoiceOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitInvoice} disabled={saveInvoice.isPending || uploadInvoiceEvidence.isPending}>登记待认证分摊</Button></DialogFooter></DialogContent></Dialog>

@@ -13,6 +13,7 @@ import { MobileBottomNavigation } from "./components/MobileBottomNavigation";
 import { MobileEvidenceShortcut } from "./components/MobileEvidenceShortcut";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AccessibilityPreferencesProvider } from "./contexts/AccessibilityPreferencesContext";
+import { MobileFormProtectionProvider } from "./contexts/MobileFormProtectionContext";
 import { useAuth } from "./_core/hooks/useAuth";
 import { useIsMobile } from "./hooks/useMobile";
 
@@ -150,12 +151,14 @@ function App() {
         // switchable
       >
         <AccessibilityPreferencesProvider>
-          <TooltipProvider>
-            <div className="notranslate" translate="no">
-              <Toaster />
-              <Router />
-            </div>
-          </TooltipProvider>
+          <MobileFormProtectionProvider>
+            <TooltipProvider>
+              <div className="notranslate" translate="no">
+                <Toaster />
+                <Router />
+              </div>
+            </TooltipProvider>
+          </MobileFormProtectionProvider>
         </AccessibilityPreferencesProvider>
       </ThemeProvider>
     </ErrorBoundary>

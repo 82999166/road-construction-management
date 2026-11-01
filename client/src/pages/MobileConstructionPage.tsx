@@ -11,14 +11,15 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime, toDeviceDateInput } from "@/lib/businessTime";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { normalizeMobileImage } from "@/lib/mobileImageUpload";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "@shared/watermarkTemplate";
 import { ArrowLeft, Bell, Camera, ClipboardCheck, FileText, HardHat, ImagePlus, LayoutDashboard, Pencil, Plus, Printer, ShieldCheck, UserRound, X } from "lucide-react";
 import React, { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 
 type Weather = "sunny" | "cloudy" | "rainy" | "snowy" | "windy" | "other";
 type ReportStatus = "draft" | "submitted" | "approved" | "rejected" | "locked";
@@ -128,7 +129,7 @@ function getStatusMeta(value: string) {
 export default function MobileConstructionPage() {
   const { user, isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
   const { isSuperAdmin } = useManagementPermissions();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const [projectId, setProjectId] = useState<number | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -144,6 +145,41 @@ export default function MobileConstructionPage() {
   const [reviewTarget, setReviewTarget] = useState<NonNullable<typeof reports.data>[number] | null>(null);
   const [reviewReply, setReviewReply] = useState("");
   const [isPrinting, setIsPrinting] = useState(false);
+
+  const deviceDraftKey = `construction-report:${projectId ?? "pending"}:${editingId ?? "new"}`;
+  const localDraftPayload = useMemo(() => ({
+    reportDate: draft.reportDate,
+    workArea: draft.workArea,
+    weather: draft.weather,
+    workContent: draft.workContent,
+    safetyNotes: draft.safetyNotes,
+    issueNotes: draft.issueNotes,
+    progressPercent: draft.progressPercent,
+  }), [draft]);
+  const localDraftDirty = dialogOpen && (hasMobileDraftContent(localDraftPayload, ["reportDate", "weather", "progressPercent"]) || draft.progressPercent !== "0" || pendingEvidenceFiles.length > 0);
+
+  function resetReportForm() {
+    setDialogOpen(false);
+    setEditingId(null);
+    setDraft({ ...emptyDraft, reportDate: getTodayText() });
+    pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
+    setPendingEvidenceFiles([]);
+    setPendingEvidencePreviews([]);
+  }
+
+  const { requestClose: requestReportClose } = useMobileFormProtection({
+    id: "construction-report-form",
+    label: pendingEvidenceFiles.length ? "施工日报（已选照片需重新选择）" : "施工日报",
+    isDirty: localDraftDirty,
+    saveDraft: () => {
+      if (!saveMobileDraft(deviceDraftKey, localDraftPayload)) throw new Error("本机草稿保存失败");
+      toast.success("日报文字内容已保存到本机草稿；照片不会保存在设备草稿中");
+    },
+    discard: () => {
+      clearMobileDraft(deviceDraftKey);
+      resetReportForm();
+    },
+  });
 
   const projectOptions = trpc.construction.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -181,6 +217,16 @@ export default function MobileConstructionPage() {
       setWeatherStatus("当前无法自动获取天气，请手动选择。");
     }
   }, [resolvedWeather.data]);
+
+  useEffect(() => {
+    if (!dialogOpen) return;
+    const saved = readMobileDraft<typeof localDraftPayload>(deviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    setDraft(current => ({ ...current, ...saved.value }));
+    toast.info("已恢复这台设备上未提交的施工日报文字草稿；照片需重新选择。");
+  // 仅在表单首次打开或切换编辑记录时恢复，避免输入中被重复覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialogOpen, deviceDraftKey]);
 
   const saveReport = trpc.construction.saveReport.useMutation({
     onSuccess: async result => {
@@ -221,12 +267,8 @@ export default function MobileConstructionPage() {
         await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
         return;
       }
-      setDialogOpen(false);
-      setEditingId(null);
-      setDraft({ ...emptyDraft, reportDate: getTodayText() });
-      pendingEvidencePreviews.forEach(url => URL.revokeObjectURL(url));
-      setPendingEvidenceFiles([]);
-      setPendingEvidencePreviews([]);
+      clearMobileDraft(deviceDraftKey);
+      resetReportForm();
       await Promise.all([utils.construction.listReports.invalidate(), utils.construction.summary.invalidate(), utils.mobile.workbench.invalidate()]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error, "施工日报操作未完成，请稍后重试")),
@@ -397,7 +439,7 @@ export default function MobileConstructionPage() {
         <nav className="mobile-bottom-navigation fixed right-0 bottom-0 left-0 z-20 flex w-full max-w-none items-center justify-around border-t border-[#ead9c8] bg-[#fffaf2]/95 px-3 py-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] backdrop-blur print:hidden"><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile")}><LayoutDashboard className="h-5 w-5" /><span className="text-[10px]">工作台</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#9f582b]"><HardHat className="h-5 w-5" /><span className="text-[10px] font-medium">施工</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/messages")}><Bell className="h-5 w-5" /><span className="text-[10px]">消息</span></button><button className="flex flex-col items-center gap-1 px-3 py-1 text-[#8f7566]" onClick={() => navigate("/mobile/profile")}><UserRound className="h-5 w-5" /><span className="text-[10px]">我的</span></button></nav>
       </div>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={open => { if (open) setDialogOpen(true); else requestReportClose(resetReportForm); }}>
           <DialogContent className="max-h-[92dvh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl pb-[max(1.5rem,env(safe-area-inset-bottom))]">
           <DialogHeader>
             <DialogTitle>{editingId ? "修改施工日报" : "新建施工日报"}</DialogTitle>
@@ -416,7 +458,8 @@ export default function MobileConstructionPage() {
             <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3"><div className="flex items-center justify-between gap-3"><div><Label>现场水印照片（可连续添加）</Label><p className="mt-1 text-[11px] leading-4 text-[#80685b]">支持相机直拍和从手机相册选择；照片会压缩为 JPG 后在保存日报时生成水印并关联，单次最多 12 张。</p></div>{pendingEvidenceFiles.length ? <span className="shrink-0 rounded-full bg-[#f9eddf] px-2 py-1 text-xs font-semibold text-[#8a4b25]">已选 {pendingEvidenceFiles.length}/12 张</span> : null}</div><div className="mt-3 grid grid-cols-2 gap-2"><label className="flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/*" capture="environment" onChange={event => { void handleEvidenceFiles(event); }} /><Camera className="h-5 w-5 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">拍摄现场照片</span></label><label className="flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#d8bca5] bg-white p-3 text-center"><input className="sr-only" type="file" multiple accept="image/*" onChange={event => { void handleEvidenceFiles(event); }} /><ImagePlus className="h-5 w-5 text-[#ad6335]" /><span className="mt-1 text-xs font-medium text-[#80543d]">从手机相册选择</span></label></div>{pendingEvidencePreviews.length ? <div className="mt-3 grid grid-cols-4 gap-2">{pendingEvidencePreviews.map((url, index) => <div key={`${url}-${index}`} className="relative"><img src={url} alt={`待关联日报照片 ${index + 1}`} className="aspect-square w-full rounded-lg object-cover" /><button aria-label={`移除照片 ${index + 1}`} type="button" className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-[#6d3421] text-white shadow" onClick={() => removePendingEvidence(index)}><X className="h-3 w-3" /></button></div>)}</div> : null}</div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => requestReportClose(resetReportForm)}>取消</Button>
+            <Button variant="secondary" onClick={() => { if (saveMobileDraft(deviceDraftKey, localDraftPayload)) toast.success("日报文字内容已保存到本机草稿；照片需重新选择"); else toast.error("本机草稿保存失败，请检查设备存储权限"); }}>保存本机草稿</Button>
             <Button disabled={saveReport.isPending || evidenceUpload.isPending} className="bg-[#9f582b] text-white hover:bg-[#85451f]" onClick={submitDraft}><Camera className="mr-1.5 h-4 w-4" />{saveReport.isPending || evidenceUpload.isPending ? "正在保存…" : pendingEvidenceFiles.length ? `保存日报并归档 ${pendingEvidenceFiles.length} 张照片` : (editingId ? "保存修改" : "保存草稿")}</Button>
           </DialogFooter>
         </DialogContent>

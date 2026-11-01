@@ -5,14 +5,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime, toChinaMonthInput, toDeviceDateInput } from "@/lib/businessTime";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowLeft, Ban, Camera, CheckCircle2, CircleHelp, ClipboardCheck, FilePlus2, HardHat, Link2, LockKeyhole, Printer, Ruler, UsersRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 
 /** 所有计量金额在此仅用于显示，核定、结算和不可回退限制都由后端处理。 */
@@ -22,6 +23,8 @@ export function claimStatus(status: string) { const labels: Record<string, strin
 export function takeoffStatus(status: string) { const labels: Record<string, string> = { draft: "草稿", submitted: "待复核", reviewing: "复核中", approved: "已审核", rejected: "已退回", locked: "已锁定", void: "已作废" }; return labels[status] ?? "待处理"; }
 function asDateInput(value: Date | string | null | undefined) { return toDeviceDateInput(value ?? new Date()); }
 const TAKEOFF_UNITS = [{ value: "m3", label: "立方米（m³）" }, { value: "m2", label: "平方米（m²）" }, { value: "m", label: "米（m）" }, { value: "t", label: "吨（t）" }, { value: "piece", label: "件" }, { value: "set", label: "套" }, { value: "other", label: "其他" }] as const;
+function emptyTakeoffDraft() { return { id: 0, measurementClaimId: "", workItem: "", workLocation: "", unit: "m3" as (typeof TAKEOFF_UNITS)[number]["value"], quantity: "", unitPrice: "", takeoffDate: asDateInput(null) }; }
+function sameDraft(left: Record<string, unknown>, right: Record<string, unknown>) { return JSON.stringify(left) === JSON.stringify(right); }
 
 /** 已确认收入的计量申报具有财务终态，不在移动端呈现作废动作；服务端仍是最终校验方。 */
 export function canVoidMeasurementClaim(status: string) { return ["draft", "submitted", "reviewing", "approved"].includes(status); }
@@ -29,7 +32,7 @@ export function canVoidMeasurementClaim(status: string) { return ["draft", "subm
 /** 工程计量移动端：申报、复核、核定及收入确认按同一服务端状态机衔接。 */
 export default function MobileMeasurementPage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const [projectId, setProjectId] = useState<number>();
   const [period, setPeriod] = useState(getCurrentPeriod);
@@ -41,15 +44,95 @@ export default function MobileMeasurementPage() {
   const [takeoffReviewOpen, setTakeoffReviewOpen] = useState(false);
   const [takeoffEvidenceOpen, setTakeoffEvidenceOpen] = useState(false);
   const [claimDraft, setClaimDraft] = useState({ declaredAmount: "" });
+  const [claimInitialLocalDraft, setClaimInitialLocalDraft] = useState<Record<string, unknown>>({ declaredAmount: "" });
   const [reviewDraft, setReviewDraft] = useState({ id: 0, approvedAmount: "", reviewNote: "" });
   const [voidDraft, setVoidDraft] = useState({ id: 0, reason: "" });
   const [paymentDraft, setPaymentDraft] = useState({ claimId: 0, amount: "", remarks: "" });
-  const [takeoffDraft, setTakeoffDraft] = useState({ id: 0, measurementClaimId: "", workItem: "", workLocation: "", unit: "m3" as (typeof TAKEOFF_UNITS)[number]["value"], quantity: "", unitPrice: "", takeoffDate: asDateInput(null) });
+  const [takeoffDraft, setTakeoffDraft] = useState(emptyTakeoffDraft);
+  const [takeoffInitialDraft, setTakeoffInitialDraft] = useState(emptyTakeoffDraft);
   const [takeoffReviewDraft, setTakeoffReviewDraft] = useState({ id: 0, targetStatus: "reviewing" as "reviewing" | "approved" | "rejected" | "locked", reviewNote: "" });
   const [takeoffEvidenceDraft, setTakeoffEvidenceDraft] = useState({ takeoffId: 0, evidenceId: "" });
   const projects = trpc.measurement.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => { if (!projectId && projects.data?.[0]) setProjectId(projects.data[0].id); }, [projectId, projects.data]);
   const selectedProjectId = projectId ?? 0;
+  /** 仅保留普通文本、数量、单价、日期和枚举；关联业务单据 ID 不会写入设备。 */
+  const claimDeviceDraftKey = `measurement-claim:${selectedProjectId || "pending"}:${period}`;
+  const claimDeviceDraft = useMemo(() => ({ declaredAmount: claimDraft.declaredAmount }), [claimDraft]);
+  const takeoffDeviceDraftKey = `measurement-takeoff:${selectedProjectId || "pending"}:${takeoffDraft.id || "new"}`;
+  const takeoffDeviceDraft = useMemo(() => ({
+    workItem: takeoffDraft.workItem,
+    workLocation: takeoffDraft.workLocation,
+    unit: takeoffDraft.unit,
+    quantity: takeoffDraft.quantity,
+    unitPrice: takeoffDraft.unitPrice,
+    takeoffDate: takeoffDraft.takeoffDate,
+  }), [takeoffDraft]);
+  const claimLocalDraftDirty = claimOpen && !sameDraft(claimDeviceDraft, claimInitialLocalDraft);
+  const takeoffLocalDraftDirty = takeoffOpen && !sameDraft(takeoffDraft, takeoffInitialDraft);
+
+  function resetClaimForm() {
+    setClaimOpen(false);
+    setClaimDraft({ declaredAmount: "" });
+    setClaimInitialLocalDraft({ declaredAmount: "" });
+  }
+  function resetTakeoffForm() {
+    setTakeoffOpen(false);
+    setTakeoffDraft(emptyTakeoffDraft());
+    setTakeoffInitialDraft(emptyTakeoffDraft());
+  }
+  function saveClaimDeviceDraft() {
+    if (!claimLocalDraftDirty) {
+      toast.info("尚未填写可保存的申报内容");
+      return;
+    }
+    if (!saveMobileDraft(claimDeviceDraftKey, claimDeviceDraft)) throw new Error("本机草稿保存失败");
+    setClaimInitialLocalDraft(claimDeviceDraft);
+    toast.success("工程计量申报已保存到本机草稿，不会创建业务单据");
+  }
+  function saveTakeoffDeviceDraft() {
+    if (!takeoffLocalDraftDirty) {
+      toast.info("尚未填写可保存的收方内容");
+      return;
+    }
+    if (!saveMobileDraft(takeoffDeviceDraftKey, takeoffDeviceDraft)) throw new Error("本机草稿保存失败");
+    setTakeoffInitialDraft(current => ({ ...current, ...takeoffDeviceDraft }));
+    toast.success("项目部收方已保存到本机草稿，不会创建业务单据");
+  }
+  const { requestClose: requestClaimClose } = useMobileFormProtection({
+    id: "mobile-measurement-claim-form",
+    label: "工程计量申报",
+    isDirty: claimLocalDraftDirty,
+    saveDraft: saveClaimDeviceDraft,
+    discard: () => { clearMobileDraft(claimDeviceDraftKey); resetClaimForm(); },
+  });
+  const { requestClose: requestTakeoffClose } = useMobileFormProtection({
+    id: "mobile-measurement-takeoff-form",
+    label: "项目部收方",
+    isDirty: takeoffLocalDraftDirty,
+    saveDraft: saveTakeoffDeviceDraft,
+    discard: () => { clearMobileDraft(takeoffDeviceDraftKey); resetTakeoffForm(); },
+  });
+  useEffect(() => {
+    if (!claimOpen) return;
+    const saved = readMobileDraft<typeof claimDeviceDraft>(claimDeviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    setClaimDraft(current => ({ ...current, ...saved.value }));
+    setClaimInitialLocalDraft({ declaredAmount: saved.value.declaredAmount ?? "" });
+    toast.info("已恢复这台设备上未提交的工程计量申报草稿。");
+  // 只在打开表单或切换项目/期间时恢复，避免输入中被覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claimOpen, claimDeviceDraftKey]);
+  useEffect(() => {
+    if (!takeoffOpen) return;
+    const saved = readMobileDraft<typeof takeoffDeviceDraft>(takeoffDeviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    const restored = { ...takeoffDraft, ...saved.value };
+    setTakeoffDraft(current => ({ ...current, ...saved.value }));
+    setTakeoffInitialDraft(restored);
+    toast.info("已恢复这台设备上未提交的项目部收方草稿；关联申报需重新选择。");
+  // 只在打开表单或切换目标记录时恢复，避免输入中被覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeoffOpen, takeoffDeviceDraftKey]);
   const projectInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const periodInput = useMemo(() => ({ projectId: selectedProjectId, period }), [selectedProjectId, period]);
   const claims = trpc.measurement.listClaims.useQuery(projectInput, { enabled: isAuthenticated && Boolean(selectedProjectId), retry: false });
@@ -61,10 +144,10 @@ export default function MobileMeasurementPage() {
   const evidenceInput = useMemo(() => ({ projectId: selectedProjectId, limit: 50 }), [selectedProjectId]);
   const availableEvidence = trpc.evidence.list.useQuery(evidenceInput, { enabled: isAuthenticated && Boolean(selectedProjectId) && takeoffEvidenceOpen, retry: false });
   const refreshData = async () => { await Promise.all([utils.measurement.listClaims.invalidate(), utils.measurement.listTakeoffs.invalidate(), utils.measurement.summary.invalidate(), utils.measurement.listPayments.invalidate()]); };
-  const save = trpc.measurement.saveClaim.useMutation({ onSuccess: async () => { toast.success("工程计量草稿已保存"); setClaimOpen(false); setClaimDraft({ declaredAmount: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
+  const save = trpc.measurement.saveClaim.useMutation({ onSuccess: async () => { clearMobileDraft(claimDeviceDraftKey); toast.success("工程计量草稿已保存"); resetClaimForm(); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
   const transition = trpc.measurement.transitionClaim.useMutation({ onSuccess: async () => { toast.success("工程计量状态已更新"); setReviewOpen(false); setVoidOpen(false); setVoidDraft({ id: 0, reason: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
   const recordPayment = trpc.measurement.recordPayment.useMutation({ onSuccess: async result => { toast.success(`回款登记完成，剩余 ${formatMoney(result.remainingAmount)}`); setPaymentOpen(false); setPaymentDraft({ claimId: 0, amount: "", remarks: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
-  const saveTakeoff = trpc.measurement.saveTakeoff.useMutation({ onSuccess: async () => { toast.success("项目收方草稿已保存，可继续关联影像或提交复核"); setTakeoffOpen(false); setTakeoffDraft({ id: 0, measurementClaimId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", unitPrice: "", takeoffDate: asDateInput(null) }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
+  const saveTakeoff = trpc.measurement.saveTakeoff.useMutation({ onSuccess: async () => { clearMobileDraft(takeoffDeviceDraftKey); toast.success("项目收方草稿已保存，可继续关联影像或提交复核"); resetTakeoffForm(); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
   const transitionTakeoff = trpc.measurement.transitionTakeoff.useMutation({ onSuccess: async () => { toast.success("项目收方状态已更新"); setTakeoffReviewOpen(false); setTakeoffReviewDraft({ id: 0, targetStatus: "reviewing", reviewNote: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
   const linkTakeoffEvidence = trpc.measurement.linkTakeoffEvidence.useMutation({ onSuccess: async () => { toast.success("收方证据已关联并写入审计记录"); setTakeoffEvidenceOpen(false); setTakeoffEvidenceDraft({ takeoffId: 0, evidenceId: "" }); await refreshData(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "计量操作未完成，请稍后重试")) });
   const activeClaims = claims.data?.filter(claim => claim.period === period) ?? [];
@@ -77,7 +160,13 @@ export default function MobileMeasurementPage() {
   function submitVoid() { if (!voidDraft.id || !voidDraft.reason.trim()) return toast.error("请填写作废原因，便于审计追溯"); transition.mutate({ id: voidDraft.id, projectId: selectedProjectId, targetStatus: "void", approvedAmount: null, reviewNote: voidDraft.reason.trim() }); }
   function openPayment(claimId: number) { setPaymentDraft({ claimId, amount: "", remarks: "" }); setPaymentOpen(true); }
   function submitPayment() { if (!paymentDraft.claimId || !paymentDraft.amount || Number(paymentDraft.amount) <= 0) return toast.error("请填写大于零的回款金额"); recordPayment.mutate({ claimId: paymentDraft.claimId, projectId: selectedProjectId, amount: Number(paymentDraft.amount), receivedAt: new Date().toISOString(), remarks: paymentDraft.remarks.trim() || null }); }
-  function openTakeoff(record?: { id: number; measurementClaimId: number | null; workItem: string; workLocation: string; unit: (typeof TAKEOFF_UNITS)[number]["value"]; quantity: string | number; unitPrice: string | number; takeoffDate: Date | string }) { setTakeoffDraft(record ? { id: record.id, measurementClaimId: record.measurementClaimId ? String(record.measurementClaimId) : "", workItem: record.workItem, workLocation: record.workLocation, unit: record.unit, quantity: String(record.quantity), unitPrice: String(record.unitPrice), takeoffDate: asDateInput(record.takeoffDate) } : { id: 0, measurementClaimId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", unitPrice: "", takeoffDate: asDateInput(null) }); setTakeoffOpen(true); }
+  function openClaim() { setClaimDraft({ declaredAmount: "" }); setClaimInitialLocalDraft({ declaredAmount: "" }); setClaimOpen(true); }
+  function openTakeoff(record?: { id: number; measurementClaimId: number | null; workItem: string; workLocation: string; unit: (typeof TAKEOFF_UNITS)[number]["value"]; quantity: string | number; unitPrice: string | number; takeoffDate: Date | string }) {
+    const nextDraft = record ? { id: record.id, measurementClaimId: record.measurementClaimId ? String(record.measurementClaimId) : "", workItem: record.workItem, workLocation: record.workLocation, unit: record.unit, quantity: String(record.quantity), unitPrice: String(record.unitPrice), takeoffDate: asDateInput(record.takeoffDate) } : emptyTakeoffDraft();
+    setTakeoffDraft(nextDraft);
+    setTakeoffInitialDraft(nextDraft);
+    setTakeoffOpen(true);
+  }
   function submitTakeoff() { if (!selectedProjectId || !takeoffDraft.workItem.trim() || !takeoffDraft.workLocation.trim() || !takeoffDraft.quantity || !takeoffDraft.unitPrice) return toast.error("请完整填写收方项目、位置、工程量与单价"); if (Number(takeoffDraft.quantity) <= 0 || Number(takeoffDraft.unitPrice) < 0) return toast.error("工程量须大于零，单价不得为负数"); saveTakeoff.mutate({ id: takeoffDraft.id || undefined, projectId: selectedProjectId, measurementClaimId: takeoffDraft.measurementClaimId ? Number(takeoffDraft.measurementClaimId) : null, workItem: takeoffDraft.workItem.trim(), workLocation: takeoffDraft.workLocation.trim(), unit: takeoffDraft.unit, quantity: Number(takeoffDraft.quantity), unitPrice: Number(takeoffDraft.unitPrice), takeoffDate: takeoffDraft.takeoffDate }); }
   function openTakeoffReview(id: number, targetStatus: "reviewing" | "approved" | "rejected" | "locked") { setTakeoffReviewDraft({ id, targetStatus, reviewNote: "" }); setTakeoffReviewOpen(true); }
   function submitTakeoffReview() { if (!takeoffReviewDraft.id) return; if (takeoffReviewDraft.targetStatus === "rejected" && !takeoffReviewDraft.reviewNote.trim()) return toast.error("退回收方必须填写原因，便于项目部修改"); transitionTakeoff.mutate({ id: takeoffReviewDraft.id, projectId: selectedProjectId, targetStatus: takeoffReviewDraft.targetStatus, reviewNote: takeoffReviewDraft.reviewNote.trim() || null }); }
@@ -98,7 +187,7 @@ export default function MobileMeasurementPage() {
         <div className="grid grid-cols-[1fr_110px] gap-2 print:hidden"><Select value={projectId ? String(projectId) : undefined} onValueChange={value => setProjectId(Number(value))}><SelectTrigger className="h-11 border-[#e9d8c6] bg-white"><SelectValue placeholder="选择项目" /></SelectTrigger><SelectContent>{projects.data.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><Input className="h-11 border-[#e9d8c6] bg-white" type="month" value={period} onChange={event => setPeriod(event.target.value)} /></div>
 	        <section className="rounded-2xl border border-[#d8b781] bg-[#fff4e2] p-4 shadow-sm print:hidden"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[#683a24]">外包劳务队计量</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">先录入项目部收方工程量，审核后再按批次下达给施工队。收方与分包为两个独立输入窗口。</p></div><HardHat className="mt-0.5 h-5 w-5 shrink-0 text-[#a55c2c]" /></div><div className="mt-3 grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-auto border-[#d1ad77] bg-white py-2 text-[#7a4024] hover:bg-[#fffaf4]" disabled={!takeoffCapabilities.data?.canSubmit} onClick={() => openTakeoff()}><FilePlus2 className="mr-1 h-4 w-4" />项目部收方录入</Button><Button size="sm" className="h-auto bg-[#6d3421] py-2 hover:bg-[#542516]" onClick={() => navigate("/mobile/subcontract")}><UsersRound className="mr-1 h-4 w-4" />劳务队分包录入</Button></div>{takeoffCapabilities.data && !takeoffCapabilities.data.canSubmit ? <p className="mt-2 text-[11px] leading-5 text-[#8f5b37]">当前岗位可查看收方，但无项目部收方录入权限；如需录入，请由项目经理或施工负责人授权后办理。</p> : null}</section>
         <section className="grid grid-cols-2 gap-3"><Metric label="申报金额" value={formatMoney(summary.data?.declaredAmount)} /><Metric label="核定金额" value={formatMoney(summary.data?.approvedAmount)} tone="text-emerald-700" /><Metric label="确认收入" value={formatMoney(summary.data?.settledAmount)} tone="text-teal-700" /><Metric label="本期回款" value={formatMoney(payments.data?.totalAmount)} tone="text-sky-700" /><Metric label="待处理" value={String(summary.data?.pendingCount ?? 0)} tone="text-amber-700" /></section>
-        <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="font-semibold">{period} 工程计量</p><p className="text-xs text-[#7d563d]">核定金额需经人工复核后固化。</p></div><div className="flex gap-1"><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={printMeasurementSummary}><Printer className="h-4 w-4" />打印汇总</Button>{claimCapabilities.data?.canDraft ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" onClick={() => setClaimOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />申报</Button> : null}</div></section>
+        <section className="flex items-center justify-between rounded-2xl bg-[#f0dfc7] px-4 py-3 print:hidden"><div><p className="font-semibold">{period} 工程计量</p><p className="text-xs text-[#7d563d]">核定金额需经人工复核后固化。</p></div><div className="flex gap-1"><Button size="sm" variant="ghost" className="gap-1 text-[#8b3f20] hover:bg-[#e8cda9]" onClick={printMeasurementSummary}><Printer className="h-4 w-4" />打印汇总</Button>{claimCapabilities.data?.canDraft ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" onClick={openClaim}><FilePlus2 className="mr-1 h-4 w-4" />申报</Button> : null}</div></section>
 	        <section className="space-y-3 rounded-2xl border border-[#e5cfb7] bg-[#fffaf4] p-4 print:hidden"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><ClipboardCheck className="h-4 w-4 text-[#8b3f20]" /><h2 className="font-semibold">项目部收方工程量</h2></div><p className="mt-1 text-xs leading-5 text-[#7d563d]">项目经理或施工负责人录入项目部工程量；计量负责人复核、审核并锁定。完成审核的收方可在“劳务队分包录入”中直接带入。</p></div>{takeoffCapabilities.data?.canSubmit ? <Button size="sm" className="shrink-0 bg-[#6d3421] hover:bg-[#542516]" onClick={() => openTakeoff()}><FilePlus2 className="mr-1 h-4 w-4" />收方录入</Button> : null}</div>
           {takeoffCapabilities.data && !takeoffCapabilities.data.canSubmit && !takeoffCapabilities.data.canReview ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">当前岗位仅可查看授权范围内的收方记录，不能提交或复核。</p> : null}
           {takeoffs.isLoading ? <p className="py-3 text-center text-xs text-[#8f7566]">正在读取项目收方记录…</p> : takeoffs.data?.length ? <div className="space-y-2">{takeoffs.data.map(takeoff => <div key={takeoff.id} className="rounded-xl border border-[#ead9c7] bg-white p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">{takeoff.takeoffNo} · {takeoff.workItem}</p><p className="mt-1 text-xs text-[#8f7566]">{takeoff.workLocation} · {takeoff.quantity} {takeoff.unit} × {formatMoney(takeoff.unitPrice)} = {formatMoney(takeoff.declaredAmount)}</p><p className="mt-1 text-[11px] text-[#a1816c]">收方日期：{asDateInput(takeoff.takeoffDate)}{takeoff.measurementClaimId ? ` · 关联申报：${claimById.get(takeoff.measurementClaimId)?.claimNo ?? `#${takeoff.measurementClaimId}`}` : ""}{takeoff.reviewNote ? ` · 说明：${takeoff.reviewNote}` : ""}</p></div><span className="shrink-0 rounded-full bg-[#f8ead8] px-2 py-1 text-[11px] text-[#94603a]">{takeoffStatus(takeoff.status)}</span></div><div className="mt-3 flex flex-wrap gap-2">{takeoffCapabilities.data?.canSubmit && ["draft", "rejected"].includes(takeoff.status) ? <><Button size="sm" variant="outline" onClick={() => openTakeoff(takeoff)}>编辑</Button><Button size="sm" variant="outline" onClick={() => transitionTakeoff.mutate({ id: takeoff.id, projectId: selectedProjectId, targetStatus: "submitted", reviewNote: null })}>提交复核</Button><Button size="sm" variant="outline" className="gap-1" onClick={() => openTakeoffEvidence(takeoff.id)}><Link2 className="h-3.5 w-3.5" />关联证据</Button><Button size="sm" variant="outline" className="gap-1" onClick={() => navigate(`/mobile/evidence?projectId=${selectedProjectId}&sourceType=site_photo&sourceId=takeoff-${takeoff.id}`)}><Camera className="h-3.5 w-3.5" />现场拍照</Button></> : null}{takeoffCapabilities.data?.canReview && takeoff.status === "submitted" ? <><Button size="sm" variant="outline" onClick={() => openTakeoffReview(takeoff.id, "reviewing")}>开始复核</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => openTakeoffReview(takeoff.id, "rejected")}>退回</Button></> : null}{takeoffCapabilities.data?.canReview && takeoff.status === "reviewing" ? <><Button size="sm" className="bg-[#47754d] hover:bg-[#355c3c]" onClick={() => openTakeoffReview(takeoff.id, "approved")}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />审核通过</Button><Button size="sm" variant="outline" className="border-rose-200 text-rose-700" onClick={() => openTakeoffReview(takeoff.id, "rejected")}>退回</Button></> : null}{takeoffCapabilities.data?.canReview && takeoff.status === "approved" ? <Button size="sm" variant="outline" className="gap-1 border-[#c4d8bf] text-[#3e6b45]" onClick={() => openTakeoffReview(takeoff.id, "locked")}><LockKeyhole className="h-3.5 w-3.5" />锁定</Button> : null}</div></div>)}</div> : <p className="rounded-xl border border-dashed border-[#e3cbb4] px-4 py-5 text-center text-xs text-[#8f7566]">当前项目暂无收方记录。请先创建收方草稿并归档现场影像或签认凭证。</p>}</section>
@@ -106,11 +195,11 @@ export default function MobileMeasurementPage() {
         <section className="space-y-2"><div className="flex items-center justify-between px-1"><h2 className="text-sm font-semibold">工程回款</h2><span className="text-xs text-[#7d563d]">本期 {formatMoney(payments.data?.totalAmount)}</span></div>{payments.data?.records.length ? payments.data.records.map(record => <Card key={record.id} className="border-0 bg-[#fffaf4] shadow-sm"><CardContent className="flex items-center justify-between p-3.5"><div><p className="text-sm font-medium">{record.recordNo}</p><p className="mt-1 text-[11px] text-[#8f7566]">{formatChinaDateTime(record.occurredAt)}</p></div><p className="font-semibold text-sky-800">{formatMoney(record.amount)}</p></CardContent></Card>) : <p className="rounded-xl bg-[#fffaf4] px-4 py-3 text-center text-xs text-[#8f7566]">当前期间暂无工程回款记录。</p>}</section>
       </>}
     </main>
-    <Dialog open={claimOpen} onOpenChange={setClaimOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>新建工程计量申报</DialogTitle></DialogHeader><div><Label>{period} 申报金额</Label><Input className="mt-1" inputMode="decimal" value={claimDraft.declaredAmount} onChange={event => setClaimDraft({ declaredAmount: event.target.value })} /></div><DialogFooter><Button variant="outline" onClick={() => setClaimOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitClaim} disabled={save.isPending}>保存</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={claimOpen} onOpenChange={open => { if (open) setClaimOpen(true); else requestClaimClose(resetClaimForm); }}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>新建工程计量申报</DialogTitle></DialogHeader><div><Label>{period} 申报金额</Label><Input className="mt-1" inputMode="decimal" value={claimDraft.declaredAmount} onChange={event => setClaimDraft({ declaredAmount: event.target.value })} /></div><DialogFooter><Button variant="outline" onClick={() => requestClaimClose(resetClaimForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveClaimDeviceDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitClaim} disabled={save.isPending}>保存</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={reviewOpen} onOpenChange={setReviewOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>核定工程计量</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>核定金额</Label><Input className="mt-1" inputMode="decimal" value={reviewDraft.approvedAmount} onChange={event => setReviewDraft(current => ({ ...current, approvedAmount: event.target.value }))} /></div><div><Label>复核说明</Label><Input className="mt-1" value={reviewDraft.reviewNote} onChange={event => setReviewDraft(current => ({ ...current, reviewNote: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setReviewOpen(false)}>取消</Button><Button className="bg-[#47754d] hover:bg-[#355c3c]" onClick={submitReview} disabled={transition.isPending}><CheckCircle2 className="mr-1 h-4 w-4" />核定</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={voidOpen} onOpenChange={setVoidOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>作废工程计量申报</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">仅收入确认前的申报可作废；已确认收入的记录为财务终态，不支持回退。</p><div><Label>作废原因</Label><Input className="mt-1" value={voidDraft.reason} onChange={event => setVoidDraft(current => ({ ...current, reason: event.target.value }))} placeholder="例如：业主计量口径调整" /></div></div><DialogFooter><Button variant="outline" onClick={() => setVoidOpen(false)}>取消</Button><Button className="bg-rose-700 hover:bg-rose-800" onClick={submitVoid} disabled={transition.isPending}><Ban className="mr-1 h-4 w-4" />确认作废</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>登记工程回款</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">仅已确认收入的计量申报可登记回款；项目范围、可回款余额和岗位权限均由服务端校验。</p><div><Label>本次回款金额</Label><Input className="mt-1" inputMode="decimal" value={paymentDraft.amount} onChange={event => setPaymentDraft(current => ({ ...current, amount: event.target.value }))} /></div><div><Label>收款说明</Label><Input className="mt-1" value={paymentDraft.remarks} onChange={event => setPaymentDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>取消</Button><Button className="bg-sky-700 hover:bg-sky-800" onClick={submitPayment} disabled={recordPayment.isPending}>登记回款</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={takeoffOpen} onOpenChange={setTakeoffOpen}><DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>{takeoffDraft.id ? "维护项目收方" : "新建项目收方"}</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">申报金额由服务端按“工程量 × 单价”重新计算；草稿保存后可在记录卡片中拍照并关联现场证据。</p><div><Label>关联计量申报（可选）</Label><Select value={takeoffDraft.measurementClaimId || "none"} onValueChange={value => setTakeoffDraft(current => ({ ...current, measurementClaimId: value === "none" ? "" : value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="暂不关联计量申报" /></SelectTrigger><SelectContent><SelectItem value="none">暂不关联计量申报</SelectItem>{activeClaims.filter(claim => claim.status !== "void").map(claim => <SelectItem key={claim.id} value={String(claim.id)}>{claim.claimNo} · {claimStatus(claim.status)}</SelectItem>)}</SelectContent></Select></div><div><Label>计量项目</Label><Input className="mt-1" value={takeoffDraft.workItem} onChange={event => setTakeoffDraft(current => ({ ...current, workItem: event.target.value }))} placeholder="例如：路基土方填筑" /></div><div><Label>作业位置</Label><Input className="mt-1" value={takeoffDraft.workLocation} onChange={event => setTakeoffDraft(current => ({ ...current, workLocation: event.target.value }))} placeholder="例如：K12+300—K12+860" /></div><div className="grid grid-cols-2 gap-3"><div><Label>计量单位</Label><Select value={takeoffDraft.unit} onValueChange={value => setTakeoffDraft(current => ({ ...current, unit: value as (typeof TAKEOFF_UNITS)[number]["value"] }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{TAKEOFF_UNITS.map(unit => <SelectItem key={unit.value} value={unit.value}>{unit.label}</SelectItem>)}</SelectContent></Select></div><div><Label>收方日期</Label><Input className="mt-1" type="date" value={takeoffDraft.takeoffDate} onChange={event => setTakeoffDraft(current => ({ ...current, takeoffDate: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-3"><div><Label>工程量</Label><Input className="mt-1" inputMode="decimal" value={takeoffDraft.quantity} onChange={event => setTakeoffDraft(current => ({ ...current, quantity: event.target.value }))} /></div><div><Label>不含税单价</Label><Input className="mt-1" inputMode="decimal" value={takeoffDraft.unitPrice} onChange={event => setTakeoffDraft(current => ({ ...current, unitPrice: event.target.value }))} /></div></div></div><DialogFooter><Button variant="outline" onClick={() => setTakeoffOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitTakeoff} disabled={saveTakeoff.isPending}>保存草稿</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={takeoffOpen} onOpenChange={open => { if (open) setTakeoffOpen(true); else requestTakeoffClose(resetTakeoffForm); }}><DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>{takeoffDraft.id ? "维护项目收方" : "新建项目收方"}</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">申报金额由服务端按“工程量 × 单价”重新计算；草稿保存后可在记录卡片中拍照并关联现场证据。</p><div><Label>关联计量申报（可选）</Label><Select value={takeoffDraft.measurementClaimId || "none"} onValueChange={value => setTakeoffDraft(current => ({ ...current, measurementClaimId: value === "none" ? "" : value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="暂不关联计量申报" /></SelectTrigger><SelectContent><SelectItem value="none">暂不关联计量申报</SelectItem>{activeClaims.filter(claim => claim.status !== "void").map(claim => <SelectItem key={claim.id} value={String(claim.id)}>{claim.claimNo} · {claimStatus(claim.status)}</SelectItem>)}</SelectContent></Select></div><div><Label>计量项目</Label><Input className="mt-1" value={takeoffDraft.workItem} onChange={event => setTakeoffDraft(current => ({ ...current, workItem: event.target.value }))} placeholder="例如：路基土方填筑" /></div><div><Label>作业位置</Label><Input className="mt-1" value={takeoffDraft.workLocation} onChange={event => setTakeoffDraft(current => ({ ...current, workLocation: event.target.value }))} placeholder="例如：K12+300—K12+860" /></div><div className="grid grid-cols-2 gap-3"><div><Label>计量单位</Label><Select value={takeoffDraft.unit} onValueChange={value => setTakeoffDraft(current => ({ ...current, unit: value as (typeof TAKEOFF_UNITS)[number]["value"] }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{TAKEOFF_UNITS.map(unit => <SelectItem key={unit.value} value={unit.value}>{unit.label}</SelectItem>)}</SelectContent></Select></div><div><Label>收方日期</Label><Input className="mt-1" type="date" value={takeoffDraft.takeoffDate} onChange={event => setTakeoffDraft(current => ({ ...current, takeoffDate: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-3"><div><Label>工程量</Label><Input className="mt-1" inputMode="decimal" value={takeoffDraft.quantity} onChange={event => setTakeoffDraft(current => ({ ...current, quantity: event.target.value }))} /></div><div><Label>不含税单价</Label><Input className="mt-1" inputMode="decimal" value={takeoffDraft.unitPrice} onChange={event => setTakeoffDraft(current => ({ ...current, unitPrice: event.target.value }))} /></div></div></div><DialogFooter><Button variant="outline" onClick={() => requestTakeoffClose(resetTakeoffForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveTakeoffDeviceDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitTakeoff} disabled={saveTakeoff.isPending}>保存草稿</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={takeoffReviewOpen} onOpenChange={setTakeoffReviewOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>{takeoffReviewDraft.targetStatus === "reviewing" ? "开始收方复核" : takeoffReviewDraft.targetStatus === "approved" ? "审核收方记录" : takeoffReviewDraft.targetStatus === "locked" ? "锁定收方记录" : "退回收方记录"}</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#edf5ed] px-3 py-2 text-xs text-[#3e6b45]">复核、审核与锁定均会写入操作人、时间和审计日志。锁定后不得再补充或修改证据。</p><div><Label>{takeoffReviewDraft.targetStatus === "rejected" ? "退回原因（必填）" : "复核说明（可选）"}</Label><Input className="mt-1" value={takeoffReviewDraft.reviewNote} onChange={event => setTakeoffReviewDraft(current => ({ ...current, reviewNote: event.target.value }))} placeholder={takeoffReviewDraft.targetStatus === "rejected" ? "请说明需要修改的工程量或证据" : "可填写现场核验结论"} /></div></div><DialogFooter><Button variant="outline" onClick={() => setTakeoffReviewOpen(false)}>取消</Button><Button className={takeoffReviewDraft.targetStatus === "rejected" ? "bg-rose-700 hover:bg-rose-800" : "bg-[#47754d] hover:bg-[#355c3c]"} onClick={submitTakeoffReview} disabled={transitionTakeoff.isPending}>确认</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={takeoffEvidenceOpen} onOpenChange={setTakeoffEvidenceOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>关联收方影像或签认凭证</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">请从当前项目已归档影像中选择；若尚未拍照，请关闭本窗口后通过收方卡片的“现场拍照”入口采集。</p>{availableEvidence.isError ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">当前账号未获现场影像查询权限，请由具有现场取证授权的人员拍照归档后协助关联。</p> : <div><Label>已归档证据</Label><Select value={takeoffEvidenceDraft.evidenceId} onValueChange={value => setTakeoffEvidenceDraft(current => ({ ...current, evidenceId: value }))}><SelectTrigger className="mt-1"><SelectValue placeholder={availableEvidence.isLoading ? "正在读取现场影像…" : "选择影像或签认凭证"} /></SelectTrigger><SelectContent>{availableEvidence.data?.map(evidence => <SelectItem key={evidence.id} value={String(evidence.id)}>#{evidence.id} · {evidence.description} · {formatChinaDateTime(evidence.capturedAt ?? evidence.createdAt)}</SelectItem>)}</SelectContent></Select></div>}</div><DialogFooter><Button variant="outline" onClick={() => setTakeoffEvidenceOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" onClick={submitTakeoffEvidence} disabled={linkTakeoffEvidence.isPending || availableEvidence.isError}>关联证据</Button></DialogFooter></DialogContent></Dialog>
   </div></div>;

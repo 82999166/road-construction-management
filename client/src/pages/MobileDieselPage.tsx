@@ -8,12 +8,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MobileAccessGate } from "@/components/MobileAccessGate";
 import { DieselSummaryPrintDialog } from "@/components/DieselSummaryPrintDialog";
 import { formatChinaDateTime, toDeviceDateTimeInput } from "@/lib/businessTime";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
 import { ArrowLeft, Camera, Fuel, Plus, Printer, ReceiptText, RefreshCw, Tractor, Truck, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, type EvidenceWatermarkTemplate } from "../../../shared/watermarkTemplate";
 
@@ -102,7 +103,7 @@ function getCurrentLocation() {
 /** 移动柴油管理展示真实台账；领用登记仅在柴油登记和现场取证权限均满足时开放。 */
 export default function MobileDieselPage() {
   const { user, isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const [projectId, setProjectId] = useState<number>();
   const [dieselPrintOpen, setDieselPrintOpen] = useState(false);
@@ -113,6 +114,33 @@ export default function MobileDieselPage() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
+  const deviceDraftKey = `diesel-refuel:${projectId ?? "pending"}`;
+  const localDraftPayload = useMemo(() => ({
+    assetType: draft.assetType,
+    assetId: draft.assetId,
+    supplyMethod: draft.supplyMethod,
+    liters: draft.liters,
+    actualUnitPrice: draft.actualUnitPrice,
+    deductFromFreight: draft.deductFromFreight,
+    refueledAt: draft.refueledAt,
+    meterReading: draft.meterReading,
+    remarks: draft.remarks,
+  }), [draft]);
+  const localDraftDirty = refuelOpen && (hasMobileDraftContent(localDraftPayload, ["assetType", "supplyMethod", "refueledAt"]) || Boolean(photoFile));
+
+  const { requestClose: requestRefuelClose } = useMobileFormProtection({
+    id: "diesel-refuel-form",
+    label: photoFile ? "柴油领用（加油表照片需重新拍摄）" : "柴油领用",
+    isDirty: localDraftDirty,
+    saveDraft: () => {
+      if (!saveMobileDraft(deviceDraftKey, localDraftPayload)) throw new Error("本机草稿保存失败");
+      toast.success("柴油领用文字内容已保存到本机草稿；加油表照片需重新拍摄");
+    },
+    discard: () => {
+      clearMobileDraft(deviceDraftKey);
+      closeRefuelDialog();
+    },
+  });
   const overview = trpc.diesel.mobileOverview.useQuery(projectId ? { projectId } : undefined, { enabled: isAuthenticated, retry: false });
   const selectedProjectId = projectId ?? 0;
   const refuelOptions = trpc.diesel.mobileRefuelOptions.useQuery({ projectId: selectedProjectId }, { enabled: isAuthenticated && refuelOpen && Boolean(selectedProjectId) && Boolean(overview.data?.capabilities?.canCreateRefuel), retry: false });
@@ -120,6 +148,7 @@ export default function MobileDieselPage() {
   const evidenceUpload = trpc.evidence.upload.useMutation({ onError: error => toast.error(getUserFacingErrorMessage(error, "加油表照片归档失败，请稍后重试")) });
   const refuelCreate = trpc.diesel.mobileCreateRefuel.useMutation({
     onSuccess: async result => {
+      clearMobileDraft(deviceDraftKey);
       toast.success(`柴油领用已记账：${result.recordNo} · ${money(result.amount)}`);
       closeRefuelDialog();
       await Promise.all([utils.diesel.mobileOverview.invalidate(), utils.diesel.mobileRefuelOptions.invalidate()]);
@@ -138,6 +167,15 @@ export default function MobileDieselPage() {
   useEffect(() => {
     if (!projectId && overview.data?.selectedProjectId) setProjectId(overview.data.selectedProjectId);
   }, [overview.data?.selectedProjectId, projectId]);
+  useEffect(() => {
+    if (!refuelOpen) return;
+    const saved = readMobileDraft<typeof localDraftPayload>(deviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    setDraft(current => ({ ...current, ...saved.value }));
+    toast.info("已恢复这台设备上的柴油领用文字草稿；加油表照片需重新拍摄。");
+  // 仅在领用窗口首次打开或切换项目时恢复。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refuelOpen, deviceDraftKey]);
   useEffect(() => {
     if (!cameraOpen || !cameraVideoRef.current || !cameraStreamRef.current) return;
     cameraVideoRef.current.srcObject = cameraStreamRef.current;
@@ -249,7 +287,7 @@ export default function MobileDieselPage() {
       </>}
     </main>
     <DieselSummaryPrintDialog open={dieselPrintOpen} onOpenChange={setDieselPrintOpen} projectId={selectedProjectId} projectName={selectedProjectName} />
-    <Dialog open={refuelOpen} onOpenChange={open => { if (!open) closeRefuelDialog(); }}><DialogContent className="max-h-[92vh] overflow-y-auto"><DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>加油表必须由后置相机现场直拍并生成工程水印；保存后直接记账，金额由服务端按有效指导价或实际油价固化。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><div><Label>资源类型</Label><Select value={draft.assetType} onValueChange={value => setDraft(current => ({ ...current, assetType: value as "vehicle" | "machine", assetId: "", deductFromFreight: false }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vehicle">车辆</SelectItem><SelectItem value="machine">机械</SelectItem></SelectContent></Select></div><div><Label>{draft.assetType === "vehicle" ? "车辆" : "机械"}</Label><Select value={draft.assetId} onValueChange={value => setDraft(current => ({ ...current, assetId: value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目资源" /></SelectTrigger><SelectContent>{assets.map(asset => <SelectItem key={asset.id} value={String(asset.id)}>{asset.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid grid-cols-2 gap-3"><div><Label>供油方式</Label><Select value={draft.supplyMethod} onValueChange={value => setDraft(current => ({ ...current, supplyMethod: value as "project_supply" | "external_station" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select></div><div><Label>加油升数（L）</Label><Input className="mt-1" inputMode="decimal" type="number" min="0.001" step="0.001" value={draft.liters} onChange={event => setDraft(current => ({ ...current, liters: event.target.value }))} /></div></div>{draft.supplyMethod === "external_station" ? <div className="grid grid-cols-2 gap-3"><div><Label>加油站 / 供应商</Label><Input className="mt-1" value={draft.stationOrSupplierName} onChange={event => setDraft(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></div><div><Label>实际单价（元/L）</Label><Input className="mt-1" inputMode="decimal" type="number" min="0.01" step="0.01" value={draft.actualUnitPrice} onChange={event => setDraft(current => ({ ...current, actualUnitPrice: event.target.value }))} /></div></div> : <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">项目部供油将由服务端匹配加油日期的有效柴油指导价；若未维护有效指导价，系统会拒绝记账。</p>}<div className="grid grid-cols-2 gap-3"><div><Label>加油时间</Label><Input className="mt-1" type="datetime-local" value={draft.refueledAt} onChange={event => setDraft(current => ({ ...current, refueledAt: event.target.value }))} /></div><div><Label>油表 / 里程读数</Label><Input className="mt-1" inputMode="decimal" type="number" min="0" step="0.01" value={draft.meterReading} onChange={event => setDraft(current => ({ ...current, meterReading: event.target.value }))} /></div></div>{recentDuplicateRefuel ? <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-800">检测到最近 {DUPLICATE_REFUEL_WINDOW_MILLISECONDS / 60_000} 分钟内相同资源、相同加油量的记录（{recentDuplicateRefuel.recordNo}）。为防止重复入账，本次保存已禁用；如确为不同加油，请核对时间或升数后再登记。</p> : null}{draft.assetType === "vehicle" && data?.capabilities?.canSettleDeduction ? <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950"><Checkbox checked={draft.deductFromFreight} onCheckedChange={checked => setDraft(current => ({ ...current, deductFromFreight: Boolean(checked) }))} /><span><strong>本次油款从渣土车运费结算中扣除。</strong><br />系统将按车辆运输结算规则统一归集，不选择某一趟运输单。</span></label> : null}<div><Label>小票 / 凭证号</Label><Input className="mt-1" value={draft.receiptNo} onChange={event => setDraft(current => ({ ...current, receiptNo: event.target.value }))} placeholder="可选" /></div><div><Label>说明</Label><Input className="mt-1" value={draft.remarks} onChange={event => setDraft(current => ({ ...current, remarks: event.target.value }))} placeholder="用途或异常说明（可选）" /></div><div className="rounded-xl border border-[#79a57f] bg-[#f4fbf1] p-3"><p className="text-xs leading-5 text-[#47754d]">加油表现场照片为必拍项：仅支持后置相机直拍，不提供相册选择；照片会写入项目、时间、操作人和防伪编号水印。</p>{cameraOpen ? <div className="mt-2 overflow-hidden rounded-xl bg-[#18301d]"><video ref={cameraVideoRef} className="aspect-[4/3] w-full bg-black object-cover" autoPlay playsInline muted /><div className="grid grid-cols-2 gap-2 p-2"><Button type="button" variant="outline" className="bg-white text-[#47754d]" onClick={stopCamera}>取消拍照</Button><Button type="button" className="bg-[#47754d] text-white hover:bg-[#39623e]" onClick={capturePhoto}><Camera className="mr-1 h-4 w-4" />确认照片</Button></div></div> : <Button type="button" variant="outline" className="mt-2 h-10 w-full border-dashed border-[#79a57f] text-[#47754d]" onClick={() => void startCamera()}><Camera className="mr-2 h-4 w-4" />打开后置相机拍摄加油表</Button>}{photoPreview ? <div className="mt-2"><img src={photoPreview} alt="待归档加油表现场照片" className="max-h-56 w-full rounded-xl border border-[#c6ddc5] object-cover" /><Button type="button" variant="ghost" size="sm" className="mt-1 h-7 px-2 text-xs text-[#47754d]" onClick={() => void startCamera()}><Camera className="mr-1 h-3.5 w-3.5" />重新拍摄</Button></div> : null}</div></div><DialogFooter><Button variant="outline" onClick={closeRefuelDialog}>取消</Button><Button className="bg-[#a65e2d] text-white hover:bg-[#884a22]" disabled={refuelCreate.isPending || evidenceUpload.isPending || !draft.assetId || !draft.liters || !photoFile || Boolean(captureConfig.error) || Boolean(recentDuplicateRefuel)} onClick={() => void submitRefuel()}>{refuelCreate.isPending || evidenceUpload.isPending ? "正在归档并记账…" : recentDuplicateRefuel ? "检测到重复记录" : "保存并直接记账"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={refuelOpen} onOpenChange={open => { if (open) setRefuelOpen(true); else requestRefuelClose(closeRefuelDialog); }}><DialogContent className="max-h-[92vh] overflow-y-auto"><DialogHeader><DialogTitle>登记柴油领用</DialogTitle><DialogDescription>加油表必须由后置相机现场直拍并生成工程水印；保存后直接记账，金额由服务端按有效指导价或实际油价固化。</DialogDescription></DialogHeader><div className="grid gap-3 py-2"><div className="grid grid-cols-2 gap-3"><div><Label>资源类型</Label><Select value={draft.assetType} onValueChange={value => setDraft(current => ({ ...current, assetType: value as "vehicle" | "machine", assetId: "", deductFromFreight: false }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="vehicle">车辆</SelectItem><SelectItem value="machine">机械</SelectItem></SelectContent></Select></div><div><Label>{draft.assetType === "vehicle" ? "车辆" : "机械"}</Label><Select value={draft.assetId} onValueChange={value => setDraft(current => ({ ...current, assetId: value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="选择项目资源" /></SelectTrigger><SelectContent>{assets.map(asset => <SelectItem key={asset.id} value={String(asset.id)}>{asset.label}</SelectItem>)}</SelectContent></Select></div></div><div className="grid grid-cols-2 gap-3"><div><Label>供油方式</Label><Select value={draft.supplyMethod} onValueChange={value => setDraft(current => ({ ...current, supplyMethod: value as "project_supply" | "external_station" }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="project_supply">项目部供油</SelectItem><SelectItem value="external_station">加油站现金加油</SelectItem></SelectContent></Select></div><div><Label>加油升数（L）</Label><Input className="mt-1" inputMode="decimal" type="number" min="0.001" step="0.001" value={draft.liters} onChange={event => setDraft(current => ({ ...current, liters: event.target.value }))} /></div></div>{draft.supplyMethod === "external_station" ? <div className="grid grid-cols-2 gap-3"><div><Label>加油站 / 供应商</Label><Input className="mt-1" value={draft.stationOrSupplierName} onChange={event => setDraft(current => ({ ...current, stationOrSupplierName: event.target.value }))} /></div><div><Label>实际单价（元/L）</Label><Input className="mt-1" inputMode="decimal" type="number" min="0.01" step="0.01" value={draft.actualUnitPrice} onChange={event => setDraft(current => ({ ...current, actualUnitPrice: event.target.value }))} /></div></div> : <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">项目部供油将由服务端匹配加油日期的有效柴油指导价；若未维护有效指导价，系统会拒绝记账。</p>}<div className="grid grid-cols-2 gap-3"><div><Label>加油时间</Label><Input className="mt-1" type="datetime-local" value={draft.refueledAt} onChange={event => setDraft(current => ({ ...current, refueledAt: event.target.value }))} /></div><div><Label>油表 / 里程读数</Label><Input className="mt-1" inputMode="decimal" type="number" min="0" step="0.01" value={draft.meterReading} onChange={event => setDraft(current => ({ ...current, meterReading: event.target.value }))} /></div></div>{recentDuplicateRefuel ? <p className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-800">检测到最近 {DUPLICATE_REFUEL_WINDOW_MILLISECONDS / 60_000} 分钟内相同资源、相同加油量的记录（{recentDuplicateRefuel.recordNo}）。为防止重复入账，本次保存已禁用；如确为不同加油，请核对时间或升数后再登记。</p> : null}{draft.assetType === "vehicle" && data?.capabilities?.canSettleDeduction ? <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950"><Checkbox checked={draft.deductFromFreight} onCheckedChange={checked => setDraft(current => ({ ...current, deductFromFreight: Boolean(checked) }))} /><span><strong>本次油款从渣土车运费结算中扣除。</strong><br />系统将按车辆运输结算规则统一归集，不选择某一趟运输单。</span></label> : null}<div><Label>小票 / 凭证号</Label><Input className="mt-1" value={draft.receiptNo} onChange={event => setDraft(current => ({ ...current, receiptNo: event.target.value }))} placeholder="可选" /></div><div><Label>说明</Label><Input className="mt-1" value={draft.remarks} onChange={event => setDraft(current => ({ ...current, remarks: event.target.value }))} placeholder="用途或异常说明（可选）" /></div><div className="rounded-xl border border-[#79a57f] bg-[#f4fbf1] p-3"><p className="text-xs leading-5 text-[#47754d]">加油表现场照片为必拍项：仅支持后置相机直拍，不提供相册选择；照片会写入项目、时间、操作人和防伪编号水印。</p>{cameraOpen ? <div className="mt-2 overflow-hidden rounded-xl bg-[#18301d]"><video ref={cameraVideoRef} className="aspect-[4/3] w-full bg-black object-cover" autoPlay playsInline muted /><div className="grid grid-cols-2 gap-2 p-2"><Button type="button" variant="outline" className="bg-white text-[#47754d]" onClick={stopCamera}>取消拍照</Button><Button type="button" className="bg-[#47754d] text-white hover:bg-[#39623e]" onClick={capturePhoto}><Camera className="mr-1 h-4 w-4" />确认照片</Button></div></div> : <Button type="button" variant="outline" className="mt-2 h-10 w-full border-dashed border-[#79a57f] text-[#47754d]" onClick={() => void startCamera()}><Camera className="mr-2 h-4 w-4" />打开后置相机拍摄加油表</Button>}{photoPreview ? <div className="mt-2"><img src={photoPreview} alt="待归档加油表现场照片" className="max-h-56 w-full rounded-xl border border-[#c6ddc5] object-cover" /><Button type="button" variant="ghost" size="sm" className="mt-1 h-7 px-2 text-xs text-[#47754d]" onClick={() => void startCamera()}><Camera className="mr-1 h-3.5 w-3.5" />重新拍摄</Button></div> : null}</div></div><DialogFooter><Button variant="outline" onClick={() => requestRefuelClose(closeRefuelDialog)}>取消</Button><Button variant="secondary" onClick={() => { if (saveMobileDraft(deviceDraftKey, localDraftPayload)) toast.success("柴油领用文字内容已保存到本机草稿；加油表照片需重新拍摄"); else toast.error("本机草稿保存失败，请检查设备存储权限"); }}>保存本机草稿</Button><Button className="bg-[#a65e2d] text-white hover:bg-[#884a22]" disabled={refuelCreate.isPending || evidenceUpload.isPending || !draft.assetId || !draft.liters || !photoFile || Boolean(captureConfig.error) || Boolean(recentDuplicateRefuel)} onClick={() => void submitRefuel()}>{refuelCreate.isPending || evidenceUpload.isPending ? "正在归档并记账…" : recentDuplicateRefuel ? "检测到重复记录" : "保存并直接记账"}</Button></DialogFooter></DialogContent></Dialog>
   </div></div>;
 }
 

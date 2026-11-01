@@ -6,15 +6,19 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MobileAccessGate } from "@/components/MobileAccessGate";
+import { useMobileFormProtection, useMobileSafeNavigate } from "@/contexts/MobileFormProtectionContext";
+import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDraft } from "@/lib/mobileDraftStorage";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ArrowLeft, Calculator, CheckCircle2, CircleHelp, FilePlus2, HardHat, UsersRound, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
 
 type SubcontractUnit = "m3" | "m2" | "m" | "t" | "piece" | "set" | "other";
+function emptyTeamDraft() { return { teamName: "", contactName: "", contactPhone: "", remarks: "" }; }
+function emptyPackageDraft() { return { subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3" as SubcontractUnit, quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", priceExceptionReason: "", remarks: "" }; }
+function sameDraft(left: Record<string, unknown>, right: Record<string, unknown>) { return JSON.stringify(left) === JSON.stringify(right); }
 
 function money(value: string | number | null | undefined) {
   return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -35,24 +39,15 @@ function teamStatus(status: string) {
 /** 移动端分包台账始终调用 PC 端共用的 tRPC 路由，不在设备侧保存业务数据。 */
 export default function MobileSubcontractPage() {
   const { isAuthenticated, loading, authLoadingTimedOut, refresh } = useAuth();
-  const [, navigate] = useLocation();
+  const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
   const [projectId, setProjectId] = useState<number>();
   const [teamOpen, setTeamOpen] = useState(false);
   const [packageOpen, setPackageOpen] = useState(false);
-  const [teamDraft, setTeamDraft] = useState({ teamName: "", contactName: "", contactPhone: "", remarks: "" });
-  const [packageDraft, setPackageDraft] = useState({
-    subcontractTeamId: "",
-    measurementTakeoffId: "",
-    workItem: "",
-    workLocation: "",
-    unit: "m3" as SubcontractUnit,
-    quantity: "",
-    upstreamUnitPrice: "",
-    subcontractUnitPrice: "",
-    priceExceptionReason: "",
-    remarks: "",
-  });
+  const [teamDraft, setTeamDraft] = useState(emptyTeamDraft);
+  const [teamInitialLocalDraft, setTeamInitialLocalDraft] = useState<Record<string, unknown>>(emptyTeamDraft());
+  const [packageDraft, setPackageDraft] = useState(emptyPackageDraft);
+  const [packageInitialDraft, setPackageInitialDraft] = useState<Record<string, unknown>>(emptyPackageDraft());
 
   const projects = trpc.measurement.projectOptions.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   useEffect(() => {
@@ -60,6 +55,79 @@ export default function MobileSubcontractPage() {
   }, [projectId, projects.data]);
 
   const selectedProjectId = projectId ?? 0;
+  /** 联系人、电话以及关联的业务记录 ID 仅保留在当前内存，不会写入本机草稿。 */
+  const teamDeviceDraftKey = `subcontract-team:${selectedProjectId || "pending"}:new`;
+  const teamDeviceDraft = useMemo(() => ({ teamName: teamDraft.teamName, remarks: teamDraft.remarks }), [teamDraft]);
+  const packageDeviceDraftKey = `subcontract-package:${selectedProjectId || "pending"}:new`;
+  const packageDeviceDraft = useMemo(() => ({
+    workItem: packageDraft.workItem,
+    workLocation: packageDraft.workLocation,
+    unit: packageDraft.unit,
+    quantity: packageDraft.quantity,
+    upstreamUnitPrice: packageDraft.upstreamUnitPrice,
+    subcontractUnitPrice: packageDraft.subcontractUnitPrice,
+    priceExceptionReason: packageDraft.priceExceptionReason,
+    remarks: packageDraft.remarks,
+  }), [packageDraft]);
+  const teamLocalDraftDirty = teamOpen && !sameDraft(teamDraft, teamInitialLocalDraft);
+  const packageLocalDraftDirty = packageOpen && !sameDraft(packageDraft, packageInitialDraft);
+
+  function resetTeamForm() {
+    setTeamOpen(false);
+    setTeamDraft(emptyTeamDraft());
+    setTeamInitialLocalDraft(emptyTeamDraft());
+  }
+  function resetPackageForm() {
+    setPackageOpen(false);
+    setPackageDraft(emptyPackageDraft());
+    setPackageInitialDraft(emptyPackageDraft());
+  }
+  function saveTeamDeviceDraft() {
+    if (hasMobileDraftContent(teamDeviceDraft) && !saveMobileDraft(teamDeviceDraftKey, teamDeviceDraft)) throw new Error("本机草稿保存失败");
+    setTeamInitialLocalDraft(current => ({ ...current, ...teamDeviceDraft }));
+    toast.success(hasMobileDraftContent(teamDeviceDraft) ? "施工队名称和备注已保存到本机草稿；联系人及电话不会保存" : "联系人及电话不会保存到本机草稿");
+  }
+  function savePackageDeviceDraft() {
+    if (hasMobileDraftContent(packageDeviceDraft) && !saveMobileDraft(packageDeviceDraftKey, packageDeviceDraft)) throw new Error("本机草稿保存失败");
+    setPackageInitialDraft(current => ({ ...current, ...packageDeviceDraft }));
+    toast.success(hasMobileDraftContent(packageDeviceDraft) ? "分包批次内容已保存到本机草稿；施工队和收方关联需重新选择" : "施工队和收方关联不会保存到本机草稿");
+  }
+  const { requestClose: requestTeamClose } = useMobileFormProtection({
+    id: "mobile-subcontract-team-form",
+    label: "外包劳务施工队",
+    isDirty: teamLocalDraftDirty,
+    saveDraft: saveTeamDeviceDraft,
+    discard: () => { clearMobileDraft(teamDeviceDraftKey); resetTeamForm(); },
+  });
+  const { requestClose: requestPackageClose } = useMobileFormProtection({
+    id: "mobile-subcontract-package-form",
+    label: "劳务队分包批次",
+    isDirty: packageLocalDraftDirty,
+    saveDraft: savePackageDeviceDraft,
+    discard: () => { clearMobileDraft(packageDeviceDraftKey); resetPackageForm(); },
+  });
+  useEffect(() => {
+    if (!teamOpen) return;
+    const saved = readMobileDraft<typeof teamDeviceDraft>(teamDeviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    const restored = { ...emptyTeamDraft(), ...saved.value };
+    setTeamDraft(restored);
+    setTeamInitialLocalDraft(restored);
+    toast.info("已恢复这台设备上未提交的施工队草稿；联系人及电话需重新填写。");
+  // 仅在表单首次打开或切换项目时恢复，避免输入中被重复覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamOpen, teamDeviceDraftKey]);
+  useEffect(() => {
+    if (!packageOpen) return;
+    const saved = readMobileDraft<typeof packageDeviceDraft>(packageDeviceDraftKey);
+    if (!saved || !hasMobileDraftContent(saved.value)) return;
+    const restored = { ...emptyPackageDraft(), ...saved.value };
+    setPackageDraft(restored);
+    setPackageInitialDraft(restored);
+    toast.info("已恢复这台设备上未提交的分包批次草稿；施工队和收方关联需重新选择。");
+  // 仅在表单首次打开或切换项目时恢复，避免输入中被重复覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [packageOpen, packageDeviceDraftKey]);
   const projectInput = useMemo(() => ({ projectId: selectedProjectId }), [selectedProjectId]);
   const subcontractCapabilitiesQuery = trpc.subcontract.capabilities.useQuery(undefined, { enabled: isAuthenticated, retry: false });
   /** 手机端可录入草稿和现场复核，但审核、付款与最终结算必须回到PC应付付款台账。 */
@@ -89,9 +157,9 @@ export default function MobileSubcontractPage() {
 
   const saveTeam = trpc.subcontract.saveTeam.useMutation({
     onSuccess: async () => {
+      clearMobileDraft(teamDeviceDraftKey);
       toast.success("施工队台账已保存，现在可录入分包批次");
-      setTeamOpen(false);
-      setTeamDraft({ teamName: "", contactName: "", contactPhone: "", remarks: "" });
+      resetTeamForm();
       await refreshData();
     },
     onError: error => toast.error(getUserFacingErrorMessage(error, "分包操作未完成，请稍后重试")),
@@ -99,9 +167,9 @@ export default function MobileSubcontractPage() {
 
   const savePackage = trpc.subcontract.savePackage.useMutation({
     onSuccess: async result => {
+      clearMobileDraft(packageDeviceDraftKey);
       toast.success(`分包批次草稿已保存，测算差额 ${money(result.marginAmount)}`);
-      setPackageOpen(false);
-      setPackageDraft({ subcontractTeamId: "", measurementTakeoffId: "", workItem: "", workLocation: "", unit: "m3", quantity: "", upstreamUnitPrice: "", subcontractUnitPrice: "", priceExceptionReason: "", remarks: "" });
+      resetPackageForm();
       await refreshData();
     },
     onError: error => toast.error(getUserFacingErrorMessage(error, "分包操作未完成，请稍后重试")),
@@ -131,6 +199,16 @@ export default function MobileSubcontractPage() {
       quantity: String(takeoff.quantity),
       upstreamUnitPrice: String(takeoff.unitPrice),
     }));
+  };
+  const openTeamForm = () => {
+    setTeamDraft(emptyTeamDraft());
+    setTeamInitialLocalDraft(emptyTeamDraft());
+    setTeamOpen(true);
+  };
+  const openPackageForm = () => {
+    setPackageDraft(emptyPackageDraft());
+    setPackageInitialDraft(emptyPackageDraft());
+    setPackageOpen(true);
   };
 
   if (loading || !isAuthenticated || projects.isLoading) {
@@ -164,7 +242,7 @@ export default function MobileSubcontractPage() {
           <section className="rounded-2xl border border-[#d8b781] bg-white p-4 shadow-sm"><div className="flex items-start gap-3"><WalletCards className="mt-0.5 h-5 w-5 shrink-0 text-[#8b4a29]" /><div><p className="text-sm font-semibold text-[#683a24]">分包应付付款状态（手机只读）</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">已确认包件须在 PC“分包应付结算与付款台账”建立应付单、会计审核并登记付款。手机端只查看状态，不提供审核、付款或导出操作。</p></div></div><div className="mt-3 space-y-2">{paymentSettlements.isLoading ? <p className="text-xs text-[#8f7566]">正在读取应付付款状态…</p> : paymentSettlements.data?.length ? paymentSettlements.data.slice(0, 5).map(item => <div key={item.id} className="flex items-center justify-between rounded-lg bg-[#fff7ed] px-3 py-2 text-xs"><div><p className="font-medium">{item.settlementNo}</p><p className="mt-0.5 text-[#8f7566]">{money(item.netPayableAmount)} · {item.payeeName}</p></div><span className={item.status === "paid" ? "font-medium text-emerald-700" : "font-medium text-amber-700"}>{paymentSettlementStatus(item.status)}</span></div>) : <p className="rounded-lg bg-[#fff7ed] px-3 py-2 text-xs text-[#8f7566]">当前项目尚未建立分包应付结算单。</p>}</div></section>
 
           <section className="rounded-2xl bg-[#f0dfc7] px-4 py-3">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold">施工队与分包批次录入</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">先建立施工队。录入批次时选择已审核收方即可自动带入工程量与上游单价。</p></div><div className="flex shrink-0 gap-1">{canMaintainDraft ? <Button size="sm" variant="ghost" className="text-[#8b3f20] hover:bg-[#e8cda9]" onClick={() => setTeamOpen(true)}><UsersRound className="mr-1 h-4 w-4" />施工队</Button> : null}{canMaintainDraft ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" disabled={!activeTeams.length} onClick={() => setPackageOpen(true)}><FilePlus2 className="mr-1 h-4 w-4" />录入批次</Button> : null}</div></div>
+            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold">施工队与分包批次录入</p><p className="mt-1 text-xs leading-5 text-[#7d563d]">先建立施工队。录入批次时选择已审核收方即可自动带入工程量与上游单价。</p></div><div className="flex shrink-0 gap-1">{canMaintainDraft ? <Button size="sm" variant="ghost" className="text-[#8b3f20] hover:bg-[#e8cda9]" onClick={openTeamForm}><UsersRound className="mr-1 h-4 w-4" />施工队</Button> : null}{canMaintainDraft ? <Button size="sm" className="bg-[#6d3421] hover:bg-[#542516]" disabled={!activeTeams.length} onClick={openPackageForm}><FilePlus2 className="mr-1 h-4 w-4" />录入批次</Button> : null}</div></div>
             {!canMaintainDraft ? <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">当前岗位仅可查看分包批次。项目经理或施工负责人可建立施工队并录入分包草稿。</p> : null}
             {canMaintainDraft && !activeTeams.length ? <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">当前项目尚无启用施工队，请先点击“施工队”建立外包劳务队台账。</p> : null}
           </section>
@@ -175,9 +253,9 @@ export default function MobileSubcontractPage() {
         </>}
       </main>
 
-      <Dialog open={teamOpen} onOpenChange={setTeamOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>新建外包劳务施工队</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>施工队名称</Label><Input className="mt-1" value={teamDraft.teamName} onChange={event => setTeamDraft(current => ({ ...current, teamName: event.target.value }))} /></div><div><Label>联系人</Label><Input className="mt-1" value={teamDraft.contactName} onChange={event => setTeamDraft(current => ({ ...current, contactName: event.target.value }))} /></div><div><Label>联系人电话（可选）</Label><Input className="mt-1" inputMode="tel" value={teamDraft.contactPhone} onChange={event => setTeamDraft(current => ({ ...current, contactPhone: event.target.value }))} /></div><div><Label>备注</Label><Textarea className="mt-1" value={teamDraft.remarks} onChange={event => setTeamDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setTeamOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" disabled={!teamDraft.teamName.trim() || saveTeam.isPending} onClick={() => saveTeam.mutate({ projectId: selectedProjectId, teamName: teamDraft.teamName.trim(), contactName: teamDraft.contactName.trim() || null, contactPhone: teamDraft.contactPhone.trim() || undefined, status: "active", remarks: teamDraft.remarks.trim() || null })}>保存施工队</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={teamOpen} onOpenChange={open => { if (open) setTeamOpen(true); else requestTeamClose(resetTeamForm); }}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>新建外包劳务施工队</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>施工队名称</Label><Input className="mt-1" value={teamDraft.teamName} onChange={event => setTeamDraft(current => ({ ...current, teamName: event.target.value }))} /></div><div><Label>联系人</Label><Input className="mt-1" value={teamDraft.contactName} onChange={event => setTeamDraft(current => ({ ...current, contactName: event.target.value }))} /></div><div><Label>联系人电话（可选）</Label><Input className="mt-1" inputMode="tel" value={teamDraft.contactPhone} onChange={event => setTeamDraft(current => ({ ...current, contactPhone: event.target.value }))} /></div><div><Label>备注</Label><Textarea className="mt-1" value={teamDraft.remarks} onChange={event => setTeamDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => requestTeamClose(resetTeamForm)}>取消</Button><Button variant="secondary" onClick={() => { try { saveTeamDeviceDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" disabled={!teamDraft.teamName.trim() || saveTeam.isPending} onClick={() => saveTeam.mutate({ projectId: selectedProjectId, teamName: teamDraft.teamName.trim(), contactName: teamDraft.contactName.trim() || null, contactPhone: teamDraft.contactPhone.trim() || undefined, status: "active", remarks: teamDraft.remarks.trim() || null })}>保存施工队</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={packageOpen} onOpenChange={setPackageOpen}><DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>录入劳务队分包批次</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">优先选择已审核收方。关联后，工作项、位置、单位、工程量和上游单价由收方快照带入；累计分配量由服务端校验。</p><div><Label>施工队</Label><Select value={packageDraft.subcontractTeamId || "UNASSIGNED"} onValueChange={value => setPackageDraft(current => ({ ...current, subcontractTeamId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="选择施工队" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择施工队</SelectItem>{activeTeams.map(team => <SelectItem key={team.id} value={String(team.id)}>{team.teamName}</SelectItem>)}</SelectContent></Select></div><div><Label>关联已审核收方（可选）</Label><Select value={packageDraft.measurementTakeoffId || "UNLINKED"} onValueChange={chooseTakeoff}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNLINKED">独立分包测算</SelectItem>{eligibleTakeoffs.map(takeoff => <SelectItem key={takeoff.id} value={String(takeoff.id)}>{takeoff.takeoffNo} · {takeoff.workItem}</SelectItem>)}</SelectContent></Select></div>{!eligibleTakeoffs.length && !takeoffs.isLoading ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">当前项目没有已审核收方。可选择独立分包测算，或返回计量页先录入并审核项目部收方。</p> : null}<div><Label>工作项</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} value={packageDraft.workItem} onChange={event => setPackageDraft(current => ({ ...current, workItem: event.target.value }))} /></div><div><Label>施工位置</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} value={packageDraft.workLocation} onChange={event => setPackageDraft(current => ({ ...current, workLocation: event.target.value }))} /></div><div className="grid grid-cols-2 gap-3"><div><Label>单位</Label><Select value={packageDraft.unit} disabled={Boolean(chosenTakeoff)} onValueChange={value => setPackageDraft(current => ({ ...current, unit: value as SubcontractUnit }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="m3">m³</SelectItem><SelectItem value="m2">m²</SelectItem><SelectItem value="m">m</SelectItem><SelectItem value="t">t</SelectItem><SelectItem value="piece">件</SelectItem><SelectItem value="set">套</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div><div><Label>工程量</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} inputMode="decimal" value={packageDraft.quantity} onChange={event => setPackageDraft(current => ({ ...current, quantity: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-3"><div><Label>上游单价</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} inputMode="decimal" value={packageDraft.upstreamUnitPrice} onChange={event => setPackageDraft(current => ({ ...current, upstreamUnitPrice: event.target.value }))} /></div><div><Label>劳务队分包单价</Label><Input className="mt-1" inputMode="decimal" value={packageDraft.subcontractUnitPrice} onChange={event => setPackageDraft(current => ({ ...current, subcontractUnitPrice: event.target.value }))} /></div></div><div className="grid grid-cols-3 gap-2 rounded-xl bg-[#f0dfc7] p-3 text-center text-xs"><div>上游<p className="mt-1 font-semibold">{money(upstreamAmount)}</p></div><div>分包<p className="mt-1 font-semibold">{money(subcontractAmount)}</p></div><div>差额<p className="mt-1 font-semibold">{money(upstreamAmount - subcontractAmount)}</p></div></div><div><Label>备注</Label><Textarea className="mt-1" value={packageDraft.remarks} onChange={event => setPackageDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setPackageOpen(false)}>取消</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" disabled={!packageDraft.subcontractTeamId || packageDraft.workItem.trim().length < 2 || Number(packageDraft.quantity) <= 0 || Number(packageDraft.upstreamUnitPrice) < 0 || Number(packageDraft.subcontractUnitPrice) < 0 || savePackage.isPending} onClick={() => savePackage.mutate({ projectId: selectedProjectId, measurementTakeoffId: packageDraft.measurementTakeoffId ? Number(packageDraft.measurementTakeoffId) : null, subcontractTeamId: Number(packageDraft.subcontractTeamId), workItem: packageDraft.workItem.trim(), workLocation: packageDraft.workLocation.trim() || null, unit: packageDraft.unit, quantity: Number(packageDraft.quantity), upstreamUnitPrice: Number(packageDraft.upstreamUnitPrice), subcontractUnitPrice: Number(packageDraft.subcontractUnitPrice), remarks: packageDraft.remarks.trim() || null })}><Calculator className="mr-1 h-4 w-4" />保存分包草稿</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={packageOpen} onOpenChange={open => { if (open) setPackageOpen(true); else requestPackageClose(resetPackageForm); }}><DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>录入劳务队分包批次</DialogTitle></DialogHeader><div className="space-y-3"><p className="rounded-lg bg-[#f8ead8] px-3 py-2 text-xs text-[#7d563d]">优先选择已审核收方。关联后，工作项、位置、单位、工程量和上游单价由收方快照带入；累计分配量由服务端校验。</p><div><Label>施工队</Label><Select value={packageDraft.subcontractTeamId || "UNASSIGNED"} onValueChange={value => setPackageDraft(current => ({ ...current, subcontractTeamId: value === "UNASSIGNED" ? "" : value }))}><SelectTrigger className="mt-1"><SelectValue placeholder="选择施工队" /></SelectTrigger><SelectContent><SelectItem value="UNASSIGNED">请选择施工队</SelectItem>{activeTeams.map(team => <SelectItem key={team.id} value={String(team.id)}>{team.teamName}</SelectItem>)}</SelectContent></Select></div><div><Label>关联已审核收方（可选）</Label><Select value={packageDraft.measurementTakeoffId || "UNLINKED"} onValueChange={chooseTakeoff}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="UNLINKED">独立分包测算</SelectItem>{eligibleTakeoffs.map(takeoff => <SelectItem key={takeoff.id} value={String(takeoff.id)}>{takeoff.takeoffNo} · {takeoff.workItem}</SelectItem>)}</SelectContent></Select></div>{!eligibleTakeoffs.length && !takeoffs.isLoading ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">当前项目没有已审核收方。可选择独立分包测算，或返回计量页先录入并审核项目部收方。</p> : null}<div><Label>工作项</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} value={packageDraft.workItem} onChange={event => setPackageDraft(current => ({ ...current, workItem: event.target.value }))} /></div><div><Label>施工位置</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} value={packageDraft.workLocation} onChange={event => setPackageDraft(current => ({ ...current, workLocation: event.target.value }))} /></div><div className="grid grid-cols-2 gap-3"><div><Label>单位</Label><Select value={packageDraft.unit} disabled={Boolean(chosenTakeoff)} onValueChange={value => setPackageDraft(current => ({ ...current, unit: value as SubcontractUnit }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="m3">m³</SelectItem><SelectItem value="m2">m²</SelectItem><SelectItem value="m">m</SelectItem><SelectItem value="t">t</SelectItem><SelectItem value="piece">件</SelectItem><SelectItem value="set">套</SelectItem><SelectItem value="other">其他</SelectItem></SelectContent></Select></div><div><Label>工程量</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} inputMode="decimal" value={packageDraft.quantity} onChange={event => setPackageDraft(current => ({ ...current, quantity: event.target.value }))} /></div></div><div className="grid grid-cols-2 gap-3"><div><Label>上游单价</Label><Input className="mt-1" disabled={Boolean(chosenTakeoff)} inputMode="decimal" value={packageDraft.upstreamUnitPrice} onChange={event => setPackageDraft(current => ({ ...current, upstreamUnitPrice: event.target.value }))} /></div><div><Label>劳务队分包单价</Label><Input className="mt-1" inputMode="decimal" value={packageDraft.subcontractUnitPrice} onChange={event => setPackageDraft(current => ({ ...current, subcontractUnitPrice: event.target.value }))} /></div></div><div className="grid grid-cols-3 gap-2 rounded-xl bg-[#f0dfc7] p-3 text-center text-xs"><div>上游<p className="mt-1 font-semibold">{money(upstreamAmount)}</p></div><div>分包<p className="mt-1 font-semibold">{money(subcontractAmount)}</p></div><div>差额<p className="mt-1 font-semibold">{money(upstreamAmount - subcontractAmount)}</p></div></div><div><Label>备注</Label><Textarea className="mt-1" value={packageDraft.remarks} onChange={event => setPackageDraft(current => ({ ...current, remarks: event.target.value }))} /></div></div><DialogFooter><Button variant="outline" onClick={() => requestPackageClose(resetPackageForm)}>取消</Button><Button variant="secondary" onClick={() => { try { savePackageDeviceDraft(); } catch { toast.error("本机草稿保存失败，请检查设备存储权限"); } }}>保存本机草稿</Button><Button className="bg-[#6d3421] hover:bg-[#542516]" disabled={!packageDraft.subcontractTeamId || packageDraft.workItem.trim().length < 2 || Number(packageDraft.quantity) <= 0 || Number(packageDraft.upstreamUnitPrice) < 0 || Number(packageDraft.subcontractUnitPrice) < 0 || savePackage.isPending} onClick={() => savePackage.mutate({ projectId: selectedProjectId, measurementTakeoffId: packageDraft.measurementTakeoffId ? Number(packageDraft.measurementTakeoffId) : null, subcontractTeamId: Number(packageDraft.subcontractTeamId), workItem: packageDraft.workItem.trim(), workLocation: packageDraft.workLocation.trim() || null, unit: packageDraft.unit, quantity: Number(packageDraft.quantity), upstreamUnitPrice: Number(packageDraft.upstreamUnitPrice), subcontractUnitPrice: Number(packageDraft.subcontractUnitPrice), remarks: packageDraft.remarks.trim() || null })}><Calculator className="mr-1 h-4 w-4" />保存分包草稿</Button></DialogFooter></DialogContent></Dialog>
     </div>
   </div>;
 }
