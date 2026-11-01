@@ -31,6 +31,8 @@ describe("后台柴油顶部筛选直接打印", () => {
       "dieselRefuelRecords.data ?? []) as DieselPrintRecord[]"
     );
     expect(source).toContain("导出当前筛选明细");
+    expect(source).toContain('"加油员"');
+    expect(source).toContain('item.refuelerName ?? "未登记"');
     expect(source).not.toContain('aria-label="柴油每日汇总日期"');
     expect(source).not.toContain("dieselDailySummary.data");
   });

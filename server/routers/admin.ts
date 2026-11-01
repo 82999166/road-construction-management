@@ -2813,6 +2813,20 @@ export const adminRouter = router({
               .where(eq(dieselPriceAlertRules.projectId, input.projectId))
               .limit(1)
           : [];
+        /** 加油员固定取该条台账的真实登记人，不能拿当前查看账号冒充历史执行人。 */
+        const refuelerUserIds = Array.from(
+          new Set(filtered.map(row => row.createdBy).filter(Number.isInteger))
+        );
+        const refuelerNames = new Map(
+          refuelerUserIds.length
+            ? (
+                await db
+                  .select({ id: users.id, name: users.name })
+                  .from(users)
+                  .where(inArray(users.id, refuelerUserIds))
+              ).map(user => [user.id, user.name?.trim() || null])
+            : []
+        );
         return Promise.all(
           filtered.map(async row => {
             const [asset] =
@@ -2862,6 +2876,7 @@ export const adminRouter = router({
                 : "未关联资源",
               tripNo: trip?.tripNo ?? null,
               grossFreightAmount: trip?.calculatedAmount ?? null,
+              refuelerName: refuelerNames.get(row.createdBy) ?? null,
               receiptEvidence: evidence
                 ? { ...evidence, url: receiptImageUrl }
                 : null,

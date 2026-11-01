@@ -19,4 +19,21 @@ describe("柴油 A4 明细打印中文状态", () => {
     expect(source).toContain("PRINT_PREVIEW_TABLE_FIT_CLASS");
     expect(source).not.toContain("PRINT_PREVIEW_TABLE_SCROLL_CLASS");
   });
+
+  it("预览和A4打印均使用固定列宽、真实加油员与对应跨列合计，避免表头和汇总错位", () => {
+    expect(source).toContain("refuelerName: string | null");
+    expect(source).toContain('const refuelerName = (value: string | null | undefined) => value?.trim() || "未登记"');
+    expect(source).toContain("PREVIEW_COLUMN_WIDTHS");
+    expect(source).toContain("PRINT_COLUMN_WIDTHS");
+    expect(source).toContain("<colgroup>{PREVIEW_COLUMN_WIDTHS.map");
+    expect(source).toContain("const printColumnGroup");
+    expect(source).toContain("<th>加油员</th>");
+    expect(source).toContain('colspan="12"');
+    expect(source).toContain('colspan="6"');
+    expect(source).toContain('colSpan={5}');
+    expect(source).toContain('colSpan={2}');
+    expect(source).toContain("PRINT_PREVIEW_TABLE_FIT_CLASS");
+    expect(source).toContain("tabular-nums");
+    expect(source).toContain("escapePrintHtml(refuelerName(item.refuelerName))");
+  });
 });

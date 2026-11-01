@@ -21504,6 +21504,7 @@ export default function AdminPage({
                           "资源类型",
                           "供油方式",
                           "供应商/供油点",
+                          "加油员",
                           "升数",
                           "适用单价",
                           "金额",
@@ -21519,6 +21520,7 @@ export default function AdminPage({
                             ? "项目部供油"
                             : "加油站加油",
                           item.stationOrSupplierName ?? "",
+                          item.refuelerName ?? "未登记",
                           Number(item.liters),
                           Number(item.appliedUnitPrice),
                           Number(item.amount),
