@@ -227,7 +227,7 @@ const DailyWagePaymentDialog = lazy(() =>
   }))
 );
 const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v15-20261101_51ac96ea.zip";
+  "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip";
 const PayrollPaymentDialog = lazy(() =>
   import("@/components/PayrollPaymentDialog").then(module => ({
     default: module.PayrollPaymentDialog,
@@ -1086,9 +1086,9 @@ const EMPTY_RFID_CARD_FORM: RfidCardForm = {
   status: "suspended",
   reuseRevokedUnboundCard: false,
 };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v12";
+const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13";
 const REQUIRED_RFID_BRIDGE_BUILD_ID =
-  "utrust-rfid-installer-20260904-firstsetup-a";
+  "utrust-rfid-installer-20261101-progress-v13";
 const EMPTY_ROLE_FORM: RoleForm = {
   code: "",
   name: "",

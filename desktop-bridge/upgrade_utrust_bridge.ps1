@@ -1,13 +1,14 @@
-﻿$sourceRoot = $PSScriptRoot
+﻿$ErrorActionPreference = "Stop"
+$sourceRoot = $PSScriptRoot
 $configuredTargetRoot = [Environment]::GetEnvironmentVariable("YUEXIN_RFID_BRIDGE_ROOT", "User")
 $targetRoot = if ([string]::IsNullOrWhiteSpace($configuredTargetRoot)) { if (Test-Path -LiteralPath "D:\") { "D:\manus" } else { Join-Path $env:ProgramData "YuexinRfidBridge" } } else { $configuredTargetRoot }
-$bridgeVersion = "utrust-bridge-installer-v12"
-$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"
-$bridgeContentSha256 = "c831475f7842c2458d007f9490cec90889654f4dc0694a55fd6eec03c74b8680"
+$bridgeVersion = "utrust-bridge-installer-v13"
+$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"
+$bridgeContentSha256 = "5577dab91bdde22ca7bd230ef44cdb150637470fb5885a2ea24a127b445d3e5e"
 $writerVersion = "ntag216-atomic-v2"
-$installerVersion = "utrust-upgrader-installer-v12"
+$installerVersion = "utrust-upgrader-installer-v13"
 $expectedHashes = @{
-  "utrust_local_bridge.ps1" = "c831475f7842c2458d007f9490cec90889654f4dc0694a55fd6eec03c74b8680"
+  "utrust_local_bridge.ps1" = "5577dab91bdde22ca7bd230ef44cdb150637470fb5885a2ea24a127b445d3e5e"
   "run_utrust_rfid_write.ps1" = "1efff811e5149b7f6846848881635a5e81ed9e76c9aa741deb334d3ecbd551ac"
   "UTrustNtag216RfidWrite.cs" = "b602906ad5c982c0e2a5d6945409f77c379f16ff32996094f4b8a243ebb4bd78"
   "UTrustVehicleCardDiagnostic.cs" = "a50730677b403c71dd3c3c810d98b2186148f6f3fb6c06a033ec300b36bb3ade"
@@ -17,6 +18,11 @@ $expectedHashes = @{
   "UTrustBridgeSupport.cs" = "1d43f62684fd277fd42a0d958762245bff023dee98078a3063eed0850c724e81"
   "run_utrust_read_uid.ps1" = "29e767ceaad276426d377435f610c19e4405b347ce7f10c5dc481d6f8763cd8f"
   "utrust_probe.ps1" = "8c4be3cf2fb03a3c083e530777e5dd3fa38a1b27da46446ca87e991d3266e64d"
+}
+
+function Write-UpgradeProgress {
+  param([string]$Message)
+  Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $Message) -ForegroundColor Cyan
 }
 
 function Get-BridgeListenerProcessIds {
@@ -37,9 +43,6 @@ function Get-BridgeListenerProcessIds {
 
 function Stop-UTrustBridge {
   foreach ($processId in @(Get-BridgeListenerProcessIds)) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
-  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @("powershell.exe", "pwsh.exe") -and [string]$_.CommandLine -match "utrust_local_bridge\.ps1" } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   for ($attempt = 0; $attempt -lt 20; $attempt++) {
     if (@(Get-BridgeListenerProcessIds).Count -eq 0) { return $true }
     Start-Sleep -Milliseconds 500
@@ -59,43 +62,40 @@ function Start-UTrustBridge {
   return @{ Process = $process; StdOut = $stdoutPath; StdErr = $stderrPath }
 }
 
-# 在停止任何现有桥接前，先用运行该升级器的 Windows PowerShell 解析每个新脚本。
 function Test-PowerShellScriptSyntax {
   param([string]$ScriptPath)
   $tokens = $null
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
-  if ($parseErrors -and $parseErrors.Count -gt 0) { return $false }
-  return $true
+  return (-not $parseErrors -or $parseErrors.Count -eq 0)
 }
 
-function Test-UTrustBridgeVersion {
+# /ready deliberately verifies bridge startup and build identity without opening the reader driver.
+# Reader discovery stays on /health and is checked from the management page after installation.
+function Test-UTrustBridgeReady {
   param($StartedProcess)
-  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
     try {
       $StartedProcess.Process.Refresh()
       if ($StartedProcess.Process.HasExited) { return @{ Success = $false; Reason = "new_bridge_process_exited" } }
     } catch { return @{ Success = $false; Reason = "new_bridge_process_unavailable" } }
     try {
-      $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/health" -TimeoutSec 3
-      $health = $response.Content | ConvertFrom-Json
-      if ($response.StatusCode -eq 200 -and [bool]$health.success) {
-        if ([string]$health.bridgeVersion -eq $bridgeVersion -and [string]$health.bridgeBuildId -eq $bridgeBuildId -and [string]$health.bridgeContentSha256 -eq $bridgeContentSha256 -and [string]$health.requiredWriterVersion -eq $writerVersion) { return @{ Success = $true; Reason = "ok" } }
+      $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/ready" -TimeoutSec 2
+      $ready = $response.Content | ConvertFrom-Json
+      if ($response.StatusCode -eq 200 -and [bool]$ready.success) {
+        if ([string]$ready.bridgeVersion -eq $bridgeVersion -and [string]$ready.bridgeBuildId -eq $bridgeBuildId -and [string]$ready.bridgeContentSha256 -eq $bridgeContentSha256 -and [string]$ready.requiredWriterVersion -eq $writerVersion) { return @{ Success = $true; Reason = "ok" } }
         return @{ Success = $false; Reason = "bridge_build_identity_mismatch" }
       }
     } catch {}
+    if ($attempt -eq 4 -or $attempt -eq 9 -or $attempt -eq 14) { Write-UpgradeProgress "Bridge is still starting; waiting briefly..." }
     Start-Sleep -Seconds 1
   }
-  return @{ Success = $false; Reason = "bridge_health_timeout" }
+  return @{ Success = $false; Reason = "bridge_ready_timeout" }
 }
 
-function Test-AnyBridgeHealth {
-  for ($attempt = 0; $attempt -lt 20; $attempt++) {
-    try {
-      $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/health" -TimeoutSec 3
-      $health = $response.Content | ConvertFrom-Json
-      if ($response.StatusCode -eq 200 -and [bool]$health.success) { return $true }
-    } catch {}
+function Test-AnyBridgeListener {
+  for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    if (@(Get-BridgeListenerProcessIds).Count -gt 0) { return $true }
     Start-Sleep -Seconds 1
   }
   return $false
@@ -106,6 +106,7 @@ $backupRoot = $null
 $newBridge = $null
 try {
   $stage = "verify_upgrade_files"
+  Write-UpgradeProgress "1/5 Verifying bridge files..."
   if (-not (Test-Path -LiteralPath $targetRoot)) { New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null }
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
@@ -115,12 +116,14 @@ try {
   }
 
   $stage = "verify_upgrade_script_syntax"
+  Write-UpgradeProgress "2/5 Checking PowerShell script syntax..."
   if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "upgrade_utrust_bridge.ps1"))) { throw "upgrade_script_parse_invalid" }
   $stage = "verify_bridge_script_syntax"
   if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot "utrust_local_bridge.ps1"))) { throw "bridge_script_parse_invalid" }
 
   $stage = "backup_previous_version"
-  $backupRoot = Join-Path $targetRoot ("backup-installer-v12-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+  Write-UpgradeProgress "3/5 Backing up the existing bridge..."
+  $backupRoot = Join-Path $targetRoot ("backup-installer-v13-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
   foreach ($name in $expectedHashes.Keys) {
     $targetPath = Join-Path $targetRoot $name
@@ -128,29 +131,32 @@ try {
   }
 
   $stage = "stop_previous_bridge"
+  Write-UpgradeProgress "4/5 Restarting the local bridge..."
   Stop-UTrustBridge | Out-Null
 
   $stage = "install_verified_bridge_files"
   foreach ($name in $expectedHashes.Keys) {
     $sourcePath = Join-Path $sourceRoot $name
     $targetPath = Join-Path $targetRoot $name
-    $tempPath = $targetPath + ".fingerprint-v10.tmp"
+    $tempPath = $targetPath + ".progress-v13.tmp"
     Copy-Item -LiteralPath $sourcePath -Destination $tempPath -Force
     Move-Item -LiteralPath $tempPath -Destination $targetPath -Force
     $installedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -ne $expectedHashes[$name]) { throw "installed_file_checksum_mismatch" }
   }
 
-  $stage = "start_fingerprint_v10_bridge"
-  $newBridge = Start-UTrustBridge -OutputSuffix "fingerprint-v10"
-  $stage = "verify_fingerprint_v10_health"
-  $healthResult = Test-UTrustBridgeVersion -StartedProcess $newBridge
-  if (-not [bool]$healthResult.Success) { $stage = [string]$healthResult.Reason; throw $stage }
+  $stage = "start_progress_v13_bridge"
+  Write-UpgradeProgress "5/5 Starting and verifying the local bridge..."
+  $newBridge = Start-UTrustBridge -OutputSuffix "progress-v13"
+  $stage = "verify_progress_v13_ready"
+  $readyResult = Test-UTrustBridgeReady -StartedProcess $newBridge
+  if (-not [bool]$readyResult.Success) { $stage = [string]$readyResult.Reason; throw $stage }
 
   @{ success = $true; installerVersion = $installerVersion; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $writerVersion; backupCreated = $true; targetRoot = $targetRoot } | ConvertTo-Json -Compress
-  exit 0
+  return
 } catch {
   $failureStage = $stage
+  Write-Host ("Bridge upgrade failed at: " + $failureStage) -ForegroundColor Red
   Stop-UTrustBridge | Out-Null
   if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
     foreach ($name in $expectedHashes.Keys) {
@@ -159,7 +165,7 @@ try {
     }
   }
   $newBridge = Start-UTrustBridge -OutputSuffix "rollback"
-  $rollbackHealthy = Test-AnyBridgeHealth
+  $rollbackHealthy = Test-AnyBridgeListener
   @{ success = $false; installerVersion = $installerVersion; failureStage = $failureStage; previousVersionRestored = $rollbackHealthy; newBridgeExited = [bool]($newBridge -and $newBridge.Process.HasExited) } | ConvertTo-Json -Compress
-  exit 1
+  throw ("bridge_upgrade_failed:" + $failureStage)
 }

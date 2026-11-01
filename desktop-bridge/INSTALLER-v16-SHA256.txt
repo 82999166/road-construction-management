@@ -1,0 +1,3 @@
+文件：utrust-bridge-first-install-v16-20261101.zip
+SHA-256：9c2d193bc6152d6257733e7cabad21130212208164e683103e881c86055927e9
+说明：管理员 PowerShell 窗口会显示5个阶段进度。安装阶段改为使用 /ready 轻量桥接就绪接口，不调用读卡器探测；启动器保持纯ASCII和Windows CRLF，PowerShell脚本保持UTF-8 BOM。

@@ -16,8 +16,8 @@ if (Test-Path -LiteralPath $bridgeConfigPath) {
   } catch {}
 }
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-installer-v12"
-$bridgeBuildId = "utrust-rfid-installer-20260904-firstsetup-a"
+$bridgeVersion = "utrust-bridge-installer-v13"
+$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -358,6 +358,7 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/ready") { Write-BridgeJson $context @{ success = $true; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion } 200; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion }; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/api/last-write-failure") {
         if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion }; continue }

@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 /** fileURLToPath 在 Windows 正确移除 file:///D:/ 前缀，避免首装包漏掉中文文件名。 */
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = join(projectRoot, "desktop-bridge");
-const stagingRoot = join("/tmp", "utrust-first-install-v15");
+const stagingRoot = join("/tmp", "utrust-first-install-v16");
 const outputRoot = process.env.UTRUST_PACKAGE_OUTPUT_DIR || "/home/ubuntu/webdev-static-assets";
-const outputFile = join(outputRoot, "utrust-bridge-first-install-v15-20261101.zip");
+const outputFile = join(outputRoot, "utrust-bridge-first-install-v16-20261101.zip");
 const files = [
   "安装写卡桥接.cmd",
   "elevate-utrust-installer.ps1",
@@ -53,8 +53,8 @@ for (const { sourceName, archiveName } of packagedFiles) {
   writeFileSync(destinationPath, bytes);
 }
 const manifest = Object.fromEntries(packagedFiles.map(({ archiveName }) => [archiveName, sha256(readFileSync(join(stagingRoot, archiveName)))]));
-writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v15", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
-writeFileSync(join(stagingRoot, readmeFileName), "推荐：解压后双击“Install-Yuexin-RFID-Bridge.cmd”，并在系统权限窗口选择“是”。本版本将 CMD 启动器固定为 ASCII 和 Windows CRLF 换行，并以绝对路径调用 PowerShell，兼容中文、空格或括号下载目录。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
+writeFileSync(join(stagingRoot, "manifest.json"), `${JSON.stringify({ packageVersion: "utrust-first-install-v16", tokenPersisted: false, files: manifest }, null, 2)}\n`, "utf8");
+writeFileSync(join(stagingRoot, readmeFileName), "推荐：解压后双击“Install-Yuexin-RFID-Bridge.cmd”，并在系统权限窗口选择“是”。本版本会在管理员 PowerShell 窗口实时显示5个安装阶段；桥接启动验证不会调用读卡器探测，因此不会因读卡器服务探测而显示空白等待。CMD 启动器为 ASCII 和 Windows CRLF，并以绝对路径调用 PowerShell，兼容中文、空格或括号下载目录。安装脚本不会保存服务器令牌；写卡令牌由后台按次短时下发。\r\n", "utf8");
 mkdirSync(outputRoot, { recursive: true });
 rmSync(outputFile, { force: true });
 /**
