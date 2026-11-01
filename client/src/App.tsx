@@ -26,6 +26,7 @@ const PublicToolKnowledgePage = lazy(() => import("./pages/PublicToolKnowledgePa
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DriverWechatBindPage = lazy(() => import("./pages/DriverWechatBindPage"));
 const DriverPortalPage = lazy(() => import("./pages/DriverPortalPage"));
+const MachineOwnerPortalPage = lazy(() => import("./pages/MachineOwnerPortalPage"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal"));
 const ScopedManagementModulePage = lazy(() => import("./pages/ScopedManagementModulePage"));
 const MobileWorkbench = lazy(() => import("./pages/MobileWorkbench"));
@@ -96,6 +97,30 @@ function UnifiedLoginRoute() {
   return <LoginPage />;
 }
 
+/** 专属账号即使保留旧收藏链接，也不能借由直达业务URL进入通用管理界面。 */
+function MobileTransportRoute() {
+  const { user, isAuthenticated, loading } = useAuth();
+  const [, navigate] = useLocation();
+  const isDriver = isAuthenticated && user?.loginMethod === "local_driver";
+  useEffect(() => {
+    if (isDriver) navigate("/driver-portal?local=1", { replace: true });
+  }, [isDriver, navigate]);
+  if (loading || isDriver) return <div className="flex min-h-screen items-center justify-center bg-[#fffaf3] text-sm text-[#76523f]">正在进入绑定车辆运费信息…</div>;
+  return <MobileTransportPage />;
+}
+
+function MobileMachineryRoute() {
+  const { user, isAuthenticated, loading } = useAuth();
+  const [, navigate] = useLocation();
+  const machineOwner = trpc.machinery.ownerExpensePortal.useQuery(undefined, { enabled: isAuthenticated && user?.loginMethod === "local_manager", retry: false });
+  const isOwner = machineOwner.data?.status === "ready";
+  useEffect(() => {
+    if (isOwner) navigate("/machine-owner-portal", { replace: true });
+  }, [isOwner, navigate]);
+  if (loading || machineOwner.isLoading || isOwner) return <div className="flex min-h-screen items-center justify-center bg-[#fffaf3] text-sm text-[#76523f]">正在核验机械费用查看范围…</div>;
+  return <MobileMachineryPage />;
+}
+
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
@@ -106,6 +131,7 @@ function Router() {
 	      <Route path={"/admin/login"} component={LocalAdminLoginRoute} />
 	      <Route path={"/driver-wechat-bind"} component={DriverWechatBindPage} />
 	      <Route path={"/driver-portal"} component={DriverPortalPage} />
+	      <Route path={"/machine-owner-portal"} component={MachineOwnerPortalPage} />
 	      <Route path={"/help"} component={HelpCenterPage} />
       <Route path={"/tools"} component={ToolKnowledgePage} />
       <Route path={"/public-tools"} component={PublicToolKnowledgePage} />
@@ -114,8 +140,8 @@ function Router() {
       <Route path={"/mobile/attendance"} component={MobileAttendancePage} />
       <Route path={"/mobile/construction"} component={MobileConstructionPage} />
       <Route path={"/mobile/labor"} component={MobileLaborPage} />
-      <Route path={"/mobile/machinery"} component={MobileMachineryPage} />
-      <Route path={"/mobile/transport"} component={MobileTransportPage} />
+	      <Route path={"/mobile/machinery"} component={MobileMachineryRoute} />
+	      <Route path={"/mobile/transport"} component={MobileTransportRoute} />
       <Route path={"/mobile/purchasing"} component={MobilePurchasingPage} />
       <Route path={"/mobile/measurement"} component={MobileMeasurementPage} />
       <Route path={"/mobile/subcontract"} component={MobileSubcontractPage} />

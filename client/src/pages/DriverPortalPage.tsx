@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Separator } from "@/components/ui/separator";
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Banknote, Bell, CalendarDays, ChevronRight, CircleHelp, Fuel, Loader2, RefreshCw, Route, Truck, WalletCards, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -42,12 +43,16 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function DriverPortalPage() {
+  const { user, isAuthenticated } = useAuth();
   const [token] = useState(() => getTokenFromSearch());
   const [noticeOpen, setNoticeOpen] = useState(false);
   const [selectedTripNo, setSelectedTripNo] = useState<string | null>(null);
   const [selectedDieselNo, setSelectedDieselNo] = useState<string | null>(null);
-  const portal = trpc.officialAccount.driverPortalSummary.useQuery({ token }, { enabled: token.length >= 16, retry: false });
-  const status = portal.data?.status ?? (portal.isLoading ? "loading" : "invalid");
+  const isLocalDriver = isAuthenticated && user?.loginMethod === "local_driver";
+  const tokenPortal = trpc.officialAccount.driverPortalSummary.useQuery({ token }, { enabled: token.length >= 16, retry: false });
+  const localPortal = trpc.officialAccount.localDriverPortalSummary.useQuery(undefined, { enabled: isLocalDriver, retry: false });
+  const portal = isLocalDriver ? localPortal : tokenPortal;
+  const status = portal.data?.status ?? (portal.isLoading ? "loading" : token.length >= 16 || isLocalDriver ? "unavailable" : "invalid");
   const summary = portal.data?.status === "ready" ? portal.data.summary : null;
   const selectedTrip = summary?.recentTrips.find(item => item.tripNo === selectedTripNo) ?? null;
   const selectedDiesel = summary?.dieselRecords.find(item => item.recordNo === selectedDieselNo) ?? null;
@@ -67,8 +72,8 @@ export default function DriverPortalPage() {
       </header>
 
       <main className="space-y-5 px-5 py-5">
-        {status === "loading" ? <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-2 p-4 text-sm text-[#765544]"><Loader2 className="h-4 w-4 animate-spin" />正在核验微信绑定车辆并读取真实账单…</CardContent></Card> : null}
-        {["invalid", "expired", "unbound", "unavailable"].includes(status) ? <Card className="border-[#e9c99a] bg-[#fff5df]"><CardContent className="p-4 text-sm leading-6 text-[#885622]"><XCircle className="mb-2 h-5 w-5" />账单入口已失效、当前微信尚未绑定车辆，或服务暂时不可用。请在服务号重新进入绑定入口后再查看。</CardContent></Card> : null}
+        {status === "loading" ? <Card className="border-0 bg-white shadow-[0_8px_22px_rgba(71,42,30,.07)]"><CardContent className="flex items-center gap-2 p-4 text-sm text-[#765544]"><Loader2 className="h-4 w-4 animate-spin" />正在核验绑定车辆并读取真实账单…</CardContent></Card> : null}
+        {["invalid", "expired", "unbound", "unavailable"].includes(status) ? <Card className="border-[#e9c99a] bg-[#fff5df]"><CardContent className="p-4 text-sm leading-6 text-[#885622]"><XCircle className="mb-2 h-5 w-5" />{isLocalDriver ? "当前手机号账号尚未绑定有效车辆，或车辆已停用。请联系管理员核验车辆与司机账号绑定。" : "账单入口已失效、当前微信尚未绑定车辆，或服务暂时不可用。请在服务号重新进入绑定入口后再查看。"}</CardContent></Card> : null}
 
         {summary ? <>
           <section className="rounded-2xl border border-[#ead9c8] bg-white p-4 shadow-[0_6px_18px_rgba(71,42,30,.06)]"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold text-[#43291e]">今日运输汇总</h2><p className="mt-1 text-xs text-[#8f7566]">{summary.today.businessDate} · 仅统计当前绑定车辆</p></div><CalendarDays className="h-5 w-5 text-[#9a5128]" /></div><div className="mt-4 grid grid-cols-3 gap-2"><Metric label="今日趟次" value={`${summary.today.tripCount} 趟`} /><Metric label="今日运费" value={formatMoney(summary.today.grossFreightAmount)} accent="text-[#47754d]" /><Metric label="今日扣油" value={formatMoney(summary.today.fuelDeductionAmount)} accent="text-[#9a5128]" /></div></section>
@@ -86,7 +91,7 @@ export default function DriverPortalPage() {
       </main>
     </div>
 
-    <Dialog open={noticeOpen} onOpenChange={setNoticeOpen}><DialogContent className="max-w-md"><DialogHeader><DialogTitle className="flex items-center gap-2"><CircleHelp className="h-5 w-5 text-[#9a5128]" />账单使用说明</DialogTitle></DialogHeader><div className="space-y-3 text-sm leading-6 text-[#634737]"><p>当前页面由微信绑定令牌直接打开，司机不需要也没有系统登录账号。</p><p>这里不是站内消息列表：本页只展示当前微信已绑定车辆的真实运输、柴油和结算数据，不读取其他车辆或系统账号的消息。</p><p>装土、卸土结果以现场刷卡回执为准；运输持续状态不会通过服务号自动群发。进入本页后可随时点击“刷新真实账单数据”查看最新记录。</p></div></DialogContent></Dialog>
+    <Dialog open={noticeOpen} onOpenChange={setNoticeOpen}><DialogContent className="max-w-md"><DialogHeader><DialogTitle className="flex items-center gap-2"><CircleHelp className="h-5 w-5 text-[#9a5128]" />账单使用说明</DialogTitle></DialogHeader><div className="space-y-3 text-sm leading-6 text-[#634737]"><p>{isLocalDriver ? "当前页面由司机手机号登录账号打开。系统按当前账号绑定车辆强制过滤，不能切换或查看其他车辆。" : "当前页面由微信绑定令牌直接打开，司机不需要也没有系统登录账号。"}</p><p>这里不是运输管理：本页只展示当前绑定车辆的真实运输、柴油和结算数据，不提供车辆、路线、运价、运单或结算的新增、修改、审核权限。</p><p>装土、卸土结果以现场刷卡回执为准；进入本页后可随时点击“刷新真实账单数据”查看最新记录。</p></div></DialogContent></Dialog>
     <Dialog open={Boolean(selectedTrip)} onOpenChange={open => { if (!open) setSelectedTripNo(null); }}><DialogContent className="max-h-[86vh] overflow-y-auto"><DialogHeader><DialogTitle>运输运单详情</DialogTitle></DialogHeader>{selectedTrip ? <div className="space-y-3"><div className="rounded-xl bg-[#f8ead8] p-3"><p className="font-semibold text-[#4d2e22]">{selectedTrip.tripNo}</p><p className="mt-1 text-xs text-[#765a49]">{selectedTrip.routeLabel}</p><p className="mt-2 inline-flex rounded-full bg-white px-2 py-1 text-xs text-[#7d552e]">{tripStatusLabel(selectedTrip.status)}</p></div><div className="rounded-xl border border-[#ead9c8] px-3"><DetailRow label="开票时间" value={formatDateTime(selectedTrip.startAt)} /><DetailRow label="结束时间" value={formatDateTime(selectedTrip.endAt)} /><DetailRow label="发票方式" value={selectedTrip.invoiceMode === "plate_photo" ? "拍照车牌发票" : "刷卡发票"} /><DetailRow label="运输距离" value={selectedTrip.actualDistanceKm === null ? "未记录" : `${selectedTrip.actualDistanceKm.toFixed(2)} km`} /><DetailRow label="运输方量" value={selectedTrip.volumeCubicMeters === null ? "未记录" : `${selectedTrip.volumeCubicMeters.toFixed(2)} m³`} /><DetailRow label="本趟运费" value={formatMoney(selectedTrip.grossFreightAmount)} /><DetailRow label="柴油扣款" value={formatMoney(selectedTrip.fuelDeductionAmount)} /><DetailRow label="本趟净额" value={formatMoney(selectedTrip.netSettlementAmount ?? selectedTrip.grossFreightAmount - selectedTrip.fuelDeductionAmount)} /></div></div> : null}</DialogContent></Dialog>
     <Dialog open={Boolean(selectedDiesel)} onOpenChange={open => { if (!open) setSelectedDieselNo(null); }}><DialogContent className="max-h-[86vh] overflow-y-auto"><DialogHeader><DialogTitle>柴油扣款详情</DialogTitle></DialogHeader>{selectedDiesel ? <div className="space-y-3"><div className="rounded-xl bg-[#fff4e7] p-3"><p className="font-semibold text-[#4d2e22]">{selectedDiesel.recordNo}</p><p className="mt-1 text-xs text-[#765a49]">{dieselStatusLabel(selectedDiesel.status)}{selectedDiesel.deductFromFreight ? " · 运费扣油" : ""}</p></div><div className="rounded-xl border border-[#ead9c8] px-3"><DetailRow label="加油时间" value={formatDateTime(selectedDiesel.refueledAt)} /><DetailRow label="加油油量" value={`${selectedDiesel.liters.toFixed(2)} L`} /><DetailRow label="加油金额" value={formatMoney(selectedDiesel.amount)} /><DetailRow label="加油机表数" value={selectedDiesel.meterReading === null ? "未记录" : String(selectedDiesel.meterReading)} /><DetailRow label="供油方式" value={selectedDiesel.supplyMethod === "external_station" ? "外部加油站" : "项目部供油"} /><DetailRow label="加油站/供油方" value={selectedDiesel.stationOrSupplierName ?? "未记录"} /><DetailRow label="票据编号" value={selectedDiesel.receiptNo ?? "未记录"} /><DetailRow label="备注" value={selectedDiesel.remarks ?? "未记录"} /></div></div> : null}</DialogContent></Dialog>
   </main>;

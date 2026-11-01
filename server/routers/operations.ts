@@ -133,6 +133,7 @@ const machineInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   operatorUserId: z.number().int().positive().nullable().optional(),
+  ownerUserId: z.number().int().positive().nullable().optional(),
   driverName: z.string().trim().max(128).nullable().optional(),
   driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效驾驶员联系电话").nullable().optional(),
   code: z.string().trim().min(2, "请填写机械编号").max(64),
@@ -1297,8 +1298,31 @@ async function assertMachineryAccess(ctx: Parameters<typeof requireAuthenticated
   return roleCodes;
 }
 
+/**
+ * 机械老板只读门户仅以机械档案 ownerUserId 显式绑定为边界。
+ * 不要求或授予机械部门、项目、录入、审核和付款权限。
+ */
+async function getMachineOwnerPortalRows(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  const user = requireAuthenticatedUser(ctx);
+  if (user.loginMethod === "local_driver") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "司机手机号账号仅能查看本人操作机械或绑定车辆，不能作为机械老板查询" });
+  }
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+  const ownedMachines = await db
+    .select()
+    .from(machines)
+    .where(eq(machines.ownerUserId, user.id))
+    .orderBy(desc(machines.updatedAt));
+  return { db, ownedMachines };
+}
+
 /** 运输模块允许的岗位；司机角色只可操作分配给本人的车辆及趟次。 */
 async function assertTransportAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
+  const user = requireAuthenticatedUser(ctx);
+  if (user.loginMethod === "local_driver") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "司机手机号账号仅可进入本人绑定车辆的运费账单，不提供运输管理功能" });
+  }
   await assertDepartmentBusinessAccess(ctx, "TRANSPORT");
   const roleCodes = await getEffectiveRoleCodes(ctx);
   const allowed = ["TRANSPORT_MANAGER", "DRIVER", "PROJECT_MANAGER", "FINANCE_MANAGER", "ACCOUNTANT"];
@@ -1371,6 +1395,61 @@ async function getScopedVehicle(ctx: Parameters<typeof requireAuthenticatedUser>
 
 /** 机械台账、租赁计价、成本记录和月度结算预览。 */
 export const machineryRouter = router({
+  /** 机械老板专属只读门户：只返回机械档案显式绑定给当前账号的设备与费用清单。 */
+  ownerExpensePortal: protectedProcedure.query(async ({ ctx }) => {
+    const { db, ownedMachines } = await getMachineOwnerPortalRows(ctx);
+    if (!ownedMachines.length) return { status: "unbound" as const, machines: [] };
+    const projectIds = Array.from(new Set(ownedMachines.flatMap(machine => machine.projectId ? [machine.projectId] : [])));
+    const projectRows = projectIds.length
+      ? await db.select({ id: projects.id, name: projects.name }).from(projects).where(inArray(projects.id, projectIds))
+      : [];
+    const projectNameById = new Map(projectRows.map(project => [project.id, project.name]));
+    const result = await Promise.all(ownedMachines.map(async machine => {
+      const projectId = machine.projectId ?? -1;
+      const [costRows, activeRules] = await Promise.all([
+        db.select().from(machineCostRecords).where(and(eq(machineCostRecords.machineId, machine.id), eq(machineCostRecords.projectId, projectId), ne(machineCostRecords.status, "void"))).orderBy(desc(machineCostRecords.occurredAt)).limit(100),
+        db.select().from(machineLeaseRules).where(and(eq(machineLeaseRules.machineId, machine.id), eq(machineLeaseRules.projectId, projectId), eq(machineLeaseRules.status, "active"))).orderBy(desc(machineLeaseRules.effectiveFrom)).limit(1),
+      ]);
+      const expenses = costRows.map(row => ({
+        id: row.id,
+        costType: row.costType,
+        costName: row.costName ?? "未命名费用",
+        quantity: Number(row.quantity),
+        unitPrice: Number(row.unitPrice),
+        amount: Number(row.amount),
+        occurredAt: row.occurredAt,
+        remarks: row.remarks ?? null,
+        status: row.status,
+      }));
+      const activeRule = activeRules[0] ?? null;
+      const sumByType = (costType: typeof machineCostRecords.$inferSelect.costType) => Math.round(expenses.filter(item => item.costType === costType).reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
+      return {
+        machine: {
+          id: machine.id,
+          projectId: machine.projectId,
+          projectName: machine.projectId ? projectNameById.get(machine.projectId) ?? "项目已归档" : "未分配项目",
+          code: machine.code,
+          name: machine.name,
+          model: machine.model ?? null,
+          plateOrAssetNo: machine.plateOrAssetNo ?? null,
+          ownership: machine.ownership,
+          supplierName: machine.supplierName ?? null,
+          status: machine.status,
+          leaseRule: activeRule ? { billingType: activeRule.billingType, rate: Number(activeRule.rate), overtimeHourlyRate: Number(activeRule.overtimeHourlyRate) } : null,
+        },
+        summary: {
+          expenseCount: expenses.length,
+          totalExpense: Math.round(expenses.reduce((sum, item) => sum + item.amount, 0) * 100) / 100,
+          fuelExpense: sumByType("fuel"),
+          repairExpense: sumByType("repair"),
+          overtimeExpense: sumByType("overtime"),
+        },
+        expenses,
+      };
+    }));
+    return { status: "ready" as const, machines: result };
+  }),
+
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertMachineryAccess(ctx);
     return listScopedProjects(ctx);
@@ -1398,10 +1477,12 @@ export const machineryRouter = router({
       const rules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machine.id)).orderBy(desc(machineLeaseRules.createdAt));
       const activeRule = rules.find(rule => rule.projectId === input.projectId && rule.status === "active");
       const [operator] = machine.operatorUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, machine.operatorUserId)).limit(1) : [];
+      const [owner] = machine.ownerUserId ? await db.select({ name: users.name }).from(users).where(eq(users.id, machine.ownerUserId)).limit(1) : [];
       const { driverPhoneEncrypted, ...machineSafe } = machine;
       return {
         ...machineSafe,
         operatorName: operator?.name ?? null,
+        ownerName: owner?.name ?? null,
         driverPhone: driverPhoneEncrypted ? decryptSecret(driverPhoneEncrypted) : null,
         leaseTerms: activeRule ? { billingType: activeRule.billingType, rate: activeRule.rate, effectiveFrom: activeRule.effectiveFrom, effectiveTo: activeRule.effectiveTo } : null,
       };
@@ -1422,9 +1503,24 @@ export const machineryRouter = router({
       if (row.projectId) await assertProjectInCurrentScope(ctx, row.projectId);
       existing = row;
     }
+    const ownerUserId = input.ownerUserId === undefined ? existing?.ownerUserId ?? null : input.ownerUserId;
+    if (ownerUserId) {
+      const [owner] = await db
+        .select({ id: users.id, loginMethod: users.loginMethod, localAccountStatus: users.localAccountStatus })
+        .from(users)
+        .where(eq(users.id, ownerUserId))
+        .limit(1);
+      if (!owner || owner.localAccountStatus !== "active") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "请选择启用中的机械老板账号" });
+      }
+      if (owner.loginMethod === "local_driver") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "司机手机号账号只能查看本人操作机械，不能绑定为机械老板" });
+      }
+    }
     const values = {
       projectId: input.projectId,
       operatorUserId: input.operatorUserId ?? null,
+      ownerUserId,
       driverName: input.driverName ?? null,
       driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null,
       driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null,

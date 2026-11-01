@@ -464,6 +464,7 @@ type MachineForm = {
   id?: number;
   projectId: string;
   operatorUserId: string;
+  ownerUserId: string;
   code: string;
   name: string;
   model: string;
@@ -896,6 +897,7 @@ const EMPTY_VEHICLE_FORM: VehicleForm = {
 const EMPTY_MACHINE_FORM: MachineForm = {
   projectId: "",
   operatorUserId: "",
+  ownerUserId: "",
   code: "",
   name: "",
   model: "",
@@ -17248,6 +17250,7 @@ export default function AdminPage({
               operatorUserId: machine.operatorUserId
                 ? String(machine.operatorUserId)
                 : "",
+              ownerUserId: machine.ownerUserId ? String(machine.ownerUserId) : "",
               code: machine.code,
               name: machine.name,
               model: machine.model ?? "",
@@ -24058,6 +24061,9 @@ export default function AdminPage({
                   operatorUserId: machineForm.operatorUserId
                     ? Number(machineForm.operatorUserId)
                     : null,
+                  ownerUserId: machineForm.ownerUserId
+                    ? Number(machineForm.ownerUserId)
+                    : null,
                   code: machineForm.code.trim(),
                   name: machineForm.name.trim(),
                   model: machineForm.model.trim() || null,
@@ -24255,6 +24261,32 @@ export default function AdminPage({
                       ))}
                     </SelectContent>
                   </Select>
+                </Field>
+                <Field label="机械老板（只读费用）">
+                  <Select
+                    value={machineForm.ownerUserId || "UNASSIGNED_OWNER"}
+                    onValueChange={value =>
+                      setMachineForm(current => ({
+                        ...current,
+                        ownerUserId: value === "UNASSIGNED_OWNER" ? "" : value,
+                      }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择机械老板账号" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="UNASSIGNED_OWNER">暂不绑定</SelectItem>
+                      {users.data
+                        ?.filter(user => user.loginMethod !== "local_driver")
+                        .map(user => (
+                          <SelectItem key={user.id} value={String(user.id)}>
+                            {user.name || `用户 #${user.id}`}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">老板登录后只查看名下全部机械费用，不能录入、审核或管理设备。</p>
                 </Field>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">

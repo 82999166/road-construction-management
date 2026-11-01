@@ -123,6 +123,9 @@ export default function MobileWorkbench() {
   const [attendanceProjectId, setAttendanceProjectId] = useState<number | undefined>();
   const [attendanceStatusOverride, setAttendanceStatusOverride] = useState<AttendanceStatusOverride | null>(null);
   const [workGuideExpanded, setWorkGuideExpanded] = useState(false);
+  const isLocalDriver = isAuthenticated && user?.loginMethod === "local_driver";
+  const isLocalManager = isAuthenticated && user?.loginMethod === "local_manager";
+  const machineOwnerPortal = trpc.machinery.ownerExpensePortal.useQuery(undefined, { enabled: isLocalManager, retry: false });
   const workbench = trpc.mobile.workbench.useQuery(undefined, {
     enabled: isAuthenticated,
     retry: shouldRetryMobileWorkbenchRequest,
@@ -192,6 +195,17 @@ export default function MobileWorkbench() {
       // 本地存储被浏览器禁用时不影响在线工作台读取。
     }
   }, [workbench.data]);
+
+  /** 司机和机械老板均使用服务端显式绑定分流，不展示或授予通用业务工作台菜单。 */
+  useEffect(() => {
+    if (isLocalDriver) {
+      navigate("/driver-portal?local=1", { replace: true });
+      return;
+    }
+    if (isLocalManager && machineOwnerPortal.data?.status === "ready") {
+      navigate("/machine-owner-portal", { replace: true });
+    }
+  }, [isLocalDriver, isLocalManager, machineOwnerPortal.data?.status, navigate]);
 
   useEffect(() => {
     if (!attendanceProjectId && authorizedAttendanceProjects.length) setAttendanceProjectId(authorizedAttendanceProjects[0].id);

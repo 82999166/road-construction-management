@@ -998,6 +998,8 @@ export const machines = mysqlTable(
     projectId: int("projectId"),
     /** 机械操作员/司机的登录用户标识；允许为空以兼容外租机械暂未绑定人员的场景。 */
     operatorUserId: int("operatorUserId"),
+    /** 机械老板的只读账号绑定；老板只能查看名下设备费用，不获得机械管理录入权限。 */
+    ownerUserId: int("ownerUserId"),
     /** 机械实际驾驶员可与系统操作员不同；姓名用于项目台账展示，手机号加密存储。 */
     driverName: varchar("driverName", { length: 128 }),
     driverPhoneEncrypted: text("driverPhoneEncrypted"),
@@ -1014,7 +1016,10 @@ export const machines = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ codeUnique: uniqueIndex("machines_code_unique").on(table.code) }),
+  table => ({
+    codeUnique: uniqueIndex("machines_code_unique").on(table.code),
+    ownerProjectIndex: index("machines_owner_project_index").on(table.ownerUserId, table.projectId),
+  }),
 );
 
 /** 机械租赁计价规则，由合同和项目参数配置，而非硬编码。 */

@@ -1,7 +1,7 @@
 import { requireAuthenticatedUser } from "../access";
 import { z } from "zod";
 import { getOfficialAccountBindingStatus, createOfficialAccountBindingUrl, createOfficialAccountScanBindingRequest } from "../officialAccountBinding";
-import { completeOfficialAccountDriverVehicleBinding, getOfficialAccountDriverBindingRequestStatus, getOfficialAccountDriverPortalSummary } from "../services/officialAccountDriverBinding";
+import { completeOfficialAccountDriverVehicleBinding, getLocalDriverPortalSummary, getOfficialAccountDriverBindingRequestStatus, getOfficialAccountDriverPortalSummary } from "../services/officialAccountDriverBinding";
 import { verifyOfficialAccountBindingFollowStatus } from "../services/officialAccountNotifier";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 
@@ -12,6 +12,11 @@ export const officialAccountRouter = router({
   beginScanBinding: protectedProcedure.mutation(async ({ ctx }) => createOfficialAccountScanBindingRequest(requireAuthenticatedUser(ctx).id)),
   verifyFollowStatus: protectedProcedure.mutation(async ({ ctx }) => verifyOfficialAccountBindingFollowStatus(requireAuthenticatedUser(ctx).id)),
   driverBindingStatus: publicProcedure.input(z.object({ token: z.string().min(16).max(160) })).query(async ({ input }) => getOfficialAccountDriverBindingRequestStatus(input.token)),
-  completeDriverBinding: publicProcedure.input(z.object({ token: z.string().min(16).max(160), plateNo: z.string().trim().min(2).max(32), driverPhone: z.string().trim().min(6).max(32), initialPassword: z.string().min(6).max(128) })).mutation(async ({ input }) => completeOfficialAccountDriverVehicleBinding(input)),
+  completeDriverBinding: publicProcedure.input(z.object({ token: z.string().trim().min(16).max(160), plateNo: z.string().trim().min(2).max(32), driverPhone: z.string().trim().min(6).max(32), initialPassword: z.string().min(6).max(128) })).mutation(async ({ input }) => completeOfficialAccountDriverVehicleBinding(input)),
   driverPortalSummary: publicProcedure.input(z.object({ token: z.string().min(16).max(512) })).query(async ({ input }) => getOfficialAccountDriverPortalSummary(input.token)),
+  localDriverPortalSummary: protectedProcedure.query(async ({ ctx }) => {
+    const user = requireAuthenticatedUser(ctx);
+    if (user.loginMethod !== "local_driver") throw new Error("仅司机手机号账号可读取绑定车辆账单");
+    return getLocalDriverPortalSummary(user.id);
+  }),
 });

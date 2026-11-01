@@ -1,8 +1,9 @@
 import React from "react";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-const { mockWorkbenchUseQuery, mockAttendanceProjectsUseQuery, mockAttendanceStatusUseQuery, mockAttendancePunchUseMutation } = vi.hoisted(() => ({ mockWorkbenchUseQuery: vi.fn(), mockAttendanceProjectsUseQuery: vi.fn(), mockAttendanceStatusUseQuery: vi.fn(), mockAttendancePunchUseMutation: vi.fn() }));
+const { mockWorkbenchUseQuery, mockAttendanceProjectsUseQuery, mockAttendanceStatusUseQuery, mockAttendancePunchUseMutation, mockMachineOwnerPortalUseQuery } = vi.hoisted(() => ({ mockWorkbenchUseQuery: vi.fn(), mockAttendanceProjectsUseQuery: vi.fn(), mockAttendanceStatusUseQuery: vi.fn(), mockAttendancePunchUseMutation: vi.fn(), mockMachineOwnerPortalUseQuery: vi.fn() }));
 
 vi.mock("@/_core/hooks/useAuth", () => ({
   useAuth: () => ({
@@ -15,7 +16,7 @@ vi.mock("@/_core/hooks/useAuth", () => ({
 }));
 
 vi.mock("@/lib/trpc", () => ({
-  trpc: { mobile: { workbench: { useQuery: mockWorkbenchUseQuery }, attendanceProjects: { useQuery: mockAttendanceProjectsUseQuery } }, labor: { attendance: { myCheckInStatus: { useQuery: mockAttendanceStatusUseQuery }, checkIn: { useMutation: mockAttendancePunchUseMutation } } } },
+  trpc: { mobile: { workbench: { useQuery: mockWorkbenchUseQuery }, attendanceProjects: { useQuery: mockAttendanceProjectsUseQuery } }, labor: { attendance: { myCheckInStatus: { useQuery: mockAttendanceStatusUseQuery }, checkIn: { useMutation: mockAttendancePunchUseMutation } } }, machinery: { ownerExpensePortal: { useQuery: mockMachineOwnerPortalUseQuery } } },
 }));
 
 vi.mock("wouter", () => ({
@@ -31,10 +32,18 @@ function renderWorkbench(data: unknown) {
   mockAttendanceProjectsUseQuery.mockReturnValue({ data: { projects: [] }, isLoading: false, error: null, refetch: vi.fn() });
   mockAttendanceStatusUseQuery.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: vi.fn() });
   mockAttendancePunchUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockMachineOwnerPortalUseQuery.mockReturnValue({ data: { status: "unbound", machines: [] }, isLoading: false, error: null, refetch: vi.fn() });
   return renderToStaticMarkup(<MobileWorkbench />);
 }
 
 describe("移动工作台部门业务投影", () => {
+  it("通过服务端机械老板绑定状态将专属账号分流，避免猜测岗位或扩大通用菜单权限", () => {
+    const source = readFileSync(new URL("./MobileWorkbench.tsx", import.meta.url), "utf8");
+    expect(source).toContain("isLocalDriver");
+    expect(source).toContain("/driver-portal?local=1");
+    expect(source).toContain("machineOwnerPortal.data?.status === \"ready\"");
+    expect(source).toContain("/machine-owner-portal");
+  });
   it("展示当前部门并仅呈现服务端已授权的劳务业务入口", () => {
     const markup = renderWorkbench({
       user: {

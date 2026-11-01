@@ -59,6 +59,20 @@ export const mobileRouter = router({
   }),
   workbench: protectedProcedure.query(async ({ ctx }) => {
     const user = requireAuthenticatedUser(ctx);
+    // 司机手机号账号仅允许进入绑定车辆账单。即使历史 DRIVER 岗位仍存在，也不能回落到项目级运输管理菜单或统计。
+    if (user.loginMethod === "local_driver") {
+      const db = await getDb();
+      const unreadMessages = db
+        ? (await db.select({ id: notificationRecords.id }).from(notificationRecords).where(and(eq(notificationRecords.recipientUserId, user.id), ne(notificationRecords.status, "read")))).length
+        : 0;
+      return {
+        user: { id: user.id, name: user.name, roleCodes: ["DRIVER"], departments: [], departmentModules: [], userSpecificModules: [] },
+        menus: MOBILE_MENU_CATALOG.filter(menu => (DEPARTMENT_AGNOSTIC_MOBILE_MENUS as readonly string[]).includes(menu.code) && menu.code !== "WORKBENCH"),
+        dataScope: { userId: user.id, hasAllProjects: false, projectIds: [], organizationIds: [] },
+        maskedFields: ["identityNo", "bankAccount", "mobile"],
+        statistics: { pendingApprovals: 0, unreadMessages, todayTrips: 0, pendingPayroll: 0 },
+      };
+    }
     const [roleCodes, dataScope, departmentAccess, userSpecificMenuModules, dieselReadAccess] = await Promise.all([
       getEffectiveRoleCodes(ctx),
       getCurrentDataScope(ctx),
