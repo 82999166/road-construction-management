@@ -11,7 +11,7 @@ import { FileText, Landmark, Loader2, Upload, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-type SettlementType = "transport_vehicle" | "machine" | "payroll" | "daily_wage";
+type SettlementType = "transport_vehicle" | "machine" | "payroll" | "daily_wage" | "subcontract";
 type PaymentMethod = "bank_transfer" | "corporate_account" | "cash" | "wechat" | "alipay" | "other";
 
 type SettlementTarget = { id: number; label: string; payeeName?: string | null; payeeAccount?: string | null };
@@ -25,7 +25,7 @@ const paymentMethodLabel: Record<PaymentMethod, string> = {
   other: "其他方式",
 };
 const money = (value: string | number | null | undefined) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const typeLabel: Record<SettlementType, string> = { transport_vehicle: "车辆结算", machine: "机械结算", payroll: "工资发放", daily_wage: "临时日结" };
+const typeLabel: Record<SettlementType, string> = { transport_vehicle: "车辆结算", machine: "机械结算", payroll: "工资发放", daily_wage: "临时日结", subcontract: "分包结算" };
 
 function fileAsBase64(file: File) {
   return new Promise<string>((resolve, reject) => {

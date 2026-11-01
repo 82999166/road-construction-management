@@ -17,7 +17,7 @@ export const publicProcedure = t.procedure;
  * 业务模块的高影响写入不能仅依赖前端隐藏按钮；客户端可直接调用 RPC。
  * 普通管理人员只能在其已授权模块与项目范围内新增、查看，既有记录修改与状态流转由超级管理员负责。
  */
-const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "subcontract.", "contract.", "finance.", "diesel.", "evidence."] as const;
+const BUSINESS_ROUTER_PREFIXES = ["construction.", "labor.", "machinery.", "transport.", "purchasing.", "measurement.", "subcontract.", "contract.", "finance.", "settlementPayment.", "diesel.", "evidence."] as const;
 const HIGH_IMPACT_MUTATION_SEGMENTS = ["transition", "approve", "pay", "void", "reverse", "ocr", "recordSettlement", "recordPayment"] as const;
 const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   construction: "CONSTRUCTION",
@@ -30,6 +30,8 @@ const BUSINESS_MODULE_BY_ROUTER: Record<string, DepartmentBusinessModule> = {
   subcontract: "MEASUREMENT",
   contract: "CONTRACT",
   finance: "FINANCE",
+  /** 实际收付款与付款凭证均属于财务域，路由内再按岗位、项目与结算状态二次校验。 */
+  settlementPayment: "FINANCE",
   diesel: "DIESEL",
   evidence: "EVIDENCE",
 };
@@ -49,6 +51,11 @@ const ROLE_GUARDED_SUBCONTRACT_MUTATIONS = new Set([
   "subcontract.saveTeam",
   "subcontract.savePackage",
   "subcontract.transitionPackage",
+]);
+/** 实际收付款在路由内完成财务模块、岗位、项目范围、封账日、余额与凭证归属的完整校验。 */
+const ROLE_GUARDED_SETTLEMENT_PAYMENT_MUTATIONS = new Set([
+  "settlementPayment.uploadProof",
+  "settlementPayment.record",
 ]);
 
 function isScopedBusinessMutation(path: string) {
@@ -126,7 +133,7 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   }
 
   const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
-  const usesDedicatedRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path) || ROLE_GUARDED_SUBCONTRACT_MUTATIONS.has(path);
+  const usesDedicatedRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path) || ROLE_GUARDED_SUBCONTRACT_MUTATIONS.has(path) || ROLE_GUARDED_SETTLEMENT_PAYMENT_MUTATIONS.has(path);
   const businessModule = getBusinessModuleForPath(path);
   const operation = inferBusinessOperationAction(path, input);
   const detailedPermission = !isSuperAdmin && businessModule

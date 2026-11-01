@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { auditLogs, dailyAccountingClosures, financialRecords, measurementTakeoffRecords, subcontractPackages, subcontractPaymentSettlements, subcontractTeams } from "../../drizzle/schema";
+import { auditLogs, measurementTakeoffRecords, subcontractPackages, subcontractPaymentSettlements, subcontractTeams } from "../../drizzle/schema";
 import { getBusinessStatusLabel } from "../../shared/domain";
 import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getEffectiveRoleCodes, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
@@ -13,7 +13,8 @@ const moneySchema = z.number().finite().min(0).max(999999999999.99);
 const quantitySchema = z.number().finite().positive().max(999999999999.999);
 const packageStatusSchema = z.enum(["draft", "allocated", "confirmed", "settled", "void"]);
 const teamStatusSchema = z.enum(["active", "suspended", "closed"]);
-const settlementStatusSchema = z.enum(["draft", "submitted", "approved", "paid", "void"]);
+/** paid/partial 只能由统一 settlementPayment.record 在已上传付款凭证后写入。 */
+const settlementStatusSchema = z.enum(["draft", "submitted", "approved", "partial", "paid", "void"]);
 const paymentMethodSchema = z.enum(["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]);
 const invoiceStatusSchema = z.enum(["missing", "attached", "verified", "rejected"]);
 
@@ -130,8 +131,6 @@ const settlementTransitionInput = z.object({
   projectId: z.number().int().positive(),
   id: z.number().int().positive(),
   targetStatus: settlementStatusSchema,
-  paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "付款日期格式应为 YYYY-MM-DD").optional(),
-  paymentReference: z.string().trim().max(128).optional().nullable(),
   remarks: z.string().trim().max(500).optional().nullable(),
 });
 
@@ -429,18 +428,10 @@ export const subcontractRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const [settlement] = await db.select().from(subcontractPaymentSettlements).where(eq(subcontractPaymentSettlements.id, input.id)).limit(1);
     if (!settlement || settlement.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目分包应付结算单" });
-    const allowedTargets: Record<string, string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["paid", "void"] };
+    const allowedTargets: Record<string, string[]> = { draft: ["submitted", "void"], submitted: ["approved", "void"], approved: ["void"] };
     if (!allowedTargets[settlement.status]?.includes(input.targetStatus)) throw new TRPCError({ code: "CONFLICT", message: "当前分包付款结算单状态不允许该操作" });
     if (["submitted", "approved", "void"].includes(input.targetStatus) && !canSettleSubcontract(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无分包结算提交、审核或作废权限" });
     if (input.targetStatus === "approved" && settlement.submittedBy === user.id && !roleCodes.includes("ALL")) throw new TRPCError({ code: "FORBIDDEN", message: "提交人与会计审核人必须职责分离" });
-    if (input.targetStatus === "paid" && !canPaySubcontract(roleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅出纳或财务负责人可登记分包付款" });
-    if (input.targetStatus === "paid" && settlement.approvedBy === user.id && !roleCodes.includes("ALL")) throw new TRPCError({ code: "FORBIDDEN", message: "会计审核人与实际付款人必须职责分离" });
-    if (input.targetStatus === "paid" && !input.paymentDate) throw new TRPCError({ code: "BAD_REQUEST", message: "登记付款时必须填写付款日期" });
-    const paymentDate = input.targetStatus === "paid" ? new Date(`${input.paymentDate}T12:00:00`) : null;
-    if (input.targetStatus === "paid") {
-      const [closure] = await db.select({ status: dailyAccountingClosures.status }).from(dailyAccountingClosures).where(and(eq(dailyAccountingClosures.projectId, input.projectId), eq(dailyAccountingClosures.closingDate, paymentDate!))).limit(1);
-      if (closure && ["closed", "archived"].includes(closure.status)) throw new TRPCError({ code: "CONFLICT", message: "付款日期已封存，须由财务负责人先授权反结账后再登记付款" });
-    }
     const now = new Date();
     await db.transaction(async tx => {
       const patch: Partial<typeof subcontractPaymentSettlements.$inferInsert> = { status: input.targetStatus };
@@ -453,29 +444,7 @@ export const subcontractRouter = router({
         patch.approvedBy = user.id;
         patch.approvedAt = now;
       }
-      if (input.targetStatus === "paid") {
-        patch.paidBy = user.id;
-        patch.paidAt = now;
-        patch.paymentDate = paymentDate!;
-        patch.paymentReference = input.paymentReference?.trim() || null;
-      }
       await tx.update(subcontractPaymentSettlements).set(patch).where(and(eq(subcontractPaymentSettlements.id, settlement.id), eq(subcontractPaymentSettlements.status, settlement.status)));
-      if (input.targetStatus === "paid") {
-        await tx.update(subcontractPackages).set({ status: "settled", settledAt: now }).where(and(eq(subcontractPackages.id, settlement.packageId), eq(subcontractPackages.status, "confirmed")));
-        await tx.insert(financialRecords).values({
-          recordNo: `F-${settlement.settlementNo}`,
-          projectId: input.projectId,
-          direction: "expense",
-          category: "分包付款",
-          amount: settlement.netPayableAmount,
-          occurredAt: paymentDate!,
-          settlementStatus: "paid",
-          sourceType: "subcontract_payment_settlement",
-          sourceId: String(settlement.id),
-          evidenceId: settlement.invoiceEvidenceId,
-          remarks: `分包付款结算单 ${settlement.settlementNo}${input.paymentReference?.trim() ? `；付款参考号 ${input.paymentReference.trim()}` : ""}`,
-        });
-      }
       await tx.insert(auditLogs).values({ userId: user.id, module: "subcontract", action: "transition_payment_settlement", targetType: "subcontract_payment_settlement", targetId: String(settlement.id), summary: `分包应付结算单 ${settlement.settlementNo} 状态变更为：${getBusinessStatusLabel(input.targetStatus)}` });
     });
     void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: `subcontract_payment_${input.targetStatus}`, targetType: "subcontract_payment_settlement", targetId: String(settlement.id), title: `分包应付结算单${getBusinessStatusLabel(input.targetStatus)}`, deepLink: "/admin" }).catch(() => undefined);

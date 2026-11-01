@@ -168,6 +168,9 @@ const TransportVehicleSettlementManager = lazy(
 const MachinePaymentSettlementManager = lazy(
   () => import("@/components/MachinePaymentSettlementManager")
 );
+const SettlementPaymentFinancialBoard = lazy(
+  () => import("@/components/SettlementPaymentFinancialBoard")
+);
 const SubcontractPaymentSettlementManager = lazy(
   () => import("@/components/SubcontractPaymentSettlementManager")
 );
@@ -20361,6 +20364,16 @@ export default function AdminPage({
                   )}
                 </CardContent>
               </Card>
+            ) : null}
+            {!isDiesel ? (
+              <SettlementPaymentFinancialBoard
+                projectId={Number(financeProjectId)}
+                projectLabel={
+                  projects.data?.find(project => String(project.id) === financeProjectId)
+                    ? `${projects.data.find(project => String(project.id) === financeProjectId)?.code} · ${projects.data.find(project => String(project.id) === financeProjectId)?.name}`
+                    : undefined
+                }
+              />
             ) : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MetricCard

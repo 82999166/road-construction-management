@@ -10,20 +10,22 @@ describe("SubcontractPaymentSettlementManager", () => {
     expect(component).toContain("建立应付草稿");
     expect(component).toContain("提交审核");
     expect(component).toContain("会计审核");
-    expect(component).toContain("登记付款");
-    expect(component).toContain("付款完成后不可作废");
+    expect(component).toContain("登记分笔付款");
+    expect(component).toContain("只有余额结清后包件才会标记为已结算");
   });
 
-  it("captures payment method, invoice evidence and a traceable payment reference", () => {
+  it("routes actual subcontract payment through the common proof, balance and payment-record dialog", () => {
+    expect(component).toContain("SettlementPaymentDialog");
+    expect(component).toContain('settlementType="subcontract"');
+    expect(component).toContain("settlementPayment.monthlyReconciliation.invalidate()");
+    expect(component).toContain("部分付款");
+    expect(component).not.toContain('targetStatus: "paid"');
+    expect(component).not.toContain("paymentReference, setPaymentReference");
+  });
+
+  it("captures payment method and invoice evidence, then filters exports and renders a separate A4 summary", () => {
     expect(component).toContain("paymentMethod");
     expect(component).toContain("invoiceEvidenceId");
-    expect(component).toContain("paymentReference");
-    expect(component).toContain("同步项目财务支出");
-  });
-
-  it("按当前施工队和结算状态筛选导出，并生成独立 A4 汇总打印", () => {
-    expect(component).toContain('const [keyword, setKeyword] = useState("")');
-    expect(component).toContain('const [settlementStatus, setSettlementStatus] = useState("all")');
     expect(component).toContain("filteredSettlements");
     expect(component).toContain("CurrentFilterPrintActions");
     expect(component).toContain("downloadCurrentFilteredCsv");
@@ -31,13 +33,11 @@ describe("SubcontractPaymentSettlementManager", () => {
     expect(component).toContain("合计：结算单");
   });
 
-  it("默认以设备日期登记付款，并在表格、导出和打印中使用中文状态与中国日期", () => {
-    expect(component).toContain('const today = () => toDeviceDateInput();');
+  it("uses Chinese status labels and China-date format in table, export and print", () => {
     expect(component).toContain("invoiceStatusDisplay(item.invoiceStatus)");
     expect(component).toContain("paymentMethodDisplay(item.paymentMethod)");
     expect(component).toContain("settlementStatusDisplay(item.status)");
     expect(component).toContain("formatChinaDate(item.paymentDate)");
     expect(component).toContain("formatChinaDateTime(new Date())");
-    expect(component).not.toContain("new Date().toISOString().slice(0, 10)");
   });
 });

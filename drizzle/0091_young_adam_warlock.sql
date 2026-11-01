@@ -1,0 +1,3 @@
+ALTER TABLE `settlement_payment_records` MODIFY COLUMN `settlementType` enum('transport_vehicle','machine','payroll','daily_wage','subcontract') NOT NULL;--> statement-breakpoint
+ALTER TABLE `subcontract_payment_settlements` MODIFY COLUMN `status` enum('draft','submitted','approved','partial','paid','void') NOT NULL DEFAULT 'draft';--> statement-breakpoint
+CREATE INDEX `settlement_payment_records_project_date_type_status_index` ON `settlement_payment_records` (`projectId`,`paymentDate`,`settlementType`,`status`);

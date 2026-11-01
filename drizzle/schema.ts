@@ -1845,7 +1845,8 @@ export const settlementPaymentRecords = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
-    settlementType: mysqlEnum("settlementType", ["transport_vehicle", "machine", "payroll", "daily_wage"]).notNull(),
+    /** 所有实际收付均落入同一付款明细；分包也必须逐笔关联付款凭证。 */
+    settlementType: mysqlEnum("settlementType", ["transport_vehicle", "machine", "payroll", "daily_wage", "subcontract"]).notNull(),
     settlementId: bigint("settlementId", { mode: "number" }).notNull(),
     direction: mysqlEnum("direction", ["expense", "income"]).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
@@ -1867,6 +1868,7 @@ export const settlementPaymentRecords = mysqlTable(
   table => ({
     settlementIndex: index("settlement_payment_records_settlement_index").on(table.settlementType, table.settlementId, table.status),
     projectDateIndex: index("settlement_payment_records_project_date_index").on(table.projectId, table.paymentDate, table.status),
+    projectDateTypeStatusIndex: index("settlement_payment_records_project_date_type_status_index").on(table.projectId, table.paymentDate, table.settlementType, table.status),
     evidenceIndex: index("settlement_payment_records_evidence_index").on(table.evidenceId),
   }),
 );
@@ -2209,7 +2211,8 @@ export const subcontractPaymentSettlements = mysqlTable(
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "paid", "void"]).default("draft").notNull(),
+    /** approved 为金额已核定待付款，partial 为已登记部分实际付款。 */
+    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "void"]).default("draft").notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),

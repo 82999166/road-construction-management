@@ -80,14 +80,14 @@ describe("工程结算与分包路由", () => {
     await expect(subcontractRouter.createCaller(createAuthContext()).createPaymentSettlement({ projectId: 10, packageId: 8, payeeName: "施工队", paymentMethod: "bank_transfer", manualDeductionAmount: 0, invoiceStatus: "missing" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("双岗复核") });
   });
 
-  it("分包付款结算强制提交人与会计审核人、会计审核人与付款人职责分离，且已付款不可回退", async () => {
+  it("分包审核保留职责分离，实际付款强制交由统一凭证台账，已结清不可回退", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 21, projectId: 10, status: "submitted", submittedBy: 1, approvedBy: null, settlementNo: "SPAY-1" }]) as never);
     await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 21, targetStatus: "approved" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("职责分离") });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 22, projectId: 10, status: "approved", submittedBy: 2, approvedBy: 1, settlementNo: "SPAY-2" }]) as never);
-    await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 22, targetStatus: "paid", paymentDate: "2026-08-21" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("职责分离") });
+    await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 22, targetStatus: "paid" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("不允许") });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 23, projectId: 10, status: "paid", submittedBy: 2, approvedBy: 3, settlementNo: "SPAY-3" }]) as never);
