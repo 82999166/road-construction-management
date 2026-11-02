@@ -11,10 +11,14 @@ describe("CompanyPersonnelRoster", () => {
     expect(source).toContain("公司全员花名册");
     expect(source).toContain("公司账号、员工档案和实名制人员");
     expect(source).toContain("全部人员类型");
-    expect(source).toContain("公司管理人员");
-    expect(source).toContain("机械操作员");
-    expect(source).toContain("施工队工人");
-    expect(source).toContain("临时日结人员");
+    expect(source).toContain("公司管理员");
+    expect(source).toContain("机械司机");
+    expect(source).toContain("渣土车司机");
+    expect(source).toContain("劳务队工人");
+    expect(source).toContain("临时工");
+    expect(source).toContain("rosterCategory");
+    expect(source).toContain("roleSources");
+    expect(source).toContain("兼任");
     expect(source).toContain("全部在职状态");
     expect(source).toContain("全部归属项目");
   });

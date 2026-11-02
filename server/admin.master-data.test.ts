@@ -237,6 +237,52 @@ describe("超级管理主数据约束", () => {
     expect(roster[0]).not.toHaveProperty("bankAccountEncrypted");
   });
 
+  it("花名册以真实车辆和机械绑定派生司机类别，不把司机账号默认归为公司管理员", async () => {
+    let selectIndex = 0;
+    const resultSets = [
+      [
+        { id: 10, userId: 2, laborWorkerId: null, projectId: null, employeeType: "management", teamName: null, employmentStatus: "active", joinedAt: null, salaryBasis: "monthly", updatedAt: new Date("2026-11-01"), createdAt: new Date("2026-10-01") },
+        { id: 11, userId: 4, laborWorkerId: null, projectId: null, employeeType: "management", teamName: null, employmentStatus: "active", joinedAt: null, salaryBasis: "monthly", updatedAt: new Date("2026-11-01"), createdAt: new Date("2026-10-01") },
+      ],
+      [
+        { id: 2, name: "渣土车司机", localAccountStatus: "active", loginMethod: "local_driver" },
+        { id: 3, name: "机械司机", localAccountStatus: "active", loginMethod: "local" },
+        { id: 4, name: "兼任司机", localAccountStatus: "active", loginMethod: "local" },
+        { id: 5, name: "普通账号", localAccountStatus: "active", loginMethod: "local" },
+      ],
+      [
+        { id: 21, realName: "劳务队工人", projectId: 8, teamName: "钢筋班", workerCategory: "labor_team", attendanceStatus: "active", entryDate: new Date("2026-10-02") },
+        { id: 22, realName: "临时工", projectId: 8, teamName: "零工班", workerCategory: "temporary_daily", attendanceStatus: "active", entryDate: new Date("2026-10-03") },
+      ],
+      [{ id: 8, name: "高速一标" }, { id: 9, name: "高速二标" }],
+      [], [], [], [], [], [],
+      [
+        { projectId: 8, operatorUserId: 3 },
+        { projectId: 8, operatorUserId: 4 },
+        { projectId: 8, operatorUserId: 999 },
+      ],
+      [
+        { projectId: 8, vehicleType: "dump_truck", driverUserId: 2 },
+        { projectId: 9, vehicleType: "dump_truck", driverUserId: 4 },
+        { projectId: 8, vehicleType: "pickup", driverUserId: 5 },
+      ],
+    ];
+    vi.mocked(getDb).mockResolvedValue({
+      select: vi.fn(() => ({ from: vi.fn(() => Promise.resolve(resultSets[selectIndex++] ?? [])) })),
+    } as never);
+
+    const roster = await adminRouter.createCaller(createAdminContext()).employee.listCompanyRoster();
+
+    expect(roster).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "account:2", employeeType: "management", rosterCategory: "dump_truck_driver", roleSources: ["dump_truck_driver"], projectName: "高速一标" }),
+      expect.objectContaining({ id: "account:3", rosterCategory: "machine_driver", roleSources: ["machine_driver"], projectName: "高速一标" }),
+      expect.objectContaining({ id: "account:4", employeeType: "management", rosterCategory: "dump_truck_driver", roleSources: ["dump_truck_driver", "machine_driver"] }),
+      expect.objectContaining({ id: "account:5", rosterCategory: "company_admin" }),
+      expect.objectContaining({ id: "worker:21", rosterCategory: "labor_team_worker" }),
+      expect.objectContaining({ id: "worker:22", rosterCategory: "temporary_worker" }),
+    ]));
+  });
+
   it("花名册按账号或工人身份去重并稳定选择最近规范档案，同名不同身份绝不合并", async () => {
     let selectIndex = 0;
     const resultSets = [

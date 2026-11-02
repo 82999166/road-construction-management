@@ -43,6 +43,21 @@ export type CompanyPersonnelRosterRow = {
   displayName: string;
   employeeType: "management" | "operator" | "construction_worker";
   workerCategory: "company_admin" | "labor_team" | "temporary_daily" | null;
+  /** 花名册展示类别由服务端根据资源绑定、劳务实名类别派生，不回写员工档案原始类型。 */
+  rosterCategory:
+    | "company_admin"
+    | "machine_driver"
+    | "dump_truck_driver"
+    | "labor_team_worker"
+    | "temporary_worker";
+  /** 同一账号可兼任机械司机、渣土车司机；花名册必须明确展示，不能误归为管理人员。 */
+  roleSources: Array<
+    | "company_admin"
+    | "machine_driver"
+    | "dump_truck_driver"
+    | "labor_team_worker"
+    | "temporary_worker"
+  >;
   employmentStatus: "active" | "suspended" | "left" | "pending";
   projectId: number | null;
   projectName: string | null;
@@ -78,17 +93,23 @@ type Props = {
 
 type PersonnelTypeFilter =
   | "all"
-  | CompanyPersonnelRosterRow["employeeType"]
-  | "temporary_daily";
+  | CompanyPersonnelRosterRow["rosterCategory"];
 type EmploymentStatusFilter =
   | "all"
   | CompanyPersonnelRosterRow["employmentStatus"];
 
+function getRosterCategoryLabel(
+  category: CompanyPersonnelRosterRow["rosterCategory"]
+) {
+  if (category === "dump_truck_driver") return "渣土车司机";
+  if (category === "machine_driver") return "机械司机";
+  if (category === "labor_team_worker") return "劳务队工人";
+  if (category === "temporary_worker") return "临时工";
+  return "公司管理员";
+}
+
 function getPersonnelTypeLabel(row: CompanyPersonnelRosterRow) {
-  if (row.workerCategory === "temporary_daily") return "临时日结人员";
-  if (row.employeeType === "management") return "公司管理人员";
-  if (row.employeeType === "operator") return "机械操作员";
-  return "施工队工人";
+  return getRosterCategoryLabel(row.rosterCategory);
 }
 
 function getEmploymentStatusLabel(
@@ -215,11 +236,7 @@ export default function CompanyPersonnelRoster({
     const keyword = search.trim().toLocaleLowerCase("zh-CN");
     return rows.filter(row => {
       const typeMatches =
-        type === "all" ||
-        (type === "temporary_daily"
-          ? row.workerCategory === "temporary_daily"
-          : row.employeeType === type &&
-            row.workerCategory !== "temporary_daily");
+        type === "all" || row.rosterCategory === type;
       const statusMatches = status === "all" || row.employmentStatus === status;
       const projectMatches =
         projectId === "all" || String(row.projectId) === projectId;
@@ -247,7 +264,7 @@ export default function CompanyPersonnelRoster({
               公司全员花名册
             </CardTitle>
             <CardDescription className="mt-1 max-w-3xl">
-              汇总公司账号、员工档案和实名制人员，自动去重；不受当前劳务项目筛选限制。人员类型、在职状态、项目和班组均可组合查看。
+              汇总公司账号、员工档案和实名制人员，自动去重；不受当前劳务项目筛选限制。花名册按真实车辆、机械绑定及劳务实名类别显示业务身份；员工档案类型不改变账号权限、工资或考勤归属。
             </CardDescription>
           </div>
           <Badge
@@ -274,10 +291,11 @@ export default function CompanyPersonnelRoster({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部人员类型</SelectItem>
-              <SelectItem value="management">公司管理人员</SelectItem>
-              <SelectItem value="operator">机械操作员</SelectItem>
-              <SelectItem value="construction_worker">施工队工人</SelectItem>
-              <SelectItem value="temporary_daily">临时日结人员</SelectItem>
+              <SelectItem value="company_admin">公司管理员</SelectItem>
+              <SelectItem value="machine_driver">机械司机</SelectItem>
+              <SelectItem value="dump_truck_driver">渣土车司机</SelectItem>
+              <SelectItem value="labor_team_worker">劳务队工人</SelectItem>
+              <SelectItem value="temporary_worker">临时工</SelectItem>
             </SelectContent>
           </Select>
           <Select
@@ -373,6 +391,17 @@ export default function CompanyPersonnelRoster({
                         >
                           {getPersonnelTypeLabel(row)}
                         </Badge>
+                        {row.roleSources
+                          .filter(category => category !== row.rosterCategory)
+                          .map(category => (
+                            <Badge
+                              key={category}
+                              variant="outline"
+                              className="border-sky-200 bg-sky-50 text-sky-700"
+                            >
+                              兼任{getRosterCategoryLabel(category)}
+                            </Badge>
+                          ))}
                         <Badge
                           variant={
                             row.employmentStatus === "active"
@@ -458,7 +487,7 @@ export default function CompanyPersonnelRoster({
               </DialogHeader>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-lg bg-slate-50 p-3">
-                  <p className="text-xs text-slate-500">人员类型 / 状态</p>
+                  <p className="text-xs text-slate-500">业务身份 / 状态</p>
                   <p className="mt-1 font-medium">
                     {getPersonnelTypeLabel(selectedRow)} ·{" "}
                     {getEmploymentStatusLabel(selectedRow.employmentStatus)}

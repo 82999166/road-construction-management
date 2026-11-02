@@ -527,6 +527,17 @@ function compareCompanyRosterEntries(
   return left.id.localeCompare(right.id);
 }
 
+/**
+ * 花名册展示类别是由真实业务绑定派生的展示口径，并不回写员工档案 employeeType。
+ * 机械/车辆关联优先于历史员工档案，避免已绑定司机因为拥有系统账号而被误示为公司管理人员。
+ */
+type CompanyRosterCategory =
+  | "company_admin"
+  | "machine_driver"
+  | "dump_truck_driver"
+  | "labor_team_worker"
+  | "temporary_worker";
+
 const employeePayrollAdvanceInput = z.object({
   employeeProfileId: z.number().int().positive(),
   advanceDate: z.string().date(),
@@ -1770,6 +1781,8 @@ export const adminRouter = router({
         checkInRows,
         payrollRows,
         dailyWageRows,
+        machineDriverRows,
+        dumpTruckDriverRows,
       ] = await Promise.all([
         db.select().from(employeeProfiles),
         db
@@ -1777,6 +1790,7 @@ export const adminRouter = router({
             id: users.id,
             name: users.name,
             localAccountStatus: users.localAccountStatus,
+            loginMethod: users.loginMethod,
           })
           .from(users),
         db
@@ -1839,6 +1853,20 @@ export const adminRouter = router({
             status: temporaryDailyWageSettlements.status,
           })
           .from(temporaryDailyWageSettlements),
+        // 仅读取当前业务绑定所需的 ID 与项目，不读取司机姓名、电话或任何加密字段。
+        db
+          .select({
+            projectId: machines.projectId,
+            operatorUserId: machines.operatorUserId,
+          })
+          .from(machines),
+        db
+          .select({
+            projectId: transportVehicles.projectId,
+            vehicleType: transportVehicles.vehicleType,
+            driverUserId: transportVehicles.driverUserId,
+          })
+          .from(transportVehicles),
       ]);
       const accountById = new Map(
         accountRows.map(account => [account.id, account])
@@ -1846,6 +1874,96 @@ export const adminRouter = router({
       const workerById = new Map(workerRows.map(worker => [worker.id, worker]));
       const accountIds = new Set(accountById.keys());
       const workerIds = new Set(workerById.keys());
+      const machineProjectsByDriverId = new Map<number, Set<number>>();
+      const dumpTruckProjectsByDriverId = new Map<number, Set<number>>();
+      const registerDriverProject = (
+        projectsByDriverId: Map<number, Set<number>>,
+        userId: number | null,
+        projectId: number | null
+      ) => {
+        // 资源表没有数据库外键时，悬空账号不得被用于花名册人员分类。
+        if (!userId || !accountIds.has(userId)) return;
+        const projects = projectsByDriverId.get(userId) ?? new Set<number>();
+        if (projectId) projects.add(projectId);
+        projectsByDriverId.set(userId, projects);
+      };
+      for (const machine of machineDriverRows)
+        registerDriverProject(
+          machineProjectsByDriverId,
+          machine.operatorUserId,
+          machine.projectId
+        );
+      for (const vehicle of dumpTruckDriverRows) {
+        if (vehicle.vehicleType !== "dump_truck") continue;
+        registerDriverProject(
+          dumpTruckProjectsByDriverId,
+          vehicle.driverUserId,
+          vehicle.projectId
+        );
+      }
+      const resolveRosterCategory = (input: {
+        userId: number | null;
+        workerCategory: "company_admin" | "labor_team" | "temporary_daily" | null;
+        employeeType: "management" | "operator" | "construction_worker" | null;
+        loginMethod: string | null | undefined;
+      }): {
+        rosterCategory: CompanyRosterCategory;
+        roleSources: CompanyRosterCategory[];
+      } => {
+        if (input.workerCategory === "temporary_daily")
+          return {
+            rosterCategory: "temporary_worker" as const,
+            roleSources: ["temporary_worker" as const],
+          };
+        if (input.workerCategory === "labor_team")
+          return {
+            rosterCategory: "labor_team_worker" as const,
+            roleSources: ["labor_team_worker" as const],
+          };
+        const roleSources: CompanyRosterCategory[] = [];
+        if (
+          input.userId &&
+          dumpTruckProjectsByDriverId.has(input.userId)
+        )
+          roleSources.push("dump_truck_driver");
+        if (
+          input.userId &&
+          (machineProjectsByDriverId.has(input.userId) ||
+            input.employeeType === "operator")
+        )
+          roleSources.push("machine_driver");
+        // local_driver 仅是当前资源绑定丢失时的降级显示依据，不能通过姓名或手机号反查司机。
+        if (
+          input.userId &&
+          input.loginMethod === "local_driver" &&
+          !roleSources.includes("dump_truck_driver")
+        )
+          roleSources.push("dump_truck_driver");
+        if (roleSources.includes("dump_truck_driver"))
+          return { rosterCategory: "dump_truck_driver" as const, roleSources };
+        if (roleSources.includes("machine_driver"))
+          return { rosterCategory: "machine_driver" as const, roleSources };
+        return {
+          rosterCategory: "company_admin" as const,
+          roleSources: ["company_admin" as const],
+        };
+      };
+      const getBoundProjectId = (userId: number | null) => {
+        if (!userId) return null;
+        const projectIds: number[] = [];
+        dumpTruckProjectsByDriverId
+          .get(userId)
+          ?.forEach(projectId => projectIds.push(projectId));
+        machineProjectsByDriverId
+          .get(userId)
+          ?.forEach(projectId => projectIds.push(projectId));
+        const distinctProjectIds = projectIds.filter(
+          (projectId, index) => projectIds.indexOf(projectId) === index
+        );
+        return distinctProjectIds.length === 1
+          ? (distinctProjectIds[0] ?? null)
+          : null;
+      };
       const projectNameById = new Map(
         projectRows.map(project => [project.id, project.name])
       );
@@ -1980,7 +2098,16 @@ export const adminRouter = router({
         const worker = profile.laborWorkerId
           ? workerById.get(profile.laborWorkerId)
           : undefined;
-        const projectId = profile.projectId ?? worker?.projectId ?? null;
+        const category = resolveRosterCategory({
+          userId: profile.userId ?? null,
+          workerCategory: worker?.workerCategory ?? null,
+          employeeType: profile.employeeType,
+          loginMethod: account?.loginMethod,
+        });
+        const projectId =
+          profile.projectId ??
+          worker?.projectId ??
+          getBoundProjectId(profile.userId ?? null);
         return {
           profileId: profile.id,
           userId: profile.userId,
@@ -1989,6 +2116,7 @@ export const adminRouter = router({
           displayName: account?.name ?? worker?.realName ?? "未命名员工",
           employeeType: profile.employeeType,
           workerCategory: worker?.workerCategory ?? null,
+          ...category,
           employmentStatus: profile.employmentStatus,
           projectId,
           projectName: projectId
@@ -2009,53 +2137,77 @@ export const adminRouter = router({
       });
       const unprofiledAccounts = accountRows
         .filter(account => !linkedAccountIds.has(account.id))
-        .map(account => ({
-          profileId: null,
-          userId: account.id,
-          laborWorkerId: null,
-          id: `account:${account.id}`,
-          displayName: account.name ?? "未命名公司人员",
-          employeeType: "management" as const,
-          workerCategory: null,
-          employmentStatus:
-            account.localAccountStatus === "disabled"
-              ? ("suspended" as const)
-              : ("active" as const),
-          projectId: null,
-          projectName: null,
-          teamName: null,
-          joinedAt: null,
-          salaryBasis: null,
-          ...getDetail(account.id, null, null, null),
-          profileComplete: false,
-        }));
+        .map(account => {
+          const category = resolveRosterCategory({
+            userId: account.id,
+            workerCategory: null,
+            employeeType: null,
+            loginMethod: account.loginMethod,
+          });
+          const projectId = getBoundProjectId(account.id);
+          return {
+            profileId: null,
+            userId: account.id,
+            laborWorkerId: null,
+            id: `account:${account.id}`,
+            displayName: account.name ?? "未命名公司人员",
+            employeeType: "management" as const,
+            workerCategory: null,
+            ...category,
+            employmentStatus:
+              account.localAccountStatus === "disabled"
+                ? ("suspended" as const)
+                : ("active" as const),
+            projectId,
+            projectName: projectId
+              ? (projectNameById.get(projectId) ?? "项目待同步")
+              : null,
+            teamName: null,
+            joinedAt: null,
+            salaryBasis: null,
+            ...getDetail(account.id, null, null, null),
+            profileComplete: false,
+          };
+        });
       const unprofiledWorkers = workerRows
         .filter(worker => !linkedWorkerIds.has(worker.id))
-        .map(worker => ({
-          profileId: null,
-          userId: null,
-          laborWorkerId: worker.id,
-          id: `worker:${worker.id}`,
-          displayName: worker.realName,
-          employeeType:
-            worker.workerCategory === "company_admin"
-              ? ("management" as const)
-              : ("construction_worker" as const),
-          workerCategory: worker.workerCategory,
-          employmentStatus:
-            worker.attendanceStatus === "left"
-              ? ("left" as const)
-              : worker.attendanceStatus === "active"
-                ? ("active" as const)
-                : ("pending" as const),
-          projectId: worker.projectId,
-          projectName: projectNameById.get(worker.projectId) ?? "项目待同步",
-          teamName: worker.teamName,
-          joinedAt: worker.entryDate,
-          salaryBasis: null,
-          ...getDetail(null, worker.id, null, null),
-          profileComplete: false,
-        }));
+        .map(worker => {
+          const category = resolveRosterCategory({
+            userId: null,
+            workerCategory: worker.workerCategory,
+            employeeType:
+              worker.workerCategory === "company_admin"
+                ? "management"
+                : "construction_worker",
+            loginMethod: null,
+          });
+          return {
+            profileId: null,
+            userId: null,
+            laborWorkerId: worker.id,
+            id: `worker:${worker.id}`,
+            displayName: worker.realName,
+            employeeType:
+              worker.workerCategory === "company_admin"
+                ? ("management" as const)
+                : ("construction_worker" as const),
+            workerCategory: worker.workerCategory,
+            ...category,
+            employmentStatus:
+              worker.attendanceStatus === "left"
+                ? ("left" as const)
+                : worker.attendanceStatus === "active"
+                  ? ("active" as const)
+                  : ("pending" as const),
+            projectId: worker.projectId,
+            projectName: projectNameById.get(worker.projectId) ?? "项目待同步",
+            teamName: worker.teamName,
+            joinedAt: worker.entryDate,
+            salaryBasis: null,
+            ...getDetail(null, worker.id, null, null),
+            profileComplete: false,
+          };
+        });
       return [
         ...profileEntries,
         ...unprofiledAccounts,
