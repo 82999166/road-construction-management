@@ -29,7 +29,7 @@ vi.mock("./access", async importOriginal => {
   };
 });
 
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes } from "./access";
+import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes } from "./access";
 import { getDb } from "./db";
 import { laborRouter } from "./routers/labor";
 import { createInAppMessage } from "./routers/messages";
@@ -196,6 +196,7 @@ describe("labor tRPC 路由", () => {
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(laborRouter.createCaller(createAuthContext()).saveWorker({ id: 7, projectId: 10, realName: "王五", attendanceStatus: "active", identityVerificationStatus: "verified" })).resolves.toEqual({ success: true, id: 7 });
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "LABOR", "edit");
 
     expect(vi.mocked(createInAppMessage)).toHaveBeenCalledWith(expect.objectContaining({
       eventCode: "IDENTITY_VERIFIED",
@@ -204,6 +205,24 @@ describe("labor tRPC 路由", () => {
       deepLink: "/mobile/labor",
     }));
     expect(vi.mocked(createInAppMessage).mock.calls[0]?.[0]?.content).not.toMatch(/王五|110101199001011234/);
+  });
+
+  it("新建实名制施工队工人要求劳务模块的 create 操作权限", async () => {
+    const insertValues = vi.fn(async () => [{ insertId: 31 }]);
+    vi.mocked(getDb).mockResolvedValue({
+      insert: vi.fn(() => ({ values: insertValues })),
+    } as never);
+
+    await expect(laborRouter.createCaller(createAuthContext()).saveWorker({
+      projectId: 10,
+      realName: "施工队测试工人",
+      identityNo: "110101199001011234",
+      workerCategory: "labor_team",
+      attendanceStatus: "active",
+      identityVerificationStatus: "pending",
+    })).resolves.toEqual({ success: true, id: 31 });
+
+    expect(vi.mocked(assertDepartmentBusinessAccess)).toHaveBeenCalledWith(expect.anything(), "LABOR", "create");
   });
 
   it("证照归档会写入无证照名称和人员信息的幂等站内消息", async () => {

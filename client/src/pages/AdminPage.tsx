@@ -532,6 +532,20 @@ type EmployeeProfileForm = {
   baseSalary: string;
   remarks: string;
 };
+/**
+ * PC 劳务入口仅新建施工队实名制工人。敏感字段只保留在当前对话框的受控内存中，
+ * 不接入任何本机草稿或既有员工档案表单。
+ */
+type LaborWorkerCreateForm = {
+  realName: string;
+  identityNo: string;
+  teamName: string;
+  phone: string;
+  bankName: string;
+  bankAccount: string;
+  entryDate: string;
+  remarks: string;
+};
 type EmployeeInsuranceForm = {
   id?: number;
   employeeProfileId: string;
@@ -1023,6 +1037,16 @@ const EMPTY_EMPLOYEE_PROFILE_FORM: EmployeeProfileForm = {
   leftAt: "",
   salaryBasis: "monthly",
   baseSalary: "",
+  remarks: "",
+};
+const EMPTY_LABOR_WORKER_CREATE_FORM: LaborWorkerCreateForm = {
+  realName: "",
+  identityNo: "",
+  teamName: "",
+  phone: "",
+  bankName: "",
+  bankAccount: "",
+  entryDate: "",
   remarks: "",
 };
 const EMPTY_EMPLOYEE_INSURANCE_FORM: EmployeeInsuranceForm = {
@@ -2369,6 +2393,13 @@ export default function AdminPage({
   const employeeOptions = trpc.admin.employee.options.useQuery(undefined, {
     enabled: canQuery && isPermission,
   });
+  const constructionWorkerOptions = useMemo(
+    () =>
+      (employeeOptions.data?.laborWorkers ?? []).filter(
+        worker => worker.workerCategory === "labor_team"
+      ),
+    [employeeOptions.data?.laborWorkers]
+  );
   const companyPersonnelRoster = trpc.admin.employee.listCompanyRoster.useQuery(
     undefined,
     { enabled: canQuery && isLabor && !scopedSection }
@@ -3753,6 +3784,10 @@ export default function AdminPage({
     useState<EmployeeProfileForm>(EMPTY_EMPLOYEE_PROFILE_FORM);
   const [employeeProfileDialogOpen, setEmployeeProfileDialogOpen] =
     useState(false);
+  const [laborWorkerCreateForm, setLaborWorkerCreateForm] =
+    useState<LaborWorkerCreateForm>(EMPTY_LABOR_WORKER_CREATE_FORM);
+  const [laborWorkerCreateDialogOpen, setLaborWorkerCreateDialogOpen] =
+    useState(false);
   const [employeeInsuranceForm, setEmployeeInsuranceForm] =
     useState<EmployeeInsuranceForm>(EMPTY_EMPLOYEE_INSURANCE_FORM);
   const [employeeInsuranceDialogOpen, setEmployeeInsuranceDialogOpen] =
@@ -4630,6 +4665,47 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
+  /**
+   * 施工队工人的身份证、电话与银行卡只会在本次受控提交内存中出现；
+   * 成功、取消和遮罩关闭均清空，且绝不写入本机草稿或员工档案。
+   */
+  const closeLaborWorkerCreateDialog = () => {
+    setLaborWorkerCreateDialogOpen(false);
+    setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM);
+  };
+  const saveLaborWorker = trpc.labor.saveWorker.useMutation({
+    onSuccess: async (_result, variables) => {
+      toast.success("实名制施工队工人已新建");
+      closeLaborWorkerCreateDialog();
+      await trpcUtils.labor.listWorkers.invalidate({
+        projectId: variables.projectId,
+        includeLeft: true,
+      });
+    },
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
+  });
+  const submitLaborWorkerCreate = () => {
+    if (!hasBusinessWorkspaceProject)
+      return toast.error("请先选择已授权项目");
+    if (!laborWorkerCreateForm.realName.trim())
+      return toast.error("请填写实名姓名");
+    if (!laborWorkerCreateForm.identityNo.trim())
+      return toast.error("请填写身份证号码");
+    saveLaborWorker.mutate({
+      projectId: workspaceProjectId,
+      workerCategory: "labor_team",
+      realName: laborWorkerCreateForm.realName.trim(),
+      identityNo: laborWorkerCreateForm.identityNo.trim(),
+      teamName: laborWorkerCreateForm.teamName.trim() || null,
+      phone: laborWorkerCreateForm.phone.trim() || null,
+      bankName: laborWorkerCreateForm.bankName.trim() || null,
+      bankAccount: laborWorkerCreateForm.bankAccount.trim() || null,
+      entryDate: laborWorkerCreateForm.entryDate || null,
+      remarks: laborWorkerCreateForm.remarks.trim() || null,
+      identityVerificationStatus: "pending",
+      attendanceStatus: "active",
+    });
+  };
   const uploadEmployeeInsurancePolicy =
     trpc.admin.employee.uploadInsurancePolicy.useMutation();
   const saveEmployeeInsurance = trpc.admin.employee.saveInsurance.useMutation({
@@ -9793,41 +9869,69 @@ export default function AdminPage({
                   {employeeProfileForm.employeeType ===
                   "construction_worker" ? (
                     <Field label="关联施工队工人">
-                      <Select
-                        value={
-                          employeeProfileForm.laborWorkerId || "UNASSIGNED"
-                        }
-                        onValueChange={value => {
-                          const worker =
-                            employeeOptions.data?.laborWorkers.find(
-                              item => String(item.id) === value
-                            );
-                          setEmployeeProfileForm(current => ({
-                            ...current,
-                            laborWorkerId: value === "UNASSIGNED" ? "" : value,
-                            projectId: worker
-                              ? String(worker.projectId)
-                              : current.projectId,
-                            teamName: worker?.teamName ?? current.teamName,
-                          }));
-                        }}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="选择劳务档案" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="UNASSIGNED">请选择</SelectItem>
-                          {employeeOptions.data?.laborWorkers.map(worker => (
-                            <SelectItem
-                              key={worker.id}
-                              value={String(worker.id)}
-                            >
-                              {worker.realName}
-                              {worker.teamName ? ` · ${worker.teamName}` : ""}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {employeeOptions.isLoading ? (
+                        <p className="text-sm text-slate-500">
+                          正在读取可关联的施工队工人…
+                        </p>
+                      ) : constructionWorkerOptions.length ? (
+                        <Select
+                          value={
+                            employeeProfileForm.laborWorkerId || "UNASSIGNED"
+                          }
+                          onValueChange={value => {
+                            const worker =
+                              constructionWorkerOptions.find(
+                                item => String(item.id) === value
+                              );
+                            setEmployeeProfileForm(current => ({
+                              ...current,
+                              laborWorkerId:
+                                value === "UNASSIGNED" ? "" : value,
+                              projectId: worker
+                                ? String(worker.projectId)
+                                : current.projectId,
+                              teamName: worker?.teamName ?? current.teamName,
+                            }));
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="选择已有劳务档案" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="UNASSIGNED">请选择</SelectItem>
+                            {constructionWorkerOptions.map(worker => (
+                              <SelectItem
+                                key={worker.id}
+                                value={String(worker.id)}
+                              >
+                                {worker.realName}
+                                {worker.teamName
+                                  ? ` · ${worker.teamName}`
+                                  : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm leading-5 text-slate-600">
+                          <p>
+                            暂无可关联的施工队工人。员工档案窗口只能关联已有真实劳务档案，不能在此创建工人。
+                          </p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-2"
+                            onClick={() => {
+                              setEmployeeProfileDialogOpen(false);
+                              setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM);
+                              setLocation("/admin/labor");
+                            }}
+                          >
+                            前往劳务工资工作台新建实名制施工队工人
+                          </Button>
+                        </div>
+                      )}
                     </Field>
                   ) : (
                     <Field label="关联公司账号">
@@ -17144,15 +17248,18 @@ export default function AdminPage({
             />
             <LaborEntryActionCard
               onAdd={() => {
-                setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM);
-                setEmployeeProfileDialogOpen(true);
-                setLocation("/admin/permission");
+                setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM);
+                setLaborWorkerCreateDialogOpen(true);
               }}
             />
             <div className="grid gap-6 xl:grid-cols-2">
               <LaborWorkerRoster
                 workers={workers}
                 displayDate={displayDate}
+                onCreateWorker={() => {
+                  setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM);
+                  setLaborWorkerCreateDialogOpen(true);
+                }}
                 onOpenProfile={worker =>
                   setDesktopRecordDetail({
                     title: `劳务人员档案 · ${worker.realName}`,
@@ -17272,6 +17379,173 @@ export default function AdminPage({
                 }
               />
             </div>
+            <Dialog
+              open={laborWorkerCreateDialogOpen}
+              onOpenChange={open => {
+                if (!open) closeLaborWorkerCreateDialog();
+              }}
+            >
+              <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>新建实名制施工队工人</DialogTitle>
+                  <DialogDescription>
+                    仅建立当前项目的真实劳务人员档案，不创建系统账号或员工档案。身份证、联系电话和银行卡仅在本次安全提交时传送，关闭后不会保留或回显。
+                  </DialogDescription>
+                </DialogHeader>
+                <form
+                  className="space-y-4"
+                  onSubmit={event => {
+                    event.preventDefault();
+                    submitLaborWorkerCreate();
+                  }}
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="当前项目（必填）">
+                      <Input
+                        value={selectedWorkspaceProject?.name ?? ""}
+                        placeholder="请先选择已授权项目"
+                        disabled
+                      />
+                    </Field>
+                    <Field label="实名姓名（必填）">
+                      <Input
+                        value={laborWorkerCreateForm.realName}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            realName: event.target.value,
+                          }))
+                        }
+                        autoComplete="off"
+                        maxLength={64}
+                      />
+                    </Field>
+                  </div>
+                  <Field label="身份证号码（必填）">
+                    <Input
+                      value={laborWorkerCreateForm.identityNo}
+                      onChange={event =>
+                        setLaborWorkerCreateForm(current => ({
+                          ...current,
+                          identityNo: event.target.value,
+                        }))
+                      }
+                      autoComplete="off"
+                      inputMode="text"
+                      maxLength={32}
+                      placeholder="仅用于本次提交，由服务端加密保存"
+                    />
+                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="班组（可选）">
+                      <Input
+                        value={laborWorkerCreateForm.teamName}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            teamName: event.target.value,
+                          }))
+                        }
+                        maxLength={128}
+                        placeholder="例如：路基施工一队"
+                      />
+                    </Field>
+                    <Field label="联系电话（可选）">
+                      <Input
+                        value={laborWorkerCreateForm.phone}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            phone: event.target.value,
+                          }))
+                        }
+                        autoComplete="off"
+                        inputMode="tel"
+                        maxLength={32}
+                        placeholder="仅用于本次提交"
+                      />
+                    </Field>
+                    <Field label="开户行（可选）">
+                      <Input
+                        value={laborWorkerCreateForm.bankName}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            bankName: event.target.value,
+                          }))
+                        }
+                        autoComplete="off"
+                        maxLength={128}
+                        placeholder="仅用于本次提交"
+                      />
+                    </Field>
+                    <Field label="银行卡号（可选）">
+                      <Input
+                        value={laborWorkerCreateForm.bankAccount}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            bankAccount: event.target.value,
+                          }))
+                        }
+                        autoComplete="off"
+                        inputMode="numeric"
+                        maxLength={64}
+                        placeholder="仅用于本次提交，由服务端加密保存"
+                      />
+                    </Field>
+                    <Field label="进场日期（可选）">
+                      <Input
+                        type="date"
+                        value={laborWorkerCreateForm.entryDate}
+                        onChange={event =>
+                          setLaborWorkerCreateForm(current => ({
+                            ...current,
+                            entryDate: event.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                    固定分类：施工队工人；实名核验：待核验；出勤状态：在场。实名核验须按既有受控流程完成。
+                  </div>
+                  <Field label="备注（可选）">
+                    <Textarea
+                      value={laborWorkerCreateForm.remarks}
+                      onChange={event =>
+                        setLaborWorkerCreateForm(current => ({
+                          ...current,
+                          remarks: event.target.value,
+                        }))
+                      }
+                      maxLength={500}
+                      placeholder="请勿填写身份证、银行卡等敏感原文"
+                    />
+                  </Field>
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={closeLaborWorkerCreateDialog}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={
+                        saveLaborWorker.isPending ||
+                        !hasBusinessWorkspaceProject ||
+                        !laborWorkerCreateForm.realName.trim() ||
+                        !laborWorkerCreateForm.identityNo.trim()
+                      }
+                    >
+                      {saveLaborWorker.isPending ? "正在安全保存…" : "安全保存施工队工人"}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
           </>
         ) : null}
         <SettlementPaymentDialog

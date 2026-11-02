@@ -1,5 +1,45 @@
-import { Activity, ArrowUpRight, Building2, ClipboardCheck, CreditCard, FileText, Gauge, HardHat, RefreshCw, Route, Truck, WalletCards } from "lucide-react";
+import {
+  Activity,
+  ArrowUpRight,
+  ClipboardCheck,
+  CreditCard,
+  Gauge,
+  HardHat,
+  RefreshCw,
+  Route,
+  Truck,
+  WalletCards,
+} from "lucide-react";
 import React from "react";
+
+export type MonthlyCostCategory = {
+  category: string;
+  accrualAmount?: number | null;
+  cashAmount?: number | null;
+  accrualCount?: number | null;
+  cashCount?: number | null;
+  sourceHint?: string | null;
+};
+
+/** 服务端当前聚合形状；TOTAL 为四类费用的合计，不作为明细卡片展示。 */
+export type MonthlyCostItem = {
+  code: "TOTAL" | "PAYROLL" | "MACHINE_RENT" | "TRANSPORT_FREIGHT" | "LIVING_EXPENSE";
+  name: string;
+  accrualAmount?: number | null;
+  cashAmount?: number | null;
+  accrualCount?: number | null;
+  cashCount?: number | null;
+  sourceHint?: string | null;
+  emptyHint?: string | null;
+};
+
+/** 新字段保持可选，允许部署早于服务端月度费用聚合时安全降级。 */
+export type MonthlyCosts = {
+  totalAccrualAmount?: number | null;
+  totalCashAmount?: number | null;
+  categories?: MonthlyCostCategory[] | null;
+  items?: MonthlyCostItem[] | null;
+};
 
 export type OperatingDashboardData = {
   scope: { projectId: number | null; period: string | null };
@@ -17,18 +57,42 @@ export type OperatingDashboardData = {
   measurement: { declaredAmount: number; approvedAmount: number; settledAmount: number; pendingCount: number };
   progress: { averageProgressPercent: number | null; reportCount: number; approvedReportCount: number };
   resources: { payrollActualAmount: number; dailyWageActualAmount: number; transportTripCount: number };
+  monthlyCosts?: MonthlyCosts;
 };
 
 type OperatingCommandCenterProps = {
   data: OperatingDashboardData;
   scopeLabel: string;
+  /** 有值时为月度视图；全部期间时不可误标为“本月”。 */
+  period?: string;
   isRefreshing: boolean;
   onRefresh: () => void;
   onNavigate: (path: string) => void;
 };
 
-const currency = (value: number) => `¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+type MonthlyCostDefinition = {
+  category: string;
+  path: "/admin/labor" | "/admin/machinery" | "/admin/transport" | "/admin/finance";
+};
+
+const MONTHLY_COST_DEFINITIONS: readonly MonthlyCostDefinition[] = [
+  { category: "人员工资", path: "/admin/labor" },
+  { category: "机械租金", path: "/admin/machinery" },
+  { category: "车辆运费", path: "/admin/transport" },
+  { category: "生活开支", path: "/admin/finance" },
+];
+
+const currency = (value: number | null | undefined) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const percentage = (value: number | null) => value === null ? "—" : `${Number(value).toFixed(1)}%`;
+const safeNumber = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? value : 0;
+const safeCount = (value: number | null | undefined) => Math.max(0, Math.trunc(safeNumber(value)));
+
+/** 来源提示只允许业务摘要，不将账户、账号或卡号带入大屏。 */
+function displaySourceHint(value: string | null | undefined): string | null {
+  const hint = value?.trim();
+  if (!hint || /(账户|账号|卡号|account|bank)/i.test(hint)) return null;
+  return hint.slice(0, 80);
+}
 
 function CommandPanel({ title, icon: Icon, children, className = "" }: { title: string; icon: typeof WalletCards; children: React.ReactNode; className?: string }) {
   return <section className={`command-panel relative overflow-hidden border border-cyan-300/20 bg-[#091d42]/82 p-4 shadow-[inset_0_0_28px_rgba(35,111,214,.13)] ${className}`}><div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(64,197,255,.08)_1px,transparent_1px),linear-gradient(rgba(64,197,255,.06)_1px,transparent_1px)] bg-[size:24px_24px] opacity-30" /><div className="relative mb-3 flex items-center gap-2 text-sm font-semibold tracking-[0.12em] text-cyan-100"><Icon className="h-4 w-4 text-cyan-300" /><span>{title}</span><span className="h-px flex-1 bg-gradient-to-r from-cyan-300/70 to-transparent" /></div>{children}</section>;
@@ -40,11 +104,21 @@ function DataButton({ label, value, hint, onClick, accent = "cyan" }: { label: s
 }
 
 /** 仅展示服务端真实聚合结果；图表和道路线路为视觉承载，不生成或推断施工业务数据。 */
-export default function OperatingCommandCenter({ data, scopeLabel, isRefreshing, onRefresh, onNavigate }: OperatingCommandCenterProps) {
+export default function OperatingCommandCenter({ data, scopeLabel, period, isRefreshing, onRefresh, onNavigate }: OperatingCommandCenterProps) {
   const progress = Math.max(0, Math.min(100, data.progress.averageProgressPercent ?? 0));
   const circumference = 2 * Math.PI * 42;
   const maxCategoryAmount = Math.max(1, ...data.finance.categories.map(item => Number(item.amount)));
   const topCategories = data.finance.categories.slice(0, 5);
+  const monthlyCosts = data.monthlyCosts;
+  const monthlyCostEntries: Array<MonthlyCostCategory | MonthlyCostItem> = monthlyCosts?.categories?.length
+    ? monthlyCosts.categories
+    : (monthlyCosts?.items ?? []).filter(item => item.code !== "TOTAL");
+  const monthlyCostByCategory = new Map(monthlyCostEntries.map(item => ["category" in item ? item.category : item.name, item]));
+  const totalMonthlyCostItem = monthlyCosts?.items?.find(item => item.code === "TOTAL");
+  const totalAccrualAmount = safeNumber(monthlyCosts?.totalAccrualAmount ?? totalMonthlyCostItem?.accrualAmount ?? monthlyCostEntries.reduce((sum, item) => sum + safeNumber(item.accrualAmount), 0));
+  const totalCashAmount = safeNumber(monthlyCosts?.totalCashAmount ?? totalMonthlyCostItem?.cashAmount ?? monthlyCostEntries.reduce((sum, item) => sum + safeNumber(item.cashAmount), 0));
+  const monthlyCostTitle = period ? "本月五类费用" : "五类费用（全部期间）";
+  const hasMonthlyCostData = monthlyCosts !== undefined;
 
   return <div className="relative overflow-hidden rounded-xl border border-[#2261b0] bg-[#040e27] p-3 text-[#e6f5ff] shadow-[0_18px_60px_rgba(0,20,65,.46)] lg:p-5" id="operating-command-center">
     <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(29,103,190,.14)_1px,transparent_1px),linear-gradient(90deg,rgba(29,103,190,.14)_1px,transparent_1px),radial-gradient(circle_at_50%_0%,rgba(27,103,255,.38),transparent_42%)] [background-size:34px_34px,34px_34px,auto]" />
@@ -56,10 +130,11 @@ export default function OperatingCommandCenter({ data, scopeLabel, isRefreshing,
 
       <div className="grid gap-3 xl:grid-cols-[minmax(230px,.85fr)_minmax(420px,1.55fr)_minmax(230px,.85fr)]">
         <div className="space-y-3"><CommandPanel title="资金结算态势" icon={WalletCards}><div className="grid grid-cols-2 gap-2"><DataButton label="总收入" value={currency(data.finance.totalIncome)} hint="进入财务明细" onClick={() => onNavigate("/admin/finance")} /><DataButton label="已开发票" value={currency(data.finance.invoiceAmount)} hint="查看票据台账" onClick={() => onNavigate("/admin/finance")} accent="amber" /><DataButton label="应收欠款" value={currency(data.finance.receivable)} hint="查看回款状态" onClick={() => onNavigate("/admin/finance")} accent="rose" /><DataButton label="应付欠款" value={currency(data.finance.payable)} hint="查看付款安排" onClick={() => onNavigate("/admin/finance")} accent="rose" /></div><div className="mt-3 grid grid-cols-2 gap-2 border-t border-cyan-300/15 pt-3 text-xs"><p className="text-cyan-100/65">付款比 <b className="ml-1 text-cyan-200">{percentage(data.finance.paymentRatio)}</b></p><p className="text-cyan-100/65">已付金额 <b className="ml-1 text-cyan-200">{currency(data.finance.paidAmount)}</b></p></div></CommandPanel>
-          <CommandPanel title="施工资源投入" icon={HardHat}><div className="space-y-3"><div className="flex items-end justify-between border-b border-cyan-300/15 pb-2"><span className="text-xs text-cyan-100/60">月度工资实发</span><b className="text-lg text-cyan-200">{currency(data.resources.payrollActualAmount)}</b></div><div className="flex items-end justify-between border-b border-cyan-300/15 pb-2"><span className="text-xs text-cyan-100/60">临时日结实发</span><b className="text-lg text-cyan-200">{currency(data.resources.dailyWageActualAmount)}</b></div><button type="button" onClick={() => onNavigate("/admin/labor")} className="flex w-full items-center justify-between rounded border border-cyan-300/15 bg-[#071832]/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-300/60"><span>劳务工资与考勤台账</span><ArrowUpRight className="h-4 w-4 text-cyan-300" /></button></div></CommandPanel></div>
+          <CommandPanel title="劳务执行台账（独立口径）" icon={HardHat}><div className="space-y-3"><div className="flex items-end justify-between border-b border-cyan-300/15 pb-2"><span className="text-xs text-cyan-100/60">工资实发（资源台账）</span><b className="text-lg text-cyan-200">{currency(data.resources.payrollActualAmount)}</b></div><div className="flex items-end justify-between border-b border-cyan-300/15 pb-2"><span className="text-xs text-cyan-100/60">临时日结实发（资源台账）</span><b className="text-lg text-cyan-200">{currency(data.resources.dailyWageActualAmount)}</b></div><p className="text-[10px] leading-4 text-cyan-100/45">本卡反映劳务执行台账，不与月度费用付款合计相加。</p><button type="button" onClick={() => onNavigate("/admin/labor")} className="flex w-full items-center justify-between rounded border border-cyan-300/15 bg-[#071832]/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-300/60"><span>进入劳务工资与考勤台账</span><ArrowUpRight className="h-4 w-4 text-cyan-300" /></button></div></CommandPanel></div>
 
         <div className="space-y-3"><CommandPanel title="施工线路与工程进度" icon={Route} className="min-h-[290px]"><div className="relative grid min-h-[220px] items-center gap-4 md:grid-cols-[1fr_170px]"><div className="relative min-h-[190px] overflow-hidden rounded border border-cyan-300/15 bg-[radial-gradient(circle_at_25%_60%,rgba(24,103,205,.32),transparent_20%),radial-gradient(circle_at_78%_32%,rgba(0,223,255,.2),transparent_18%),linear-gradient(135deg,#071630,#0b2b55)]"><div className="absolute left-[10%] top-[56%] h-1 w-[79%] -rotate-[13deg] bg-gradient-to-r from-cyan-300 via-blue-200 to-cyan-300 shadow-[0_0_14px_rgba(67,217,255,.9)]" /><div className="absolute left-[12%] top-[47%] h-5 w-5 rounded-full border-2 border-cyan-200 bg-[#0c2e57] shadow-[0_0_16px_rgba(67,217,255,.9)]" /><div className="absolute right-[10%] top-[26%] h-5 w-5 rounded-full border-2 border-amber-200 bg-[#3b2e20] shadow-[0_0_16px_rgba(255,203,102,.8)]" /><div className="absolute left-[25%] top-[29%] text-[10px] text-cyan-100/70">施工起点</div><div className="absolute right-[9%] top-[14%] text-[10px] text-amber-100/80">计量节点</div><div className="absolute bottom-3 left-3 rounded border border-cyan-300/25 bg-[#061733]/80 px-2 py-1 text-[10px] text-cyan-100">以项目施工日报、计量与运输真实台账汇总</div></div><div className="flex flex-col items-center justify-center"><div className="relative grid h-32 w-32 place-items-center"><svg className="absolute h-full w-full -rotate-90"><circle cx="64" cy="64" r="42" fill="none" stroke="rgba(100,170,255,.18)" strokeWidth="9" /><circle cx="64" cy="64" r="42" fill="none" stroke="#39d6ff" strokeLinecap="round" strokeWidth="9" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - progress / 100)} /></svg><div className="text-center"><p className="text-3xl font-bold text-white">{data.progress.averageProgressPercent === null ? "—" : `${progress.toFixed(1)}%`}</p><p className="mt-1 text-[10px] tracking-[0.18em] text-cyan-200">项目进度</p></div></div><button type="button" onClick={() => onNavigate("/admin/construction")} className="mt-3 text-xs text-cyan-300 hover:text-white">进入施工管理 →</button></div></div></CommandPanel>
-          <CommandPanel title="计量、产值与成本构成" icon={Activity}><div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4"><div><p className="text-cyan-100/55">申报计量</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.declaredAmount)}</b></div><div><p className="text-cyan-100/55">核定计量</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.approvedAmount)}</b></div><div><p className="text-cyan-100/55">已结算产值</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.settledAmount)}</b></div><div><p className="text-cyan-100/55">结算比</p><b className="mt-1 block text-amber-200">{percentage(data.finance.settlementRatio)}</b></div></div><div className="mt-4 flex h-20 items-end gap-2 border-t border-cyan-300/15 pt-3">{topCategories.length ? topCategories.map((item, index) => <div key={item.category} className="group flex flex-1 flex-col items-center gap-1"><span className="text-[9px] text-cyan-100/55">{currency(item.amount)}</span><div className="w-full bg-gradient-to-t from-[#1a69d7] to-cyan-300/90" style={{ height: `${Math.max(10, Number(item.amount) / maxCategoryAmount * 46)}px` }} /><span className="max-w-full truncate text-[9px] text-cyan-100/70">{index + 1}.{item.category}</span></div>) : <p className="w-full text-center text-xs text-cyan-100/50">当前范围暂无有效支出分类。</p>}</div></CommandPanel></div>
+          <CommandPanel title="计量、产值与成本构成" icon={Activity}><div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4"><div><p className="text-cyan-100/55">申报计量</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.declaredAmount)}</b></div><div><p className="text-cyan-100/55">核定计量</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.approvedAmount)}</b></div><div><p className="text-cyan-100/55">已结算产值</p><b className="mt-1 block text-cyan-200">{currency(data.measurement.settledAmount)}</b></div><div><p className="text-cyan-100/55">结算比</p><b className="mt-1 block text-amber-200">{percentage(data.finance.settlementRatio)}</b></div></div><div className="mt-4 flex h-20 items-end gap-2 border-t border-cyan-300/15 pt-3">{topCategories.length ? topCategories.map((item, index) => <div key={item.category} className="group flex flex-1 flex-col items-center gap-1"><span className="text-[9px] text-cyan-100/55">{currency(item.amount)}</span><div className="w-full bg-gradient-to-t from-[#1a69d7] to-cyan-300/90" style={{ height: `${Math.max(10, Number(item.amount) / maxCategoryAmount * 46)}px` }} /><span className="max-w-full truncate text-[9px] text-cyan-100/70">{index + 1}.{item.category}</span></div>) : <p className="w-full text-center text-xs text-cyan-100/50">当前范围暂无有效支出分类。</p>}</div></CommandPanel>
+          <CommandPanel title={monthlyCostTitle} icon={CreditCard}><div className="grid gap-2 sm:grid-cols-2"><div className="rounded border border-amber-300/25 bg-[#071832]/80 px-3 py-2"><p className="text-[11px] text-cyan-100/65">已核定应付/成本合计</p><b className="mt-1 block text-lg tabular-nums text-amber-200">{currency(totalAccrualAmount)}</b><p className="mt-1 text-[10px] text-cyan-100/45">核定应付或成本口径</p></div><div className="rounded border border-emerald-300/25 bg-[#071832]/80 px-3 py-2"><p className="text-[11px] text-cyan-100/65">实际付款合计</p><b className="mt-1 block text-lg tabular-nums text-emerald-200">{currency(totalCashAmount)}</b><p className="mt-1 text-[10px] text-cyan-100/45">已登记实际付款口径</p></div></div><p className="mt-2 text-[10px] leading-4 text-cyan-100/55">两项为不同口径，不相加；仅展示金额与来源单据数量，不展示账户或付款账号信息。</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{MONTHLY_COST_DEFINITIONS.map(definition => { const item = monthlyCostByCategory.get(definition.category); const accrualCount = safeCount(item?.accrualCount); const cashCount = safeCount(item?.cashCount); const hasRecord = hasMonthlyCostData && (accrualCount > 0 || cashCount > 0); const sourceHint = displaySourceHint(item?.sourceHint); return <button type="button" key={definition.category} onClick={() => onNavigate(definition.path)} className="group rounded border border-cyan-300/15 bg-[#071832]/80 p-3 text-left transition hover:border-cyan-300/60 hover:bg-[#0d2855]"><div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-cyan-100">{definition.category}</p><ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-cyan-300 transition group-hover:translate-x-0.5 group-hover:-translate-y-0.5" /></div><div className="mt-2 grid grid-cols-2 gap-2 text-[10px]"><div><p className="text-cyan-100/50">核定应付/成本</p><b className="mt-0.5 block tabular-nums text-amber-200">{currency(safeNumber(item?.accrualAmount))}</b></div><div><p className="text-cyan-100/50">实际付款</p><b className="mt-0.5 block tabular-nums text-emerald-200">{currency(safeNumber(item?.cashAmount))}</b></div></div><p className="mt-2 min-h-4 text-[10px] leading-4 text-cyan-100/50">{hasRecord ? `应付/成本来源 ${accrualCount} 单 · 付款来源 ${cashCount} 单${sourceHint ? ` · ${sourceHint}` : ""}` : "暂无有效真实记录"}</p></button>; })}</div></CommandPanel></div>
 
         <div className="space-y-3"><CommandPanel title="运输与现场动态" icon={Truck}><div className="grid grid-cols-2 gap-2"><DataButton label="运输趟次" value={`${data.resources.transportTripCount} 趟`} hint="查看运单台账" onClick={() => onNavigate("/admin/transport")} /><DataButton label="施工日报" value={`${data.progress.reportCount} 条`} hint="查看施工记录" onClick={() => onNavigate("/admin/construction")} /><DataButton label="已审核日报" value={`${data.progress.approvedReportCount} 条`} hint="查看审核状态" onClick={() => onNavigate("/admin/construction")} accent="amber" /><DataButton label="待处理计量" value={`${data.measurement.pendingCount} 笔`} hint="查看计量流程" onClick={() => onNavigate("/admin/measurement-tools")} accent={data.measurement.pendingCount ? "rose" : "cyan"} /></div></CommandPanel>
           <CommandPanel title="项目风险与控制" icon={Gauge}><div className="space-y-2 text-xs"><div className="flex items-center justify-between rounded border border-cyan-300/15 bg-[#071832]/70 px-3 py-2"><span className="text-cyan-100/60">资金待付</span><b className="text-[#ff9fc3]">{currency(data.finance.payable)}</b></div><div className="flex items-center justify-between rounded border border-cyan-300/15 bg-[#071832]/70 px-3 py-2"><span className="text-cyan-100/60">计量待处理</span><b className="text-[#ffd46b]">{data.measurement.pendingCount} 笔</b></div><button type="button" onClick={() => onNavigate("/admin/risk")} className="mt-1 flex w-full items-center justify-between rounded border border-cyan-300/25 px-3 py-2 text-cyan-200 transition hover:bg-cyan-300/10"><span>进入 AI 项目风控</span><ArrowUpRight className="h-4 w-4" /></button></div></CommandPanel></div>

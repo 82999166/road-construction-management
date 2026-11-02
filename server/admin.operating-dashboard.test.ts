@@ -11,6 +11,11 @@ describe("经营数据大屏", () => {
     expect(service).toContain("measurementClaims");
     expect(service).toContain("constructionDailyReports");
     expect(service).toContain("temporaryDailyWageSettlements");
+    expect(service).toContain("monthlyCosts");
+    expect(service).toContain("settlementPaymentRecords");
+    expect(service).toContain("machinePaymentSettlements");
+    expect(service).toContain("transportVehicleSettlements");
+    expect(service).toContain("buildMonthlyCostStatistics");
     expect(service).toContain("paymentRatio");
     expect(service).toContain("settlementRatio");
     expect(router).toContain("operatingDashboard");

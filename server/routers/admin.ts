@@ -437,6 +437,96 @@ const employeeProfileInput = z
       });
   });
 
+/** 花名册仅合并仍可解析到当前主数据的单一身份；失效或异常历史关联保留独立档案。 */
+type CompanyRosterProfile = {
+  id: number;
+  userId: number | null;
+  laborWorkerId: number | null;
+  updatedAt: Date;
+  createdAt: Date;
+};
+
+function compareEmployeeProfileRecency(
+  left: CompanyRosterProfile,
+  right: CompanyRosterProfile
+) {
+  const updatedAtDifference = right.updatedAt.getTime() - left.updatedAt.getTime();
+  if (updatedAtDifference) return updatedAtDifference;
+  const createdAtDifference = right.createdAt.getTime() - left.createdAt.getTime();
+  if (createdAtDifference) return createdAtDifference;
+  return right.id - left.id;
+}
+
+function getCompanyRosterIdentity(
+  profile: CompanyRosterProfile,
+  accountIds: ReadonlySet<number>,
+  workerIds: ReadonlySet<number>
+) {
+  const associationCount =
+    Number(profile.userId !== null) + Number(profile.laborWorkerId !== null);
+  if (associationCount !== 1) return `profile:${profile.id}`;
+  if (profile.userId !== null && accountIds.has(profile.userId))
+    return `account:${profile.userId}`;
+  if (profile.laborWorkerId !== null && workerIds.has(profile.laborWorkerId))
+    return `worker:${profile.laborWorkerId}`;
+  return `profile:${profile.id}`;
+}
+
+/**
+ * 生产中保留了可追溯的重复历史档案；花名册只展示每个有效身份最近维护的规范档案。
+ * 新写入由 saveProfile 阻止重复，不能借由本函数删除或改写任何历史记录。
+ */
+function selectCanonicalCompanyRosterProfiles<T extends CompanyRosterProfile>(
+  profileRows: T[],
+  accountIds: ReadonlySet<number>,
+  workerIds: ReadonlySet<number>
+) {
+  const selectedByIdentity = new Map<string, T>();
+  for (const profile of [...profileRows].sort(compareEmployeeProfileRecency)) {
+    const identity = getCompanyRosterIdentity(profile, accountIds, workerIds);
+    if (!selectedByIdentity.has(identity)) selectedByIdentity.set(identity, profile);
+  }
+  return Array.from(selectedByIdentity.entries()).map(([identity, profile]) => ({
+    identity,
+    profile,
+  }));
+}
+
+/** 显式补齐全部次级排序键，避免数据库返回顺序或同名人员造成花名册顺序抖动。 */
+function compareCompanyRosterEntries(
+  left: {
+    id: string;
+    displayName: string;
+    employeeType: string;
+    projectId: number | null;
+    teamName: string | null;
+  },
+  right: {
+    id: string;
+    displayName: string;
+    employeeType: string;
+    projectId: number | null;
+    teamName: string | null;
+  }
+) {
+  const displayNameDifference = left.displayName.localeCompare(
+    right.displayName,
+    "zh-CN"
+  );
+  if (displayNameDifference) return displayNameDifference;
+  const employeeTypeDifference = left.employeeType.localeCompare(right.employeeType);
+  if (employeeTypeDifference) return employeeTypeDifference;
+  const leftProjectId = left.projectId ?? Number.MAX_SAFE_INTEGER;
+  const rightProjectId = right.projectId ?? Number.MAX_SAFE_INTEGER;
+  if (leftProjectId !== rightProjectId) return leftProjectId - rightProjectId;
+  const teamNameDifference = (left.teamName ?? "").localeCompare(
+    right.teamName ?? "",
+    "zh-CN"
+  );
+  if (teamNameDifference) return teamNameDifference;
+  return left.id.localeCompare(right.id);
+}
+
 const employeePayrollAdvanceInput = z.object({
   employeeProfileId: z.number().int().positive(),
   advanceDate: z.string().date(),
@@ -1586,6 +1676,7 @@ export const adminRouter = router({
             realName: laborWorkers.realName,
             teamName: laborWorkers.teamName,
             projectId: laborWorkers.projectId,
+            workerCategory: laborWorkers.workerCategory,
           })
           .from(laborWorkers)
           .orderBy(asc(laborWorkers.realName)),
@@ -1753,6 +1844,8 @@ export const adminRouter = router({
         accountRows.map(account => [account.id, account])
       );
       const workerById = new Map(workerRows.map(worker => [worker.id, worker]));
+      const accountIds = new Set(accountById.keys());
+      const workerIds = new Set(workerById.keys());
       const projectNameById = new Map(
         projectRows.map(project => [project.id, project.name])
       );
@@ -1861,15 +1954,26 @@ export const adminRouter = router({
           latestPayrollStatus: latestWage?.status ?? null,
         };
       };
-      const linkedAccountIds = new Set(
-        profileRows.flatMap(profile => (profile.userId ? [profile.userId] : []))
+      const canonicalProfiles = selectCanonicalCompanyRosterProfiles(
+        profileRows,
+        accountIds,
+        workerIds
       );
-      const linkedWorkerIds = new Set(
-        profileRows.flatMap(profile =>
-          profile.laborWorkerId ? [profile.laborWorkerId] : []
+      const linkedAccountIds = new Set(
+        canonicalProfiles.flatMap(({ identity }) =>
+          identity.startsWith("account:")
+            ? [Number(identity.slice("account:".length))]
+            : []
         )
       );
-      const profileEntries = profileRows.map(profile => {
+      const linkedWorkerIds = new Set(
+        canonicalProfiles.flatMap(({ identity }) =>
+          identity.startsWith("worker:")
+            ? [Number(identity.slice("worker:".length))]
+            : []
+        )
+      );
+      const profileEntries = canonicalProfiles.map(({ profile, identity }) => {
         const account = profile.userId
           ? accountById.get(profile.userId)
           : undefined;
@@ -1881,7 +1985,7 @@ export const adminRouter = router({
           profileId: profile.id,
           userId: profile.userId,
           laborWorkerId: profile.laborWorkerId,
-          id: `profile:${profile.id}`,
+          id: identity,
           displayName: account?.name ?? worker?.realName ?? "未命名员工",
           employeeType: profile.employeeType,
           workerCategory: worker?.workerCategory ?? null,
@@ -1956,9 +2060,7 @@ export const adminRouter = router({
         ...profileEntries,
         ...unprofiledAccounts,
         ...unprofiledWorkers,
-      ].sort((left, right) =>
-        left.displayName.localeCompare(right.displayName, "zh-CN")
-      );
+      ].sort(compareCompanyRosterEntries);
     }),
     compensationDetails: protectedProcedure
       .input(z.object({
@@ -2097,9 +2199,14 @@ export const adminRouter = router({
               message: "关联的管理人员或机械操作员账号不存在",
             });
         }
+        let resolvedProjectId = input.projectId ?? null;
         if (input.laborWorkerId) {
           const [worker] = await db
-            .select({ id: laborWorkers.id, projectId: laborWorkers.projectId })
+            .select({
+              id: laborWorkers.id,
+              projectId: laborWorkers.projectId,
+              workerCategory: laborWorkers.workerCategory,
+            })
             .from(laborWorkers)
             .where(eq(laborWorkers.id, input.laborWorkerId))
             .limit(1);
@@ -2108,11 +2215,17 @@ export const adminRouter = router({
               code: "BAD_REQUEST",
               message: "关联的施工队工人档案不存在",
             });
+          if (worker.workerCategory !== "labor_team")
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "施工队员工只能关联类别为施工队人员的劳务实名档案",
+            });
           if (input.projectId && worker.projectId !== input.projectId)
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "施工队工人的归属项目必须与劳务实名档案一致",
             });
+          resolvedProjectId = worker.projectId;
         }
         if (normalizedPhoneNumber) {
           const phoneFingerprint = fingerprintSecret(normalizedPhoneNumber);
@@ -2126,11 +2239,11 @@ export const adminRouter = router({
           )
             throw new TRPCError({ code: "CONFLICT", message: "该手机号已被其他员工使用，请更换手机号" });
         }
-        if (input.projectId) {
+        if (resolvedProjectId) {
           const [project] = await db
             .select({ id: projects.id, status: projects.status })
             .from(projects)
-            .where(eq(projects.id, input.projectId))
+            .where(eq(projects.id, resolvedProjectId))
             .limit(1);
           if (!project || project.status === "archived")
             throw new TRPCError({
@@ -2138,10 +2251,36 @@ export const adminRouter = router({
               message: "员工归属项目必须是未归档的有效项目",
             });
         }
+        const [existing] = input.id
+          ? await db
+              .select({ id: employeeProfiles.id })
+              .from(employeeProfiles)
+              .where(eq(employeeProfiles.id, input.id))
+              .limit(1)
+          : [];
+        if (input.id && !existing)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "员工档案不存在",
+          });
+        const occupiedProfiles = input.userId
+          ? await db
+              .select({ id: employeeProfiles.id })
+              .from(employeeProfiles)
+              .where(eq(employeeProfiles.userId, input.userId))
+          : await db
+              .select({ id: employeeProfiles.id })
+              .from(employeeProfiles)
+              .where(eq(employeeProfiles.laborWorkerId, input.laborWorkerId!));
+        if (occupiedProfiles.some(profile => profile.id !== input.id))
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "该人员已关联另一条员工档案，请先处理既有档案后再保存",
+          });
         const values = {
           userId: input.userId ?? null,
           laborWorkerId: input.laborWorkerId ?? null,
-          projectId: input.projectId ?? null,
+          projectId: resolvedProjectId,
           employeeType: input.employeeType,
           tradeName: input.tradeName ?? null,
           teamName: input.teamName ?? null,
@@ -2158,16 +2297,6 @@ export const adminRouter = router({
           remarks: input.remarks ?? null,
         };
         if (input.id) {
-          const [existing] = await db
-            .select({ id: employeeProfiles.id })
-            .from(employeeProfiles)
-            .where(eq(employeeProfiles.id, input.id))
-            .limit(1);
-          if (!existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "员工档案不存在",
-            });
           await db
             .update(employeeProfiles)
             .set(values)

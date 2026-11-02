@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
-/** 仅负责劳务档案录入入口；档案表单、项目范围和权限校验继续由父页面处理。 */
+/** 仅负责施工队实名制工人录入入口；项目范围和服务端权限校验继续由父页面处理。 */
 export default function LaborEntryActionCard({ onAdd }: { onAdd: () => void }) {
-  return <Card className="border-[#d8e3e0]"><CardContent className="flex flex-wrap items-center justify-between gap-3 p-4"><div><p className="text-sm font-semibold text-[#203c48]">员工与工人信息录入</p><p className="mt-1 text-xs text-slate-500">新增公司管理人员、劳务队工人或临时日结人员档案；档案将同步用于工资、考勤与日结。</p></div><Button onClick={onAdd}>添加员工/工人</Button></CardContent></Card>;
+  return <Card className="border-[#d8e3e0]"><CardContent className="flex flex-wrap items-center justify-between gap-3 p-4"><div><p className="text-sm font-semibold text-[#203c48]">新建实名制施工队工人</p><p className="mt-1 text-xs text-slate-500">在当前已授权项目直接建立真实劳务人员档案；不会创建系统账号或员工档案，保存后可用于考勤和工资台账。</p></div><Button onClick={onAdd}>新建施工队工人</Button></CardContent></Card>;
 }

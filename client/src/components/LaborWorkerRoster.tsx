@@ -17,12 +17,15 @@ function identityLabel(status: LaborWorkerRosterRow["identityVerificationStatus"
   return status === "verified" ? "已核验" : status === "rejected" ? "已驳回" : "待核验";
 }
 
-/** 劳务实名制人员的脱敏目录；档案详情仍由父级受控弹窗统一承载。 */
-export default function LaborWorkerRoster({ workers, displayDate, onOpenProfile }: { workers: LaborWorkerRosterRow[]; displayDate: (value: Date | string) => string; onOpenProfile: (worker: LaborWorkerRosterRow) => void }) {
+/** 劳务实名制人员的脱敏目录；档案详情与新建窗口均由父级受控承载。 */
+export default function LaborWorkerRoster({ workers, displayDate, onOpenProfile, onCreateWorker }: { workers: LaborWorkerRosterRow[]; displayDate: (value: Date | string) => string; onOpenProfile: (worker: LaborWorkerRosterRow) => void; onCreateWorker?: () => void }) {
   return <Card>
-    <CardHeader>
-      <CardTitle className="text-base">劳务人员台账</CardTitle>
-      <CardDescription>展示实名核验与进退场状态；个人身份和资金字段保持脱敏。</CardDescription>
+    <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
+      <div>
+        <CardTitle className="text-base">劳务人员台账</CardTitle>
+        <CardDescription>展示实名核验与进退场状态；个人身份和资金字段保持脱敏。</CardDescription>
+      </div>
+      {onCreateWorker ? <Button size="sm" onClick={onCreateWorker}>新建施工队工人</Button> : null}
     </CardHeader>
     <CardContent className="space-y-2">
       {workers.length ? workers.map(worker => <div key={worker.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">

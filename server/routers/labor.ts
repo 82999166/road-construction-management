@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { attendanceCheckIns, attendanceDeviceBindings, attendanceRecords, auditLogs, evidenceRecords, laborWorkers, payrollStatements, projects, temporaryDailyWageSettlements, users } from "../../drizzle/schema";
 import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrollStatusTransition, calculatePayrollAmounts, canApprovePayroll, canPayPayroll, canVoidPayroll, summarizePayrollStatements } from "../../shared/domain";
-import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser } from "../access";
+import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
 import { decryptSecret, encryptSecret } from "../services/secretVault";
@@ -109,8 +109,11 @@ const MAX_CERTIFICATE_BYTES = 5 * 1024 * 1024;
  * 只有劳资、项目、财务及会计岗位可以进入劳务工资数据域。
  * 管理员对应 ALL 标记，用于系统初始化、应急处理和后台授权后的完整数据访问。
  */
-async function assertLaborBusinessAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0]) {
-  await assertDepartmentBusinessAccess(ctx, "LABOR");
+async function assertLaborBusinessAccess(
+  ctx: Parameters<typeof requireAuthenticatedUser>[0],
+  action: BusinessOperationAction = "read",
+) {
+  await assertDepartmentBusinessAccess(ctx, "LABOR", action);
   return getEffectiveRoleCodes(ctx);
 }
 
@@ -280,7 +283,7 @@ export const laborRouter = router({
   /** 新建或维护实名制人员档案；身份证、手机号和银行卡在服务端加密后才会持久化。 */
   saveWorker: protectedProcedure.input(workerInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertLaborBusinessAccess(ctx);
+    await assertLaborBusinessAccess(ctx, input.id ? "edit" : "create");
     await assertProjectInCurrentScope(ctx, input.projectId);
     if (input.entryDate && input.exitDate && input.exitDate < input.entryDate) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "退场日期不得早于进场日期" });
