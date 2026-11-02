@@ -5,7 +5,7 @@
  * 不输出数据库名、备份路径、凭据、命令行或 mysqldump 原始诊断。
  */
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, promises as fs } from "node:fs";
+import { constants as fsConstants, createReadStream, createWriteStream, existsSync, promises as fs } from "node:fs";
 import { createGzip, createGunzip } from "node:zlib";
 import { basename, join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -112,10 +112,22 @@ async function removeExpiredBackups() {
 }
 
 async function assertSecureBackupDirectory() {
-  await fs.mkdir(backupDir, { recursive: true, mode: 0o2750 });
-  await fs.chmod(backupDir, 0o2750);
-  const defaultsStat = await fs.stat(defaultsFile);
-  if (!defaultsStat.isFile() || (defaultsStat.mode & 0o007) !== 0) throw backupError("CREDENTIAL_FILE_PERMISSION_INVALID");
+  try {
+    const directoryStat = await fs.stat(backupDir);
+    if (!directoryStat.isDirectory()) throw backupError("BACKUP_DIRECTORY_NOT_READY");
+    // 目录属主、组与setgid权限仅由受控root部署步骤设置；低权限备份账户绝不自行chmod/chown生产目录。
+    await fs.access(backupDir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
+  } catch (error) {
+    if (errorCode(error) === "BACKUP_DIRECTORY_NOT_READY") throw error;
+    throw backupError("BACKUP_DIRECTORY_NOT_READY");
+  }
+  try {
+    const defaultsStat = await fs.stat(defaultsFile);
+    if (!defaultsStat.isFile() || (defaultsStat.mode & 0o007) !== 0) throw backupError("CREDENTIAL_FILE_PERMISSION_INVALID");
+  } catch (error) {
+    if (errorCode(error) === "CREDENTIAL_FILE_PERMISSION_INVALID") throw error;
+    throw backupError("CREDENTIAL_FILE_PERMISSION_INVALID");
+  }
 }
 
 async function main() {
@@ -194,8 +206,8 @@ async function main() {
 }
 
 main().catch(async error => {
-  const code = errorCode(error);
-  await fs.mkdir(backupDir, { recursive: true, mode: 0o2750 }).catch(() => undefined);
+  const nativeCode = errorCode(error);
+  const code = nativeCode === "EPERM" || nativeCode === "EACCES" ? "BACKUP_DIRECTORY_NOT_READY" : nativeCode;
   await fs.writeFile(join(backupDir, "latest-failure.json"), `${JSON.stringify({ failedAt: new Date().toISOString(), code }, null, 2)}\n`, { mode: 0o640 }).catch(() => undefined);
   console.error(JSON.stringify({ event: "backup_failed", code }));
   process.exit(1);

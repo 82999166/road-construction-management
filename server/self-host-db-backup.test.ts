@@ -18,6 +18,9 @@ describe("自有服务器全库备份脚本", () => {
     expect(source).toContain("writeJsonAtomic(join(backupDir, \"latest-success.json\")");
     expect(source).toContain("await fs.unlink(join(backupDir, \"latest-failure.json\"))");
     expect(source).toContain("process.umask(0o027)");
+    expect(source).toContain("BACKUP_DIRECTORY_NOT_READY");
+    expect(source).toContain("低权限备份账户绝不自行chmod/chown生产目录");
+    expect(source).not.toContain("await fs.chmod(backupDir");
     expect(source).toContain("backup_verified");
     expect(source).toContain("backup_failed");
     expect(source).not.toContain("backupFile: dumpPath");
