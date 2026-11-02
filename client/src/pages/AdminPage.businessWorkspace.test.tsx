@@ -259,6 +259,10 @@ describe("统一后台业务工作区范围保护", () => {
     const source = ADMIN_PAGE_SOURCE;
 
     expectSourceToContain(source, "员工档案、薪资与保险");
+    expectSourceToContain(source, "历史重复记录会折叠为一份规范档案");
+    expectSourceToContain(source, '"历史重复档案数"');
+    expectSourceToContain(source, "historicalDuplicateProfileCount");
+    expectSourceToContain(source, "已折叠 {profile.historicalDuplicateProfileCount} 份历史重复档案");
     expectSourceToContain(source, "30 天内到期");
     expectSourceToContain(source, "employeeInsurance");
     expectSourceToContain(source, "downloadCsvFile");

@@ -9158,7 +9158,7 @@ export default function AdminPage({
                   员工档案、薪资与保险
                 </CardTitle>
                 <CardDescription className="mt-1">
-                  先建立或维护人员档案；实际工资仍由考勤和经审核工资条决定。
+                  先建立或维护人员档案；实际工资仍由考勤和经审核工资条决定。相同账号或施工队实名档案的历史重复记录会折叠为一份规范档案，不参与日常编辑或导出。
                 </CardDescription>
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
@@ -9195,6 +9195,7 @@ export default function AdminPage({
                         "姓名",
                         "人员类型",
                         "归属队伍",
+                        "历史重复档案数",
                         "状态",
                         "入职日期",
                         "计薪口径",
@@ -9210,6 +9211,7 @@ export default function AdminPage({
                             ? "机械操作员"
                             : "施工队工人",
                         profile.teamName || profile.laborTeamName || "",
+                        profile.historicalDuplicateProfileCount || 0,
                         profile.employmentStatus === "active"
                           ? "在职"
                           : profile.employmentStatus === "suspended"
@@ -9370,7 +9372,12 @@ export default function AdminPage({
                               className="border-[#edf0ee] hover:bg-[#fbfaf1]"
                             >
                               <TableCell className="px-3 py-2.5 font-semibold text-[#203c48]">
-                                {profile.displayName}
+                                <p>{profile.displayName}</p>
+                                {profile.historicalDuplicateProfileCount ? (
+                                  <p className="mt-0.5 text-[11px] font-normal text-amber-700">
+                                    已折叠 {profile.historicalDuplicateProfileCount} 份历史重复档案
+                                  </p>
+                                ) : null}
                               </TableCell>
                               <TableCell className="px-3 py-2.5 text-slate-700">
                                 {profile.employeeType === "management"

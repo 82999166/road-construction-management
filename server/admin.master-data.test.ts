@@ -237,6 +237,42 @@ describe("超级管理主数据约束", () => {
     expect(roster[0]).not.toHaveProperty("bankAccountEncrypted");
   });
 
+  it("员工档案台账折叠同一有效账号的历史重复记录，并将其保单状态汇总至规范档案", async () => {
+    let selectIndex = 0;
+    const resultSets = [
+      [
+        { id: 10, userId: 2, laborWorkerId: null, projectId: null, employeeType: "management", tradeName: null, teamName: null, employmentStatus: "left", joinedAt: null, leftAt: null, salaryBasis: "monthly", baseSalary: "5000", remarks: null, updatedAt: new Date("2026-10-01"), createdAt: new Date("2026-10-01") },
+        { id: 11, userId: 2, laborWorkerId: null, projectId: null, employeeType: "management", tradeName: "项目经理", teamName: null, employmentStatus: "active", joinedAt: null, leftAt: null, salaryBasis: "monthly", baseSalary: "6000", remarks: null, updatedAt: new Date("2026-11-01"), createdAt: new Date("2026-10-02") },
+      ],
+      [{ id: 2, name: "测试管理人员" }],
+      [],
+      [{ id: 91, employeeProfileId: 10, insuranceType: "work_injury", providerName: null, policyReference: null, evidenceId: null, premiumAmount: null, coverageAmount: null, purchasedAt: new Date("2026-01-01"), expiresAt: new Date("2027-01-01"), status: "active", remarks: null, createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01") }],
+    ];
+    const from = vi.fn(() => {
+      const result = resultSets[selectIndex++] ?? [];
+      const resolve = () => Promise.resolve(result);
+      return {
+        orderBy: resolve,
+        where: resolve,
+        then: (onfulfilled: (value: unknown[]) => unknown, onrejected: (reason: unknown) => unknown) => resolve().then(onfulfilled, onrejected),
+      };
+    });
+    vi.mocked(getDb).mockResolvedValue({ select: vi.fn(() => ({ from })) } as never);
+
+    const profiles = await adminRouter.createCaller(createAdminContext()).employee.listProfiles();
+
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({
+      id: 11,
+      displayName: "测试管理人员",
+      historicalDuplicateProfileCount: 1,
+      insuranceStatus: "active",
+    });
+    expect(profiles[0]?.policies).toHaveLength(1);
+    expect(profiles[0]).not.toHaveProperty("phoneEncrypted");
+    expect(profiles[0]).not.toHaveProperty("bankAccountEncrypted");
+  });
+
   it("花名册以真实车辆和机械绑定派生司机类别，不把司机账号默认归为公司管理员", async () => {
     let selectIndex = 0;
     const resultSets = [
@@ -338,6 +374,25 @@ describe("超级管理主数据约束", () => {
     vi.mocked(getDb).mockResolvedValue(rebindDb as never);
     await expect(adminRouter.createCaller(createAdminContext()).employee.saveProfile({ ...accountInput, id: 10, userId: null, laborWorkerId: 31, employeeType: "construction_worker", projectId: null, salaryBasis: "daily" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("另一条员工档案") });
     expect(rebindDb.writeWhere).not.toHaveBeenCalled();
+  });
+
+  it("历史重复存在时允许维护规范档案的原身份字段，但仍不允许改绑或新建重复身份", async () => {
+    const input = { id: 11, userId: 2, laborWorkerId: null, employeeType: "management" as const, projectId: null, teamName: "项目管理组", employmentStatus: "active" as const, joinedAt: "2026-08-01", leftAt: null, salaryBasis: "monthly" as const, baseSalary: 6000, remarks: "维护规范档案" };
+    const db = createSequentialLimitDb(
+      [{ id: 2 }],
+      [{ id: 11, userId: 2, laborWorkerId: null }],
+    );
+    vi.mocked(getDb).mockResolvedValue(db as never);
+
+    await expect(adminRouter.createCaller(createAdminContext()).employee.saveProfile(input)).resolves.toEqual({ success: true });
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({
+      module: "personnel",
+      action: "update_employee_profile",
+      targetType: "employee_profile",
+      targetId: "11",
+    }));
   });
 
   it("施工队员工只可关联施工队劳务档案，并强制使用实名档案项目", async () => {

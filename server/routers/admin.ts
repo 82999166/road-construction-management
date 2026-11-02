@@ -1702,32 +1702,71 @@ export const adminRouter = router({
         .select()
         .from(employeeProfiles)
         .orderBy(desc(employeeProfiles.updatedAt));
+
+      if (!rows.length) return [];
+
+      // 员工档案的历史重复记录必须保留审计，但日常台账、导出和维护只能
+      // 使用同一有效身份最近维护的规范档案。绝不按姓名、手机号或银行卡猜测身份。
+      const [accountRows, workerRows, policyRows] = await Promise.all([
+        db
+          .select({ id: users.id, name: users.name })
+          .from(users),
+        db
+          .select({
+            id: laborWorkers.id,
+            realName: laborWorkers.realName,
+            teamName: laborWorkers.teamName,
+            projectId: laborWorkers.projectId,
+          })
+          .from(laborWorkers),
+        db
+          .select()
+          .from(employeeInsurancePolicies)
+          .where(
+            inArray(
+              employeeInsurancePolicies.employeeProfileId,
+              rows.map(profile => profile.id)
+            )
+          ),
+      ]);
+      const accountById = new Map(accountRows.map(account => [account.id, account]));
+      const workerById = new Map(workerRows.map(worker => [worker.id, worker]));
+      const accountIds = new Set(accountById.keys());
+      const workerIds = new Set(workerById.keys());
+      const profilesByIdentity = new Map<string, typeof rows>();
+      for (const profile of rows) {
+        const identity = getCompanyRosterIdentity(profile, accountIds, workerIds);
+        const groupedProfiles = profilesByIdentity.get(identity) ?? [];
+        groupedProfiles.push(profile);
+        profilesByIdentity.set(identity, groupedProfiles);
+      }
+      const policiesByProfileId = new Map<number, typeof policyRows>();
+      for (const policy of policyRows) {
+        const policies = policiesByProfileId.get(policy.employeeProfileId) ?? [];
+        policies.push(policy);
+        policiesByProfileId.set(policy.employeeProfileId, policies);
+      }
+      const canonicalProfiles = selectCanonicalCompanyRosterProfiles(
+        rows,
+        accountIds,
+        workerIds
+      );
       return Promise.all(
-        rows.map(async profile => {
-          const [user] = profile.userId
-            ? await db
-                .select({ id: users.id, name: users.name })
-                .from(users)
-                .where(eq(users.id, profile.userId))
-                .limit(1)
-            : [];
-          const [worker] = profile.laborWorkerId
-            ? await db
-                .select({
-                  id: laborWorkers.id,
-                  realName: laborWorkers.realName,
-                  teamName: laborWorkers.teamName,
-                  projectId: laborWorkers.projectId,
-                })
-                .from(laborWorkers)
-                .where(eq(laborWorkers.id, profile.laborWorkerId))
-                .limit(1)
-            : [];
-          const policies = await db
-            .select()
-            .from(employeeInsurancePolicies)
-            .where(eq(employeeInsurancePolicies.employeeProfileId, profile.id))
-            .orderBy(desc(employeeInsurancePolicies.expiresAt));
+        canonicalProfiles.map(async ({ identity, profile }) => {
+          const groupedProfiles = profilesByIdentity.get(identity) ?? [profile];
+          const user = profile.userId
+            ? accountById.get(profile.userId)
+            : undefined;
+          const worker = profile.laborWorkerId
+            ? workerById.get(profile.laborWorkerId)
+            : undefined;
+          const policies = groupedProfiles
+            .flatMap(item => policiesByProfileId.get(item.id) ?? [])
+            .sort(
+              (left, right) =>
+                new Date(right.expiresAt).getTime() -
+                new Date(left.expiresAt).getTime()
+            );
           const policyViews = await Promise.all(policies.map(async policy => {
             const [evidence] = policy.evidenceId ? await db.select({ fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, policy.evidenceId)).limit(1) : [];
             return { ...policy, evidence: evidence?.status === "active" ? { fileName: evidence.fileName || "保单附件", url: await storageGetSignedUrl(evidence.fileKey) } : null };
@@ -1758,6 +1797,10 @@ export const adminRouter = router({
             laborTeamName: worker?.teamName ?? null,
             policies: policyViews,
             insuranceStatus,
+            historicalDuplicateProfileCount: Math.max(
+              0,
+              groupedProfiles.length - 1
+            ),
           };
         })
       );
@@ -2405,7 +2448,11 @@ export const adminRouter = router({
         }
         const [existing] = input.id
           ? await db
-              .select({ id: employeeProfiles.id })
+              .select({
+                id: employeeProfiles.id,
+                userId: employeeProfiles.userId,
+                laborWorkerId: employeeProfiles.laborWorkerId,
+              })
               .from(employeeProfiles)
               .where(eq(employeeProfiles.id, input.id))
               .limit(1)
@@ -2415,20 +2462,29 @@ export const adminRouter = router({
             code: "NOT_FOUND",
             message: "员工档案不存在",
           });
-        const occupiedProfiles = input.userId
-          ? await db
-              .select({ id: employeeProfiles.id })
-              .from(employeeProfiles)
-              .where(eq(employeeProfiles.userId, input.userId))
-          : await db
-              .select({ id: employeeProfiles.id })
-              .from(employeeProfiles)
-              .where(eq(employeeProfiles.laborWorkerId, input.laborWorkerId!));
-        if (occupiedProfiles.some(profile => profile.id !== input.id))
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "该人员已关联另一条员工档案，请先处理既有档案后再保存",
-          });
+        const keepsExistingIdentity = Boolean(
+          existing &&
+            existing.userId === (input.userId ?? null) &&
+            existing.laborWorkerId === (input.laborWorkerId ?? null)
+        );
+        // 历史导入曾遗留重复身份时，规范档案仍需可维护其岗位、状态和薪资等字段；
+        // 但新建、改绑或任何身份改变继续严格拒绝占用冲突，绝不借维护入口制造新重复。
+        if (!keepsExistingIdentity) {
+          const occupiedProfiles = input.userId
+            ? await db
+                .select({ id: employeeProfiles.id })
+                .from(employeeProfiles)
+                .where(eq(employeeProfiles.userId, input.userId))
+            : await db
+                .select({ id: employeeProfiles.id })
+                .from(employeeProfiles)
+                .where(eq(employeeProfiles.laborWorkerId, input.laborWorkerId!));
+          if (occupiedProfiles.some(profile => profile.id !== input.id))
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "该人员已关联另一条员工档案，请先处理既有档案后再保存",
+            });
+        }
         const values = {
           userId: input.userId ?? null,
           laborWorkerId: input.laborWorkerId ?? null,
