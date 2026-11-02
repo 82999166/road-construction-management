@@ -105,6 +105,18 @@ chown -R root:root "$staging_release"
 find "$staging_release" -type d -exec chmod 755 {} +
 find "$staging_release" -type f -exec chmod 644 {} +
 mv "$staging_release" "$new_release"
+# 完整备份运行时和 unit 模板随发布版本更新；严禁复制 backup.env、MySQL defaults、历史转储或状态清单。
+if [[ -f "$new_release/dist/scripts/self-host-db-backup.mjs" && -f "$new_release/dist/scripts/verify-self-host-db-backup.mjs" ]]; then
+  install -d -o root -g root -m 0755 /usr/local/lib/yx-cloud-management/backup
+  install -o root -g root -m 0644 "$new_release/dist/scripts/self-host-db-backup.mjs" /usr/local/lib/yx-cloud-management/backup/self-host-db-backup.mjs
+  install -o root -g root -m 0644 "$new_release/dist/scripts/verify-self-host-db-backup.mjs" /usr/local/lib/yx-cloud-management/backup/verify-self-host-db-backup.mjs
+fi
+if [[ -f "$new_release/dist/deploy/yx-db-backup.service" && -f "$new_release/dist/deploy/yx-db-backup.timer" ]]; then
+  install -o root -g root -m 0644 "$new_release/dist/deploy/yx-db-backup.service" /etc/systemd/system/yx-db-backup.service
+  install -o root -g root -m 0644 "$new_release/dist/deploy/yx-db-backup.timer" /etc/systemd/system/yx-db-backup.timer
+  systemctl daemon-reload
+  systemctl enable yx-db-backup.timer
+fi
 ln -sfn "$new_release" "$APP_ROOT/current.next"
 mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"
 activated=1

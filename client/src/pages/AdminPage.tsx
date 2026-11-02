@@ -3861,6 +3861,11 @@ export default function AdminPage({
   const [resetPassword, setResetPassword] = useState("");
   const [deleteTarget, setDeleteTarget] =
     useState<LocalAccountActionTarget | null>(null);
+  const [fullBackupDownloadTarget, setFullBackupDownloadTarget] = useState<{
+    backupId: string;
+    tableCount: number;
+    compressedBytes: number;
+  } | null>(null);
   const [userPermissionTarget, setUserPermissionTarget] =
     useState<LocalAccountActionTarget | null>(null);
   const [draftUserPermissionIds, setDraftUserPermissionIds] = useState<
@@ -6002,6 +6007,20 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
+  const confirmFullDatabaseBackupDownload = async () => {
+    if (!fullBackupDownloadTarget) return;
+    const anchor = document.createElement("a");
+    anchor.href = `/api/admin/backups/full/${encodeURIComponent(fullBackupDownloadTarget.backupId)}/download`;
+    // 服务端会重验会话、超级管理员身份、清单、大小与 SHA-256；文件名不含数据库名或服务器路径。
+    anchor.download = "yx-full-database-backup.sql.gz";
+    anchor.rel = "noopener noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setFullBackupDownloadTarget(null);
+    toast.success("已开始下载已验证的完整数据库备份，下载行为已记录审计");
+    await audits.refetch();
+  };
   const transitionConstructionReport =
     trpc.construction.transitionReport.useMutation({
       onSuccess: async () => {
@@ -20143,9 +20162,30 @@ export default function AdminPage({
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-medium text-emerald-900">
-                      最近完整备份校验通过
+                      {fullDatabaseBackup.data.latestSuccess.verification
+                        .gzipIntegrity === "passed" &&
+                      fullDatabaseBackup.data.latestSuccess.verification
+                        .allTableDefinitionsPresent
+                        ? "最近完整备份校验通过"
+                        : "最近完整备份需重新核验"}
                     </p>
-                    <Badge className="bg-emerald-700">逐表校验通过</Badge>
+                    <Badge
+                      className={
+                        fullDatabaseBackup.data.latestSuccess.verification
+                          .gzipIntegrity === "passed" &&
+                        fullDatabaseBackup.data.latestSuccess.verification
+                          .allTableDefinitionsPresent
+                          ? "bg-emerald-700"
+                          : "bg-amber-700"
+                      }
+                    >
+                      {fullDatabaseBackup.data.latestSuccess.verification
+                        .gzipIntegrity === "passed" &&
+                      fullDatabaseBackup.data.latestSuccess.verification
+                        .allTableDefinitionsPresent
+                        ? "逐表校验通过"
+                        : "校验待确认"}
+                    </Badge>
                   </div>
                   <p className="mt-1 text-xs text-emerald-900">
                     {displayDate(
@@ -20161,6 +20201,15 @@ export default function AdminPage({
                     {fullDatabaseBackup.data.latestSuccess.sha256.slice(0, 12)}…
                   </p>
                   <p className="mt-1 text-xs text-emerald-800">
+                    压缩备份大小：
+                    {(
+                      fullDatabaseBackup.data.latestSuccess.compressedBytes /
+                      1024 /
+                      1024
+                    ).toFixed(2)}{" "}
+                    MB
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-800">
                     保留策略：
                     {
                       fullDatabaseBackup.data.latestSuccess.retention.keepDays
@@ -20172,6 +20221,36 @@ export default function AdminPage({
                     }{" "}
                     个过期文件。
                   </p>
+                  {fullDatabaseBackup.data.browserDownload.enabled ? (
+                    fullDatabaseBackup.data.browserDownload.available ? (
+                      <Button
+                        className="mt-3 print:hidden"
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setFullBackupDownloadTarget({
+                            backupId:
+                              fullDatabaseBackup.data.latestSuccess!.backupId,
+                            tableCount:
+                              fullDatabaseBackup.data.latestSuccess!.tableCount,
+                            compressedBytes:
+                              fullDatabaseBackup.data.latestSuccess!
+                                .compressedBytes,
+                          })
+                        }
+                      >
+                        下载已验证完整备份
+                      </Button>
+                    ) : (
+                      <p className="mt-3 text-xs text-amber-800">
+                        浏览器下载已启用，但当前备份未通过文件可用性复核或超过受控下载大小上限。
+                      </p>
+                    )
+                  ) : (
+                    <p className="mt-3 text-xs text-slate-600">
+                      浏览器下载由服务器管理员单独启用；未启用时仍可在服务器端执行受控灾备与恢复演练。
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
@@ -20190,12 +20269,41 @@ export default function AdminPage({
                 </div>
               ) : null}
               <p className="text-xs text-slate-500">
-                完整备份用于灾难恢复，不开放浏览器直接下载或在线恢复；恢复必须在非生产演练库中由服务器管理员执行。
+                完整备份仅用于灾难恢复。下载前会再次校验超级管理员会话、文件清单、SHA-256 和大小，并记录审计；系统始终不提供在线恢复，恢复必须在非生产演练库中由服务器管理员执行。
               </p>
             </>
           )}
         </CardContent>
       </Card>
+      <AlertDialog
+        open={Boolean(fullBackupDownloadTarget)}
+        onOpenChange={open => {
+          if (!open) setFullBackupDownloadTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认下载已验证的完整数据库备份？</AlertDialogTitle>
+            <AlertDialogDescription>
+              该压缩包包含完整业务数据，仅可保存到受控加密介质，不得转发、上传至个人网盘或在非受控电脑长期留存。本次下载会重新校验超级管理员会话、备份清单、SHA-256 和文件大小，并记录审计；系统不提供在线恢复。
+              {fullBackupDownloadTarget
+                ? ` 当前备份：${fullBackupDownloadTarget.tableCount} 张表，约 ${(fullBackupDownloadTarget.compressedBytes / 1024 / 1024).toFixed(2)} MB。`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-[#203c48] text-white hover:bg-[#17313b]"
+              onClick={() => {
+                void confirmFullDatabaseBackupDownload();
+              }}
+            >
+              确认下载并记录审计
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 
