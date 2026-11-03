@@ -18,7 +18,9 @@ describe("后台支付账号账单批量打印入口", () => {
       "const [paymentBillPrintOpen, setPaymentBillPrintOpen] = useState(false)"
     );
     expect(source).toContain("支付账号账单打印");
-    expect(source).toContain("onClick={() => setPaymentBillPrintOpen(true)}");
+    expect(source).toContain("onSelect={() => setPaymentBillPrintOpen(true)}");
+    expect(source).toContain("报表打印");
+    expect(source).toContain("DropdownMenuItem");
   });
 
   it("将账单打印保持为独立组件，而不是混入资金总账查询路径", () => {

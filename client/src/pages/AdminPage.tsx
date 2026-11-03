@@ -1,3 +1,17 @@
+import {
+  FinanceWorkspaceNavigation,
+  FinanceRetainedPanel,
+  FinancePagination,
+  type FinanceWorkspaceTab,
+} from "@/components/FinanceWorkspaceNavigation";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
 import { PersonnelResourceSelect } from "@/components/PersonnelResourceSelect";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, {
@@ -850,15 +864,56 @@ type DesktopRecordDetail = {
 };
 
 /** 仅在用户主动打开单份日报详情时申请短时影像URL，避免台账列表预取所有现场照片。 */
-function ConstructionReportEvidenceDetail({ projectId, reportId }: { projectId: number; reportId: number }) {
+function ConstructionReportEvidenceDetail({
+  projectId,
+  reportId,
+}: {
+  projectId: number;
+  reportId: number;
+}) {
   const evidence = trpc.construction.reportEvidence.useQuery(
     { projectId, reportIds: [reportId] },
     { enabled: projectId > 0 && reportId > 0, retry: false }
   );
-  if (evidence.isLoading || evidence.isFetching) return <p className="text-sm text-slate-500">正在读取已授权的关联现场照片…</p>;
-  if (evidence.isError) return <p className="text-sm leading-6 text-amber-700">关联照片暂时无法读取，请关闭详情后刷新台账重试。</p>;
-  if (!evidence.data?.length) return <p className="text-sm leading-6 text-slate-500">该日报暂未关联现场照片。填报人员可在日报新建或编辑窗口中补充照片后再提交审核。</p>;
-  return <div className="grid gap-3 sm:grid-cols-2">{evidence.data.map((photo, index) => <ProtectedImagePreview key={photo.id} file={{ url: photo.url, fileName: photo.fileName }} title={`施工日报照片 ${index + 1}`} description="点击查看站内原图，不会下载照片。" className="block overflow-hidden rounded-lg border border-slate-200 bg-white p-2 hover:border-[#2d6b63]"><img className="h-40 w-full rounded object-cover" src={photo.url} alt={photo.description || `施工日报照片 ${index + 1}`} /><span className="mt-2 block text-xs leading-5 text-slate-600">{photo.description || "施工日报现场影像"} · {displayDate(photo.capturedAt)} · 点击预览</span></ProtectedImagePreview>)}</div>;
+  if (evidence.isLoading || evidence.isFetching)
+    return (
+      <p className="text-sm text-slate-500">正在读取已授权的关联现场照片…</p>
+    );
+  if (evidence.isError)
+    return (
+      <p className="text-sm leading-6 text-amber-700">
+        关联照片暂时无法读取，请关闭详情后刷新台账重试。
+      </p>
+    );
+  if (!evidence.data?.length)
+    return (
+      <p className="text-sm leading-6 text-slate-500">
+        该日报暂未关联现场照片。填报人员可在日报新建或编辑窗口中补充照片后再提交审核。
+      </p>
+    );
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {evidence.data.map((photo, index) => (
+        <ProtectedImagePreview
+          key={photo.id}
+          file={{ url: photo.url, fileName: photo.fileName }}
+          title={`施工日报照片 ${index + 1}`}
+          description="点击查看站内原图，不会下载照片。"
+          className="block overflow-hidden rounded-lg border border-slate-200 bg-white p-2 hover:border-[#2d6b63]"
+        >
+          <img
+            className="h-40 w-full rounded object-cover"
+            src={photo.url}
+            alt={photo.description || `施工日报照片 ${index + 1}`}
+          />
+          <span className="mt-2 block text-xs leading-5 text-slate-600">
+            {photo.description || "施工日报现场影像"} ·{" "}
+            {displayDate(photo.capturedAt)} · 点击预览
+          </span>
+        </ProtectedImagePreview>
+      ))}
+    </div>
+  );
 }
 
 const EMPTY_ORGANIZATION_FORM: OrganizationForm = {
@@ -2457,6 +2512,40 @@ export default function AdminPage({
   const [measurementTakeoffDialogOpen, setMeasurementTakeoffDialogOpen] =
     useState(false);
   const [financeProjectId, setFinanceProjectId] = useState("");
+  const financeUtils = trpc.useUtils();
+  const [financePaymentTarget, setFinancePaymentTarget] = useState<{
+    projectId: number;
+    sourceType:
+      | "transport_vehicle"
+      | "machine"
+      | "payroll"
+      | "daily_wage"
+      | "subcontract";
+    settlementId: number;
+    settlementNo: string;
+    readOnly: boolean;
+  } | null>(null);
+  const [financeTab, setFinanceTab] = useState<FinanceWorkspaceTab>("overview");
+  const [financeSettlementView, setFinanceSettlementView] = useState<
+    "board" | "records"
+  >("board");
+  const [financeClosingView, setFinanceClosingView] = useState<
+    "daily" | "reconciliation"
+  >("daily");
+  const [financeCostsView, setFinanceCostsView] = useState<
+    "categories" | "subcategories"
+  >("categories");
+  const [financeTaxDirty, setFinanceTaxDirty] = useState(false);
+  const [financeInvoiceFilter, setFinanceInvoiceFilter] = useState({
+    status: "all",
+    keyword: "",
+  });
+  const [financeLedgerPage, setFinanceLedgerPage] = useState(1);
+  const [financeLedgerPageSize, setFinanceLedgerPageSize] = useState(20);
+  const [financeInvoicePage, setFinanceInvoicePage] = useState(1);
+  const [financeInvoicePageSize, setFinanceInvoicePageSize] = useState(20);
+  const [financeExpensePage, setFinanceExpensePage] = useState(1);
+  const [financeExpensePageSize, setFinanceExpensePageSize] = useState(20);
   const [financePeriod, setFinancePeriod] = useState(() => toChinaMonthInput());
   const [financeLedgerFilter, setFinanceLedgerFilter] = useState({
     direction: "all",
@@ -2480,6 +2569,57 @@ export default function AdminPage({
     "ledger" | "invoices" | "categories" | "subcategories" | null
   >(null);
   const [paymentBillPrintOpen, setPaymentBillPrintOpen] = useState(false);
+  const confirmFinanceScopeChange = () =>
+    !financePaymentTarget &&
+    (!(financeTaxDirty || financeReopenReason.trim()) ||
+      window.confirm(
+        "当前财务资料有未保存内容。切换项目或月份将清空未保存内容，是否继续？"
+      ));
+  const changeFinanceProject = (value: string) => {
+    if (value === financeProjectId || !confirmFinanceScopeChange()) return;
+    setFinanceProjectId(value);
+    setFinancePrintPreview(null);
+    setExpenseCategoryDetailOpen(false);
+    setFinanceReopenReason("");
+    setFinanceTaxDirty(false);
+  };
+  const changeFinancePeriod = (value: string) => {
+    if (
+      !/^\d{4}-(0[1-9]|1[0-2])$/.test(value) ||
+      value === financePeriod ||
+      !confirmFinanceScopeChange()
+    )
+      return;
+    setFinancePeriod(value);
+    setFinancePrintPreview(null);
+    setExpenseCategoryDetailOpen(false);
+    setFinanceReopenReason("");
+    setFinanceTaxDirty(false);
+  };
+  useEffect(() => {
+    setFinanceLedgerPage(1);
+  }, [
+    financeProjectId,
+    financePeriod,
+    financeLedgerFilter,
+    financeLedgerPageSize,
+  ]);
+  useEffect(() => {
+    setFinanceInvoicePage(1);
+  }, [
+    financeProjectId,
+    financePeriod,
+    financeInvoiceFilter,
+    financeInvoicePageSize,
+  ]);
+  useEffect(() => {
+    setFinanceExpensePage(1);
+  }, [
+    financeProjectId,
+    financePeriod,
+    expenseCategoryDetailFilter,
+    financeExpensePageSize,
+  ]);
   const [riskScanDate, setRiskScanDate] = useState(() => toLocalDateInput());
   const [riskAlertStatus, setRiskAlertStatus] = useState<
     | "all"
@@ -2570,12 +2710,14 @@ export default function AdminPage({
     useState<PayrollPaymentTarget | null>(null);
   const [constructionReportEditor, setConstructionReportEditor] =
     useState<ConstructionReportEditor | null>(null);
-  const [constructionReportFilter, setConstructionReportFilter] = useState(() => ({
-    dateFrom: toChinaDateInput(),
-    dateTo: toChinaDateInput(),
-    createdBy: "all",
-    keyword: "",
-  }));
+  const [constructionReportFilter, setConstructionReportFilter] = useState(
+    () => ({
+      dateFrom: toChinaDateInput(),
+      dateTo: toChinaDateInput(),
+      createdBy: "all",
+      keyword: "",
+    })
+  );
   const [isConstructionPrinting, setIsConstructionPrinting] = useState(false);
   const [desktopRecordDetail, setDesktopRecordDetail] =
     useState<DesktopRecordDetail | null>(null);
@@ -3058,6 +3200,10 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
+        (isDiesel ||
+          financeTab === "overview" ||
+          financeTab === "ledger" ||
+          financePrintPreview === "ledger") &&
         Number(financeProjectId) > 0 &&
         Boolean(financePeriod),
     }
@@ -3068,13 +3214,24 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
+        !isDiesel &&
+        financeTab === "overview" &&
         Number(financeProjectId) > 0 &&
         Boolean(financePeriod),
     }
   );
   const financeInvoices = trpc.finance.listInvoices.useQuery(
-    financeProjectInput,
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { ...financeProjectInput, period: financePeriod },
+    {
+      enabled:
+        canQuery &&
+        isFinance &&
+        (isDiesel ||
+          financeTab === "overview" ||
+          financeTab === "invoices" ||
+          financePrintPreview === "invoices") &&
+        Number(financeProjectId) > 0,
+    }
   );
   const dailyAccountingReport = trpc.finance.getDailyPrintableReport.useQuery(
     {
@@ -3085,17 +3242,19 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
+        (isDiesel ||
+          (financeTab === "closing" && financeClosingView === "daily")) &&
         Number(financeProjectId) > 0 &&
         Boolean(financeClosingDate),
     }
   );
   const dieselGuidelinePrices = trpc.admin.diesel.listGuidelinePrices.useQuery(
     { projectId: Number(financeProjectId || 0) },
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
   );
   const dieselRefuelRecords = trpc.admin.diesel.listRefuelRecords.useQuery(
     dieselRefuelRecordsInput,
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
   );
   const dieselCurrentSummary = useMemo(
     () =>
@@ -3114,7 +3273,7 @@ export default function AdminPage({
   ].join("；");
   const dieselPriceAlertRule = trpc.admin.diesel.getPriceAlertRule.useQuery(
     { projectId: Number(financeProjectId || 0) },
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
   );
   const dieselSupplierReconciliation =
     trpc.admin.diesel.supplierReconciliation.useQuery(
@@ -3122,21 +3281,21 @@ export default function AdminPage({
       {
         enabled:
           canQuery &&
-          isFinance &&
+          isDiesel &&
           Number(financeProjectId) > 0 &&
           /^\d{4}-(0[1-9]|1[0-2])$/.test(financePeriod),
       }
     );
   const dieselVehicleOptions = trpc.admin.vehicle.list.useQuery(undefined, {
-    enabled: canQuery && isFinance && Number(financeProjectId) > 0,
+    enabled: canQuery && isDiesel && Number(financeProjectId) > 0,
   });
   const dieselMachineOptions = trpc.machinery.listMachines.useQuery(
     { projectId: Number(financeProjectId || 0) },
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
   );
   const dieselTripOptions = trpc.transport.listTrips.useQuery(
     { projectId: Number(financeProjectId || 0), date: undefined },
-    { enabled: canQuery && isFinance && Number(financeProjectId) > 0 }
+    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
   );
   const riskRule = trpc.projectRisk.getRule.useQuery(riskProjectInput, {
     enabled: canQuery && isRisk && Number(financeProjectId) > 0,
@@ -3161,7 +3320,13 @@ export default function AdminPage({
     {
       enabled:
         canQuery &&
-        (isRisk || isFinance) &&
+        (isRisk ||
+          (isFinance &&
+            !isDiesel &&
+            (financeTab === "overview" ||
+              financeTab === "costs" ||
+              financePrintPreview === "categories" ||
+              financePrintPreview === "subcategories"))) &&
         Number(financeProjectId) > 0 &&
         Boolean(financePeriod),
     }
@@ -3787,9 +3952,20 @@ export default function AdminPage({
     useState(false);
   const [employeeProfileForm, setEmployeeProfileForm] =
     useState<EmployeeProfileForm>(EMPTY_EMPLOYEE_PROFILE_FORM);
-  const [laborWorkspaceTab, setLaborWorkspaceTab] = useState(() => new URLSearchParams(window.location.search).get("tab") === "operations" ? "operations" : "personnel");
+  const [laborWorkspaceTab, setLaborWorkspaceTab] = useState(() =>
+    new URLSearchParams(window.location.search).get("tab") === "operations"
+      ? "operations"
+      : "personnel"
+  );
   const [personnelCreateSignal, setPersonnelCreateSignal] = useState(0);
-  const [personnelOpenSource, setPersonnelOpenSource] = useState<{sourceType: "worker" | "profile" | "user"; sourceId: number; requestKey: number} | undefined>();
+  const [personnelOpenSource, setPersonnelOpenSource] = useState<
+    | {
+        sourceType: "worker" | "profile" | "user";
+        sourceId: number;
+        requestKey: number;
+      }
+    | undefined
+  >();
   const [employeeProfileDialogOpen, setEmployeeProfileDialogOpen] =
     useState(false);
   const [laborWorkerCreateForm, setLaborWorkerCreateForm] =
@@ -4698,8 +4874,7 @@ export default function AdminPage({
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const submitLaborWorkerCreate = () => {
-    if (!hasBusinessWorkspaceProject)
-      return toast.error("请先选择已授权项目");
+    if (!hasBusinessWorkspaceProject) return toast.error("请先选择已授权项目");
     if (!laborWorkerCreateForm.realName.trim())
       return toast.error("请填写实名姓名");
     if (!laborWorkerCreateForm.identityNo.trim())
@@ -6152,7 +6327,8 @@ export default function AdminPage({
     [organizations.data]
   );
   const departmentScopeProjects = useMemo(
-    () => (projects.data ?? []).filter(project => project.status !== "archived"),
+    () =>
+      (projects.data ?? []).filter(project => project.status !== "archived"),
     [projects.data]
   );
   const departmentScopePickerState = getDepartmentScopePickerState(
@@ -7494,7 +7670,9 @@ export default function AdminPage({
         vehicleType: vehicleForm.vehicleType,
         ownership: vehicleForm.ownership,
         ownerName: vehicleForm.ownerName.trim() || null,
-        driverPersonId: vehicleForm.driverPersonId ? Number(vehicleForm.driverPersonId) : null,
+        driverPersonId: vehicleForm.driverPersonId
+          ? Number(vehicleForm.driverPersonId)
+          : null,
         driverUserId: vehicleForm.driverUserId
           ? Number(vehicleForm.driverUserId)
           : null,
@@ -8325,7 +8503,27 @@ export default function AdminPage({
                 </div>
                 <div className="rounded-xl border border-[#d8e3e0] bg-[#f7faf9] p-3">
                   <Label>驾驶员人员档案</Label>
-                  <PersonnelResourceSelect projectId={Number(vehicleForm.projectId) || undefined} role="driver" value={vehicleForm.driverPersonId ? Number(vehicleForm.driverPersonId) : null} fallbackLabel={vehicleForm.driverName} onChange={person => setVehicleForm(current => ({ ...current, driverPersonId: person ? String(person.id) : "", driverUserId: person?.userId ? String(person.userId) : "", driverName: person?.name ?? "", driverPhone: "" }))} />
+                  <PersonnelResourceSelect
+                    projectId={Number(vehicleForm.projectId) || undefined}
+                    role="driver"
+                    value={
+                      vehicleForm.driverPersonId
+                        ? Number(vehicleForm.driverPersonId)
+                        : null
+                    }
+                    fallbackLabel={vehicleForm.driverName}
+                    onChange={person =>
+                      setVehicleForm(current => ({
+                        ...current,
+                        driverPersonId: person ? String(person.id) : "",
+                        driverUserId: person?.userId
+                          ? String(person.userId)
+                          : "",
+                        driverName: person?.name ?? "",
+                        driverPhone: "",
+                      }))
+                    }
+                  />
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <div>
@@ -9183,7 +9381,15 @@ export default function AdminPage({
         </TabsContent>
 
         <TabsContent value="accounts" className="mt-0 space-y-4">
-          <UnifiedPersonnelDirectory onSaved={async () => { await Promise.all([companyPersonnelRoster.refetch(), employeeProfiles.refetch(), audits.refetch()]); }} />
+          <UnifiedPersonnelDirectory
+            onSaved={async () => {
+              await Promise.all([
+                companyPersonnelRoster.refetch(),
+                employeeProfiles.refetch(),
+                audits.refetch(),
+              ]);
+            }}
+          />
           <Card className="border-[#d8e3e0] shadow-sm">
             <CardHeader>
               <CardTitle className="text-base">普通管理人员账号</CardTitle>
@@ -9541,10 +9747,9 @@ export default function AdminPage({
                             employeeProfileForm.laborWorkerId || "UNASSIGNED"
                           }
                           onValueChange={value => {
-                            const worker =
-                              constructionWorkerOptions.find(
-                                item => String(item.id) === value
-                              );
+                            const worker = constructionWorkerOptions.find(
+                              item => String(item.id) === value
+                            );
                             setEmployeeProfileForm(current => ({
                               ...current,
                               laborWorkerId:
@@ -9567,9 +9772,7 @@ export default function AdminPage({
                                 value={String(worker.id)}
                               >
                                 {worker.realName}
-                                {worker.teamName
-                                  ? ` · ${worker.teamName}`
-                                  : ""}
+                                {worker.teamName ? ` · ${worker.teamName}` : ""}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -9586,7 +9789,9 @@ export default function AdminPage({
                             className="mt-2"
                             onClick={() => {
                               setEmployeeProfileDialogOpen(false);
-                              setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM);
+                              setEmployeeProfileForm(
+                                EMPTY_EMPLOYEE_PROFILE_FORM
+                              );
                               setLocation("/admin/labor");
                             }}
                           >
@@ -9801,11 +10006,13 @@ export default function AdminPage({
                   try {
                     let evidenceId = employeeInsuranceForm.evidenceId ?? null;
                     if (employeeInsurancePolicyFile) {
-                      if (![
-                        "image/jpeg",
-                        "image/png",
-                        "application/pdf",
-                      ].includes(employeeInsurancePolicyFile.type)) {
+                      if (
+                        ![
+                          "image/jpeg",
+                          "image/png",
+                          "application/pdf",
+                        ].includes(employeeInsurancePolicyFile.type)
+                      ) {
                         toast.error("保单仅支持 JPG、PNG 或 PDF 文件");
                         return;
                       }
@@ -9848,7 +10055,10 @@ export default function AdminPage({
                     });
                   } catch (error) {
                     toast.error(
-                      getUserFacingErrorMessage(error, "保单附件上传失败，请重试")
+                      getUserFacingErrorMessage(
+                        error,
+                        "保单附件上传失败，请重试"
+                      )
                     );
                   }
                 }}
@@ -9987,7 +10197,8 @@ export default function AdminPage({
                     }
                   />
                   <p className="mt-1 text-xs text-slate-500">
-                    文件最大 15MB；保存时先校验格式并受控归档。续保请新增保险记录，历史保单不会被覆盖。
+                    文件最大
+                    15MB；保存时先校验格式并受控归档。续保请新增保险记录，历史保单不会被覆盖。
                   </p>
                   {employeeInsurancePolicyFile ? (
                     <p className="mt-1 text-xs font-medium text-[#467067]">
@@ -10717,7 +10928,9 @@ export default function AdminPage({
               <p className="text-xs font-semibold tracking-wide text-[#467067]">
                 菜单可见性 · 项目与部门范围
               </p>
-              <CardTitle className="mt-1 text-base">项目或部门可办理业务</CardTitle>
+              <CardTitle className="mt-1 text-base">
+                项目或部门可办理业务
+              </CardTitle>
               <CardDescription className="mt-1">
                 已有项目可直接配置业务菜单，无需先建立组织节点；部门/项目部配置继续保留。人员仍须同时具备该项目或部门范围内的角色授权，此处不增加数据范围或操作权限。
               </CardDescription>
@@ -10791,7 +11004,8 @@ export default function AdminPage({
                     const scopeId = Number(rawScopeId);
                     if (
                       departmentScopeForm.module &&
-                      (scopeType === "organization" || scopeType === "project") &&
+                      (scopeType === "organization" ||
+                        scopeType === "project") &&
                       Number.isSafeInteger(scopeId) &&
                       scopeId > 0
                     )
@@ -10839,8 +11053,8 @@ export default function AdminPage({
                       >
                         <div>
                           <p className="text-sm font-medium text-slate-800">
-                            {scope.scopeType === "project" ? "项目" : "部门"} · {scope.scopeName} ·{" "}
-                            {module?.name ?? scope.module}
+                            {scope.scopeType === "project" ? "项目" : "部门"} ·{" "}
+                            {scope.scopeName} · {module?.name ?? scope.module}
                           </p>
                           <p className="mt-0.5 text-xs text-slate-500">
                             {scope.status === "active" ? "已启用" : "已停用"} ·
@@ -13447,9 +13661,10 @@ export default function AdminPage({
         constructionReportFilterInput
       );
       const projectName = selectedWorkspaceProject?.name ?? "当前项目";
-      const selectedSubmitter = constructionReportSubmitters.data?.find(
-        item => String(item.id) === constructionReportFilter.createdBy
-      )?.name ?? "全部管理员";
+      const selectedSubmitter =
+        constructionReportSubmitters.data?.find(
+          item => String(item.id) === constructionReportFilter.createdBy
+        )?.name ?? "全部管理员";
       const filterText = [
         `日期：${constructionReportFilter.dateFrom || "不限"} 至 ${constructionReportFilter.dateTo || "不限"}`,
         `提交管理员：${selectedSubmitter}`,
@@ -13473,7 +13688,12 @@ export default function AdminPage({
         bodyHtml: `<h1>施工日报筛选明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　${escapePrintHtml(filterText)}</p><p class="sub">生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}　|　本表仅打印当前筛选、当前项目和当前账号已授权的施工日报</p><hr class="rule"><table><thead><tr><th style="width:4%">序号</th><th style="width:8%">日期</th><th style="width:9%">提交管理员</th><th style="width:10%">作业面</th><th style="width:5%">天气</th><th style="width:7%">进度</th><th style="width:7%">状态</th><th style="width:19%">施工内容</th><th style="width:15%">安全情况</th><th style="width:16%">问题 / 审核回复</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="center">当前筛选范围暂无施工日报</td></tr>'}<tr class="summary"><td colspan="10">合计：施工日报 ${printableRows.length} 份；待审核 ${statusCounts.submitted ?? 0} 份，已归档 ${statusCounts.locked ?? 0} 份，已退回 ${statusCounts.rejected ?? 0} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>复核人：________________</span></div>`,
       });
     } catch (error) {
-      toast.error(getUserFacingErrorMessage(error, "施工日报批量打印未生成，请检查筛选范围与打印权限"));
+      toast.error(
+        getUserFacingErrorMessage(
+          error,
+          "施工日报批量打印未生成，请检查筛选范围与打印权限"
+        )
+      );
     } finally {
       setIsConstructionPrinting(false);
     }
@@ -13515,11 +13735,19 @@ export default function AdminPage({
     const showConstructionEvidence = (item: (typeof rows)[number]) => {
       setDesktopRecordDetail({
         title: `施工日报关联影像 · ${item.workArea}`,
-        description: "仅在打开本详情后读取当前日报的短时签名照片，仍受当前项目范围与施工读取权限校验。",
-        fields: [{
-          label: "关联现场照片",
-          value: <ConstructionReportEvidenceDetail projectId={workspaceProjectId} reportId={Number(item.id)} />,
-        }],
+        description:
+          "仅在打开本详情后读取当前日报的短时签名照片，仍受当前项目范围与施工读取权限校验。",
+        fields: [
+          {
+            label: "关联现场照片",
+            value: (
+              <ConstructionReportEvidenceDetail
+                projectId={workspaceProjectId}
+                reportId={Number(item.id)}
+              />
+            ),
+          },
+        ],
       });
     };
     return (
@@ -13550,12 +13778,133 @@ export default function AdminPage({
         {hasBusinessWorkspaceProject ? (
           <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
             <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(130px,1fr)_minmax(130px,1fr)_minmax(170px,1fr)_minmax(220px,2fr)_auto] lg:items-end">
-              <div><Label htmlFor="construction-report-date-from">日报开始日期</Label><Input id="construction-report-date-from" className="mt-1" type="date" value={constructionReportFilter.dateFrom} max={constructionReportFilter.dateTo || undefined} onChange={event => setConstructionReportFilter(current => ({ ...current, dateFrom: event.target.value }))} /></div>
-              <div><Label htmlFor="construction-report-date-to">日报结束日期</Label><Input id="construction-report-date-to" className="mt-1" type="date" value={constructionReportFilter.dateTo} min={constructionReportFilter.dateFrom || undefined} onChange={event => setConstructionReportFilter(current => ({ ...current, dateTo: event.target.value }))} /></div>
-              <div><Label htmlFor="construction-report-submitter">提交管理员</Label><Select value={constructionReportFilter.createdBy} onValueChange={createdBy => setConstructionReportFilter(current => ({ ...current, createdBy }))}><SelectTrigger id="construction-report-submitter" className="mt-1"><SelectValue placeholder="全部管理员" /></SelectTrigger><SelectContent><SelectItem value="all">全部管理员</SelectItem>{(constructionReportSubmitters.data ?? []).map(item => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div>
-              <div><Label htmlFor="construction-report-keyword">关键字查询</Label><Input id="construction-report-keyword" className="mt-1" value={constructionReportFilter.keyword} maxLength={100} placeholder="作业面、施工内容、安全或问题" onChange={event => setConstructionReportFilter(current => ({ ...current, keyword: event.target.value }))} /></div>
-              <div className="flex flex-wrap items-center gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setConstructionReportFilter({ dateFrom: toChinaDateInput(), dateTo: toChinaDateInput(), createdBy: "all", keyword: "" })}>恢复当天</Button><Button type="button" size="sm" variant="outline" onClick={() => setConstructionReportFilter(current => ({ ...current, dateFrom: "", dateTo: "" }))}>不限日期</Button></div>
-              <div className="lg:col-span-5"><div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-white px-3 py-2.5"><p className="text-xs leading-5 text-slate-600">列表、统计和打印均按当前日期、提交管理员和关键字的服务端筛选结果生成；打印不包含现场照片或坐标。</p><CurrentFilterPrintActions disabled={!rows.length} printing={isConstructionPrinting} printLabel="批量打印当前筛选日报" onPrint={() => { void printConstructionReports(); }} /></div></div>
+              <div>
+                <Label htmlFor="construction-report-date-from">
+                  日报开始日期
+                </Label>
+                <Input
+                  id="construction-report-date-from"
+                  className="mt-1"
+                  type="date"
+                  value={constructionReportFilter.dateFrom}
+                  max={constructionReportFilter.dateTo || undefined}
+                  onChange={event =>
+                    setConstructionReportFilter(current => ({
+                      ...current,
+                      dateFrom: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <Label htmlFor="construction-report-date-to">
+                  日报结束日期
+                </Label>
+                <Input
+                  id="construction-report-date-to"
+                  className="mt-1"
+                  type="date"
+                  value={constructionReportFilter.dateTo}
+                  min={constructionReportFilter.dateFrom || undefined}
+                  onChange={event =>
+                    setConstructionReportFilter(current => ({
+                      ...current,
+                      dateTo: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <Label htmlFor="construction-report-submitter">
+                  提交管理员
+                </Label>
+                <Select
+                  value={constructionReportFilter.createdBy}
+                  onValueChange={createdBy =>
+                    setConstructionReportFilter(current => ({
+                      ...current,
+                      createdBy,
+                    }))
+                  }
+                >
+                  <SelectTrigger
+                    id="construction-report-submitter"
+                    className="mt-1"
+                  >
+                    <SelectValue placeholder="全部管理员" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部管理员</SelectItem>
+                    {(constructionReportSubmitters.data ?? []).map(item => (
+                      <SelectItem key={item.id} value={String(item.id)}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="construction-report-keyword">关键字查询</Label>
+                <Input
+                  id="construction-report-keyword"
+                  className="mt-1"
+                  value={constructionReportFilter.keyword}
+                  maxLength={100}
+                  placeholder="作业面、施工内容、安全或问题"
+                  onChange={event =>
+                    setConstructionReportFilter(current => ({
+                      ...current,
+                      keyword: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setConstructionReportFilter({
+                      dateFrom: toChinaDateInput(),
+                      dateTo: toChinaDateInput(),
+                      createdBy: "all",
+                      keyword: "",
+                    })
+                  }
+                >
+                  恢复当天
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setConstructionReportFilter(current => ({
+                      ...current,
+                      dateFrom: "",
+                      dateTo: "",
+                    }))
+                  }
+                >
+                  不限日期
+                </Button>
+              </div>
+              <div className="lg:col-span-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-white px-3 py-2.5">
+                  <p className="text-xs leading-5 text-slate-600">
+                    列表、统计和打印均按当前日期、提交管理员和关键字的服务端筛选结果生成；打印不包含现场照片或坐标。
+                  </p>
+                  <CurrentFilterPrintActions
+                    disabled={!rows.length}
+                    printing={isConstructionPrinting}
+                    printLabel="批量打印当前筛选日报"
+                    onPrint={() => {
+                      void printConstructionReports();
+                    }}
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
         ) : null}
@@ -13669,7 +14018,8 @@ export default function AdminPage({
                               {displayDate(item.reportDate)}
                             </TableCell>
                             <TableCell className="px-4 py-3 text-slate-700">
-                              {item.createdByName || `管理员 #${item.createdBy}`}
+                              {item.createdByName ||
+                                `管理员 #${item.createdBy}`}
                             </TableCell>
                             <TableCell className="max-w-[280px] px-4 py-3">
                               <p className="font-semibold text-[#203c48]">
@@ -14722,7 +15072,10 @@ export default function AdminPage({
                                                 className="font-medium text-[#2b6660] underline"
                                               >
                                                 查看采购单据：
-                                                {item.documentAttachment.fileName}
+                                                {
+                                                  item.documentAttachment
+                                                    .fileName
+                                                }
                                               </ProtectedImagePreview>
                                             ) : (
                                               "未关联采购单据"
@@ -14739,7 +15092,10 @@ export default function AdminPage({
                                                   className="font-medium text-[#2b6660] underline"
                                                 >
                                                   查看发票附件：
-                                                  {item.invoiceAttachment.fileName}
+                                                  {
+                                                    item.invoiceAttachment
+                                                      .fileName
+                                                  }
                                                 </ProtectedImagePreview>
                                               ) : (
                                                 "已登记发票，但未找到归档附件"
@@ -16581,647 +16937,683 @@ export default function AdminPage({
         laborDailyWages.refetch(),
       ]);
     return (
-      <Tabs value={scopedSection ? "operations" : laborWorkspaceTab} onValueChange={setLaborWorkspaceTab} className="space-y-4">
-        {!scopedSection ? <>
-          <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl bg-[#e9f0ed] p-1">
-            <TabsTrigger value="personnel" className="py-2">人员档案</TabsTrigger>
-            <TabsTrigger value="operations" className="py-2">考勤与工资结算</TabsTrigger>
-          </TabsList>
-          <TabsContent value="personnel" className="mt-0">
-            <UnifiedPersonnelDirectory openLegacySource={personnelOpenSource} openCreateSignal={personnelCreateSignal} initialProjectId={hasBusinessWorkspaceProject ? Number(businessWorkspaceProjectId) : undefined} onSaved={async () => { await Promise.all([companyPersonnelRoster.refetch(), employeeProfiles.refetch(), audits.refetch()]); }} />
-          </TabsContent>
-        </> : null}
-        <TabsContent value="operations" className="mt-0">
-      <LaborWorkspaceShell
-        projectFilter={renderWorkspaceProjectFilter(
-          "劳务项目范围",
-          "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。"
-        )}
-        hasProject={hasBusinessWorkspaceProject}
-        queryEnabled={laborWorkspaceQueryEnabled}
-        loading={laborWorkspaceLoading}
-        hasError={laborWorkspaceHasError}
-        refreshing={laborWorkspaceRefreshing}
-        onRetry={() => void retryLaborWorkspace()}
+      <Tabs
+        value={scopedSection ? "operations" : laborWorkspaceTab}
+        onValueChange={setLaborWorkspaceTab}
+        className="space-y-4"
       >
-        {!laborWorkspaceLoading &&
-        !laborWorkspaceHasError &&
-        laborWorkspaceQueryEnabled &&
-        hasBusinessWorkspaceProject ? (
+        {!scopedSection ? (
           <>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="实名制人员"
-                value={workers.length}
-                description="已按敏感字段脱敏"
-                icon={UsersRound}
-              />
-              <MetricCard
-                title="在场人员"
-                value={
-                  workers.filter(item => item.attendanceStatus === "active")
-                    .length
+            <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl bg-[#e9f0ed] p-1">
+              <TabsTrigger value="personnel" className="py-2">
+                人员档案
+              </TabsTrigger>
+              <TabsTrigger value="operations" className="py-2">
+                考勤与工资结算
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="personnel" className="mt-0">
+              <UnifiedPersonnelDirectory
+                openLegacySource={personnelOpenSource}
+                openCreateSignal={personnelCreateSignal}
+                initialProjectId={
+                  hasBusinessWorkspaceProject
+                    ? Number(businessWorkspaceProjectId)
+                    : undefined
                 }
-                description="可计入当前项目考勤"
-                icon={ShieldCheck}
-              />
-              <MetricCard
-                title="今日已上班"
-                value={checkIns.length}
-                description={`${checkIns.filter(item => item.checkedOutAt).length} 人已完成下班打卡`}
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="待会计处理"
-                value={
-                  payrolls.filter(item => item.status === "reviewing").length
-                }
-                description="审核中工资条"
-                icon={BarChart3}
-              />
-            </section>
-            <LaborCheckInLedger
-              checkIns={checkIns}
-              businessDate={laborAttendanceDate}
-              onBusinessDateChange={setLaborAttendanceDate}
-              fallbackBusinessDate={toChinaBusinessDateInput()}
-              displayDate={displayDate}
-              formatAttendanceLocation={formatAttendanceLocation}
-              onExportCsv={downloadCsvFile}
-            />
-            <LaborPayrollHeadline
-              summary={payrollSummary}
-              formatMoney={displayMoney}
-            />
-            <LaborTeamAuditSummary
-              companyActual={companyPayrollSummary.actual}
-              companyPayable={companyPayrollSummary.payable}
-              companyPaid={companyPayrollSummary.paid}
-              laborActual={laborTeamPayrollSummary.actual}
-              laborPayable={laborTeamPayrollSummary.payable}
-              laborPaid={laborTeamPayrollSummary.paid}
-              temporaryActual={temporaryDailySummary.actual}
-              temporaryApproved={temporaryDailySummary.approved}
-              temporaryPaid={temporaryDailySummary.paid}
-              rows={laborTeamAuditRows}
-              formatMoney={displayMoney}
-            />
-            <DailyWageLedger
-              summary={dailyWageSummary}
-              rows={dailyWages}
-              refreshing={laborDailyWages.isFetching}
-              workbookPending={payrollWorkbookExport.isFetching}
-              paymentListPending={payrollPaymentListExport.isFetching}
-              submitPending={submitDailyWage.isPending}
-              reviewPending={reviewDailyWage.isPending}
-              formatMoney={displayMoney}
-              displayDate={displayDate}
-              toBusinessDateInput={toBusinessDateInput}
-              onRefresh={() => laborDailyWages.refetch()}
-              onExportWorkbook={async () => {
-                const response = await payrollWorkbookExport.refetch();
-                const data = response.data;
-                if (!data) return toast.error("工资分类报表数据读取失败");
-                const standardHeaders = [
-                  "人员",
-                  "班组",
-                  "期间/日期",
-                  "应发",
-                  "扣款",
-                  "实发",
-                  "开户行",
-                  "脱敏银行卡",
-                  "状态",
-                  "实际付款日期",
-                ];
-                const toPayrollRows = (rows: typeof data.payrollRows) =>
-                  rows.map(row => [
-                    row.workerName,
-                    row.teamName || "",
-                    row.period,
-                    row.payableAmount,
-                    row.deductionAmount,
-                    row.actualAmount,
-                    row.bankName || "",
-                    row.bankAccountMasked || "",
-                    getBusinessStatusLabel(row.status),
-                    row.paidAt ? displayDate(row.paidAt) : "",
+                onSaved={async () => {
+                  await Promise.all([
+                    companyPersonnelRoster.refetch(),
+                    employeeProfiles.refetch(),
+                    audits.refetch(),
                   ]);
-                const toDailyRows = (rows: typeof data.dailyRows) =>
-                  rows.map(row => [
-                    row.workerName,
-                    row.teamName || "",
-                    toBusinessDateInput(row.settlementDate),
-                    row.payableAmount,
-                    row.deductionAmount,
-                    row.actualAmount,
-                    row.bankName || "",
-                    row.bankAccountMasked || "",
-                    getBusinessStatusLabel(row.status),
-                    row.paidAt ? displayDate(row.paidAt) : "",
-                  ]);
-                const laborTeamNames = Array.from(
-                  new Set(
-                    data.payrollRows
-                      .filter(row => row.workerCategory === "labor_team")
-                      .map(row => row.teamName || "未设置班组")
-                  )
-                );
-                downloadXlsxWorkbook(
-                  `工资分类报表-${laborPeriod || "全部期间"}.xlsx`,
-                  [
-                    {
-                      name: "公司管理人员",
-                      headers: standardHeaders,
-                      rows: toPayrollRows(
-                        data.payrollRows.filter(
-                          row => row.workerCategory === "company_admin"
-                        )
-                      ),
-                    },
-                    {
-                      name: "临时日结",
-                      headers: standardHeaders,
-                      rows: toDailyRows(data.dailyRows),
-                    },
-                    ...laborTeamNames.map(teamName => ({
-                      name: `劳务队-${teamName}`,
-                      headers: standardHeaders,
-                      rows: toPayrollRows(
-                        data.payrollRows.filter(
-                          row =>
-                            row.workerCategory === "labor_team" &&
-                            (row.teamName || "未设置班组") === teamName
-                        )
-                      ),
-                    })),
-                  ]
-                );
-                toast.success("分类工资 Excel 已生成，普通报表仅含脱敏银行卡");
-              }}
-              onExportPaymentList={async () => {
-                const response = await payrollPaymentListExport.refetch();
-                const data = response.data;
-                if (!data)
-                  return toast.error("付款专用清单无权限或数据读取失败");
-                const headers = [
-                  "来源",
-                  "人员",
-                  "人员类型",
-                  "班组",
-                  "期间/日结日期",
-                  "开户行",
-                  "完整银行卡号",
-                  "实发金额",
-                  "状态",
-                  "实际付款日期",
-                ];
-                const payrollRows = data.payrollRows.map(row => [
-                  "月度工资",
-                  row.workerName,
-                  getPayrollWorkerCategoryLabel(row.workerCategory),
-                  row.teamName || "",
-                  toBusinessDateInput(row.settlementDate),
-                  row.bankName || "",
-                  row.bankAccount || "未登记",
-                  row.actualAmount,
-                  getBusinessStatusLabel(row.status),
-                  row.paidAt ? displayDate(row.paidAt) : "",
-                ]);
-                const dailyRows = data.dailyRows.map(row => [
-                  "临时日结",
-                  row.workerName,
-                  getPayrollWorkerCategoryLabel(row.workerCategory),
-                  row.teamName || "",
-                  toBusinessDateInput(row.settlementDate),
-                  row.bankName || "",
-                  row.bankAccount || "未登记",
-                  row.actualAmount,
-                  getBusinessStatusLabel(row.status),
-                  row.paidAt ? displayDate(row.paidAt) : "",
-                ]);
-                downloadXlsxWorkbook(
-                  `付款专用清单-${laborPeriod || "全部期间"}.xlsx`,
-                  [
-                    {
-                      name: "付款专用清单",
-                      headers,
-                      rows: [...payrollRows, ...dailyRows],
-                    },
-                  ]
-                );
-                toast.success("付款专用 Excel 已生成，生成行为已写入审计日志");
-              }}
-              onSubmit={id => submitDailyWage.mutate({ id })}
-              onReturnDraft={id =>
-                reviewDailyWage.mutate({ id, decision: "returned" })
-              }
-              onApprove={id =>
-                reviewDailyWage.mutate({ id, decision: "approved" })
-              }
-              onRegisterPayment={item => {
-                setDailyWagePaymentTarget({
-                  id: item.id,
-                  workerName: item.workerName,
-                });
-              }}
-            />
-            <PayrollStatementLedger
-              period={laborPeriod}
-              onPeriodChange={setLaborPeriod}
-              search={laborPayrollSearch}
-              onSearchChange={setLaborPayrollSearch}
-              team={laborPayrollTeam}
-              onTeamChange={setLaborPayrollTeam}
-              status={laborPayrollStatus}
-              onStatusChange={setLaborPayrollStatus}
-              teams={payrollTeams}
-              rows={visiblePayrolls}
-              formatMoney={displayMoney}
-              onExport={() =>
-                downloadCsvFile(
-                  `工资条-${laborPeriod || "全部期间"}.csv`,
-                  [
-                    "项目范围",
-                    "筛选期间",
-                    "人员",
-                    "班组",
-                    "工资期间",
-                    "应发金额",
-                    "扣款",
-                    "实发金额",
-                    "付款凭证",
-                    "状态",
-                  ],
-                  visiblePayrolls.map(item => [
-                    workspaceProjectId
-                      ? `项目 #${workspaceProjectId}`
-                      : "当前项目",
-                    laborPeriod || "全部期间",
-                    item.workerName,
-                    item.teamName || "",
-                    item.period,
-                    item.payableAmount,
-                    item.deductionAmount,
-                    item.actualAmount,
-                    item.paymentReference || "",
-                    getBusinessStatusLabel(item.status),
-                  ])
-                )
-              }
-              onOpenDetail={item =>
-                setDesktopRecordDetail({
-                  title: `工资条明细 · ${item.workerName}`,
-                  description:
-                    "工资金额由服务端计算，付款凭证与敏感账户字段仅向获授权岗位展示。",
-                  fields: [
-                    { label: "工资期间", value: item.period },
-                    {
-                      label: "状态",
-                      value: <BusinessStatusBadge status={item.status} />,
-                    },
-                    {
-                      label: "应发金额",
-                      value: `¥ ${displayMoney(item.payableAmount)}`,
-                    },
-                    {
-                      label: "扣款金额",
-                      value: `¥ ${displayMoney(item.deductionAmount)}`,
-                    },
-                    {
-                      label: "实发金额",
-                      value: `¥ ${displayMoney(item.actualAmount)}`,
-                    },
-                    {
-                      label: "付款凭证",
-                      value: item.paymentReference || "尚未发放",
-                    },
-                  ],
-                })
-              }
-              onRegisterPayment={item =>
-                setPayrollPaymentTarget({
-                  id: item.id,
-                  workerName: item.workerName,
-                  period: item.period,
-                })
-              }
-            />
-            <LaborEntryActionCard
-              onAdd={() => {
-                setLaborWorkspaceTab("personnel");
-                setPersonnelCreateSignal(current => current + 1);
-              }}
-            />
-            <div className="grid gap-6 xl:grid-cols-2">
-              <LaborWorkerRoster
-                workers={workers}
-                displayDate={displayDate}
-                onCreateWorker={() => {
-                  setLaborWorkspaceTab("personnel");
-                  setPersonnelCreateSignal(current => current + 1);
-                }}
-                onOpenProfile={worker => {
-                  setLaborWorkspaceTab("personnel");
-                  setPersonnelOpenSource(current => ({ sourceType: "worker", sourceId: worker.id, requestKey: (current?.requestKey ?? 0) + 1 }));
                 }}
               />
-              <LaborAttendanceLedger
-                filter={laborAttendanceFilter}
-                onFilterChange={setLaborAttendanceFilter}
-                teams={attendanceTeams}
-                rows={visibleAttendance}
-                hasAttendance={attendance.length > 0}
-                getWorkerCategory={workerId =>
-                  workerById.get(workerId)?.workerCategory
-                }
-                displayDate={displayDate}
-                onExport={() =>
-                  downloadCsvFile(
-                    `劳务考勤-${laborAttendanceDate || "全部日期"}.csv`,
-                    [
-                      "人员",
-                      "班组",
-                      "人员类型",
-                      "考勤日期",
-                      "正常工时",
-                      "加班工时",
-                      "来源",
-                      "状态",
-                      "备注",
-                    ],
-                    visibleAttendance.map(item => {
-                      const worker = workerById.get(item.workerId);
-                      return [
-                        item.workerName,
-                        item.teamName || "未设置班组",
-                        worker?.workerCategory === "company_admin"
-                          ? "公司管理人员"
-                          : worker?.workerCategory === "temporary_daily"
-                            ? "临时日结人员"
-                            : "劳务队人员",
-                        toBusinessDateInput(item.attendanceDate),
-                        item.workHours,
-                        item.overtimeHours,
-                        getAttendanceSourceLabel(item.source),
-                        getBusinessStatusLabel(item.status),
-                        item.note || "",
-                      ];
-                    }),
-                    {
-                      module: "劳务考勤高级筛选导出",
-                      filters: [
-                        [
-                          "项目",
-                          selectedWorkspaceProject?.name ||
-                            `项目 #${workspaceProjectId}`,
-                        ],
-                        ["考勤日期", laborAttendanceDate || "全部日期"],
-                        [
-                          "姓名/班组",
-                          laborAttendanceFilter.workerName || "全部",
-                        ],
-                        [
-                          "班组",
-                          laborAttendanceFilter.team === "all"
-                            ? "全部"
-                            : laborAttendanceFilter.team,
-                        ],
-                        [
-                          "人员类型",
-                          laborAttendanceFilter.category === "all"
-                            ? "全部"
-                            : laborAttendanceFilter.category,
-                        ],
-                        [
-                          "考勤状态",
-                          laborAttendanceFilter.status === "all"
-                            ? "全部"
-                            : laborAttendanceFilter.status,
-                        ],
-                      ],
-                    }
-                  )
-                }
-              />
-            </div>
-            <Dialog
-              open={laborWorkerCreateDialogOpen}
-              onOpenChange={open => {
-                if (!open) closeLaborWorkerCreateDialog();
-              }}
-            >
-              <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>新建实名制施工队工人</DialogTitle>
-                  <DialogDescription>
-                    仅建立当前项目的真实劳务人员档案，不创建系统账号或员工档案。身份证、联系电话和银行卡仅在本次安全提交时传送，关闭后不会保留或回显。
-                  </DialogDescription>
-                </DialogHeader>
-                <form
-                  className="space-y-4"
-                  onSubmit={event => {
-                    event.preventDefault();
-                    submitLaborWorkerCreate();
-                  }}
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="当前项目（必填）">
-                      <Input
-                        value={selectedWorkspaceProject?.name ?? ""}
-                        placeholder="请先选择已授权项目"
-                        disabled
-                      />
-                    </Field>
-                    <Field label="实名姓名（必填）">
-                      <Input
-                        value={laborWorkerCreateForm.realName}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            realName: event.target.value,
-                          }))
-                        }
-                        autoComplete="off"
-                        maxLength={64}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="身份证号码（必填）">
-                    <Input
-                      value={laborWorkerCreateForm.identityNo}
-                      onChange={event =>
-                        setLaborWorkerCreateForm(current => ({
-                          ...current,
-                          identityNo: event.target.value,
-                        }))
-                      }
-                      autoComplete="off"
-                      inputMode="text"
-                      maxLength={32}
-                      placeholder="仅用于本次提交，由服务端加密保存"
-                    />
-                  </Field>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="班组（可选）">
-                      <Input
-                        value={laborWorkerCreateForm.teamName}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            teamName: event.target.value,
-                          }))
-                        }
-                        maxLength={128}
-                        placeholder="例如：路基施工一队"
-                      />
-                    </Field>
-                    <Field label="联系电话（可选）">
-                      <Input
-                        value={laborWorkerCreateForm.phone}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            phone: event.target.value,
-                          }))
-                        }
-                        autoComplete="off"
-                        inputMode="tel"
-                        maxLength={32}
-                        placeholder="仅用于本次提交"
-                      />
-                    </Field>
-                    <Field label="开户行（可选）">
-                      <Input
-                        value={laborWorkerCreateForm.bankName}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            bankName: event.target.value,
-                          }))
-                        }
-                        autoComplete="off"
-                        maxLength={128}
-                        placeholder="仅用于本次提交"
-                      />
-                    </Field>
-                    <Field label="银行卡号（可选）">
-                      <Input
-                        value={laborWorkerCreateForm.bankAccount}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            bankAccount: event.target.value,
-                          }))
-                        }
-                        autoComplete="off"
-                        inputMode="numeric"
-                        maxLength={64}
-                        placeholder="仅用于本次提交，由服务端加密保存"
-                      />
-                    </Field>
-                    <Field label="进场日期（可选）">
-                      <Input
-                        type="date"
-                        value={laborWorkerCreateForm.entryDate}
-                        onChange={event =>
-                          setLaborWorkerCreateForm(current => ({
-                            ...current,
-                            entryDate: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                    固定分类：施工队工人；实名核验：待核验；出勤状态：在场。实名核验须按既有受控流程完成。
-                  </div>
-                  <Field label="备注（可选）">
-                    <Textarea
-                      value={laborWorkerCreateForm.remarks}
-                      onChange={event =>
-                        setLaborWorkerCreateForm(current => ({
-                          ...current,
-                          remarks: event.target.value,
-                        }))
-                      }
-                      maxLength={500}
-                      placeholder="请勿填写身份证、银行卡等敏感原文"
-                    />
-                  </Field>
-                  <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={closeLaborWorkerCreateDialog}
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      type="submit"
-                      disabled={
-                        saveLaborWorker.isPending ||
-                        !hasBusinessWorkspaceProject ||
-                        !laborWorkerCreateForm.realName.trim() ||
-                        !laborWorkerCreateForm.identityNo.trim()
-                      }
-                    >
-                      {saveLaborWorker.isPending ? "正在安全保存…" : "安全保存施工队工人"}
-                    </Button>
-                  </DialogFooter>
-                </form>
-              </DialogContent>
-            </Dialog>
+            </TabsContent>
           </>
         ) : null}
-        <SettlementPaymentDialog
-          open={Boolean(dailyWagePaymentTarget)}
-          onOpenChange={open => {
-            if (!open) setDailyWagePaymentTarget(null);
-          }}
-          projectId={workspaceProjectId ?? 0}
-          settlementType="daily_wage"
-          target={
-            dailyWagePaymentTarget
-              ? {
-                  id: dailyWagePaymentTarget.id,
-                  label: `临时日结 · ${dailyWagePaymentTarget.workerName}`,
-                  payeeName: dailyWagePaymentTarget.workerName,
-                }
-              : null
-          }
-          onCompleted={async () => {
-            await Promise.all([
-              trpcUtils.labor.dailyWage.list.invalidate(),
-              trpcUtils.labor.payroll.list.invalidate(),
-              trpcUtils.labor.summary.invalidate(),
-            ]);
-          }}
-        />
-        <SettlementPaymentDialog
-          open={Boolean(payrollPaymentTarget)}
-          onOpenChange={open => {
-            if (!open) setPayrollPaymentTarget(null);
-          }}
-          projectId={workspaceProjectId ?? 0}
-          settlementType="payroll"
-          target={
-            payrollPaymentTarget
-              ? {
-                  id: payrollPaymentTarget.id,
-                  label: `${payrollPaymentTarget.period} 工资 · ${payrollPaymentTarget.workerName}`,
-                  payeeName: payrollPaymentTarget.workerName,
-                }
-              : null
-          }
-          onCompleted={async () => {
-            await Promise.all([
-              trpcUtils.labor.payroll.list.invalidate(),
-              trpcUtils.labor.summary.invalidate(),
-            ]);
-          }}
-        />
-      </LaborWorkspaceShell>
+        <TabsContent value="operations" className="mt-0">
+          <LaborWorkspaceShell
+            projectFilter={renderWorkspaceProjectFilter(
+              "劳务项目范围",
+              "选择项目后按真实人员、考勤和工资条加载。每个工资状态操作仍由劳务、会计和财务角色在服务端二次核验。"
+            )}
+            hasProject={hasBusinessWorkspaceProject}
+            queryEnabled={laborWorkspaceQueryEnabled}
+            loading={laborWorkspaceLoading}
+            hasError={laborWorkspaceHasError}
+            refreshing={laborWorkspaceRefreshing}
+            onRetry={() => void retryLaborWorkspace()}
+          >
+            {!laborWorkspaceLoading &&
+            !laborWorkspaceHasError &&
+            laborWorkspaceQueryEnabled &&
+            hasBusinessWorkspaceProject ? (
+              <>
+                <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <MetricCard
+                    title="实名制人员"
+                    value={workers.length}
+                    description="已按敏感字段脱敏"
+                    icon={UsersRound}
+                  />
+                  <MetricCard
+                    title="在场人员"
+                    value={
+                      workers.filter(item => item.attendanceStatus === "active")
+                        .length
+                    }
+                    description="可计入当前项目考勤"
+                    icon={ShieldCheck}
+                  />
+                  <MetricCard
+                    title="今日已上班"
+                    value={checkIns.length}
+                    description={`${checkIns.filter(item => item.checkedOutAt).length} 人已完成下班打卡`}
+                    icon={ScrollText}
+                  />
+                  <MetricCard
+                    title="待会计处理"
+                    value={
+                      payrolls.filter(item => item.status === "reviewing")
+                        .length
+                    }
+                    description="审核中工资条"
+                    icon={BarChart3}
+                  />
+                </section>
+                <LaborCheckInLedger
+                  checkIns={checkIns}
+                  businessDate={laborAttendanceDate}
+                  onBusinessDateChange={setLaborAttendanceDate}
+                  fallbackBusinessDate={toChinaBusinessDateInput()}
+                  displayDate={displayDate}
+                  formatAttendanceLocation={formatAttendanceLocation}
+                  onExportCsv={downloadCsvFile}
+                />
+                <LaborPayrollHeadline
+                  summary={payrollSummary}
+                  formatMoney={displayMoney}
+                />
+                <LaborTeamAuditSummary
+                  companyActual={companyPayrollSummary.actual}
+                  companyPayable={companyPayrollSummary.payable}
+                  companyPaid={companyPayrollSummary.paid}
+                  laborActual={laborTeamPayrollSummary.actual}
+                  laborPayable={laborTeamPayrollSummary.payable}
+                  laborPaid={laborTeamPayrollSummary.paid}
+                  temporaryActual={temporaryDailySummary.actual}
+                  temporaryApproved={temporaryDailySummary.approved}
+                  temporaryPaid={temporaryDailySummary.paid}
+                  rows={laborTeamAuditRows}
+                  formatMoney={displayMoney}
+                />
+                <DailyWageLedger
+                  summary={dailyWageSummary}
+                  rows={dailyWages}
+                  refreshing={laborDailyWages.isFetching}
+                  workbookPending={payrollWorkbookExport.isFetching}
+                  paymentListPending={payrollPaymentListExport.isFetching}
+                  submitPending={submitDailyWage.isPending}
+                  reviewPending={reviewDailyWage.isPending}
+                  formatMoney={displayMoney}
+                  displayDate={displayDate}
+                  toBusinessDateInput={toBusinessDateInput}
+                  onRefresh={() => laborDailyWages.refetch()}
+                  onExportWorkbook={async () => {
+                    const response = await payrollWorkbookExport.refetch();
+                    const data = response.data;
+                    if (!data) return toast.error("工资分类报表数据读取失败");
+                    const standardHeaders = [
+                      "人员",
+                      "班组",
+                      "期间/日期",
+                      "应发",
+                      "扣款",
+                      "实发",
+                      "开户行",
+                      "脱敏银行卡",
+                      "状态",
+                      "实际付款日期",
+                    ];
+                    const toPayrollRows = (rows: typeof data.payrollRows) =>
+                      rows.map(row => [
+                        row.workerName,
+                        row.teamName || "",
+                        row.period,
+                        row.payableAmount,
+                        row.deductionAmount,
+                        row.actualAmount,
+                        row.bankName || "",
+                        row.bankAccountMasked || "",
+                        getBusinessStatusLabel(row.status),
+                        row.paidAt ? displayDate(row.paidAt) : "",
+                      ]);
+                    const toDailyRows = (rows: typeof data.dailyRows) =>
+                      rows.map(row => [
+                        row.workerName,
+                        row.teamName || "",
+                        toBusinessDateInput(row.settlementDate),
+                        row.payableAmount,
+                        row.deductionAmount,
+                        row.actualAmount,
+                        row.bankName || "",
+                        row.bankAccountMasked || "",
+                        getBusinessStatusLabel(row.status),
+                        row.paidAt ? displayDate(row.paidAt) : "",
+                      ]);
+                    const laborTeamNames = Array.from(
+                      new Set(
+                        data.payrollRows
+                          .filter(row => row.workerCategory === "labor_team")
+                          .map(row => row.teamName || "未设置班组")
+                      )
+                    );
+                    downloadXlsxWorkbook(
+                      `工资分类报表-${laborPeriod || "全部期间"}.xlsx`,
+                      [
+                        {
+                          name: "公司管理人员",
+                          headers: standardHeaders,
+                          rows: toPayrollRows(
+                            data.payrollRows.filter(
+                              row => row.workerCategory === "company_admin"
+                            )
+                          ),
+                        },
+                        {
+                          name: "临时日结",
+                          headers: standardHeaders,
+                          rows: toDailyRows(data.dailyRows),
+                        },
+                        ...laborTeamNames.map(teamName => ({
+                          name: `劳务队-${teamName}`,
+                          headers: standardHeaders,
+                          rows: toPayrollRows(
+                            data.payrollRows.filter(
+                              row =>
+                                row.workerCategory === "labor_team" &&
+                                (row.teamName || "未设置班组") === teamName
+                            )
+                          ),
+                        })),
+                      ]
+                    );
+                    toast.success(
+                      "分类工资 Excel 已生成，普通报表仅含脱敏银行卡"
+                    );
+                  }}
+                  onExportPaymentList={async () => {
+                    const response = await payrollPaymentListExport.refetch();
+                    const data = response.data;
+                    if (!data)
+                      return toast.error("付款专用清单无权限或数据读取失败");
+                    const headers = [
+                      "来源",
+                      "人员",
+                      "人员类型",
+                      "班组",
+                      "期间/日结日期",
+                      "开户行",
+                      "完整银行卡号",
+                      "实发金额",
+                      "状态",
+                      "实际付款日期",
+                    ];
+                    const payrollRows = data.payrollRows.map(row => [
+                      "月度工资",
+                      row.workerName,
+                      getPayrollWorkerCategoryLabel(row.workerCategory),
+                      row.teamName || "",
+                      toBusinessDateInput(row.settlementDate),
+                      row.bankName || "",
+                      row.bankAccount || "未登记",
+                      row.actualAmount,
+                      getBusinessStatusLabel(row.status),
+                      row.paidAt ? displayDate(row.paidAt) : "",
+                    ]);
+                    const dailyRows = data.dailyRows.map(row => [
+                      "临时日结",
+                      row.workerName,
+                      getPayrollWorkerCategoryLabel(row.workerCategory),
+                      row.teamName || "",
+                      toBusinessDateInput(row.settlementDate),
+                      row.bankName || "",
+                      row.bankAccount || "未登记",
+                      row.actualAmount,
+                      getBusinessStatusLabel(row.status),
+                      row.paidAt ? displayDate(row.paidAt) : "",
+                    ]);
+                    downloadXlsxWorkbook(
+                      `付款专用清单-${laborPeriod || "全部期间"}.xlsx`,
+                      [
+                        {
+                          name: "付款专用清单",
+                          headers,
+                          rows: [...payrollRows, ...dailyRows],
+                        },
+                      ]
+                    );
+                    toast.success(
+                      "付款专用 Excel 已生成，生成行为已写入审计日志"
+                    );
+                  }}
+                  onSubmit={id => submitDailyWage.mutate({ id })}
+                  onReturnDraft={id =>
+                    reviewDailyWage.mutate({ id, decision: "returned" })
+                  }
+                  onApprove={id =>
+                    reviewDailyWage.mutate({ id, decision: "approved" })
+                  }
+                  onRegisterPayment={item => {
+                    setDailyWagePaymentTarget({
+                      id: item.id,
+                      workerName: item.workerName,
+                    });
+                  }}
+                />
+                <PayrollStatementLedger
+                  period={laborPeriod}
+                  onPeriodChange={setLaborPeriod}
+                  search={laborPayrollSearch}
+                  onSearchChange={setLaborPayrollSearch}
+                  team={laborPayrollTeam}
+                  onTeamChange={setLaborPayrollTeam}
+                  status={laborPayrollStatus}
+                  onStatusChange={setLaborPayrollStatus}
+                  teams={payrollTeams}
+                  rows={visiblePayrolls}
+                  formatMoney={displayMoney}
+                  onExport={() =>
+                    downloadCsvFile(
+                      `工资条-${laborPeriod || "全部期间"}.csv`,
+                      [
+                        "项目范围",
+                        "筛选期间",
+                        "人员",
+                        "班组",
+                        "工资期间",
+                        "应发金额",
+                        "扣款",
+                        "实发金额",
+                        "付款凭证",
+                        "状态",
+                      ],
+                      visiblePayrolls.map(item => [
+                        workspaceProjectId
+                          ? `项目 #${workspaceProjectId}`
+                          : "当前项目",
+                        laborPeriod || "全部期间",
+                        item.workerName,
+                        item.teamName || "",
+                        item.period,
+                        item.payableAmount,
+                        item.deductionAmount,
+                        item.actualAmount,
+                        item.paymentReference || "",
+                        getBusinessStatusLabel(item.status),
+                      ])
+                    )
+                  }
+                  onOpenDetail={item =>
+                    setDesktopRecordDetail({
+                      title: `工资条明细 · ${item.workerName}`,
+                      description:
+                        "工资金额由服务端计算，付款凭证与敏感账户字段仅向获授权岗位展示。",
+                      fields: [
+                        { label: "工资期间", value: item.period },
+                        {
+                          label: "状态",
+                          value: <BusinessStatusBadge status={item.status} />,
+                        },
+                        {
+                          label: "应发金额",
+                          value: `¥ ${displayMoney(item.payableAmount)}`,
+                        },
+                        {
+                          label: "扣款金额",
+                          value: `¥ ${displayMoney(item.deductionAmount)}`,
+                        },
+                        {
+                          label: "实发金额",
+                          value: `¥ ${displayMoney(item.actualAmount)}`,
+                        },
+                        {
+                          label: "付款凭证",
+                          value: item.paymentReference || "尚未发放",
+                        },
+                      ],
+                    })
+                  }
+                  onRegisterPayment={item =>
+                    setPayrollPaymentTarget({
+                      id: item.id,
+                      workerName: item.workerName,
+                      period: item.period,
+                    })
+                  }
+                />
+                <LaborEntryActionCard
+                  onAdd={() => {
+                    setLaborWorkspaceTab("personnel");
+                    setPersonnelCreateSignal(current => current + 1);
+                  }}
+                />
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <LaborWorkerRoster
+                    workers={workers}
+                    displayDate={displayDate}
+                    onCreateWorker={() => {
+                      setLaborWorkspaceTab("personnel");
+                      setPersonnelCreateSignal(current => current + 1);
+                    }}
+                    onOpenProfile={worker => {
+                      setLaborWorkspaceTab("personnel");
+                      setPersonnelOpenSource(current => ({
+                        sourceType: "worker",
+                        sourceId: worker.id,
+                        requestKey: (current?.requestKey ?? 0) + 1,
+                      }));
+                    }}
+                  />
+                  <LaborAttendanceLedger
+                    filter={laborAttendanceFilter}
+                    onFilterChange={setLaborAttendanceFilter}
+                    teams={attendanceTeams}
+                    rows={visibleAttendance}
+                    hasAttendance={attendance.length > 0}
+                    getWorkerCategory={workerId =>
+                      workerById.get(workerId)?.workerCategory
+                    }
+                    displayDate={displayDate}
+                    onExport={() =>
+                      downloadCsvFile(
+                        `劳务考勤-${laborAttendanceDate || "全部日期"}.csv`,
+                        [
+                          "人员",
+                          "班组",
+                          "人员类型",
+                          "考勤日期",
+                          "正常工时",
+                          "加班工时",
+                          "来源",
+                          "状态",
+                          "备注",
+                        ],
+                        visibleAttendance.map(item => {
+                          const worker = workerById.get(item.workerId);
+                          return [
+                            item.workerName,
+                            item.teamName || "未设置班组",
+                            worker?.workerCategory === "company_admin"
+                              ? "公司管理人员"
+                              : worker?.workerCategory === "temporary_daily"
+                                ? "临时日结人员"
+                                : "劳务队人员",
+                            toBusinessDateInput(item.attendanceDate),
+                            item.workHours,
+                            item.overtimeHours,
+                            getAttendanceSourceLabel(item.source),
+                            getBusinessStatusLabel(item.status),
+                            item.note || "",
+                          ];
+                        }),
+                        {
+                          module: "劳务考勤高级筛选导出",
+                          filters: [
+                            [
+                              "项目",
+                              selectedWorkspaceProject?.name ||
+                                `项目 #${workspaceProjectId}`,
+                            ],
+                            ["考勤日期", laborAttendanceDate || "全部日期"],
+                            [
+                              "姓名/班组",
+                              laborAttendanceFilter.workerName || "全部",
+                            ],
+                            [
+                              "班组",
+                              laborAttendanceFilter.team === "all"
+                                ? "全部"
+                                : laborAttendanceFilter.team,
+                            ],
+                            [
+                              "人员类型",
+                              laborAttendanceFilter.category === "all"
+                                ? "全部"
+                                : laborAttendanceFilter.category,
+                            ],
+                            [
+                              "考勤状态",
+                              laborAttendanceFilter.status === "all"
+                                ? "全部"
+                                : laborAttendanceFilter.status,
+                            ],
+                          ],
+                        }
+                      )
+                    }
+                  />
+                </div>
+                <Dialog
+                  open={laborWorkerCreateDialogOpen}
+                  onOpenChange={open => {
+                    if (!open) closeLaborWorkerCreateDialog();
+                  }}
+                >
+                  <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>新建实名制施工队工人</DialogTitle>
+                      <DialogDescription>
+                        仅建立当前项目的真实劳务人员档案，不创建系统账号或员工档案。身份证、联系电话和银行卡仅在本次安全提交时传送，关闭后不会保留或回显。
+                      </DialogDescription>
+                    </DialogHeader>
+                    <form
+                      className="space-y-4"
+                      onSubmit={event => {
+                        event.preventDefault();
+                        submitLaborWorkerCreate();
+                      }}
+                    >
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label="当前项目（必填）">
+                          <Input
+                            value={selectedWorkspaceProject?.name ?? ""}
+                            placeholder="请先选择已授权项目"
+                            disabled
+                          />
+                        </Field>
+                        <Field label="实名姓名（必填）">
+                          <Input
+                            value={laborWorkerCreateForm.realName}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                realName: event.target.value,
+                              }))
+                            }
+                            autoComplete="off"
+                            maxLength={64}
+                          />
+                        </Field>
+                      </div>
+                      <Field label="身份证号码（必填）">
+                        <Input
+                          value={laborWorkerCreateForm.identityNo}
+                          onChange={event =>
+                            setLaborWorkerCreateForm(current => ({
+                              ...current,
+                              identityNo: event.target.value,
+                            }))
+                          }
+                          autoComplete="off"
+                          inputMode="text"
+                          maxLength={32}
+                          placeholder="仅用于本次提交，由服务端加密保存"
+                        />
+                      </Field>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label="班组（可选）">
+                          <Input
+                            value={laborWorkerCreateForm.teamName}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                teamName: event.target.value,
+                              }))
+                            }
+                            maxLength={128}
+                            placeholder="例如：路基施工一队"
+                          />
+                        </Field>
+                        <Field label="联系电话（可选）">
+                          <Input
+                            value={laborWorkerCreateForm.phone}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                phone: event.target.value,
+                              }))
+                            }
+                            autoComplete="off"
+                            inputMode="tel"
+                            maxLength={32}
+                            placeholder="仅用于本次提交"
+                          />
+                        </Field>
+                        <Field label="开户行（可选）">
+                          <Input
+                            value={laborWorkerCreateForm.bankName}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                bankName: event.target.value,
+                              }))
+                            }
+                            autoComplete="off"
+                            maxLength={128}
+                            placeholder="仅用于本次提交"
+                          />
+                        </Field>
+                        <Field label="银行卡号（可选）">
+                          <Input
+                            value={laborWorkerCreateForm.bankAccount}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                bankAccount: event.target.value,
+                              }))
+                            }
+                            autoComplete="off"
+                            inputMode="numeric"
+                            maxLength={64}
+                            placeholder="仅用于本次提交，由服务端加密保存"
+                          />
+                        </Field>
+                        <Field label="进场日期（可选）">
+                          <Input
+                            type="date"
+                            value={laborWorkerCreateForm.entryDate}
+                            onChange={event =>
+                              setLaborWorkerCreateForm(current => ({
+                                ...current,
+                                entryDate: event.target.value,
+                              }))
+                            }
+                          />
+                        </Field>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                        固定分类：施工队工人；实名核验：待核验；出勤状态：在场。实名核验须按既有受控流程完成。
+                      </div>
+                      <Field label="备注（可选）">
+                        <Textarea
+                          value={laborWorkerCreateForm.remarks}
+                          onChange={event =>
+                            setLaborWorkerCreateForm(current => ({
+                              ...current,
+                              remarks: event.target.value,
+                            }))
+                          }
+                          maxLength={500}
+                          placeholder="请勿填写身份证、银行卡等敏感原文"
+                        />
+                      </Field>
+                      <DialogFooter>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={closeLaborWorkerCreateDialog}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          type="submit"
+                          disabled={
+                            saveLaborWorker.isPending ||
+                            !hasBusinessWorkspaceProject ||
+                            !laborWorkerCreateForm.realName.trim() ||
+                            !laborWorkerCreateForm.identityNo.trim()
+                          }
+                        >
+                          {saveLaborWorker.isPending
+                            ? "正在安全保存…"
+                            : "安全保存施工队工人"}
+                        </Button>
+                      </DialogFooter>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              </>
+            ) : null}
+            <SettlementPaymentDialog
+              open={Boolean(dailyWagePaymentTarget)}
+              onOpenChange={open => {
+                if (!open) setDailyWagePaymentTarget(null);
+              }}
+              projectId={workspaceProjectId ?? 0}
+              settlementType="daily_wage"
+              target={
+                dailyWagePaymentTarget
+                  ? {
+                      id: dailyWagePaymentTarget.id,
+                      label: `临时日结 · ${dailyWagePaymentTarget.workerName}`,
+                      payeeName: dailyWagePaymentTarget.workerName,
+                    }
+                  : null
+              }
+              onCompleted={async () => {
+                await Promise.all([
+                  trpcUtils.labor.dailyWage.list.invalidate(),
+                  trpcUtils.labor.payroll.list.invalidate(),
+                  trpcUtils.labor.summary.invalidate(),
+                ]);
+              }}
+            />
+            <SettlementPaymentDialog
+              open={Boolean(payrollPaymentTarget)}
+              onOpenChange={open => {
+                if (!open) setPayrollPaymentTarget(null);
+              }}
+              projectId={workspaceProjectId ?? 0}
+              settlementType="payroll"
+              target={
+                payrollPaymentTarget
+                  ? {
+                      id: payrollPaymentTarget.id,
+                      label: `${payrollPaymentTarget.period} 工资 · ${payrollPaymentTarget.workerName}`,
+                      payeeName: payrollPaymentTarget.workerName,
+                    }
+                  : null
+              }
+              onCompleted={async () => {
+                await Promise.all([
+                  trpcUtils.labor.payroll.list.invalidate(),
+                  trpcUtils.labor.summary.invalidate(),
+                ]);
+              }}
+            />
+          </LaborWorkspaceShell>
         </TabsContent>
       </Tabs>
     );
@@ -17287,11 +17679,15 @@ export default function AdminPage({
           ? {
               id: machine.id,
               projectId: String(machine.projectId),
-              operatorPersonId: machine.operatorPersonId ? String(machine.operatorPersonId) : "",
-            operatorUserId: machine.operatorUserId
+              operatorPersonId: machine.operatorPersonId
+                ? String(machine.operatorPersonId)
+                : "",
+              operatorUserId: machine.operatorUserId
                 ? String(machine.operatorUserId)
                 : "",
-              ownerUserId: machine.ownerUserId ? String(machine.ownerUserId) : "",
+              ownerUserId: machine.ownerUserId
+                ? String(machine.ownerUserId)
+                : "",
               code: machine.code,
               name: machine.name,
               model: machine.model ?? "",
@@ -18016,26 +18412,56 @@ export default function AdminPage({
                           <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
                             <p className="text-xs text-slate-500">合同月租</p>
                             <p className="mt-1 font-semibold text-[#203c48]">
-                              {machineAnalysis.data.rental?.monthlyRate == null ? "—" : `¥${displayMoney(machineAnalysis.data.rental.monthlyRate)}`}
+                              {machineAnalysis.data.rental?.monthlyRate == null
+                                ? "—"
+                                : `¥${displayMoney(machineAnalysis.data.rental.monthlyRate)}`}
                             </p>
-                            <p className="mt-1 text-xs text-slate-500">{machineAnalysis.data.rental?.billingType === "monthly" ? "当前生效月租合同" : "非月租合同不换算"}</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {machineAnalysis.data.rental?.billingType ===
+                              "monthly"
+                                ? "当前生效月租合同"
+                                : "非月租合同不换算"}
+                            </p>
                           </div>
                           <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
                             <p className="text-xs text-slate-500">日租费用</p>
                             <p className="mt-1 font-semibold text-[#203c48]">
-                              {machineAnalysis.data.rental?.dailyRate == null ? "—" : `¥${displayMoney(machineAnalysis.data.rental.dailyRate)} / 天`}
+                              {machineAnalysis.data.rental?.dailyRate == null
+                                ? "—"
+                                : `¥${displayMoney(machineAnalysis.data.rental.dailyRate)} / 天`}
                             </p>
-                            <p className="mt-1 text-xs text-slate-500">月租按当月自然日折算，仅供日成本查看</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              月租按当月自然日折算，仅供日成本查看
+                            </p>
                           </div>
                           <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
-                            <p className="text-xs text-slate-500">本期日作业加班费</p>
-                            <p className="mt-1 font-semibold text-[#8a4b25]">¥{displayMoney(machineAnalysis.data.overtime.operationAmount)}</p>
-                            <p className="mt-1 text-xs text-slate-500">{machineAnalysis.data.overtime.hours} 小时 × 当日记录费率</p>
+                            <p className="text-xs text-slate-500">
+                              本期日作业加班费
+                            </p>
+                            <p className="mt-1 font-semibold text-[#8a4b25]">
+                              ¥
+                              {displayMoney(
+                                machineAnalysis.data.overtime.operationAmount
+                              )}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {machineAnalysis.data.overtime.hours} 小时 ×
+                              当日记录费率
+                            </p>
                           </div>
                           <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
-                            <p className="text-xs text-slate-500">独立加班成本</p>
-                            <p className="mt-1 font-semibold text-[#8a4b25]">¥{displayMoney(machineAnalysis.data.overtime.costRecordAmount)}</p>
-                            <p className="mt-1 text-xs text-slate-500">成本台账单列，不与日作业加班重复相加</p>
+                            <p className="text-xs text-slate-500">
+                              独立加班成本
+                            </p>
+                            <p className="mt-1 font-semibold text-[#8a4b25]">
+                              ¥
+                              {displayMoney(
+                                machineAnalysis.data.overtime.costRecordAmount
+                              )}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              成本台账单列，不与日作业加班重复相加
+                            </p>
                           </div>
                         </div>
                         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -19872,7 +20298,8 @@ export default function AdminPage({
                 </div>
               ) : null}
               <p className="text-xs text-slate-500">
-                完整备份仅用于灾难恢复。下载前会再次校验超级管理员会话、文件清单、SHA-256 和大小，并记录审计；系统始终不提供在线恢复，恢复必须在非生产演练库中由服务器管理员执行。
+                完整备份仅用于灾难恢复。下载前会再次校验超级管理员会话、文件清单、SHA-256
+                和大小，并记录审计；系统始终不提供在线恢复，恢复必须在非生产演练库中由服务器管理员执行。
               </p>
             </>
           )}
@@ -19886,9 +20313,12 @@ export default function AdminPage({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认下载已验证的完整数据库备份？</AlertDialogTitle>
+            <AlertDialogTitle>
+              确认下载已验证的完整数据库备份？
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              该压缩包包含完整业务数据，仅可保存到受控加密介质，不得转发、上传至个人网盘或在非受控电脑长期留存。本次下载会重新校验超级管理员会话、备份清单、SHA-256 和文件大小，并记录审计；系统不提供在线恢复。
+              该压缩包包含完整业务数据，仅可保存到受控加密介质，不得转发、上传至个人网盘或在非受控电脑长期留存。本次下载会重新校验超级管理员会话、备份清单、SHA-256
+              和文件大小，并记录审计；系统不提供在线恢复。
               {fullBackupDownloadTarget
                 ? ` 当前备份：${fullBackupDownloadTarget.tableCount} 张表，约 ${(fullBackupDownloadTarget.compressedBytes / 1024 / 1024).toFixed(2)} MB。`
                 : ""}
@@ -19921,6 +20351,32 @@ export default function AdminPage({
         bodyHtml: `<h1>会计日结装订页</h1><p class="sub">项目：${escapePrintHtml(projectName)}　封存日期：${escapePrintHtml(financeClosingDate)}　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th>日结单号</th><th>版本</th><th>封存状态</th><th>收入（元）</th><th>开支（元）</th><th>发票数量</th><th>发票金额（元）</th><th>快照指纹</th></tr></thead><tbody><tr><td>${escapePrintHtml(closure.closingNo)}</td><td class="center">第 ${escapePrintHtml(closure.revision ?? 1)} 版</td><td class="center">${escapePrintHtml(getBusinessStatusLabel(closure.status))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalIncome))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalExpense))}</td><td class="right">${escapePrintHtml(closure.invoiceCount)}</td><td class="right">${escapePrintHtml(displayMoney(closure.invoiceAmount))}</td><td>${escapePrintHtml(closure.snapshotHash)}</td></tr><tr class="summary"><td colspan="3">本次封存快照汇总</td><td class="right">${escapePrintHtml(displayMoney(closure.totalIncome))}</td><td class="right">${escapePrintHtml(displayMoney(closure.totalExpense))}</td><td class="right">${escapePrintHtml(closure.invoiceCount)}</td><td class="right">${escapePrintHtml(displayMoney(closure.invoiceAmount))}</td><td>以服务端封存快照为准</td></tr></tbody></table><div class="footer"><span>制表：系统按当前封存快照生成</span><span>审核：________________</span></div>`,
       });
     };
+    const financePrintQuery =
+      financePrintPreview === "ledger"
+        ? financeSummary
+        : financePrintPreview === "invoices"
+          ? financeInvoices
+          : riskFinanceAnalysis;
+    const financePrintReady =
+      !financePrintPreview ||
+      (financePrintQuery.isSuccess && !financePrintQuery.isFetching);
+    const financePrintError = financePrintPreview && financePrintQuery.error;
+    const financeInvoiceRows = (financeInvoices.data?.invoices ?? []).filter(
+      invoice => {
+        if (
+          financeInvoiceFilter.status !== "all" &&
+          invoice.status !== financeInvoiceFilter.status
+        )
+          return false;
+        const keyword = financeInvoiceFilter.keyword.trim().toLowerCase();
+        return (
+          !keyword ||
+          `${invoice.invoiceNo} ${invoice.counterpartyName}`
+            .toLowerCase()
+            .includes(keyword)
+        );
+      }
+    );
     const allFinanceRecords = financeSummary.data?.records ?? [];
     const financeCategories = Array.from(
       new Set(allFinanceRecords.map(record => record.category).filter(Boolean))
@@ -19962,6 +20418,31 @@ export default function AdminPage({
           .includes(keyword)
       );
     });
+    const ledgerPage = Math.min(
+      financeLedgerPage,
+      Math.max(1, Math.ceil(financeLedgerRows.length / financeLedgerPageSize))
+    );
+    const financeLedgerPageRows = financeLedgerRows.slice(
+      (ledgerPage - 1) * financeLedgerPageSize,
+      ledgerPage * financeLedgerPageSize
+    );
+    const invoicePage = Math.min(
+      financeInvoicePage,
+      Math.max(1, Math.ceil(financeInvoiceRows.length / financeInvoicePageSize))
+    );
+    const financeInvoicePageRows = financeInvoiceRows.slice(
+      (invoicePage - 1) * financeInvoicePageSize,
+      invoicePage * financeInvoicePageSize
+    );
+    const expenseRows = expenseCategoryDetails.data?.records ?? [];
+    const expensePage = Math.min(
+      financeExpensePage,
+      Math.max(1, Math.ceil(expenseRows.length / financeExpensePageSize))
+    );
+    const expensePageRows = expenseRows.slice(
+      (expensePage - 1) * financeExpensePageSize,
+      expensePage * financeExpensePageSize
+    );
     const financeLedgerIncome = financeLedgerRows
       .filter(
         record =>
@@ -20043,7 +20524,7 @@ export default function AdminPage({
         }, new Map<string, { category: string; count: number; income: number; expense: number }>())
         .values()
     ).sort((a, b) => b.income + b.expense - (a.income + a.expense));
-    const validInvoiceRows = (financeInvoices.data?.invoices ?? []).filter(
+    const validInvoiceRows = financeInvoiceRows.filter(
       invoice => !["void", "red_flushed"].includes(invoice.status)
     );
     const invoiceDetailedSummary = {
@@ -20084,20 +20565,18 @@ export default function AdminPage({
         record.remarks ?? "—",
       ],
     }));
-    const invoicePrintRows = (financeInvoices.data?.invoices ?? []).map(
-      invoice => ({
-        id: String(invoice.id),
-        cells: [
-          invoice.invoiceNo,
-          invoice.counterpartyName,
-          displayDate(invoice.issuedAt),
-          getInvoiceTypeLabel(invoice.invoiceType),
-          `¥${displayMoney(invoice.amount)}`,
-          `¥${displayMoney(invoice.taxAmount)}`,
-          getBusinessStatusLabel(invoice.status),
-        ],
-      })
-    );
+    const invoicePrintRows = financeInvoiceRows.map(invoice => ({
+      id: String(invoice.id),
+      cells: [
+        invoice.invoiceNo,
+        invoice.counterpartyName,
+        displayDate(invoice.issuedAt),
+        getInvoiceTypeLabel(invoice.invoiceType),
+        `¥${displayMoney(invoice.amount)}`,
+        `¥${displayMoney(invoice.taxAmount)}`,
+        getBusinessStatusLabel(invoice.status),
+      ],
+    }));
     const invoiceTotalTax = (financeInvoices.data?.invoices ?? [])
       .filter(invoice => invoice.status !== "void")
       .reduce((sum, invoice) => sum + Number(invoice.taxAmount ?? 0), 0);
@@ -20164,7 +20643,7 @@ export default function AdminPage({
           <CardContent className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
             <Select
               value={financeProjectId}
-              onValueChange={setFinanceProjectId}
+              onValueChange={changeFinanceProject}
             >
               <SelectTrigger>
                 <SelectValue placeholder="选择项目" />
@@ -20174,7 +20653,8 @@ export default function AdminPage({
                   ?.filter(project => project.status !== "archived")
                   .map(project => (
                     <SelectItem key={project.id} value={String(project.id)}>
-                      {project.code} · {project.name}
+                      {project.code ? `${project.code} · ` : ""}
+                      {project.name}
                     </SelectItem>
                   ))}
               </SelectContent>
@@ -20182,32 +20662,136 @@ export default function AdminPage({
             <Input
               type="month"
               value={financePeriod}
-              onChange={event => setFinancePeriod(event.target.value)}
+              onChange={event => changeFinancePeriod(event.target.value)}
               aria-label="会计期间"
             />
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 onClick={() => {
-                  void financeSummary.refetch();
-                  void financeBusinessSummary.refetch();
-                  void financeInvoices.refetch();
-                  void riskFinanceAnalysis.refetch();
+                  void financeUtils.finance.invalidate();
+                  void financeUtils.settlementPayment.invalidate();
+                  void financeUtils.projectRisk.financeCategoryAnalysis.invalidate();
+                  if (
+                    financeTab === "overview" ||
+                    financeTab === "ledger" ||
+                    isDiesel
+                  )
+                    void financeSummary.refetch();
+                  if (financeTab === "overview")
+                    void financeBusinessSummary.refetch();
+                  if (
+                    financeTab === "overview" ||
+                    financeTab === "invoices" ||
+                    isDiesel
+                  )
+                    void financeInvoices.refetch();
+                  if (financeTab === "overview" || financeTab === "costs")
+                    void riskFinanceAnalysis.refetch();
+                  if (
+                    financeTab === "closing" &&
+                    financeClosingView === "daily"
+                  )
+                    void dailyAccountingReport.refetch();
                 }}
               >
                 刷新统计
               </Button>
               {!isDiesel ? (
-                <Button
-                  variant="outline"
-                  onClick={() => setPaymentBillPrintOpen(true)}
-                >
-                  支付账号账单打印
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" disabled={!financeProjectId}>
+                      <Printer className="mr-1.5 size-4" />
+                      报表打印
+                      <ChevronDown className="ml-1 size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuLabel>
+                      当前项目与期间 · 全部筛选结果
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem
+                      onSelect={() => setFinancePrintPreview("ledger")}
+                    >
+                      资金总账明细与汇总
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => setFinancePrintPreview("invoices")}
+                    >
+                      发票台账明细与汇总
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => setFinancePrintPreview("categories")}
+                    >
+                      成本分类明细与汇总
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => setFinancePrintPreview("subcategories")}
+                    >
+                      成本小类目明细与汇总
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() => setPaymentBillPrintOpen(true)}
+                    >
+                      支付账号账单打印
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setFinanceTab("settlements");
+                        setFinanceSettlementView("records");
+                      }}
+                    >
+                      付款凭证批量打印
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setFinanceTab("closing");
+                        setFinanceClosingView("reconciliation");
+                      }}
+                    >
+                      月度内部对账与导出
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setFinanceTab("closing");
+                        setFinanceClosingView("daily");
+                      }}
+                    >
+                      日结装订页打印
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
             </div>
           </CardContent>
         </Card>
+        {!isDiesel ? (
+          <>
+            <FinanceWorkspaceNavigation
+              value={financeTab}
+              onValueChange={setFinanceTab}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#d8e3e0] bg-[#f8fbf9] px-3 py-2 text-xs text-slate-600">
+              <span>
+                当前项目：
+                {projects.data?.find(
+                  project => String(project.id) === financeProjectId
+                )?.name || "未选择"}{" "}
+                · 会计月份：{financePeriod}
+              </span>
+              <span>
+                {financeTab === "settlements"
+                  ? "结算余额按独立截至日；付款记录按实际付款月份"
+                  : financeTab === "closing"
+                    ? "日结按独立封存日期；月度对账按实际付款月份"
+                    : financeTab === "costs"
+                      ? "成本按会计月份；明细默认当天，可切本月"
+                      : "统计、打印与导出遵循当前栏目筛选"}
+              </span>
+            </div>
+          </>
+        ) : null}
         {!financeProjectId ? (
           <EmptyState
             text={
@@ -20218,881 +20802,1118 @@ export default function AdminPage({
           />
         ) : (
           <>
-            {!isDiesel ? (
-              <Card className="border-[#d8e3e0] bg-[#fbfdfc] shadow-sm">
-                <CardHeader>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    财务管理 · 真实业务台账
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    本期业务数据总览
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    统一读取采购、柴油、工资、机械、维修、运输和资金总账。资金总账与各业务台账分层展示：不把同一笔采购结算、机械油料等重复相加，避免生成错误总额。
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {financeBusinessSummary.isLoading ? (
-                    <p className="text-sm text-slate-500">
-                      正在核对本期各业务台账…
-                    </p>
-                  ) : (
-                    <>
-                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
-                          <p className="text-xs text-slate-500">
-                            已归集业务成本
-                          </p>
-                          <p className="mt-1 text-xl font-semibold text-[#203c48]">
-                            ¥
-                            {displayMoney(
-                              riskFinanceAnalysis.data?.expenseAmount ?? 0
-                            )}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            按业务台账去重后的已登记成本
-                          </p>
-                        </div>
-                        <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
-                          <p className="text-xs text-slate-500">本期业务来源</p>
-                          <p className="mt-1 text-xl font-semibold text-[#203c48]">
-                            {
-                              (
-                                financeBusinessSummary.data?.sources ?? []
-                              ).filter(item => item.recordCount > 0).length
-                            }{" "}
-                            类
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            仅统计当前项目、当前会计期间
-                          </p>
-                        </div>
-                        <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
-                          <p className="text-xs text-amber-800">
-                            待核验/待结算运输
-                          </p>
-                          <p className="mt-1 text-xl font-semibold text-amber-950">
-                            {financeBusinessSummary.data?.pendingTransport
-                              .count ?? 0}{" "}
-                            趟
-                          </p>
-                          <p className="mt-1 text-xs text-amber-800">
-                            应付预估 ¥
-                            {displayMoney(
-                              financeBusinessSummary.data?.pendingTransport
-                                .amount ?? 0
-                            )}
-                            ；未进入成本或现金流
-                          </p>
-                        </div>
-                        <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
-                          <p className="text-xs text-slate-500">
-                            已审核运输结算
-                          </p>
-                          <p className="mt-1 text-xl font-semibold text-[#203c48]">
-                            ¥
-                            {displayMoney(
-                              financeBusinessSummary.data?.settledTransport
-                                .amount ?? 0
-                            )}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {financeBusinessSummary.data?.settledTransport
-                              .count ?? 0}{" "}
-                            趟已办理运输结算
-                          </p>
-                        </div>
-                      </div>
-                      <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
-                        <Table className="min-w-[940px] text-xs">
-                          <TableHeader className="bg-[#edf1ed]">
-                            <TableRow>
-                              <TableHead>业务台账</TableHead>
-                              <TableHead>本期记录</TableHead>
-                              <TableHead>有效/已审核</TableHead>
-                              <TableHead className="text-right">
-                                本期金额
-                              </TableHead>
-                              <TableHead>当前状态</TableHead>
-                              <TableHead>财务归集规则</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {(financeBusinessSummary.data?.sources ?? []).map(
-                              item => (
-                                <TableRow key={item.code}>
-                                  <TableCell className="font-medium text-[#203c48]">
-                                    {item.label}
-                                  </TableCell>
-                                  <TableCell>{item.recordCount} 笔</TableCell>
-                                  <TableCell>
-                                    {item.effectiveCount} 笔
-                                  </TableCell>
-                                  <TableCell className="text-right font-medium">
-                                    ¥{displayMoney(item.amount)}
-                                  </TableCell>
-                                  <TableCell>{item.statusSummary}</TableCell>
-                                  <TableCell className="whitespace-normal text-slate-600">
-                                    {item.accountingLink}
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            )}
-                          </TableBody>
-                        </Table>
-                      </div>
-                      {!(
-                        (financeBusinessSummary.data?.sources ?? []).some(
-                          item => item.recordCount > 0
-                        ) ||
-                        (financeBusinessSummary.data?.pendingTransport.count ??
-                          0) > 0
-                      ) ? (
-                        <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                          当前会计期间未找到已登记业务记录。请通过上方月份切换至已有业务的期间，或先在对应业务模块完成登记、审核和结算。
-                        </p>
-                      ) : null}
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            ) : null}
-            {!isDiesel ? (
-              <SettlementPaymentFinancialBoard
-                projectId={Number(financeProjectId)}
-                projectLabel={
-                  projects.data?.find(project => String(project.id) === financeProjectId)
-                    ? `${projects.data.find(project => String(project.id) === financeProjectId)?.code} · ${projects.data.find(project => String(project.id) === financeProjectId)?.name}`
-                    : undefined
-                }
-              />
-            ) : null}
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="确认收入（资金总账）"
-                value={financeSummary.data?.incomeAmount}
-                description="不含重复回款口径"
-                icon={BarChart3}
-              />
-              <MetricCard
-                title="项目开支（资金总账）"
-                value={financeSummary.data?.expenseAmount}
-                description="已登记资金支出流水"
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="已开票金额"
-                value={financeInvoices.data?.summary.totalAmount}
-                description="不含作废与红冲"
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="待认证发票"
-                value={financeInvoices.data?.summary.pendingAmount}
-                description="须会计复核"
-                icon={ScrollText}
-              />
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="应收余额"
-                value={financeSummary.data?.receivableAmount}
-                description="已确认收入待回款"
-                icon={BarChart3}
-              />
-              <MetricCard
-                title="应付余额"
-                value={financeSummary.data?.payableAmount}
-                description="已登记开支待结清"
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="本期现金净流"
-                value={financeSummary.data?.netCashFlowAmount}
-                description={`流入 ¥${displayMoney(financeSummary.data?.cashInflowAmount ?? 0)} · 流出 ¥${displayMoney(financeSummary.data?.cashOutflowAmount ?? 0)}`}
-                icon={BarChart3}
-              />
-              <MetricCard
-                title="本期经营利润（资金总账）"
-                value={financeSummary.data?.profitAmount}
-                description="确认收入减已登记资金支出"
-                icon={ScrollText}
-              />
-            </div>
-            {!isDiesel ? (
-              <Card className="border-[#d8e3e0] bg-[#fbfdfc] shadow-sm">
-                <CardHeader>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    财务管理 · 详细汇总
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    各类账本明细与汇总信息
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    以下数据与当前项目、会计期间和资金总账明细保持同一服务端口径；金额不把发票、采购应付和实际结算重复相加。
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    {[
-                      {
-                        label: "资金流水",
-                        count: financeLedgerRows.length,
-                        amount: financeLedgerIncome + financeLedgerExpense,
-                        note: `收入 ¥${displayMoney(financeLedgerIncome)} · 支出 ¥${displayMoney(financeLedgerExpense)}`,
-                      },
-                      {
-                        label: "未结清/部分结清",
-                        count: financeLedgerDetailedSummary
-                          .filter(
-                            item =>
-                              ["unpaid", "partial"].includes(item.status) &&
-                              item.status !== "void"
-                          )
-                          .reduce((sum, item) => sum + item.count, 0),
-                        amount: financeLedgerDetailedSummary
-                          .filter(item =>
-                            ["unpaid", "partial"].includes(item.status)
-                          )
-                          .reduce((sum, item) => sum + item.amount, 0),
-                        note: `应收 ¥${displayMoney(financeSummary.data?.receivableAmount ?? 0)} · 应付 ¥${displayMoney(financeSummary.data?.payableAmount ?? 0)}`,
-                      },
-                      {
-                        label: "发票台账",
-                        count: invoiceDetailedSummary.count,
-                        amount: invoiceDetailedSummary.amount,
-                        note: `税额 ¥${displayMoney(invoiceDetailedSummary.tax)} · 待认证 ¥${displayMoney(invoiceDetailedSummary.pending)}`,
-                      },
-                      {
-                        label: "成本分类",
-                        count: financeCategorySummary.length,
-                        amount:
-                          riskFinanceAnalysis.data?.expenseAmount ??
-                          financeSummary.data?.expenseAmount ??
-                          0,
-                        note: `${financeCategoryRecordCount} 笔业务 · 按类别归集`,
-                      },
-                    ].map(item => (
-                      <div
-                        key={item.label}
-                        className="rounded-xl border border-[#d8e3e0] bg-white p-3"
-                      >
-                        <p className="text-xs text-slate-500">{item.label}</p>
-                        <p className="mt-1 text-xl font-semibold text-[#203c48]">
-                          ¥{displayMoney(item.amount)}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {item.count} 项 · {item.note}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
-                      <div className="border-b border-[#e1e8e4] px-3 py-2 text-sm font-semibold text-[#203c48]">
-                        资金流水按结算状态
-                      </div>
-                      <Table className="min-w-[560px] text-xs">
-                        <TableHeader className="bg-[#edf1ed]">
-                          <TableRow>
-                            <TableHead>收支</TableHead>
-                            <TableHead>结算状态</TableHead>
-                            <TableHead>笔数</TableHead>
-                            <TableHead className="text-right">金额</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {financeLedgerDetailedSummary
-                            .filter(item => item.count > 0)
-                            .map(item => (
-                              <TableRow
-                                key={`${item.direction}-${item.status}`}
-                              >
-                                <TableCell>
-                                  {item.direction === "income"
-                                    ? "收入"
-                                    : "支出"}
-                                </TableCell>
-                                <TableCell>
-                                  {financeSettlementStatusDisplay(item.status)}
-                                </TableCell>
-                                <TableCell>{item.count}</TableCell>
-                                <TableCell className="text-right font-medium">
-                                  ¥{displayMoney(item.amount)}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          {financeLedgerDetailedSummary.every(
-                            item => item.count === 0
-                          ) ? (
-                            <TableRow>
-                              <TableCell
-                                colSpan={4}
-                                className="py-6 text-center text-slate-500"
-                              >
-                                当前期间暂无资金流水。
-                              </TableCell>
-                            </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
-                      <div className="border-b border-[#e1e8e4] px-3 py-2 text-sm font-semibold text-[#203c48]">
-                        资金细项分类汇总
-                      </div>
-                      <Table className="min-w-[560px] text-xs">
-                        <TableHeader className="bg-[#edf1ed]">
-                          <TableRow>
-                            <TableHead>资金细项</TableHead>
-                            <TableHead>笔数</TableHead>
-                            <TableHead className="text-right">收入</TableHead>
-                            <TableHead className="text-right">支出</TableHead>
-                            <TableHead className="text-right">合计</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {financeCategorySummary.slice(0, 12).map(item => (
-                            <TableRow key={item.category}>
-                              <TableCell className="font-medium">
-                                {item.category}
-                              </TableCell>
-                              <TableCell>{item.count}</TableCell>
-                              <TableCell className="text-right text-emerald-700">
-                                ¥{displayMoney(item.income)}
-                              </TableCell>
-                              <TableCell className="text-right text-rose-700">
-                                ¥{displayMoney(item.expense)}
-                              </TableCell>
-                              <TableCell className="text-right font-medium">
-                                ¥{displayMoney(item.income + item.expense)}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                          {!financeCategorySummary.length ? (
-                            <TableRow>
-                              <TableCell
-                                colSpan={5}
-                                className="py-6 text-center text-slate-500"
-                              >
-                                当前期间暂无资金细项。
-                              </TableCell>
-                            </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                      {financeCategorySummary.length > 12 ? (
-                        <p className="px-3 py-2 text-xs text-slate-500">
-                          已显示金额最高的12个细项，完整明细请使用下方筛选、导出和打印。
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-            <Card className="border-[#d8e3e0] shadow-sm">
-              <CardHeader className="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    资金总账 · 审计口径
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    全部收入、支出、应收应付与现金流明细
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    本表只汇总已形成的真实财务流水；采购、工资、柴油、运输等业务成本在下方“成本类别分析”按权威来源归集，避免同一笔业务重复累计。可按大类、细项、收付状态、业务来源及关键词组合筛选。
-                  </CardDescription>
-                </div>
-                <CurrentFilterPrintActions
-                  disabled={!financeLedgerRows.length}
-                  onPrint={() => setFinancePrintPreview("ledger")}
-                  onExport={() =>
-                    downloadCsvFile(
-                      `项目资金总账-${financePeriod}.csv`,
-                      [
-                        "单号",
-                        "发生时间",
-                        "收支方向",
-                        "资金大类/细项",
-                        "业务来源",
-                        "结算状态",
-                        "金额",
-                        "说明",
-                      ],
-                      financeLedgerRows.map(record => [
-                        record.recordNo,
-                        displayDate(record.occurredAt),
-                        record.direction === "income" ? "收入" : "支出",
-                        record.category,
-                        financeSourceTypeDisplay(record.sourceType),
-                        financeSettlementStatusDisplay(record.settlementStatus),
-                        Number(record.amount),
-                        record.remarks ?? "",
-                      ])
-                    )
-                  }
-                  exportLabel="导出当前明细"
+            <FinanceRetainedPanel
+              active={!isDiesel && financeTab === "overview"}
+              label="财务总览"
+            >
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <MetricCard
+                  title="确认收入（资金总账）"
+                  value={financeSummary.data?.incomeAmount}
+                  description="不含重复回款口径"
+                  icon={BarChart3}
                 />
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                  <Select
-                    value={financeLedgerFilter.direction}
-                    onValueChange={direction =>
-                      setFinanceLedgerFilter(current => ({
-                        ...current,
-                        direction,
-                      }))
-                    }
-                  >
-                    <SelectTrigger aria-label="资金收支方向">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部收支方向</SelectItem>
-                      <SelectItem value="income">仅收入</SelectItem>
-                      <SelectItem value="expense">仅支出</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={financeLedgerFilter.category}
-                    onValueChange={category =>
-                      setFinanceLedgerFilter(current => ({
-                        ...current,
-                        category,
-                      }))
-                    }
-                  >
-                    <SelectTrigger aria-label="财务细项">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部资金细项</SelectItem>
-                      {financeCategories.map(category => (
-                        <SelectItem key={category} value={category}>
-                          {category}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={financeLedgerFilter.settlementStatus}
-                    onValueChange={settlementStatus =>
-                      setFinanceLedgerFilter(current => ({
-                        ...current,
-                        settlementStatus,
-                      }))
-                    }
-                  >
-                    <SelectTrigger aria-label="资金结算状态">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部结算状态</SelectItem>
-                      <SelectItem value="unpaid">未结清</SelectItem>
-                      <SelectItem value="partial">部分结清</SelectItem>
-                      <SelectItem value="paid">已结清</SelectItem>
-                      <SelectItem value="void">已作废</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={financeLedgerFilter.sourceType}
-                    onValueChange={sourceType =>
-                      setFinanceLedgerFilter(current => ({
-                        ...current,
-                        sourceType,
-                      }))
-                    }
-                  >
-                    <SelectTrigger aria-label="财务业务来源">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部业务来源</SelectItem>
-                      {financeSourceTypes.map(source => (
-                        <SelectItem key={source} value={source}>
-                          {financeSourceTypeDisplay(source)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    value={financeLedgerFilter.keyword}
-                    aria-label="财务关键词筛选"
-                    placeholder="单号、类别、说明"
-                    onChange={event =>
-                      setFinanceLedgerFilter(current => ({
-                        ...current,
-                        keyword: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e1e8e4] bg-[#f8fbf8] px-4 py-3 text-sm">
-                  <span>
-                    当前筛选：{financeLedgerRows.length} 笔 · 收入{" "}
-                    <strong>¥{displayMoney(financeLedgerIncome)}</strong> · 支出{" "}
-                    <strong>¥{displayMoney(financeLedgerExpense)}</strong> ·
-                    净额{" "}
-                    <strong>
-                      ¥
-                      {displayMoney(financeLedgerIncome - financeLedgerExpense)}
-                    </strong>
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() =>
-                      setFinanceLedgerFilter({
-                        direction: "all",
-                        category: "all",
-                        settlementStatus: "all",
-                        sourceType: "all",
-                        keyword: "",
-                      })
-                    }
-                  >
-                    清除筛选
-                  </Button>
-                </div>
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1060px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow>
-                        <TableHead>单号 / 时间</TableHead>
-                        <TableHead>收支</TableHead>
-                        <TableHead>资金细项</TableHead>
-                        <TableHead>业务来源</TableHead>
-                        <TableHead>结算状态</TableHead>
-                        <TableHead>金额</TableHead>
-                        <TableHead>说明</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {financeLedgerRows.length ? (
-                        financeLedgerRows.map(record => (
-                          <TableRow key={record.id}>
-                            <TableCell>
-                              <p className="font-medium text-[#203c48]">
-                                {record.recordNo}
+                <MetricCard
+                  title="项目开支（资金总账）"
+                  value={financeSummary.data?.expenseAmount}
+                  description="已登记资金支出流水"
+                  icon={ScrollText}
+                />
+                <MetricCard
+                  title="已开票金额"
+                  value={financeInvoices.data?.summary.totalAmount}
+                  description="不含作废与红冲"
+                  icon={ScrollText}
+                />
+                <MetricCard
+                  title="待认证发票"
+                  value={financeInvoices.data?.summary.pendingAmount}
+                  description="须会计复核"
+                  icon={ScrollText}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <MetricCard
+                  title="应收余额"
+                  value={financeSummary.data?.receivableAmount}
+                  description="已确认收入待回款"
+                  icon={BarChart3}
+                />
+                <MetricCard
+                  title="应付余额"
+                  value={financeSummary.data?.payableAmount}
+                  description="已登记开支待结清"
+                  icon={ScrollText}
+                />
+                <MetricCard
+                  title="本期现金净流"
+                  value={financeSummary.data?.netCashFlowAmount}
+                  description={`流入 ¥${displayMoney(financeSummary.data?.cashInflowAmount ?? 0)} · 流出 ¥${displayMoney(financeSummary.data?.cashOutflowAmount ?? 0)}`}
+                  icon={BarChart3}
+                />
+                <MetricCard
+                  title="本期收支差额（资金总账）"
+                  value={financeSummary.data?.profitAmount}
+                  description="确认收入减已登记资金支出"
+                  icon={ScrollText}
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <Button
+                  variant="outline"
+                  onClick={() => setFinanceTab("settlements")}
+                >
+                  查看结算待办
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setFinanceTab("costs")}
+                >
+                  查看成本明细
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setFinanceTab("invoices")}
+                >
+                  查看发票台账
+                </Button>
+              </div>
+              <details className="rounded-xl border border-[#d8e3e0] bg-white p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-[#203c48]">
+                  展开业务来源与运输待核验摘要
+                </summary>
+                <div className="mt-3">
+                  {!isDiesel ? (
+                    <Card className="border-[#d8e3e0] bg-[#fbfdfc] shadow-sm">
+                      <CardHeader>
+                        <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                          财务管理 · 真实业务台账
+                        </p>
+                        <CardTitle className="mt-1 text-base">
+                          本期业务数据总览
+                        </CardTitle>
+                        <CardDescription className="mt-1">
+                          统一读取采购、柴油、工资、机械、维修、运输和资金总账。资金总账与各业务台账分层展示：不把同一笔采购结算、机械油料等重复相加，避免生成错误总额。
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {financeBusinessSummary.isLoading ? (
+                          <p className="text-sm text-slate-500">
+                            正在核对本期各业务台账…
+                          </p>
+                        ) : (
+                          <>
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                              <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
+                                <p className="text-xs text-slate-500">
+                                  已归集业务成本
+                                </p>
+                                <p className="mt-1 text-xl font-semibold text-[#203c48]">
+                                  ¥
+                                  {displayMoney(
+                                    riskFinanceAnalysis.data?.expenseAmount ?? 0
+                                  )}
+                                </p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  按业务台账去重后的已登记成本
+                                </p>
+                              </div>
+                              <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
+                                <p className="text-xs text-slate-500">
+                                  本期业务来源
+                                </p>
+                                <p className="mt-1 text-xl font-semibold text-[#203c48]">
+                                  {
+                                    (
+                                      financeBusinessSummary.data?.sources ?? []
+                                    ).filter(item => item.recordCount > 0)
+                                      .length
+                                  }{" "}
+                                  类
+                                </p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  仅统计当前项目、当前会计期间
+                                </p>
+                              </div>
+                              <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+                                <p className="text-xs text-amber-800">
+                                  待核验/待结算运输
+                                </p>
+                                <p className="mt-1 text-xl font-semibold text-amber-950">
+                                  {financeBusinessSummary.data?.pendingTransport
+                                    .count ?? 0}{" "}
+                                  趟
+                                </p>
+                                <p className="mt-1 text-xs text-amber-800">
+                                  应付预估 ¥
+                                  {displayMoney(
+                                    financeBusinessSummary.data
+                                      ?.pendingTransport.amount ?? 0
+                                  )}
+                                  ；未进入成本或现金流
+                                </p>
+                              </div>
+                              <div className="rounded-xl border border-[#d8e3e0] bg-white p-3">
+                                <p className="text-xs text-slate-500">
+                                  已审核运输结算
+                                </p>
+                                <p className="mt-1 text-xl font-semibold text-[#203c48]">
+                                  ¥
+                                  {displayMoney(
+                                    financeBusinessSummary.data
+                                      ?.settledTransport.amount ?? 0
+                                  )}
+                                </p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {financeBusinessSummary.data?.settledTransport
+                                    .count ?? 0}{" "}
+                                  趟已办理运输结算
+                                </p>
+                              </div>
+                            </div>
+                            <details className="rounded-lg border border-[#e1e8e4] bg-white p-3">
+                              <summary className="cursor-pointer text-xs font-semibold text-[#203c48]">
+                                展开本期业务来源摘要
+                              </summary>
+                              <div className="mt-3">
+                                {" "}
+                                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
+                                  <Table className="min-w-[940px] text-xs">
+                                    <TableHeader className="bg-[#edf1ed]">
+                                      <TableRow>
+                                        <TableHead>业务台账</TableHead>
+                                        <TableHead>本期记录</TableHead>
+                                        <TableHead>有效/已审核</TableHead>
+                                        <TableHead className="text-right">
+                                          本期金额
+                                        </TableHead>
+                                        <TableHead>当前状态</TableHead>
+                                        <TableHead>财务归集规则</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {(
+                                        financeBusinessSummary.data?.sources ??
+                                        []
+                                      ).map(item => (
+                                        <TableRow key={item.code}>
+                                          <TableCell className="font-medium text-[#203c48]">
+                                            {item.label}
+                                          </TableCell>
+                                          <TableCell>
+                                            {item.recordCount} 笔
+                                          </TableCell>
+                                          <TableCell>
+                                            {item.effectiveCount} 笔
+                                          </TableCell>
+                                          <TableCell className="text-right font-medium">
+                                            ¥{displayMoney(item.amount)}
+                                          </TableCell>
+                                          <TableCell>
+                                            {item.statusSummary}
+                                          </TableCell>
+                                          <TableCell className="whitespace-normal text-slate-600">
+                                            {item.accountingLink}
+                                          </TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </div>
+                            </details>{" "}
+                            {!(
+                              (financeBusinessSummary.data?.sources ?? []).some(
+                                item => item.recordCount > 0
+                              ) ||
+                              (financeBusinessSummary.data?.pendingTransport
+                                .count ?? 0) > 0
+                            ) ? (
+                              <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                                当前会计期间未找到已登记业务记录。请通过上方月份切换至已有业务的期间，或先在对应业务模块完成登记、审核和结算。
                               </p>
-                              <p className="mt-1 text-[11px] text-slate-500">
-                                {displayDate(record.occurredAt)}
-                              </p>
-                            </TableCell>
-                            <TableCell
-                              className={
-                                record.direction === "income"
-                                  ? "font-medium text-emerald-700"
-                                  : "font-medium text-rose-700"
-                              }
-                            >
-                              {record.direction === "income" ? "收入" : "支出"}
-                            </TableCell>
-                            <TableCell>{record.category}</TableCell>
-                            <TableCell>
-                              {financeSourceTypeDisplay(record.sourceType)}
-                            </TableCell>
-                            <TableCell>
-                              <BusinessStatusBadge
-                                status={record.settlementStatus}
-                              />
-                            </TableCell>
-                            <TableCell className="font-medium">
-                              ¥{displayMoney(record.amount)}
-                            </TableCell>
-                            <TableCell className="max-w-[280px] whitespace-normal text-slate-600">
-                              {record.remarks || "—"}
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={7}
-                            className="py-10 text-center text-slate-500"
-                          >
-                            当前筛选范围暂无已登记资金流水。可检查项目、期间和筛选条件，或由财务按权限登记真实流水。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
+                            ) : null}
+                          </>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ) : null}
                 </div>
-              </CardContent>
-            </Card>
-            {!isDiesel ? (
+              </details>
+            </FinanceRetainedPanel>
+            <FinanceRetainedPanel
+              active={isDiesel || financeTab === "ledger"}
+              label="收支账本"
+            >
               <Card className="border-[#d8e3e0] shadow-sm">
-                <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+                <CardHeader className="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-start lg:justify-between">
                   <div>
                     <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                      业财分析 · 小类目
+                      资金总账 · 审计口径
                     </p>
                     <CardTitle className="mt-1 text-base">
-                      小类目成本占比与导出
+                      全部收入、支出、应收应付与现金流明细
                     </CardTitle>
                     <CardDescription className="mt-1">
-                      在一级成本口径内细分生活、工资、油料、维修等已登记明细；占比均以当前项目、当前会计期间的真实项目开支为分母。采购订单应付与实际现金结算继续分开处理，不在本表重复累计。
+                      本表只汇总已形成的真实财务流水；采购、工资、柴油、运输等业务成本在下方“成本类别分析”按权威来源归集，避免同一笔业务重复累计。可按大类、细项、收付状态、业务来源及关键词组合筛选。
                     </CardDescription>
                   </div>
                   <CurrentFilterPrintActions
-                    disabled={!riskFinanceAnalysis.data?.subcategories.length}
-                    onPrint={() => setFinancePrintPreview("subcategories")}
+                    disabled={!financeLedgerRows.length}
+                    onPrint={() => setFinancePrintPreview("ledger")}
                     onExport={() =>
                       downloadCsvFile(
-                        `财务小类目汇总-${financePeriod}.csv`,
+                        `项目资金总账-${financePeriod}.csv`,
                         [
-                          "一级类别",
-                          "小类目",
+                          "单号",
+                          "发生时间",
+                          "收支方向",
+                          "资金大类/细项",
+                          "业务来源",
+                          "结算状态",
                           "金额",
-                          "占项目开支",
-                          "业务笔数",
-                          "权威来源",
+                          "说明",
                         ],
-                        (riskFinanceAnalysis.data?.subcategories ?? []).map(
-                          item => [
-                            expenseCategoryDisplay(item.parentCode),
-                            item.label,
-                            item.amount,
-                            `${item.percentage}%`,
-                            item.recordCount,
-                            item.sources.join("、"),
-                          ]
-                        )
+                        financeLedgerRows.map(record => [
+                          record.recordNo,
+                          displayDate(record.occurredAt),
+                          record.direction === "income" ? "收入" : "支出",
+                          record.category,
+                          financeSourceTypeDisplay(record.sourceType),
+                          financeSettlementStatusDisplay(
+                            record.settlementStatus
+                          ),
+                          Number(record.amount),
+                          record.remarks ?? "",
+                        ])
                       )
                     }
-                    printLabel="打印当前小类目明细与汇总"
-                    exportLabel="导出小类目汇总"
+                    exportLabel="导出当前明细"
                   />
                 </CardHeader>
-                <CardContent>
-                  {riskFinanceAnalysis.isLoading ? (
-                    <p className="text-sm text-slate-500">
-                      正在汇总小类目成本…
-                    </p>
-                  ) : riskFinanceAnalysis.data?.subcategories.length ? (
-                    <div className="space-y-3">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3">
-                          <p className="text-xs text-slate-500">
-                            生活开支占项目开支
-                          </p>
-                          <p className="mt-1 text-lg font-semibold text-[#203c48]">
-                            {riskFinanceAnalysis.data.categories.find(
-                              item => item.code === "living"
-                            )?.percentage ?? 0}
-                            %
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            ¥{" "}
-                            {displayMoney(
-                              riskFinanceAnalysis.data.categories.find(
-                                item => item.code === "living"
-                              )?.amount ?? 0
-                            )}
-                          </p>
-                        </div>
-                        <div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3">
-                          <p className="text-xs text-slate-500">
-                            工资劳务占项目开支
-                          </p>
-                          <p className="mt-1 text-lg font-semibold text-[#203c48]">
-                            {riskFinanceAnalysis.data.categories.find(
-                              item => item.code === "payroll"
-                            )?.percentage ?? 0}
-                            %
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            ¥{" "}
-                            {displayMoney(
-                              riskFinanceAnalysis.data.categories.find(
-                                item => item.code === "payroll"
-                              )?.amount ?? 0
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                        <Table className="min-w-[820px] text-xs">
-                          <TableHeader className="bg-[#edf1ed]">
-                            <TableRow>
-                              <TableHead>一级类别</TableHead>
-                              <TableHead>小类目</TableHead>
-                              <TableHead>金额</TableHead>
-                              <TableHead>占项目开支</TableHead>
-                              <TableHead>业务笔数</TableHead>
-                              <TableHead>权威来源</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {riskFinanceAnalysis.data.subcategories.map(
-                              item => (
-                                <TableRow key={item.code}>
-                                  <TableCell>
-                                    {expenseCategoryDisplay(item.parentCode)}
-                                  </TableCell>
-                                  <TableCell className="font-medium text-[#203c48]">
-                                    {item.label}
-                                  </TableCell>
-                                  <TableCell>
-                                    ¥{displayMoney(item.amount)}
-                                  </TableCell>
-                                  <TableCell>{item.percentage}%</TableCell>
-                                  <TableCell>{item.recordCount}</TableCell>
-                                  <TableCell className="text-slate-600">
-                                    {item.sources.join("、")}
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            )}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      当前期间暂无可导出的已登记小类目成本。
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            ) : null}
-            {!isDiesel ? (
-              <Card className="border-[#d8e3e0] shadow-sm">
-                <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                  <div>
-                    <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                      业财分析 · 权威业务来源
-                    </p>
-                    <CardTitle className="mt-1 text-base">
-                      按成本类别分析汇总
-                    </CardTitle>
-                    <CardDescription className="mt-1">
-                      完整展示生活开支、柴油油料、工资劳务、机械成本、车辆与运输、采购材料及其他开支。点击“查看明细”可按来源、状态、日期和关键词下钻真实业务单据；已关联柴油、采购结算与采购订单仍按防重复规则处理。
-                    </CardDescription>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setExpenseCategoryDetailFilter({
-                          category: "all",
-                          source: "all",
-                          status: "all",
-                          dateFrom: toLocalDateInput(),
-                          dateTo: toLocalDateInput(),
-                          keyword: "",
-                        });
-                        setExpenseCategoryDetailOpen(true);
-                      }}
-                    >
-                      查看全部明细
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!riskFinanceAnalysis.data?.categories.length}
-                      onClick={() =>
-                        downloadCsvFile(
-                          `财务分类汇总-${financePeriod}.csv`,
-                          ["成本类别", "金额", "占比", "笔数", "权威来源"],
-                          (riskFinanceAnalysis.data?.categories ?? []).map(
-                            item => [
-                              item.label,
-                              item.amount,
-                              `${item.percentage}%`,
-                              item.recordCount,
-                              item.sources.join("、") || "—",
-                            ]
-                          )
-                        )
+                <CardContent className="space-y-4">
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                    <Select
+                      value={financeLedgerFilter.direction}
+                      onValueChange={direction =>
+                        setFinanceLedgerFilter(current => ({
+                          ...current,
+                          direction,
+                        }))
                       }
                     >
-                      导出分类汇总
+                      <SelectTrigger aria-label="资金收支方向">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部收支方向</SelectItem>
+                        <SelectItem value="income">仅收入</SelectItem>
+                        <SelectItem value="expense">仅支出</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={financeLedgerFilter.category}
+                      onValueChange={category =>
+                        setFinanceLedgerFilter(current => ({
+                          ...current,
+                          category,
+                        }))
+                      }
+                    >
+                      <SelectTrigger aria-label="财务细项">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部资金细项</SelectItem>
+                        {financeCategories.map(category => (
+                          <SelectItem key={category} value={category}>
+                            {category}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={financeLedgerFilter.settlementStatus}
+                      onValueChange={settlementStatus =>
+                        setFinanceLedgerFilter(current => ({
+                          ...current,
+                          settlementStatus,
+                        }))
+                      }
+                    >
+                      <SelectTrigger aria-label="资金结算状态">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部结算状态</SelectItem>
+                        <SelectItem value="unpaid">未结清</SelectItem>
+                        <SelectItem value="partial">部分结清</SelectItem>
+                        <SelectItem value="paid">已结清</SelectItem>
+                        <SelectItem value="void">已作废</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={financeLedgerFilter.sourceType}
+                      onValueChange={sourceType =>
+                        setFinanceLedgerFilter(current => ({
+                          ...current,
+                          sourceType,
+                        }))
+                      }
+                    >
+                      <SelectTrigger aria-label="财务业务来源">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部业务来源</SelectItem>
+                        {financeSourceTypes.map(source => (
+                          <SelectItem key={source} value={source}>
+                            {financeSourceTypeDisplay(source)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={financeLedgerFilter.keyword}
+                      aria-label="财务关键词筛选"
+                      placeholder="单号、类别、说明"
+                      onChange={event =>
+                        setFinanceLedgerFilter(current => ({
+                          ...current,
+                          keyword: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e1e8e4] bg-[#f8fbf8] px-4 py-3 text-sm">
+                    <span>
+                      当前筛选：{financeLedgerRows.length} 笔 · 收入{" "}
+                      <strong>¥{displayMoney(financeLedgerIncome)}</strong> ·
+                      支出{" "}
+                      <strong>¥{displayMoney(financeLedgerExpense)}</strong> ·
+                      净额{" "}
+                      <strong>
+                        ¥
+                        {displayMoney(
+                          financeLedgerIncome - financeLedgerExpense
+                        )}
+                      </strong>
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() =>
+                        setFinanceLedgerFilter({
+                          direction: "all",
+                          category: "all",
+                          settlementStatus: "all",
+                          sourceType: "all",
+                          keyword: "",
+                        })
+                      }
+                    >
+                      清除筛选
                     </Button>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  {riskFinanceAnalysis.isLoading ? (
-                    <p className="text-sm text-slate-500">
-                      正在汇总已登记的真实成本…
-                    </p>
-                  ) : riskFinanceAnalysis.data?.categories.length ? (
-                    <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                      <Table className="min-w-[820px] text-xs">
-                        <TableHeader className="bg-[#edf1ed]">
-                          <TableRow>
-                            <TableHead>成本类别</TableHead>
-                            <TableHead>金额</TableHead>
-                            <TableHead>占项目开支</TableHead>
-                            <TableHead>业务笔数</TableHead>
-                            <TableHead>权威来源</TableHead>
-                            <TableHead className="text-right">明细</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {riskFinanceAnalysis.data.categories.map(item => (
-                            <TableRow key={item.code}>
-                              <TableCell className="font-medium text-[#203c48]">
-                                {item.label}
+                  <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
+                    <Table className="min-w-[1060px] text-xs">
+                      <TableHeader className="bg-[#edf1ed]">
+                        <TableRow>
+                          <TableHead>单号 / 时间</TableHead>
+                          <TableHead>收支</TableHead>
+                          <TableHead>资金细项</TableHead>
+                          <TableHead>业务来源</TableHead>
+                          <TableHead>结算状态</TableHead>
+                          <TableHead>金额</TableHead>
+                          <TableHead>说明</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {financeLedgerRows.length ? (
+                          financeLedgerPageRows.map(record => (
+                            <TableRow key={record.id}>
+                              <TableCell>
+                                <p className="font-medium text-[#203c48]">
+                                  {record.recordNo}
+                                </p>
+                                <p className="mt-1 text-[11px] text-slate-500">
+                                  {displayDate(record.occurredAt)}
+                                </p>
+                              </TableCell>
+                              <TableCell
+                                className={
+                                  record.direction === "income"
+                                    ? "font-medium text-emerald-700"
+                                    : "font-medium text-rose-700"
+                                }
+                              >
+                                {record.direction === "income"
+                                  ? "收入"
+                                  : "支出"}
+                              </TableCell>
+                              <TableCell>{record.category}</TableCell>
+                              <TableCell>
+                                {financeSourceTypeDisplay(record.sourceType)}
                               </TableCell>
                               <TableCell>
-                                ¥{displayMoney(item.amount)}
+                                <BusinessStatusBadge
+                                  status={record.settlementStatus}
+                                />
                               </TableCell>
-                              <TableCell>{item.percentage}%</TableCell>
-                              <TableCell>{item.recordCount}</TableCell>
-                              <TableCell className="text-slate-600">
-                                {item.sources.join("、") || "暂无记录"}
+                              <TableCell className="font-medium">
+                                ¥{displayMoney(record.amount)}
                               </TableCell>
-                              <TableCell className="text-right">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => {
-                                    setExpenseCategoryDetailFilter({
-                                      category: item.code,
-                                      source: "all",
-                                      status: "all",
-                                      dateFrom: toLocalDateInput(),
-                                      dateTo: toLocalDateInput(),
-                                      keyword: "",
-                                    });
-                                    setExpenseCategoryDetailOpen(true);
-                                  }}
-                                >
-                                  查看明细
-                                </Button>
+                              <TableCell className="max-w-[280px] whitespace-normal text-slate-600">
+                                {record.remarks || "—"}
                               </TableCell>
                             </TableRow>
-                          ))}
-                          <TableRow className="bg-[#f8fbf8]">
-                            <TableCell className="font-semibold">
-                              合计
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell
+                              colSpan={7}
+                              className="py-10 text-center text-slate-500"
+                            >
+                              当前筛选范围暂无已登记资金流水。可检查项目、期间和筛选条件，或由财务按权限登记真实流水。
                             </TableCell>
-                            <TableCell className="font-semibold">
-                              ¥
-                              {displayMoney(
-                                riskFinanceAnalysis.data.expenseAmount
-                              )}
-                            </TableCell>
-                            <TableCell>100%</TableCell>
-                            <TableCell>{financeCategoryRecordCount}</TableCell>
-                            <TableCell>统计期间：{financePeriod}</TableCell>
-                            <TableCell />
                           </TableRow>
-                        </TableBody>
-                      </Table>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500">
-                      当前期间暂无可分类的已登记成本。请先登记真实流水、柴油领用、工资、采购订单、机械成本或已审核运输结算。
-                    </p>
-                  )}
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    当前页 {financeLedgerPageRows.length} 笔；本页显示金额 ¥
+                    {displayMoney(
+                      financeLedgerPageRows.reduce(
+                        (sum, row) => sum + Number(row.amount),
+                        0
+                      )
+                    )}
+                    。上方收入、支出及导出均为全部筛选结果。
+                  </div>
+                  <FinancePagination
+                    page={ledgerPage}
+                    pageSize={financeLedgerPageSize}
+                    total={financeLedgerRows.length}
+                    onPageChange={setFinanceLedgerPage}
+                    onPageSizeChange={setFinanceLedgerPageSize}
+                    label="资金总账"
+                  />
                 </CardContent>
               </Card>
+              <details className="rounded-xl border bg-white p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-[#203c48]">
+                  展开结算状态与资金细项汇总
+                </summary>
+                <div className="mt-3">
+                  {!isDiesel ? (
+                    <Card className="border-[#d8e3e0] bg-[#fbfdfc] shadow-sm">
+                      <CardHeader>
+                        <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                          财务管理 · 详细汇总
+                        </p>
+                        <CardTitle className="mt-1 text-base">
+                          各类账本明细与汇总信息
+                        </CardTitle>
+                        <CardDescription className="mt-1">
+                          以下数据与当前项目、会计期间和资金总账明细保持同一服务端口径；金额不把发票、采购应付和实际结算重复相加。
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                          {[
+                            {
+                              label: "资金流水",
+                              count: financeLedgerRows.length,
+                              amount:
+                                financeLedgerIncome + financeLedgerExpense,
+                              note: `收入 ¥${displayMoney(financeLedgerIncome)} · 支出 ¥${displayMoney(financeLedgerExpense)}`,
+                            },
+                            {
+                              label: "未结清/部分结清",
+                              count: financeLedgerDetailedSummary
+                                .filter(
+                                  item =>
+                                    ["unpaid", "partial"].includes(
+                                      item.status
+                                    ) && item.status !== "void"
+                                )
+                                .reduce((sum, item) => sum + item.count, 0),
+                              amount: financeLedgerDetailedSummary
+                                .filter(item =>
+                                  ["unpaid", "partial"].includes(item.status)
+                                )
+                                .reduce((sum, item) => sum + item.amount, 0),
+                              note: `应收 ¥${displayMoney(financeSummary.data?.receivableAmount ?? 0)} · 应付 ¥${displayMoney(financeSummary.data?.payableAmount ?? 0)}`,
+                            },
+                            {
+                              label: "发票台账",
+                              count: invoiceDetailedSummary.count,
+                              amount: invoiceDetailedSummary.amount,
+                              note: `税额 ¥${displayMoney(invoiceDetailedSummary.tax)} · 待认证 ¥${displayMoney(invoiceDetailedSummary.pending)}`,
+                            },
+                            {
+                              label: "成本分类",
+                              count: financeCategorySummary.length,
+                              amount:
+                                riskFinanceAnalysis.data?.expenseAmount ??
+                                financeSummary.data?.expenseAmount ??
+                                0,
+                              note: `${financeCategoryRecordCount} 笔业务 · 按类别归集`,
+                            },
+                          ].map(item => (
+                            <div
+                              key={item.label}
+                              className="rounded-xl border border-[#d8e3e0] bg-white p-3"
+                            >
+                              <p className="text-xs text-slate-500">
+                                {item.label}
+                              </p>
+                              <p className="mt-1 text-xl font-semibold text-[#203c48]">
+                                ¥{displayMoney(item.amount)}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {item.count} 项 · {item.note}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid gap-4 xl:grid-cols-2">
+                          <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
+                            <div className="border-b border-[#e1e8e4] px-3 py-2 text-sm font-semibold text-[#203c48]">
+                              资金流水按结算状态
+                            </div>
+                            <Table className="min-w-[560px] text-xs">
+                              <TableHeader className="bg-[#edf1ed]">
+                                <TableRow>
+                                  <TableHead>收支</TableHead>
+                                  <TableHead>结算状态</TableHead>
+                                  <TableHead>笔数</TableHead>
+                                  <TableHead className="text-right">
+                                    金额
+                                  </TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {financeLedgerDetailedSummary
+                                  .filter(item => item.count > 0)
+                                  .map(item => (
+                                    <TableRow
+                                      key={`${item.direction}-${item.status}`}
+                                    >
+                                      <TableCell>
+                                        {item.direction === "income"
+                                          ? "收入"
+                                          : "支出"}
+                                      </TableCell>
+                                      <TableCell>
+                                        {financeSettlementStatusDisplay(
+                                          item.status
+                                        )}
+                                      </TableCell>
+                                      <TableCell>{item.count}</TableCell>
+                                      <TableCell className="text-right font-medium">
+                                        ¥{displayMoney(item.amount)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                {financeLedgerDetailedSummary.every(
+                                  item => item.count === 0
+                                ) ? (
+                                  <TableRow>
+                                    <TableCell
+                                      colSpan={4}
+                                      className="py-6 text-center text-slate-500"
+                                    >
+                                      当前期间暂无资金流水。
+                                    </TableCell>
+                                  </TableRow>
+                                ) : null}
+                              </TableBody>
+                            </Table>
+                          </div>
+                          <div className="overflow-x-auto rounded-xl border border-[#e1e8e4] bg-white">
+                            <div className="border-b border-[#e1e8e4] px-3 py-2 text-sm font-semibold text-[#203c48]">
+                              资金细项分类汇总
+                            </div>
+                            <Table className="min-w-[560px] text-xs">
+                              <TableHeader className="bg-[#edf1ed]">
+                                <TableRow>
+                                  <TableHead>资金细项</TableHead>
+                                  <TableHead>笔数</TableHead>
+                                  <TableHead className="text-right">
+                                    收入
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    支出
+                                  </TableHead>
+                                  <TableHead className="text-right">
+                                    合计
+                                  </TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {financeCategorySummary
+                                  .slice(0, 12)
+                                  .map(item => (
+                                    <TableRow key={item.category}>
+                                      <TableCell className="font-medium">
+                                        {item.category}
+                                      </TableCell>
+                                      <TableCell>{item.count}</TableCell>
+                                      <TableCell className="text-right text-emerald-700">
+                                        ¥{displayMoney(item.income)}
+                                      </TableCell>
+                                      <TableCell className="text-right text-rose-700">
+                                        ¥{displayMoney(item.expense)}
+                                      </TableCell>
+                                      <TableCell className="text-right font-medium">
+                                        ¥
+                                        {displayMoney(
+                                          item.income + item.expense
+                                        )}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                {!financeCategorySummary.length ? (
+                                  <TableRow>
+                                    <TableCell
+                                      colSpan={5}
+                                      className="py-6 text-center text-slate-500"
+                                    >
+                                      当前期间暂无资金细项。
+                                    </TableCell>
+                                  </TableRow>
+                                ) : null}
+                              </TableBody>
+                            </Table>
+                            {financeCategorySummary.length > 12 ? (
+                              <p className="px-3 py-2 text-xs text-slate-500">
+                                已显示金额最高的12个细项，完整明细请使用下方筛选、导出和打印。
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                </div>
+              </details>
+            </FinanceRetainedPanel>
+            {!isDiesel && financeTab === "settlements" ? (
+              <Tabs
+                value={financeSettlementView}
+                onValueChange={value =>
+                  setFinanceSettlementView(value as "board" | "records")
+                }
+              >
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="board">待付款 / 待收补款</TabsTrigger>
+                  <TabsTrigger value="records">付款记录 / 凭证</TabsTrigger>
+                </TabsList>
+              </Tabs>
             ) : null}
+            {!isDiesel && financeTab === "closing" ? (
+              <Tabs
+                value={financeClosingView}
+                onValueChange={value =>
+                  setFinanceClosingView(value as "daily" | "reconciliation")
+                }
+              >
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="daily">日结封存</TabsTrigger>
+                  <TabsTrigger value="reconciliation">月度内部对账</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            ) : null}
+            <FinanceRetainedPanel
+              active={
+                !isDiesel &&
+                (financeTab === "settlements" ||
+                  (financeTab === "closing" &&
+                    financeClosingView === "reconciliation"))
+              }
+              label="结算收付与月度对账"
+            >
+              {!isDiesel ? (
+                <SettlementPaymentFinancialBoard
+                  projectId={Number(financeProjectId)}
+                  view={
+                    financeTab === "closing"
+                      ? "reconciliation"
+                      : financeSettlementView
+                  }
+                  enabled={
+                    !isDiesel &&
+                    (financeTab === "settlements" ||
+                      (financeTab === "closing" &&
+                        financeClosingView === "reconciliation"))
+                  }
+                  period={financePeriod}
+                  onPeriodChange={changeFinancePeriod}
+                  onNavigateToSettlement={row =>
+                    setFinancePaymentTarget({
+                      ...row,
+                      readOnly: row.canRegisterSettlementPayment !== true,
+                    })
+                  }
+                  projectLabel={
+                    projects.data?.find(
+                      project => String(project.id) === financeProjectId
+                    )
+                      ? projects.data.find(
+                          project => String(project.id) === financeProjectId
+                        )?.name
+                      : undefined
+                  }
+                />
+              ) : null}
+            </FinanceRetainedPanel>
+            <FinanceRetainedPanel
+              active={!isDiesel && financeTab === "costs"}
+              label="成本分析"
+            >
+              <Tabs
+                value={financeCostsView}
+                onValueChange={value =>
+                  setFinanceCostsView(value as "categories" | "subcategories")
+                }
+              >
+                <TabsList className="grid w-full grid-cols-2 bg-[#eaf2ee]">
+                  <TabsTrigger value="categories">成本分类</TabsTrigger>
+                  <TabsTrigger value="subcategories">小类目分析</TabsTrigger>
+                </TabsList>
+                <div className="mt-3">
+                  <FinanceRetainedPanel
+                    active={financeCostsView === "categories"}
+                    label="成本分类"
+                  >
+                    {!isDiesel ? (
+                      <Card className="border-[#d8e3e0] shadow-sm">
+                        <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                          <div>
+                            <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                              业财分析 · 权威业务来源
+                            </p>
+                            <CardTitle className="mt-1 text-base">
+                              按成本类别分析汇总
+                            </CardTitle>
+                            <CardDescription className="mt-1">
+                              完整展示生活开支、柴油油料、工资劳务、机械成本、车辆与运输、采购材料及其他开支。点击“查看明细”可按来源、状态、日期和关键词下钻真实业务单据；已关联柴油、采购结算与采购订单仍按防重复规则处理。
+                            </CardDescription>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setExpenseCategoryDetailFilter({
+                                  category: "all",
+                                  source: "all",
+                                  status: "all",
+                                  dateFrom: toLocalDateInput(),
+                                  dateTo: toLocalDateInput(),
+                                  keyword: "",
+                                });
+                                setExpenseCategoryDetailOpen(true);
+                              }}
+                            >
+                              查看全部明细
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                !riskFinanceAnalysis.data?.categories.length
+                              }
+                              onClick={() =>
+                                downloadCsvFile(
+                                  `财务分类汇总-${financePeriod}.csv`,
+                                  [
+                                    "成本类别",
+                                    "金额",
+                                    "占比",
+                                    "笔数",
+                                    "权威来源",
+                                  ],
+                                  (
+                                    riskFinanceAnalysis.data?.categories ?? []
+                                  ).map(item => [
+                                    item.label,
+                                    item.amount,
+                                    `${item.percentage}%`,
+                                    item.recordCount,
+                                    item.sources.join("、") || "—",
+                                  ])
+                                )
+                              }
+                            >
+                              导出分类汇总
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          {riskFinanceAnalysis.isLoading ? (
+                            <p className="text-sm text-slate-500">
+                              正在汇总已登记的真实成本…
+                            </p>
+                          ) : riskFinanceAnalysis.data?.categories.length ? (
+                            <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
+                              <Table className="min-w-[820px] text-xs">
+                                <TableHeader className="bg-[#edf1ed]">
+                                  <TableRow>
+                                    <TableHead>成本类别</TableHead>
+                                    <TableHead>金额</TableHead>
+                                    <TableHead>占项目开支</TableHead>
+                                    <TableHead>业务笔数</TableHead>
+                                    <TableHead>权威来源</TableHead>
+                                    <TableHead className="text-right">
+                                      明细
+                                    </TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {riskFinanceAnalysis.data.categories.map(
+                                    item => (
+                                      <TableRow key={item.code}>
+                                        <TableCell className="font-medium text-[#203c48]">
+                                          {item.label}
+                                        </TableCell>
+                                        <TableCell>
+                                          ¥{displayMoney(item.amount)}
+                                        </TableCell>
+                                        <TableCell>
+                                          {item.percentage}%
+                                        </TableCell>
+                                        <TableCell>
+                                          {item.recordCount}
+                                        </TableCell>
+                                        <TableCell className="text-slate-600">
+                                          {item.sources.join("、") ||
+                                            "暂无记录"}
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => {
+                                              setExpenseCategoryDetailFilter({
+                                                category: item.code,
+                                                source: "all",
+                                                status: "all",
+                                                dateFrom: toLocalDateInput(),
+                                                dateTo: toLocalDateInput(),
+                                                keyword: "",
+                                              });
+                                              setExpenseCategoryDetailOpen(
+                                                true
+                                              );
+                                            }}
+                                          >
+                                            查看明细
+                                          </Button>
+                                        </TableCell>
+                                      </TableRow>
+                                    )
+                                  )}
+                                  <TableRow className="bg-[#f8fbf8]">
+                                    <TableCell className="font-semibold">
+                                      合计
+                                    </TableCell>
+                                    <TableCell className="font-semibold">
+                                      ¥
+                                      {displayMoney(
+                                        riskFinanceAnalysis.data.expenseAmount
+                                      )}
+                                    </TableCell>
+                                    <TableCell>100%</TableCell>
+                                    <TableCell>
+                                      {financeCategoryRecordCount}
+                                    </TableCell>
+                                    <TableCell>
+                                      统计期间：{financePeriod}
+                                    </TableCell>
+                                    <TableCell />
+                                  </TableRow>
+                                </TableBody>
+                              </Table>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">
+                              当前期间暂无可分类的已登记成本。请先登记真实流水、柴油领用、工资、采购订单、机械成本或已审核运输结算。
+                            </p>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ) : null}
+                  </FinanceRetainedPanel>
+                  <FinanceRetainedPanel
+                    active={financeCostsView === "subcategories"}
+                    label="小类目分析"
+                  >
+                    {!isDiesel ? (
+                      <Card className="border-[#d8e3e0] shadow-sm">
+                        <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                              业财分析 · 小类目
+                            </p>
+                            <CardTitle className="mt-1 text-base">
+                              小类目成本占比与导出
+                            </CardTitle>
+                            <CardDescription className="mt-1">
+                              在一级成本口径内细分生活、工资、油料、维修等已登记明细；占比均以当前项目、当前会计期间的真实项目开支为分母。采购订单应付与实际现金结算继续分开处理，不在本表重复累计。
+                            </CardDescription>
+                          </div>
+                          <CurrentFilterPrintActions
+                            disabled={
+                              !riskFinanceAnalysis.data?.subcategories.length
+                            }
+                            onPrint={() =>
+                              setFinancePrintPreview("subcategories")
+                            }
+                            onExport={() =>
+                              downloadCsvFile(
+                                `财务小类目汇总-${financePeriod}.csv`,
+                                [
+                                  "一级类别",
+                                  "小类目",
+                                  "金额",
+                                  "占项目开支",
+                                  "业务笔数",
+                                  "权威来源",
+                                ],
+                                (
+                                  riskFinanceAnalysis.data?.subcategories ?? []
+                                ).map(item => [
+                                  expenseCategoryDisplay(item.parentCode),
+                                  item.label,
+                                  item.amount,
+                                  `${item.percentage}%`,
+                                  item.recordCount,
+                                  item.sources.join("、"),
+                                ])
+                              )
+                            }
+                            printLabel="打印当前小类目明细与汇总"
+                            exportLabel="导出小类目汇总"
+                          />
+                        </CardHeader>
+                        <CardContent>
+                          {riskFinanceAnalysis.isLoading ? (
+                            <p className="text-sm text-slate-500">
+                              正在汇总小类目成本…
+                            </p>
+                          ) : riskFinanceAnalysis.data?.subcategories.length ? (
+                            <div className="space-y-3">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3">
+                                  <p className="text-xs text-slate-500">
+                                    生活开支占项目开支
+                                  </p>
+                                  <p className="mt-1 text-lg font-semibold text-[#203c48]">
+                                    {riskFinanceAnalysis.data.categories.find(
+                                      item => item.code === "living"
+                                    )?.percentage ?? 0}
+                                    %
+                                  </p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    ¥{" "}
+                                    {displayMoney(
+                                      riskFinanceAnalysis.data.categories.find(
+                                        item => item.code === "living"
+                                      )?.amount ?? 0
+                                    )}
+                                  </p>
+                                </div>
+                                <div className="rounded-lg border border-[#d8e3e0] bg-[#f8fbfa] p-3">
+                                  <p className="text-xs text-slate-500">
+                                    工资劳务占项目开支
+                                  </p>
+                                  <p className="mt-1 text-lg font-semibold text-[#203c48]">
+                                    {riskFinanceAnalysis.data.categories.find(
+                                      item => item.code === "payroll"
+                                    )?.percentage ?? 0}
+                                    %
+                                  </p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    ¥{" "}
+                                    {displayMoney(
+                                      riskFinanceAnalysis.data.categories.find(
+                                        item => item.code === "payroll"
+                                      )?.amount ?? 0
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
+                                <Table className="min-w-[820px] text-xs">
+                                  <TableHeader className="bg-[#edf1ed]">
+                                    <TableRow>
+                                      <TableHead>一级类别</TableHead>
+                                      <TableHead>小类目</TableHead>
+                                      <TableHead>金额</TableHead>
+                                      <TableHead>占项目开支</TableHead>
+                                      <TableHead>业务笔数</TableHead>
+                                      <TableHead>权威来源</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {riskFinanceAnalysis.data.subcategories.map(
+                                      item => (
+                                        <TableRow key={item.code}>
+                                          <TableCell>
+                                            {expenseCategoryDisplay(
+                                              item.parentCode
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="font-medium text-[#203c48]">
+                                            {item.label}
+                                          </TableCell>
+                                          <TableCell>
+                                            ¥{displayMoney(item.amount)}
+                                          </TableCell>
+                                          <TableCell>
+                                            {item.percentage}%
+                                          </TableCell>
+                                          <TableCell>
+                                            {item.recordCount}
+                                          </TableCell>
+                                          <TableCell className="text-slate-600">
+                                            {item.sources.join("、")}
+                                          </TableCell>
+                                        </TableRow>
+                                      )
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">
+                              当前期间暂无可导出的已登记小类目成本。
+                            </p>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ) : null}
+                  </FinanceRetainedPanel>
+                </div>
+              </Tabs>
+              <Card className="border-[#d8e3e0]">
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-5">
+                  <p className="text-sm text-slate-600">
+                    柴油成本已纳入上方真实分类；完整加油登记、筛选、扣款与供应商对账在柴油管理办理。
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => setLocation("/admin/diesel")}
+                  >
+                    进入柴油管理
+                  </Button>
+                </CardContent>
+              </Card>
+            </FinanceRetainedPanel>
             {!isDiesel ? (
               <Dialog
                 open={expenseCategoryDetailOpen}
@@ -21220,6 +22041,40 @@ export default function AdminPage({
                         />
                       </Field>
                     </div>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                      <span>
+                        明细日期范围：
+                        {expenseCategoryDetailFilter.dateFrom || "月初"} 至{" "}
+                        {expenseCategoryDetailFilter.dateTo || "月末"} ·
+                        上方成本汇总为 {financePeriod} 整月
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setExpenseCategoryDetailFilter(current => ({
+                            ...current,
+                            dateFrom: toChinaDateInput(),
+                            dateTo: toChinaDateInput(),
+                          }))
+                        }
+                      >
+                        当天
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setExpenseCategoryDetailFilter(current => ({
+                            ...current,
+                            dateFrom: `${financePeriod}-01`,
+                            dateTo: `${financePeriod}-${String(new Date(Number(financePeriod.slice(0, 4)), Number(financePeriod.slice(5, 7)), 0).getDate()).padStart(2, "0")}`,
+                          }))
+                        }
+                      >
+                        查看本月
+                      </Button>
+                    </div>
                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-[#f7fbf9] px-4 py-3">
                       <p className="text-sm text-slate-700">
                         当前筛选：
@@ -21306,7 +22161,7 @@ export default function AdminPage({
                           </TableHeader>
                           <TableBody>
                             {expenseCategoryDetails.data?.records.length ? (
-                              expenseCategoryDetails.data.records.map(item => (
+                              expensePageRows.map(item => (
                                 <TableRow key={item.id}>
                                   <TableCell>
                                     <p className="font-medium text-[#203c48]">
@@ -21350,6 +22205,14 @@ export default function AdminPage({
                         </Table>
                       </div>
                     )}
+                    <FinancePagination
+                      page={expensePage}
+                      pageSize={financeExpensePageSize}
+                      total={expenseRows.length}
+                      onPageChange={setFinanceExpensePage}
+                      onPageSizeChange={setFinanceExpensePageSize}
+                      label="支出分类明细"
+                    />
                   </div>
                   <DialogFooter>
                     <Button onClick={() => setExpenseCategoryDetailOpen(false)}>
@@ -21359,906 +22222,1071 @@ export default function AdminPage({
                 </DialogContent>
               </Dialog>
             ) : null}
-            <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
-              <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    项目部供油 · 运输扣款 · 机械油料成本
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    柴油领用与每日结算
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。
-                  </CardDescription>
-                </div>
-                <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
-                  <Button
-                    className="min-h-11 sm:min-h-8"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setDieselPriceForm({
-                        ...EMPTY_DIESEL_PRICE_FORM,
-                        projectId: financeProjectId,
-                        effectiveFrom: dieselDate,
-                      });
-                      setDieselPriceDialogOpen(true);
-                    }}
-                  >
-                    维护指导价
-                  </Button>
-                  <Button
-                    className="min-h-11 sm:min-h-8"
-                    size="sm"
-                    onClick={() => {
-                      resetDieselReceiptCapture();
-                      setDieselRefuelForm({
-                        ...EMPTY_DIESEL_REFUEL_FORM,
-                        projectId: financeProjectId,
-                        refueledAt: toDeviceDateTimeInput(),
-                      });
-                      setDieselRefuelDialogOpen(true);
-                    }}
-                  >
-                    登记柴油领用
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div
-                  className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"
-                  data-diesel-current-print
-                >
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-semibold text-[#29483e]">
-                        柴油组合筛选
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        首次进入与恢复筛选后默认显示当天；可按需改为日期范围、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。
-                      </p>
-                    </div>
+            <FinanceRetainedPanel active={isDiesel} label="柴油管理">
+              <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
+                <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                      项目部供油 · 运输扣款 · 机械油料成本
+                    </p>
+                    <CardTitle className="mt-1 text-base">
+                      柴油领用与每日结算
+                    </CardTitle>
+                    <CardDescription className="mt-1">
+                      项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。
+                    </CardDescription>
+                  </div>
+                  <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
                     <Button
+                      className="min-h-11 sm:min-h-8"
                       size="sm"
-                      variant="ghost"
+                      variant="outline"
                       onClick={() => {
-                        const today = toLocalDateInput();
-                        setDieselLedgerFilter({
-                          plateNo: "",
-                          dateFrom: today,
-                          dateTo: today,
-                          month: "",
-                          supplyMethod: "all",
-                          assetType: "all",
-                          supplierName: "",
+                        setDieselPriceForm({
+                          ...EMPTY_DIESEL_PRICE_FORM,
+                          projectId: financeProjectId,
+                          effectiveFrom: dieselDate,
                         });
-                        setDieselMachineName("");
+                        setDieselPriceDialogOpen(true);
                       }}
                     >
-                      恢复当天筛选
+                      维护指导价
+                    </Button>
+                    <Button
+                      className="min-h-11 sm:min-h-8"
+                      size="sm"
+                      onClick={() => {
+                        resetDieselReceiptCapture();
+                        setDieselRefuelForm({
+                          ...EMPTY_DIESEL_REFUEL_FORM,
+                          projectId: financeProjectId,
+                          refueledAt: toDeviceDateTimeInput(),
+                        });
+                        setDieselRefuelDialogOpen(true);
+                      }}
+                    >
+                      登记柴油领用
                     </Button>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <Select
-                      value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"}
-                      disabled={dieselLedgerFilter.assetType === "machine"}
-                      onValueChange={value =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          plateNo: value === "ALL_VEHICLES" ? "" : value,
-                          assetType:
-                            value === "ALL_VEHICLES"
-                              ? current.assetType
-                              : "vehicle",
-                        }))
-                      }
-                    >
-                      <SelectTrigger aria-label="柴油筛选车牌">
-                        <SelectValue placeholder="全部车辆" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ALL_VEHICLES">全部车辆</SelectItem>
-                        {(dieselVehicleOptions.data ?? [])
-                          .filter(
-                            vehicle =>
-                              String(vehicle.projectId) === financeProjectId
-                          )
-                          .map(vehicle => (
-                            <SelectItem
-                              key={vehicle.id}
-                              value={vehicle.plateNo}
-                            >
-                              {vehicle.plateNo}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      type="date"
-                      max={dieselLedgerFilter.dateTo || undefined}
-                      value={dieselLedgerFilter.dateFrom}
-                      aria-label="柴油加油开始日期"
-                      onChange={event =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          dateFrom: event.target.value,
-                        }))
-                      }
-                    />
-                    <Input
-                      type="date"
-                      min={dieselLedgerFilter.dateFrom || undefined}
-                      value={dieselLedgerFilter.dateTo}
-                      aria-label="柴油加油结束日期"
-                      onChange={event =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          dateTo: event.target.value,
-                        }))
-                      }
-                    />
-                    <Input
-                      type="month"
-                      value={dieselLedgerFilter.month}
-                      aria-label="柴油加油月份"
-                      onChange={event =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          month: event.target.value,
-                        }))
-                      }
-                    />
-                    <Select
-                      value={dieselLedgerFilter.supplyMethod}
-                      onValueChange={value =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          supplyMethod: value,
-                        }))
-                      }
-                    >
-                      <SelectTrigger aria-label="柴油供油方式">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">全部供油方式</SelectItem>
-                        <SelectItem value="project_supply">
-                          项目部供油
-                        </SelectItem>
-                        <SelectItem value="external_station">
-                          加油站现金加油
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Select
-                      value={dieselLedgerFilter.assetType}
-                      onValueChange={value =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          assetType: value,
-                          plateNo: value === "machine" ? "" : current.plateNo,
-                        }))
-                      }
-                    >
-                      <SelectTrigger aria-label="柴油车辆机械">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">全部车辆 / 机械</SelectItem>
-                        <SelectItem value="vehicle">仅车辆</SelectItem>
-                        <SelectItem value="machine">仅机械</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      value={dieselMachineName}
-                      aria-label="柴油顶部机械名称筛选"
-                      placeholder="机械名称 / 编号（可选）"
-                      disabled={dieselLedgerFilter.assetType === "vehicle"}
-                      onChange={event => {
-                        setDieselMachineName(event.target.value);
-                        if (event.target.value.trim())
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div
+                    className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"
+                    data-diesel-current-print
+                  >
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-[#29483e]">
+                          柴油组合筛选
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          首次进入与恢复筛选后默认显示当天；可按需改为日期范围、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          const today = toLocalDateInput();
+                          setDieselLedgerFilter({
+                            plateNo: "",
+                            dateFrom: today,
+                            dateTo: today,
+                            month: "",
+                            supplyMethod: "all",
+                            assetType: "all",
+                            supplierName: "",
+                          });
+                          setDieselMachineName("");
+                        }}
+                      >
+                        恢复当天筛选
+                      </Button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <Select
+                        value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"}
+                        disabled={dieselLedgerFilter.assetType === "machine"}
+                        onValueChange={value =>
                           setDieselLedgerFilter(current => ({
                             ...current,
-                            assetType: "machine",
-                            plateNo: "",
-                          }));
+                            plateNo: value === "ALL_VEHICLES" ? "" : value,
+                            assetType:
+                              value === "ALL_VEHICLES"
+                                ? current.assetType
+                                : "vehicle",
+                          }))
+                        }
+                      >
+                        <SelectTrigger aria-label="柴油筛选车牌">
+                          <SelectValue placeholder="全部车辆" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ALL_VEHICLES">全部车辆</SelectItem>
+                          {(dieselVehicleOptions.data ?? [])
+                            .filter(
+                              vehicle =>
+                                String(vehicle.projectId) === financeProjectId
+                            )
+                            .map(vehicle => (
+                              <SelectItem
+                                key={vehicle.id}
+                                value={vehicle.plateNo}
+                              >
+                                {vehicle.plateNo}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="date"
+                        max={dieselLedgerFilter.dateTo || undefined}
+                        value={dieselLedgerFilter.dateFrom}
+                        aria-label="柴油加油开始日期"
+                        onChange={event =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            dateFrom: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        type="date"
+                        min={dieselLedgerFilter.dateFrom || undefined}
+                        value={dieselLedgerFilter.dateTo}
+                        aria-label="柴油加油结束日期"
+                        onChange={event =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            dateTo: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        type="month"
+                        value={dieselLedgerFilter.month}
+                        aria-label="柴油加油月份"
+                        onChange={event =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            month: event.target.value,
+                          }))
+                        }
+                      />
+                      <Select
+                        value={dieselLedgerFilter.supplyMethod}
+                        onValueChange={value =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            supplyMethod: value,
+                          }))
+                        }
+                      >
+                        <SelectTrigger aria-label="柴油供油方式">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全部供油方式</SelectItem>
+                          <SelectItem value="project_supply">
+                            项目部供油
+                          </SelectItem>
+                          <SelectItem value="external_station">
+                            加油站现金加油
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={dieselLedgerFilter.assetType}
+                        onValueChange={value =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            assetType: value,
+                            plateNo: value === "machine" ? "" : current.plateNo,
+                          }))
+                        }
+                      >
+                        <SelectTrigger aria-label="柴油车辆机械">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全部车辆 / 机械</SelectItem>
+                          <SelectItem value="vehicle">仅车辆</SelectItem>
+                          <SelectItem value="machine">仅机械</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        value={dieselMachineName}
+                        aria-label="柴油顶部机械名称筛选"
+                        placeholder="机械名称 / 编号（可选）"
+                        disabled={dieselLedgerFilter.assetType === "vehicle"}
+                        onChange={event => {
+                          setDieselMachineName(event.target.value);
+                          if (event.target.value.trim())
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              assetType: "machine",
+                              plateNo: "",
+                            }));
+                        }}
+                      />
+                      <Input
+                        value={dieselLedgerFilter.supplierName}
+                        aria-label="柴油筛选供应商"
+                        placeholder="供应商 / 加油站（可选）"
+                        onChange={event =>
+                          setDieselLedgerFilter(current => ({
+                            ...current,
+                            supplierName: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#d8e3e0] pt-3 print:hidden">
+                      <p className="text-xs text-slate-500">
+                        打印、导出和台账始终使用以上当前筛选条件。
+                      </p>
+                      <Button
+                        disabled={!dieselRefuelRecords.data?.length}
+                        onClick={() => {
+                          setDieselPrintMode(
+                            dieselLedgerFilter.assetType === "vehicle"
+                              ? "vehicle"
+                              : dieselLedgerFilter.assetType === "machine"
+                                ? "machine"
+                                : "current"
+                          );
+                          setDieselPrintOpen(true);
+                        }}
+                      >
+                        打印当前筛选明细与汇总
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        void refreshDieselLedger();
                       }}
+                    >
+                      刷新当前筛选台账
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={!dieselRefuelRecords.data?.length}
+                      onClick={() =>
+                        downloadCsvFile(
+                          `柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || "当前筛选"}.csv`,
+                          [
+                            "单号",
+                            "资源",
+                            "资源类型",
+                            "供油方式",
+                            "供应商/供油点",
+                            "加油员",
+                            "升数",
+                            "适用单价",
+                            "金额",
+                            "是否扣运费",
+                            "加油时间",
+                            "状态",
+                          ],
+                          (dieselRefuelRecords.data ?? []).map(item => [
+                            item.recordNo,
+                            item.assetName,
+                            item.assetType === "vehicle" ? "车辆" : "机械",
+                            item.supplyMethod === "project_supply"
+                              ? "项目部供油"
+                              : "加油站加油",
+                            item.stationOrSupplierName ?? "",
+                            item.refuelerName ?? "未登记",
+                            Number(item.liters),
+                            Number(item.appliedUnitPrice),
+                            Number(item.amount),
+                            item.deductFromFreight ? "是" : "否",
+                            displayDate(item.refueledAt),
+                            getBusinessStatusLabel(item.status),
+                          ])
+                        )
+                      }
+                    >
+                      导出当前筛选明细
+                    </Button>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <MetricCard
+                      title="当前筛选供油量"
+                      value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
+                      description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
+                      icon={Truck}
                     />
-                    <Input
-                      value={dieselLedgerFilter.supplierName}
-                      aria-label="柴油筛选供应商"
-                      placeholder="供应商 / 加油站（可选）"
-                      onChange={event =>
-                        setDieselLedgerFilter(current => ({
-                          ...current,
-                          supplierName: event.target.value,
-                        }))
+                    <MetricCard
+                      title="当前筛选柴油金额"
+                      value={dieselCurrentSummary.totalAmount}
+                      description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
+                      icon={BarChart3}
+                    />
+                    <MetricCard
+                      title="车辆 / 机械领用"
+                      value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
+                      description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
+                      icon={Settings2}
+                    />
+                    <MetricCard
+                      title="待扣运费油款"
+                      value={dieselCurrentSummary.deductibleAmount}
+                      description="同当前筛选；结算运输趟次时从总运费扣减"
+                      icon={ScrollText}
+                    />
+                  </div>
+                  <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]">
+                    <p>
+                      <span className="font-medium">项目部供油：</span>
+                      {dieselGuidelinePrices.data?.find(
+                        price => price.status === "active"
+                      )
+                        ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）`
+                        : "尚未维护有效指导价；项目部供油登记前请先维护。"}
+                    </p>
+                    <p className="mt-1">
+                      <span className="font-medium">加油站现金加油：</span>
+                      每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
+                    </p>
+                    <DieselRefuelPrintDialog
+                      open={dieselPrintOpen}
+                      onOpenChange={setDieselPrintOpen}
+                      mode={dieselPrintMode}
+                      projectName={selectedWorkspaceProject?.name ?? "当前项目"}
+                      dateLabel={dieselCurrentFilterLabel}
+                      records={
+                        (dieselRefuelRecords.data ?? []) as DieselPrintRecord[]
                       }
                     />
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#d8e3e0] pt-3 print:hidden">
-                    <p className="text-xs text-slate-500">
-                      打印、导出和台账始终使用以上当前筛选条件。
-                    </p>
-                    <Button
-                      disabled={!dieselRefuelRecords.data?.length}
-                      onClick={() => {
-                        setDieselPrintMode(
-                          dieselLedgerFilter.assetType === "vehicle"
-                            ? "vehicle"
-                            : dieselLedgerFilter.assetType === "machine"
-                              ? "machine"
-                              : "current"
-                        );
-                        setDieselPrintOpen(true);
-                      }}
-                    >
-                      打印当前筛选明细与汇总
-                    </Button>
-                  </div>
-                </div>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      void refreshDieselLedger();
-                    }}
-                  >
-                    刷新当前筛选台账
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!dieselRefuelRecords.data?.length}
-                    onClick={() =>
-                      downloadCsvFile(
-                        `柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || "当前筛选"}.csv`,
-                        [
-                          "单号",
-                          "资源",
-                          "资源类型",
-                          "供油方式",
-                          "供应商/供油点",
-                          "加油员",
-                          "升数",
-                          "适用单价",
-                          "金额",
-                          "是否扣运费",
-                          "加油时间",
-                          "状态",
-                        ],
-                        (dieselRefuelRecords.data ?? []).map(item => [
-                          item.recordNo,
-                          item.assetName,
-                          item.assetType === "vehicle" ? "车辆" : "机械",
-                          item.supplyMethod === "project_supply"
-                            ? "项目部供油"
-                            : "加油站加油",
-                          item.stationOrSupplierName ?? "",
-                          item.refuelerName ?? "未登记",
-                          Number(item.liters),
-                          Number(item.appliedUnitPrice),
-                          Number(item.amount),
-                          item.deductFromFreight ? "是" : "否",
-                          displayDate(item.refueledAt),
-                          getBusinessStatusLabel(item.status),
-                        ])
-                      )
-                    }
-                  >
-                    导出当前筛选明细
-                  </Button>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard
-                    title="当前筛选供油量"
-                    value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
-                    description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
-                    icon={Truck}
-                  />
-                  <MetricCard
-                    title="当前筛选柴油金额"
-                    value={dieselCurrentSummary.totalAmount}
-                    description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
-                    icon={BarChart3}
-                  />
-                  <MetricCard
-                    title="车辆 / 机械领用"
-                    value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
-                    description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
-                    icon={Settings2}
-                  />
-                  <MetricCard
-                    title="待扣运费油款"
-                    value={dieselCurrentSummary.deductibleAmount}
-                    description="同当前筛选；结算运输趟次时从总运费扣减"
-                    icon={ScrollText}
-                  />
-                </div>
-                <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]">
-                  <p>
-                    <span className="font-medium">项目部供油：</span>
-                    {dieselGuidelinePrices.data?.find(
-                      price => price.status === "active"
-                    )
-                      ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）`
-                      : "尚未维护有效指导价；项目部供油登记前请先维护。"}
-                  </p>
-                  <p className="mt-1">
-                    <span className="font-medium">加油站现金加油：</span>
-                    每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
-                  </p>
-                  <DieselRefuelPrintDialog
-                    open={dieselPrintOpen}
-                    onOpenChange={setDieselPrintOpen}
-                    mode={dieselPrintMode}
-                    projectName={selectedWorkspaceProject?.name ?? "当前项目"}
-                    dateLabel={dieselCurrentFilterLabel}
-                    records={
-                      (dieselRefuelRecords.data ?? []) as DieselPrintRecord[]
-                    }
-                  />
-                </div>
-                <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-                  <Card className="border-amber-200 bg-amber-50/50 shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm">
-                        现金油价异常预警
-                      </CardTitle>
-                      <CardDescription>
-                        同项目、同一供应商当前价格相对上一笔有效现金价格的波动达到阈值时，柴油记录和采购对账将显示预警并写入审计。
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="flex flex-wrap items-end gap-2">
-                      <div className="grid gap-1.5">
-                        <Label>波动阈值（%）</Label>
-                        <Input
-                          className="w-36"
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          value={dieselAlertThreshold}
-                          onChange={event =>
-                            setDieselAlertThreshold(event.target.value)
-                          }
-                        />
-                      </div>
-                      <Button
-                        size="sm"
-                        disabled={
-                          saveDieselPriceAlertRule.isPending ||
-                          !Number(dieselAlertThreshold)
-                        }
-                        onClick={() =>
-                          saveDieselPriceAlertRule.mutate({
-                            projectId: Number(financeProjectId),
-                            thresholdPercent: Number(dieselAlertThreshold),
-                            enabled: dieselPriceAlertRule.data?.enabled ?? true,
-                          })
-                        }
-                      >
-                        {saveDieselPriceAlertRule.isPending
-                          ? "正在保存…"
-                          : `保存${dieselPriceAlertRule.data?.enabled === false ? "并启用" : "阈值"}`}
-                      </Button>
-                      <p className="basis-full text-xs text-amber-900">
-                        当前：
-                        {dieselPriceAlertRule.data?.enabled === false
-                          ? "已停用预警"
-                          : `波动达到 ${dieselPriceAlertRule.data?.thresholdPercent ?? 10}% 时预警`}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="border-[#d8e3e0] shadow-none">
-                    <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                      <div>
+                  <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+                    <Card className="border-amber-200 bg-amber-50/50 shadow-none">
+                      <CardHeader className="pb-3">
                         <CardTitle className="text-sm">
-                          供应商柴油采购对账
+                          现金油价异常预警
                         </CardTitle>
                         <CardDescription>
-                          按当前会计期间汇总加油站现金采购的升数、金额、加权均价、凭证和异常数量。
+                          同项目、同一供应商当前价格相对上一笔有效现金价格的波动达到阈值时，柴油记录和采购对账将显示预警并写入审计。
                         </CardDescription>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!dieselSupplierReconciliation.data?.length}
-                        onClick={() =>
-                          downloadCsvFile(
-                            `柴油供应商对账-${financePeriod}.csv`,
-                            [
-                              "供应商",
-                              "笔数",
-                              "升数",
-                              "金额",
-                              "加权均价",
-                              "最低单价",
-                              "最高单价",
-                              "价差",
-                              "凭证数",
-                              "异常数",
-                            ],
-                            (dieselSupplierReconciliation.data ?? []).map(
-                              item => [
-                                item.supplierName,
-                                item.recordCount,
-                                item.liters.toFixed(3),
-                                item.amount.toFixed(2),
-                                item.averageUnitPrice.toFixed(2),
-                                item.minUnitPrice.toFixed(2),
-                                item.maxUnitPrice.toFixed(2),
-                                item.priceSpread.toFixed(2),
-                                item.receiptCount,
-                                item.alertCount,
-                              ]
-                            )
-                          )
-                        }
-                      >
-                        导出对账
-                      </Button>
-                    </CardHeader>
-                    <CardContent>
-                      {dieselSupplierReconciliation.isLoading ? (
-                        <p className="text-sm text-slate-500">
-                          正在汇总供应商采购…
-                        </p>
-                      ) : dieselSupplierReconciliation.data?.length ? (
-                        <div className="overflow-x-auto">
-                          <Table className="min-w-[760px] text-xs">
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>供应商</TableHead>
-                                <TableHead>升数 / 金额</TableHead>
-                                <TableHead>加权均价</TableHead>
-                                <TableHead>价格区间</TableHead>
-                                <TableHead>凭证</TableHead>
-                                <TableHead>异常</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {dieselSupplierReconciliation.data.map(item => (
-                                <TableRow key={item.supplierName}>
-                                  <TableCell className="font-medium">
-                                    {item.supplierName}
-                                  </TableCell>
-                                  <TableCell>
-                                    {item.liters.toFixed(2)} L / ¥
-                                    {displayMoney(item.amount)}
-                                  </TableCell>
-                                  <TableCell>
-                                    ¥{displayMoney(item.averageUnitPrice)}/L
-                                  </TableCell>
-                                  <TableCell>
-                                    ¥{displayMoney(item.minUnitPrice)}–
-                                    {displayMoney(item.maxUnitPrice)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {item.receiptCount} / {item.recordCount}
-                                  </TableCell>
-                                  <TableCell
-                                    className={
-                                      item.alertCount
-                                        ? "font-medium text-rose-700"
-                                        : "text-emerald-700"
-                                    }
-                                  >
-                                    {item.alertCount
-                                      ? `${item.alertCount} 条预警`
-                                      : "无异常"}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
+                      </CardHeader>
+                      <CardContent className="flex flex-wrap items-end gap-2">
+                        <div className="grid gap-1.5">
+                          <Label>波动阈值（%）</Label>
+                          <Input
+                            className="w-36"
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={dieselAlertThreshold}
+                            onChange={event =>
+                              setDieselAlertThreshold(event.target.value)
+                            }
+                          />
                         </div>
-                      ) : (
-                        <p className="text-sm text-slate-500">
-                          当前期间暂无加油站现金采购记录。
-                        </p>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-                <LedgerTable
-                  title="每日柴油领用明细"
-                  description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
-                  loading={dieselRefuelRecords.isLoading}
-                  columns={[
-                    "单号/资源",
-                    "供油方式",
-                    "油量 / 单价",
-                    "金额",
-                    "凭证 / 预警",
-                    "运输扣油",
-                    "加油时间",
-                    "状态",
-                  ]}
-                  rows={(dieselRefuelRecords.data ?? []).map(item => ({
-                    id: Number(item.id),
-                    cells: [
-                      <div>
-                        <p>{item.recordNo}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          {item.assetName}
-                        </p>
-                      </div>,
-                      item.supplyMethod === "project_supply"
-                        ? "项目部供油"
-                        : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
-                      `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
-                      `¥ ${displayMoney(item.amount)}`,
-                      <div className="space-y-1">
-                        {item.receiptEvidence?.url ? (
-                          <ProtectedImagePreview
-                            file={{ url: item.receiptEvidence.url!, fileName: item.receiptEvidence.fileName, mimeType: item.receiptEvidence.mimeType }}
-                            title="柴油加油小票"
-                            description="小票照片仅在当前授权范围内站内预览。"
-                            className="text-xs font-medium text-[#2b6660] underline"
-                          >
-                            查看小票照片
-                          </ProtectedImagePreview>
-                        ) : (
-                          <p className="text-xs text-slate-500">无小票照片</p>
-                        )}
-                        {item.priceAlert?.isAlert ? (
-                          <p className="text-xs font-medium text-rose-700">
-                            价格波动 {item.priceAlert.deviationPercent}%
-                          </p>
-                        ) : item.supplyMethod === "external_station" ? (
-                          <p className="text-xs text-emerald-700">价格正常</p>
-                        ) : null}
-                      </div>,
-                      item.deductFromFreight
-                        ? item.tripNo
-                          ? `扣 ${item.tripNo}`
-                          : "待关联趟次"
-                        : "不扣",
-                      displayDate(item.refueledAt),
-                      <BusinessStatusBadge status={item.status} />,
-                    ],
-                    onOpen: () =>
-                      setDesktopRecordDetail({
-                        title: `柴油领用 ${item.recordNo}`,
-                        description:
-                          "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
-                        fields: [
-                          { label: "资源", value: item.assetName },
-                          {
-                            label: "供油方式",
-                            value:
-                              item.supplyMethod === "project_supply"
-                                ? "项目部供油"
-                                : "加油站现金加油",
-                          },
-                          {
-                            label: "加油量",
-                            value: `${Number(item.liters).toFixed(2)} L`,
-                          },
-                          {
-                            label: "适用单价",
-                            value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
-                          },
-                          {
-                            label: "金额",
-                            value: `¥ ${displayMoney(item.amount)}`,
-                          },
-                          {
-                            label: "价格预警",
-                            value: item.priceAlert?.isAlert
-                              ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
-                              : item.supplyMethod === "external_station"
-                                ? "未触发预警"
-                                : "项目部指导价供油，不参与现金价格预警",
-                          },
-                          {
-                            label: "现金小票",
-                            value: item.receiptEvidence?.url ? (
-                              <ProtectedImagePreview
-                                file={{ url: item.receiptEvidence.url!, fileName: item.receiptEvidence.fileName, mimeType: item.receiptEvidence.mimeType }}
-                                title="柴油加油小票"
-                                description="小票照片仅在当前授权范围内站内预览。"
-                                className="font-medium text-[#2b6660] underline"
-                              >
-                                查看受控小票影像：
-                                {item.receiptEvidence.fileName}
-                              </ProtectedImagePreview>
-                            ) : (
-                              "未关联小票照片"
-                            ),
-                          },
-                          {
-                            label: "运输扣款",
-                            value: item.deductFromFreight
-                              ? (item.tripNo ?? "待关联趟次")
-                              : "不扣减运费",
-                          },
-                          {
-                            label: "时间",
-                            value: displayDate(item.refueledAt),
-                          },
-                          {
-                            label: "状态",
-                            value: getBusinessStatusLabel(item.status),
-                          },
-                        ],
-                      }),
-                  }))}
-                />
-              </CardContent>
-            </Card>
-            <Card className="border-amber-200 bg-amber-50/40 shadow-sm">
-              <CardHeader>
-                <p className="text-xs font-semibold tracking-[0.12em] text-amber-800">
-                  财务期间控制 · 调整链
-                </p>
-                <CardTitle className="mt-1 text-base">
-                  日结封存、授权反结账与版本快照
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  已封存日期的流水、发票、采购结算和冲销会由服务端拦截。仅财务负责人可填写原因授权反结账；重新封存后生成新版本，旧快照与反结账原因永久保留。
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {dailyAccountingReport.data ? (
-                  <>
-                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-white/80 p-3">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {dailyAccountingReport.data.closure.closingNo} · 第{" "}
-                          {dailyAccountingReport.data.closure.revision ?? 1} 版
-                        </p>
-                        <p className="mt-1 text-xs text-slate-600">
-                          当前状态：
-                          {dailyAccountingReport.data.closure.status ===
-                          "reopened"
-                            ? "已授权反结账，允许补充后重新封存"
-                            : "已封存，写入已锁定"}{" "}
-                          · 快照{" "}
-                          {dailyAccountingReport.data.closure.snapshotHash.slice(
-                            0,
-                            16
-                          )}
-                          …
-                        </p>
-                      </div>
-                      <BusinessStatusBadge
-                        status={dailyAccountingReport.data.closure.status}
-                      />
-                    </div>
-                    {dailyAccountingReport.data.closure.status === "closed" ? (
-                      <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-                        <Input
-                          value={financeReopenReason}
-                          maxLength={500}
-                          placeholder="反结账原因（至少 5 个字，例如：补充已核实的原始凭证）"
-                          onChange={event =>
-                            setFinanceReopenReason(event.target.value)
-                          }
-                        />
                         <Button
-                          variant="outline"
+                          size="sm"
                           disabled={
-                            reopenDailyAccount.isPending ||
-                            financeReopenReason.trim().length < 5
+                            saveDieselPriceAlertRule.isPending ||
+                            !Number(dieselAlertThreshold)
                           }
                           onClick={() =>
-                            reopenDailyAccount.mutate({
+                            saveDieselPriceAlertRule.mutate({
                               projectId: Number(financeProjectId),
-                              closingDate: financeClosingDate,
-                              reason: financeReopenReason.trim(),
+                              thresholdPercent: Number(dieselAlertThreshold),
+                              enabled:
+                                dieselPriceAlertRule.data?.enabled ?? true,
                             })
                           }
                         >
-                          {reopenDailyAccount.isPending
-                            ? "正在授权…"
-                            : "授权反结账"}
+                          {saveDieselPriceAlertRule.isPending
+                            ? "正在保存…"
+                            : `保存${dieselPriceAlertRule.data?.enabled === false ? "并启用" : "阈值"}`}
                         </Button>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-amber-900">
-                        当前日期已反结账。请完成受控调整后重新执行日结，系统会生成下一版本快照。
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-sm text-slate-600">
-                    选择已封存日期后可查看版本快照和受控调整状态。
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-            <Card className="w-full border-[#d8e3e0] shadow-sm">
-              <CardHeader>
-                <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                  财务审计 · 综合台账
-                </p>
-                <CardTitle className="mt-1 text-base">
-                  发票、成本与审计台账
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  发票行内集中展示往来单位、开票日期、金额、税额与状态；柴油领用和会计日结保留为关联业务台账，不重复展示发票列表。
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {financeInvoices.isLoading ? (
-                  <EmptyState text="正在读取发票台账…" />
-                ) : (
-                  <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                    <Table className="min-w-[1080px] text-xs">
-                      <TableHeader className="bg-[#edf1ed]">
-                        <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            发票号码
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            往来单位
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            开票日期
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            发票类型
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            金额
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            税额
-                          </TableHead>
-                          <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                            状态
-                          </TableHead>
-                          <TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">
-                            操作
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {financeInvoices.data?.invoices.length ? (
-                          financeInvoices.data?.invoices.map(invoice => (
-                            <TableRow
-                              key={invoice.id}
-                              className="border-[#edf0ee] hover:bg-[#fbfaf1]"
-                            >
-                              <TableCell className="px-4 py-3 font-semibold text-[#203c48]">
-                                {invoice.invoiceNo}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                {invoice.counterpartyName}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                {displayDate(invoice.issuedAt)}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                {getInvoiceTypeLabel(invoice.invoiceType)}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 font-medium text-slate-800">
-                                ¥{displayMoney(invoice.amount)}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                ¥{displayMoney(invoice.taxAmount)}
-                              </TableCell>
-                              <TableCell className="px-4 py-3">
-                                <BusinessStatusBadge status={invoice.status} />
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-right">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    setDesktopRecordDetail({
-                                      title: `发票审计 · ${invoice.invoiceNo}`,
-                                      description:
-                                        "发票详情仍受会计、财务负责人及项目范围的服务端校验。",
-                                      fields: [
-                                        {
-                                          label: "往来单位",
-                                          value: invoice.counterpartyName,
-                                        },
-                                        {
-                                          label: "开票日期",
-                                          value: displayDate(invoice.issuedAt),
-                                        },
-                                        {
-                                          label: "发票类型",
-                                          value: getInvoiceTypeLabel(
-                                            invoice.invoiceType
-                                          ),
-                                        },
-                                        {
-                                          label: "金额",
-                                          value: `¥ ${displayMoney(invoice.amount)}`,
-                                        },
-                                        {
-                                          label: "税额",
-                                          value: `¥ ${displayMoney(invoice.taxAmount)}`,
-                                        },
-                                        {
-                                          label: "状态",
-                                          value: (
-                                            <BusinessStatusBadge
-                                              status={invoice.status}
-                                            />
-                                          ),
-                                        },
-                                      ],
-                                    })
-                                  }
-                                >
-                                  详情
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))
+                        <p className="basis-full text-xs text-amber-900">
+                          当前：
+                          {dieselPriceAlertRule.data?.enabled === false
+                            ? "已停用预警"
+                            : `波动达到 ${dieselPriceAlertRule.data?.thresholdPercent ?? 10}% 时预警`}
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-[#d8e3e0] shadow-none">
+                      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                        <div>
+                          <CardTitle className="text-sm">
+                            供应商柴油采购对账
+                          </CardTitle>
+                          <CardDescription>
+                            按当前会计期间汇总加油站现金采购的升数、金额、加权均价、凭证和异常数量。
+                          </CardDescription>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!dieselSupplierReconciliation.data?.length}
+                          onClick={() =>
+                            downloadCsvFile(
+                              `柴油供应商对账-${financePeriod}.csv`,
+                              [
+                                "供应商",
+                                "笔数",
+                                "升数",
+                                "金额",
+                                "加权均价",
+                                "最低单价",
+                                "最高单价",
+                                "价差",
+                                "凭证数",
+                                "异常数",
+                              ],
+                              (dieselSupplierReconciliation.data ?? []).map(
+                                item => [
+                                  item.supplierName,
+                                  item.recordCount,
+                                  item.liters.toFixed(3),
+                                  item.amount.toFixed(2),
+                                  item.averageUnitPrice.toFixed(2),
+                                  item.minUnitPrice.toFixed(2),
+                                  item.maxUnitPrice.toFixed(2),
+                                  item.priceSpread.toFixed(2),
+                                  item.receiptCount,
+                                  item.alertCount,
+                                ]
+                              )
+                            )
+                          }
+                        >
+                          导出对账
+                        </Button>
+                      </CardHeader>
+                      <CardContent>
+                        {dieselSupplierReconciliation.isLoading ? (
+                          <p className="text-sm text-slate-500">
+                            正在汇总供应商采购…
+                          </p>
+                        ) : dieselSupplierReconciliation.data?.length ? (
+                          <div className="overflow-x-auto">
+                            <Table className="min-w-[760px] text-xs">
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>供应商</TableHead>
+                                  <TableHead>升数 / 金额</TableHead>
+                                  <TableHead>加权均价</TableHead>
+                                  <TableHead>价格区间</TableHead>
+                                  <TableHead>凭证</TableHead>
+                                  <TableHead>异常</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {dieselSupplierReconciliation.data.map(item => (
+                                  <TableRow key={item.supplierName}>
+                                    <TableCell className="font-medium">
+                                      {item.supplierName}
+                                    </TableCell>
+                                    <TableCell>
+                                      {item.liters.toFixed(2)} L / ¥
+                                      {displayMoney(item.amount)}
+                                    </TableCell>
+                                    <TableCell>
+                                      ¥{displayMoney(item.averageUnitPrice)}/L
+                                    </TableCell>
+                                    <TableCell>
+                                      ¥{displayMoney(item.minUnitPrice)}–
+                                      {displayMoney(item.maxUnitPrice)}
+                                    </TableCell>
+                                    <TableCell>
+                                      {item.receiptCount} / {item.recordCount}
+                                    </TableCell>
+                                    <TableCell
+                                      className={
+                                        item.alertCount
+                                          ? "font-medium text-rose-700"
+                                          : "text-emerald-700"
+                                      }
+                                    >
+                                      {item.alertCount
+                                        ? `${item.alertCount} 条预警`
+                                        : "无异常"}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
                         ) : (
-                          <TableRow>
-                            <TableCell
-                              colSpan={8}
-                              className="px-4 py-10 text-center text-slate-500"
-                            >
-                              当前期间暂无发票，财务岗位可通过发票台账接口登记真实凭证。
-                            </TableCell>
-                          </TableRow>
+                          <p className="text-sm text-slate-500">
+                            当前期间暂无加油站现金采购记录。
+                          </p>
                         )}
-                      </TableBody>
-                    </Table>
+                      </CardContent>
+                    </Card>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-            <TaxAccountingHandoffManager
-              projectId={Number(financeProjectId)}
-              period={financePeriod}
-            />
-            {!isDiesel ? (
-              <Card className="border-[#c9dbd6] bg-[#f6fbf8] shadow-sm">
-                <CardHeader>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    财务打印中心 · 当前项目与期间
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    各类账本明细与汇总打印
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    资金总账保持页面当前筛选；发票、成本分类和成本小类目均按当前项目与会计期间的已授权真实数据打印，末行汇总与当前页面口径一致。
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  <Button
-                    variant="outline"
-                    disabled={!financeLedgerPrintRows.length}
-                    onClick={() => setFinancePrintPreview("ledger")}
-                  >
-                    资金总账明细与汇总
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!invoicePrintRows.length}
-                    onClick={() => setFinancePrintPreview("invoices")}
-                  >
-                    发票台账明细与汇总
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!financeCategoryPrintRows.length}
-                    onClick={() => setFinancePrintPreview("categories")}
-                  >
-                    成本分类明细与汇总
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!financeSubcategoryPrintRows.length}
-                    onClick={() => setFinancePrintPreview("subcategories")}
-                  >
-                    成本小类目明细与汇总
-                  </Button>
+                  <LedgerTable
+                    title="每日柴油领用明细"
+                    description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
+                    loading={dieselRefuelRecords.isLoading}
+                    columns={[
+                      "单号/资源",
+                      "供油方式",
+                      "油量 / 单价",
+                      "金额",
+                      "凭证 / 预警",
+                      "运输扣油",
+                      "加油时间",
+                      "状态",
+                    ]}
+                    rows={(dieselRefuelRecords.data ?? []).map(item => ({
+                      id: Number(item.id),
+                      cells: [
+                        <div>
+                          <p>{item.recordNo}</p>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            {item.assetName}
+                          </p>
+                        </div>,
+                        item.supplyMethod === "project_supply"
+                          ? "项目部供油"
+                          : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
+                        `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
+                        `¥ ${displayMoney(item.amount)}`,
+                        <div className="space-y-1">
+                          {item.receiptEvidence?.url ? (
+                            <ProtectedImagePreview
+                              file={{
+                                url: item.receiptEvidence.url!,
+                                fileName: item.receiptEvidence.fileName,
+                                mimeType: item.receiptEvidence.mimeType,
+                              }}
+                              title="柴油加油小票"
+                              description="小票照片仅在当前授权范围内站内预览。"
+                              className="text-xs font-medium text-[#2b6660] underline"
+                            >
+                              查看小票照片
+                            </ProtectedImagePreview>
+                          ) : (
+                            <p className="text-xs text-slate-500">无小票照片</p>
+                          )}
+                          {item.priceAlert?.isAlert ? (
+                            <p className="text-xs font-medium text-rose-700">
+                              价格波动 {item.priceAlert.deviationPercent}%
+                            </p>
+                          ) : item.supplyMethod === "external_station" ? (
+                            <p className="text-xs text-emerald-700">价格正常</p>
+                          ) : null}
+                        </div>,
+                        item.deductFromFreight
+                          ? item.tripNo
+                            ? `扣 ${item.tripNo}`
+                            : "待关联趟次"
+                          : "不扣",
+                        displayDate(item.refueledAt),
+                        <BusinessStatusBadge status={item.status} />,
+                      ],
+                      onOpen: () =>
+                        setDesktopRecordDetail({
+                          title: `柴油领用 ${item.recordNo}`,
+                          description:
+                            "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
+                          fields: [
+                            { label: "资源", value: item.assetName },
+                            {
+                              label: "供油方式",
+                              value:
+                                item.supplyMethod === "project_supply"
+                                  ? "项目部供油"
+                                  : "加油站现金加油",
+                            },
+                            {
+                              label: "加油量",
+                              value: `${Number(item.liters).toFixed(2)} L`,
+                            },
+                            {
+                              label: "适用单价",
+                              value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
+                            },
+                            {
+                              label: "金额",
+                              value: `¥ ${displayMoney(item.amount)}`,
+                            },
+                            {
+                              label: "价格预警",
+                              value: item.priceAlert?.isAlert
+                                ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
+                                : item.supplyMethod === "external_station"
+                                  ? "未触发预警"
+                                  : "项目部指导价供油，不参与现金价格预警",
+                            },
+                            {
+                              label: "现金小票",
+                              value: item.receiptEvidence?.url ? (
+                                <ProtectedImagePreview
+                                  file={{
+                                    url: item.receiptEvidence.url!,
+                                    fileName: item.receiptEvidence.fileName,
+                                    mimeType: item.receiptEvidence.mimeType,
+                                  }}
+                                  title="柴油加油小票"
+                                  description="小票照片仅在当前授权范围内站内预览。"
+                                  className="font-medium text-[#2b6660] underline"
+                                >
+                                  查看受控小票影像：
+                                  {item.receiptEvidence.fileName}
+                                </ProtectedImagePreview>
+                              ) : (
+                                "未关联小票照片"
+                              ),
+                            },
+                            {
+                              label: "运输扣款",
+                              value: item.deductFromFreight
+                                ? (item.tripNo ?? "待关联趟次")
+                                : "不扣减运费",
+                            },
+                            {
+                              label: "时间",
+                              value: displayDate(item.refueledAt),
+                            },
+                            {
+                              label: "状态",
+                              value: getBusinessStatusLabel(item.status),
+                            },
+                          ],
+                        }),
+                    }))}
+                  />
                 </CardContent>
               </Card>
-            ) : null}
+            </FinanceRetainedPanel>
+            <FinanceRetainedPanel
+              active={isDiesel || financeTab === "invoices"}
+              label="发票管理"
+            >
+              <Card className="w-full border-[#d8e3e0] shadow-sm">
+                <CardHeader>
+                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
+                    财务审计 · 综合台账
+                  </p>
+                  <CardTitle className="mt-1 text-base">
+                    发票、成本与审计台账
+                  </CardTitle>
+                  <CardDescription className="mt-1">
+                    发票行内集中展示往来单位、开票日期、金额、税额与状态；柴油领用和会计日结保留为关联业务台账，不重复展示发票列表。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)_auto]">
+                    <Select
+                      value={financeInvoiceFilter.status}
+                      onValueChange={status =>
+                        setFinanceInvoiceFilter(current => ({
+                          ...current,
+                          status,
+                        }))
+                      }
+                    >
+                      <SelectTrigger aria-label="发票状态筛选">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部发票状态</SelectItem>
+                        {Array.from(
+                          new Set(
+                            (financeInvoices.data?.invoices ?? []).map(
+                              invoice => invoice.status
+                            )
+                          )
+                        ).map(status => (
+                          <SelectItem key={status} value={status}>
+                            {getBusinessStatusLabel(status)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      aria-label="发票关键词筛选"
+                      value={financeInvoiceFilter.keyword}
+                      onChange={event =>
+                        setFinanceInvoiceFilter(current => ({
+                          ...current,
+                          keyword: event.target.value,
+                        }))
+                      }
+                      placeholder="发票号码、往来单位"
+                    />
+                    <CurrentFilterPrintActions
+                      disabled={!financeInvoiceRows.length}
+                      onPrint={() => setFinancePrintPreview("invoices")}
+                      onExport={() =>
+                        downloadCsvFile(
+                          `发票台账-${financePeriod}.csv`,
+                          [
+                            "发票号码",
+                            "往来单位",
+                            "日期",
+                            "类型",
+                            "金额",
+                            "税额",
+                            "状态",
+                          ],
+                          financeInvoiceRows.map(invoice => [
+                            invoice.invoiceNo,
+                            invoice.counterpartyName,
+                            displayDate(invoice.issuedAt),
+                            getInvoiceTypeLabel(invoice.invoiceType),
+                            invoice.amount,
+                            invoice.taxAmount ?? 0,
+                            getBusinessStatusLabel(invoice.status),
+                          ])
+                        )
+                      }
+                    />
+                  </div>
+                  <p className="rounded-lg border bg-[#f8fbf9] px-3 py-2 text-xs text-slate-600">
+                    当前月份 {financePeriod} · 全部筛选{" "}
+                    {financeInvoiceRows.length} 张 · 有效开票金额 ¥
+                    {displayMoney(invoiceDetailedSummary.amount)} · 有效税额 ¥
+                    {displayMoney(invoiceDetailedSummary.tax)}（不含作废与红冲）
+                  </p>
+                  {financeInvoices.isLoading ? (
+                    <EmptyState text="正在读取发票台账…" />
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
+                      <Table className="min-w-[1080px] text-xs">
+                        <TableHeader className="bg-[#edf1ed]">
+                          <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              发票号码
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              往来单位
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              开票日期
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              发票类型
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              金额
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              税额
+                            </TableHead>
+                            <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
+                              状态
+                            </TableHead>
+                            <TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">
+                              操作
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {financeInvoiceRows.length ? (
+                            financeInvoicePageRows.map(invoice => (
+                              <TableRow
+                                key={invoice.id}
+                                className="border-[#edf0ee] hover:bg-[#fbfaf1]"
+                              >
+                                <TableCell className="px-4 py-3 font-semibold text-[#203c48]">
+                                  {invoice.invoiceNo}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-slate-700">
+                                  {invoice.counterpartyName}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-slate-700">
+                                  {displayDate(invoice.issuedAt)}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-slate-700">
+                                  {getInvoiceTypeLabel(invoice.invoiceType)}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 font-medium text-slate-800">
+                                  ¥{displayMoney(invoice.amount)}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-slate-700">
+                                  ¥{displayMoney(invoice.taxAmount)}
+                                </TableCell>
+                                <TableCell className="px-4 py-3">
+                                  <BusinessStatusBadge
+                                    status={invoice.status}
+                                  />
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-right">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      setDesktopRecordDetail({
+                                        title: `发票审计 · ${invoice.invoiceNo}`,
+                                        description:
+                                          "发票详情仍受会计、财务负责人及项目范围的服务端校验。",
+                                        fields: [
+                                          {
+                                            label: "往来单位",
+                                            value: invoice.counterpartyName,
+                                          },
+                                          {
+                                            label: "开票日期",
+                                            value: displayDate(
+                                              invoice.issuedAt
+                                            ),
+                                          },
+                                          {
+                                            label: "发票类型",
+                                            value: getInvoiceTypeLabel(
+                                              invoice.invoiceType
+                                            ),
+                                          },
+                                          {
+                                            label: "金额",
+                                            value: `¥ ${displayMoney(invoice.amount)}`,
+                                          },
+                                          {
+                                            label: "税额",
+                                            value: `¥ ${displayMoney(invoice.taxAmount)}`,
+                                          },
+                                          {
+                                            label: "状态",
+                                            value: (
+                                              <BusinessStatusBadge
+                                                status={invoice.status}
+                                              />
+                                            ),
+                                          },
+                                        ],
+                                      })
+                                    }
+                                  >
+                                    详情
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          ) : (
+                            <TableRow>
+                              <TableCell
+                                colSpan={8}
+                                className="px-4 py-10 text-center text-slate-500"
+                              >
+                                当前期间暂无发票，财务岗位可通过发票台账接口登记真实凭证。
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                  <FinancePagination
+                    page={invoicePage}
+                    pageSize={financeInvoicePageSize}
+                    total={financeInvoiceRows.length}
+                    onPageChange={setFinanceInvoicePage}
+                    onPageSizeChange={setFinanceInvoicePageSize}
+                    label="发票台账"
+                  />
+                </CardContent>
+              </Card>
+            </FinanceRetainedPanel>
+            <FinanceRetainedPanel
+              active={
+                isDiesel ||
+                (financeTab === "closing" && financeClosingView === "daily")
+              }
+              label="日结封存"
+            >
+              <Card className="print:border-0 print:shadow-none">
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    后勤每日开支会计日结与打印
+                  </CardTitle>
+                  <CardDescription>
+                    日结时由服务端重新汇总当日流水与发票，生成 SHA-256
+                    快照；封存后不可重复日结，可作为每日凭证装订页打印。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="grid gap-1.5">
+                      <Label>日结日期</Label>
+                      <Input
+                        type="date"
+                        value={financeClosingDate}
+                        onChange={event =>
+                          setFinanceClosingDate(event.target.value)
+                        }
+                      />
+                    </div>
+                    <Button
+                      className="bg-[#203c48] hover:bg-[#17313b]"
+                      disabled={closeDailyAccount.isPending}
+                      onClick={() =>
+                        closeDailyAccount.mutate({
+                          projectId: Number(financeProjectId),
+                          closingDate: financeClosingDate,
+                        })
+                      }
+                    >
+                      {closeDailyAccount.isPending
+                        ? "正在日结…"
+                        : "执行日结并封存"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={!dailyAccountingReport.data}
+                      onClick={printDailyAccountingSnapshot}
+                    >
+                      打印日结装订页
+                    </Button>
+                  </div>
+                  {dailyAccountingReport.data ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap justify-between gap-3">
+                        <div>
+                          <p className="font-medium text-slate-900">
+                            日结单：
+                            {dailyAccountingReport.data.closure.closingNo}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            封存日期：{financeClosingDate} · 快照指纹：
+                            {dailyAccountingReport.data.closure.snapshotHash.slice(
+                              0,
+                              16
+                            )}
+                            …
+                          </p>
+                        </div>
+                        <div className="text-right text-sm">
+                          <p>
+                            收入：¥{" "}
+                            {displayMoney(
+                              dailyAccountingReport.data.closure.totalIncome
+                            )}
+                          </p>
+                          <p>
+                            开支：¥{" "}
+                            {displayMoney(
+                              dailyAccountingReport.data.closure.totalExpense
+                            )}
+                          </p>
+                          <p>
+                            发票：
+                            {dailyAccountingReport.data.closure.invoiceCount} 张
+                            · ¥{" "}
+                            {displayMoney(
+                              dailyAccountingReport.data.closure.invoiceAmount
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">
+                      尚未封存该日期，执行日结后将显示可打印的审计快照。
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+              <Card className="border-amber-200 bg-amber-50/40 shadow-sm">
+                <CardHeader>
+                  <p className="text-xs font-semibold tracking-[0.12em] text-amber-800">
+                    财务期间控制 · 调整链
+                  </p>
+                  <CardTitle className="mt-1 text-base">
+                    日结封存、授权反结账与版本快照
+                  </CardTitle>
+                  <CardDescription className="mt-1">
+                    已封存日期的流水、发票、采购结算和冲销会由服务端拦截。仅财务负责人可填写原因授权反结账；重新封存后生成新版本，旧快照与反结账原因永久保留。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {dailyAccountingReport.data ? (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-white/80 p-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {dailyAccountingReport.data.closure.closingNo} · 第{" "}
+                            {dailyAccountingReport.data.closure.revision ?? 1}{" "}
+                            版
+                          </p>
+                          <p className="mt-1 text-xs text-slate-600">
+                            当前状态：
+                            {dailyAccountingReport.data.closure.status ===
+                            "reopened"
+                              ? "已授权反结账，允许补充后重新封存"
+                              : "已封存，写入已锁定"}{" "}
+                            · 快照{" "}
+                            {dailyAccountingReport.data.closure.snapshotHash.slice(
+                              0,
+                              16
+                            )}
+                            …
+                          </p>
+                        </div>
+                        <BusinessStatusBadge
+                          status={dailyAccountingReport.data.closure.status}
+                        />
+                      </div>
+                      {dailyAccountingReport.data.closure.status ===
+                      "closed" ? (
+                        <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                          <Input
+                            value={financeReopenReason}
+                            maxLength={500}
+                            placeholder="反结账原因（至少 5 个字，例如：补充已核实的原始凭证）"
+                            onChange={event =>
+                              setFinanceReopenReason(event.target.value)
+                            }
+                          />
+                          <Button
+                            variant="outline"
+                            disabled={
+                              reopenDailyAccount.isPending ||
+                              financeReopenReason.trim().length < 5
+                            }
+                            onClick={() =>
+                              reopenDailyAccount.mutate({
+                                projectId: Number(financeProjectId),
+                                closingDate: financeClosingDate,
+                                reason: financeReopenReason.trim(),
+                              })
+                            }
+                          >
+                            {reopenDailyAccount.isPending
+                              ? "正在授权…"
+                              : "授权反结账"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-amber-900">
+                          当前日期已反结账。请完成受控调整后重新执行日结，系统会生成下一版本快照。
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-600">
+                      选择已封存日期后可查看版本快照和受控调整状态。
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </FinanceRetainedPanel>
+            <FinanceRetainedPanel
+              active={!isDiesel && financeTab === "tax"}
+              label="财税交接"
+            >
+              <TaxAccountingHandoffManager
+                projectId={Number(financeProjectId)}
+                period={financePeriod}
+                enabled={financeTab === "tax" && !isDiesel}
+                onDirtyChange={setFinanceTaxDirty}
+              />
+            </FinanceRetainedPanel>
             {!isDiesel ? (
               <FinancialLedgerPrintPreviewDialogs
-                activeBook={financePrintPreview}
+                activeBook={financePrintReady ? financePrintPreview : null}
                 onActiveBookChange={setFinancePrintPreview}
                 projectName={selectedWorkspaceProject?.name ?? "当前项目"}
                 period={financePeriod}
@@ -22328,97 +23356,61 @@ export default function AdminPage({
                 ]}
               />
             ) : null}
-            <Card className="print:border-0 print:shadow-none">
-              <CardHeader>
-                <CardTitle className="text-base">
-                  后勤每日开支会计日结与打印
-                </CardTitle>
-                <CardDescription>
-                  日结时由服务端重新汇总当日流水与发票，生成 SHA-256
-                  快照；封存后不可重复日结，可作为每日凭证装订页打印。
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="grid gap-1.5">
-                    <Label>日结日期</Label>
-                    <Input
-                      type="date"
-                      value={financeClosingDate}
-                      onChange={event =>
-                        setFinanceClosingDate(event.target.value)
-                      }
-                    />
-                  </div>
-                  <Button
-                    className="bg-[#203c48] hover:bg-[#17313b]"
-                    disabled={closeDailyAccount.isPending}
-                    onClick={() =>
-                      closeDailyAccount.mutate({
-                        projectId: Number(financeProjectId),
-                        closingDate: financeClosingDate,
-                      })
-                    }
-                  >
-                    {closeDailyAccount.isPending
-                      ? "正在日结…"
-                      : "执行日结并封存"}
-                  </Button>
+            {!isDiesel && financePrintPreview && !financePrintReady ? (
+              <Dialog
+                open
+                onOpenChange={open => {
+                  if (!open) setFinancePrintPreview(null);
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>财务报表预览</DialogTitle>
+                    <DialogDescription>
+                      {financePrintError
+                        ? "报表数据暂时无法读取，请稍后重试。"
+                        : "正在读取当前项目、期间及全部筛选结果，请稍候…"}
+                    </DialogDescription>
+                  </DialogHeader>
+                  {financePrintError ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => void financePrintQuery.refetch()}
+                    >
+                      重新读取
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
-                    disabled={!dailyAccountingReport.data}
-                    onClick={printDailyAccountingSnapshot}
+                    onClick={() => setFinancePrintPreview(null)}
                   >
-                    打印日结装订页
+                    关闭
                   </Button>
-                </div>
-                {dailyAccountingReport.data ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-wrap justify-between gap-3">
-                      <div>
-                        <p className="font-medium text-slate-900">
-                          日结单：{dailyAccountingReport.data.closure.closingNo}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          封存日期：{financeClosingDate} · 快照指纹：
-                          {dailyAccountingReport.data.closure.snapshotHash.slice(
-                            0,
-                            16
-                          )}
-                          …
-                        </p>
-                      </div>
-                      <div className="text-right text-sm">
-                        <p>
-                          收入：¥{" "}
-                          {displayMoney(
-                            dailyAccountingReport.data.closure.totalIncome
-                          )}
-                        </p>
-                        <p>
-                          开支：¥{" "}
-                          {displayMoney(
-                            dailyAccountingReport.data.closure.totalExpense
-                          )}
-                        </p>
-                        <p>
-                          发票：
-                          {dailyAccountingReport.data.closure.invoiceCount} 张 ·
-                          ¥{" "}
-                          {displayMoney(
-                            dailyAccountingReport.data.closure.invoiceAmount
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-500">
-                    尚未封存该日期，执行日结后将显示可打印的审计快照。
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+                </DialogContent>
+              </Dialog>
+            ) : null}
+            {financePaymentTarget ? (
+              <SettlementPaymentDialog
+                open
+                onOpenChange={open => {
+                  if (!open) setFinancePaymentTarget(null);
+                }}
+                projectId={financePaymentTarget.projectId}
+                settlementType={financePaymentTarget.sourceType}
+                target={{
+                  id: financePaymentTarget.settlementId,
+                  label: financePaymentTarget.settlementNo,
+                }}
+                readOnly={financePaymentTarget.readOnly}
+                onCompleted={async () => {
+                  await Promise.all([
+                    financeUtils.settlementPayment.board.invalidate(),
+                    financeUtils.settlementPayment.monthlyReconciliation.invalidate(),
+                    financeUtils.finance.summary.invalidate(),
+                  ]);
+                }}
+              />
+            ) : null}
           </>
         )}
       </div>
@@ -24200,7 +25192,9 @@ export default function AdminPage({
                 saveMachine.mutate({
                   id: machineForm.id,
                   projectId: Number(machineForm.projectId),
-                  operatorPersonId: machineForm.operatorPersonId ? Number(machineForm.operatorPersonId) : null,
+                  operatorPersonId: machineForm.operatorPersonId
+                    ? Number(machineForm.operatorPersonId)
+                    : null,
                   operatorUserId: machineForm.operatorUserId
                     ? Number(machineForm.operatorUserId)
                     : null,
@@ -24383,7 +25377,27 @@ export default function AdminPage({
                   />
                 </Field>
                 <Field label="操作员人员档案">
-                  <PersonnelResourceSelect projectId={Number(machineForm.projectId) || undefined} role="operator" value={machineForm.operatorPersonId ? Number(machineForm.operatorPersonId) : null} fallbackLabel={machineForm.driverName} onChange={person => setMachineForm(current => ({ ...current, operatorPersonId: person ? String(person.id) : "", operatorUserId: person?.userId ? String(person.userId) : "", driverName: person?.name ?? "", driverPhone: "" }))} />
+                  <PersonnelResourceSelect
+                    projectId={Number(machineForm.projectId) || undefined}
+                    role="operator"
+                    value={
+                      machineForm.operatorPersonId
+                        ? Number(machineForm.operatorPersonId)
+                        : null
+                    }
+                    fallbackLabel={machineForm.driverName}
+                    onChange={person =>
+                      setMachineForm(current => ({
+                        ...current,
+                        operatorPersonId: person ? String(person.id) : "",
+                        operatorUserId: person?.userId
+                          ? String(person.userId)
+                          : "",
+                        driverName: person?.name ?? "",
+                        driverPhone: "",
+                      }))
+                    }
+                  />
                 </Field>
                 <Field label="机械老板（只读费用）">
                   <Select
@@ -24409,7 +25423,9 @@ export default function AdminPage({
                         ))}
                     </SelectContent>
                   </Select>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">老板登录后只查看名下全部机械费用，不能录入、审核或管理设备。</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    老板登录后只查看名下全部机械费用，不能录入、审核或管理设备。
+                  </p>
                 </Field>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
