@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-describe("直拍车牌运输闭环", () => {
-  it("直拍开票在装土时进入在途，并以受控定位完成卸土", () => {
+describe("运输拍照卸土闭环", () => {
+  it("拍照发票和NFC发票均可在卸土点通过受控定位完成拍照卸土", () => {
     const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
     expect(source).toContain("confirmPlatePhotoUnload");
     expect(source).toContain("unloadEvidenceId");
@@ -14,5 +14,8 @@ describe("直拍车牌运输闭环", () => {
     expect(source).toContain("未达到卸土点");
     expect(source).toContain("activeVehicleTransitKey: null");
     expect(source).toContain("transport_unload_completed");
+    expect(source).toContain('unloadConfirmationMode: "photo"');
+    expect(source).toContain('status: "submitted"');
+    expect(source).not.toContain('message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认"');
   });
 });

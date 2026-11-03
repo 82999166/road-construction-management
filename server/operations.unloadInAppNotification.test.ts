@@ -27,7 +27,7 @@ describe("运输卸土成功站内通知", () => {
     expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车装土成功');
     expect(source).toContain('const mobileNfcTripOrdinal = event.success && !event.needsReview');
     expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${mobileNfcTripOrdinal} 车装土成功');
-    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，直拍票据卸土确认后');
+    expect(source).toContain('车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，${trip.invoiceMode === "plate_photo" ? "拍照发票" : "刷卡发票"}已通过卸土现场拍照确认');
   });
 
   it("列表投影返回两端实际确认管理员及时间", () => {

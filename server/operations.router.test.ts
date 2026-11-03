@@ -475,13 +475,16 @@ describe("机械与运输 tRPC 路由", () => {
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_plate_photo_ticket_submitted", targetId: "TR-PLATE-001" }));
   });
 
-  it("车牌直拍票据不能被误送入 NFC 装卸刷卡状态机", async () => {
+  it("车牌直拍票据仍不允许误送入 NFC 装卸刷卡状态机，但可走拍照卸土接口", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
       { id: 62, projectId: 10, vehicleId: 11, invoiceMode: "plate_photo", status: "submitted", loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: null, unloadConfirmedAt: null },
     ]) as never);
 
     await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 62, projectId: 10, siteId: 71, idempotencyKey: "reader-photo-block-0001", occurredAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不进入 NFC 刷卡流程") });
+    const operationsSource = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
+    expect(operationsSource).not.toContain('if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });');
+    expect(operationsSource).toContain('unloadConfirmationMode: "photo"');
   });
 
   it("运输日汇总按车辆拆分 NFC 与直拍票据数量，并保留运费与待核验数量", async () => {

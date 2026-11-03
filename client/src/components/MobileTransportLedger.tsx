@@ -29,8 +29,7 @@ function tripProgress(trip: { status: "draft" | "submitted" | "verified" | "sett
 }
 
 function canConfirmPhotoUnload(trip: any) {
-  return trip.invoiceMode === "plate_photo"
-    && Boolean(trip.loadConfirmedAt)
+  return Boolean(trip.loadConfirmedAt)
     && !trip.unloadConfirmedAt
     && !["void", "settled"].includes(trip.status);
 }
@@ -84,7 +83,7 @@ export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirm
         <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-[#8f7566]">
           <span>{Number(trip.volumeCubicMeters ?? 0).toFixed(2)} m³ · {formatMoney(trip.calculatedAmount)}</span>
           <div className="flex shrink-0 items-center gap-1.5">
-            {showUnload ? <Button type="button" size="sm" className="h-8 bg-[#47754d] px-3 text-xs font-semibold text-white hover:bg-[#39623e]" onClick={() => openPhotoUnload(trip.id)}>确认卸土</Button> : null}
+            {showUnload ? <Button type="button" size="sm" className="h-8 bg-[#47754d] px-3 text-xs font-semibold text-white hover:bg-[#39623e]" onClick={() => openPhotoUnload(trip.id)}>拍照卸土</Button> : null}
             <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs text-[#8f7566]" onClick={() => setSelectedTripId(trip.id)}>详情 <ChevronRight className="ml-0.5 h-3.5 w-3.5" /></Button>
           </div>
         </div>
