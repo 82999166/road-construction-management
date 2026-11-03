@@ -12,6 +12,14 @@ describe("移动端拍照车牌发票", () => {
     expect(source).toContain('facingMode: { ideal: "environment" }');
   });
 
+  it("拍照发票使用独立车牌选择状态，不会被台账车辆筛选状态覆盖", () => {
+    expect(source).toContain("const [tripVehicleId, setTripVehicleId]");
+    expect(source).toContain("onClick={() => setTripVehicleId(vehicle.id)}");
+    expect(source).toContain("vehicleId: tripVehicleId");
+    expect(source).toContain("!tripVehicleId");
+    expect(source).not.toContain("onClick={() => setVehicleId(vehicle.id)}");
+  });
+
   it("禁止相册选择并在直拍开票后显示成功反馈", () => {
     expect(source).toContain("不提供相册选择");
     expect(source).toContain('formatVehicleStageReceipt(data.vehiclePlateNo, data.dailyVehicleTripOrdinal, "load")');
