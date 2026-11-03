@@ -1,7 +1,13 @@
 import {
+  DieselPriceHistory,
+  DieselSupplierReport,
+} from "@/components/DieselSupportingReports";
+import { DieselReceiptLedger } from "@/components/DieselReceiptLedger";
+import {
   FinanceWorkspaceNavigation,
   FinanceRetainedPanel,
   FinancePagination,
+  useFinancePagination,
   type FinanceWorkspaceTab,
 } from "@/components/FinanceWorkspaceNavigation";
 import {
@@ -2525,6 +2531,11 @@ export default function AdminPage({
     settlementNo: string;
     readOnly: boolean;
   } | null>(null);
+  const [dieselTab, setDieselTab] = useState<
+    "ledger" | "prices" | "suppliers" | "receipts"
+  >("ledger");
+  const [dieselPriceDialogOpen, setDieselPriceDialogOpen] = useState(false);
+  const [dieselRefuelDialogOpen, setDieselRefuelDialogOpen] = useState(false);
   const [financeTab, setFinanceTab] = useState<FinanceWorkspaceTab>("overview");
   const [financeSettlementView, setFinanceSettlementView] = useState<
     "board" | "records"
@@ -2571,6 +2582,8 @@ export default function AdminPage({
   const [paymentBillPrintOpen, setPaymentBillPrintOpen] = useState(false);
   const confirmFinanceScopeChange = () =>
     !financePaymentTarget &&
+    !dieselRefuelDialogOpen &&
+    !dieselPriceDialogOpen &&
     (!(financeTaxDirty || financeReopenReason.trim()) ||
       window.confirm(
         "当前财务资料有未保存内容。切换项目或月份将清空未保存内容，是否继续？"
@@ -3200,8 +3213,8 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
-        (isDiesel ||
-          financeTab === "overview" ||
+        !isDiesel &&
+        (financeTab === "overview" ||
           financeTab === "ledger" ||
           financePrintPreview === "ledger") &&
         Number(financeProjectId) > 0 &&
@@ -3226,8 +3239,8 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
-        (isDiesel ||
-          financeTab === "overview" ||
+        !isDiesel &&
+        (financeTab === "overview" ||
           financeTab === "invoices" ||
           financePrintPreview === "invoices") &&
         Number(financeProjectId) > 0,
@@ -3242,19 +3255,38 @@ export default function AdminPage({
       enabled:
         canQuery &&
         isFinance &&
-        (isDiesel ||
-          (financeTab === "closing" && financeClosingView === "daily")) &&
+        !isDiesel &&
+        financeTab === "closing" &&
+        financeClosingView === "daily" &&
         Number(financeProjectId) > 0 &&
         Boolean(financeClosingDate),
     }
   );
   const dieselGuidelinePrices = trpc.admin.diesel.listGuidelinePrices.useQuery(
     { projectId: Number(financeProjectId || 0) },
-    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
+    {
+      enabled:
+        canQuery &&
+        isDiesel &&
+        (dieselTab === "ledger" ||
+          dieselTab === "prices" ||
+          dieselRefuelDialogOpen) &&
+        Number(financeProjectId) > 0,
+    }
   );
   const dieselRefuelRecords = trpc.admin.diesel.listRefuelRecords.useQuery(
     dieselRefuelRecordsInput,
-    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
+    {
+      enabled:
+        canQuery &&
+        isDiesel &&
+        (dieselTab === "ledger" || dieselTab === "receipts") &&
+        Number(financeProjectId) > 0,
+    }
+  );
+  const dieselLedgerPagination = useFinancePagination(
+    dieselRefuelRecords.data ?? [],
+    JSON.stringify(dieselRefuelRecordsInput)
   );
   const dieselCurrentSummary = useMemo(
     () =>
@@ -3273,7 +3305,13 @@ export default function AdminPage({
   ].join("；");
   const dieselPriceAlertRule = trpc.admin.diesel.getPriceAlertRule.useQuery(
     { projectId: Number(financeProjectId || 0) },
-    { enabled: canQuery && isDiesel && Number(financeProjectId) > 0 }
+    {
+      enabled:
+        canQuery &&
+        isDiesel &&
+        dieselTab === "prices" &&
+        Number(financeProjectId) > 0,
+    }
   );
   const dieselSupplierReconciliation =
     trpc.admin.diesel.supplierReconciliation.useQuery(
@@ -3282,6 +3320,7 @@ export default function AdminPage({
         enabled:
           canQuery &&
           isDiesel &&
+          dieselTab === "suppliers" &&
           Number(financeProjectId) > 0 &&
           /^\d{4}-(0[1-9]|1[0-2])$/.test(financePeriod),
       }
@@ -3615,14 +3654,7 @@ export default function AdminPage({
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const refreshDieselLedger = async () => {
-    await Promise.all([
-      dieselGuidelinePrices.refetch(),
-      dieselRefuelRecords.refetch(),
-      dieselPriceAlertRule.refetch(),
-      dieselSupplierReconciliation.refetch(),
-      financeSummary.refetch(),
-      audits.refetch(),
-    ]);
+    await trpcUtils.admin.diesel.invalidate();
   };
   const stopDieselCamera = () => {
     dieselCameraStream?.getTracks().forEach(track => track.stop());
@@ -3985,11 +4017,9 @@ export default function AdminPage({
   const [dieselPriceForm, setDieselPriceForm] = useState<DieselPriceForm>(
     EMPTY_DIESEL_PRICE_FORM
   );
-  const [dieselPriceDialogOpen, setDieselPriceDialogOpen] = useState(false);
   const [dieselRefuelForm, setDieselRefuelForm] = useState<DieselRefuelForm>(
     EMPTY_DIESEL_REFUEL_FORM
   );
-  const [dieselRefuelDialogOpen, setDieselRefuelDialogOpen] = useState(false);
   const [dieselReceiptFile, setDieselReceiptFile] = useState<File | null>(null);
   const [dieselAlertThreshold, setDieselAlertThreshold] = useState("10");
   const [rfidWriterDeviceForm, setRfidWriterDeviceForm] =
@@ -20341,6 +20371,9 @@ export default function AdminPage({
   );
 
   const renderFinance = () => {
+    const dieselProjectName =
+      projects.data?.find(project => String(project.id) === financeProjectId)
+        ?.name ?? "当前项目";
     const printDailyAccountingSnapshot = () => {
       const report = dailyAccountingReport.data;
       if (!report) return;
@@ -20660,31 +20693,28 @@ export default function AdminPage({
               </SelectContent>
             </Select>
             <Input
+              hidden={isDiesel && dieselTab !== "suppliers"}
               type="month"
               value={financePeriod}
               onChange={event => changeFinancePeriod(event.target.value)}
-              aria-label="会计期间"
+              aria-label={isDiesel ? "供应商对账月份" : "会计期间"}
             />
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
                 onClick={() => {
+                  if (isDiesel) {
+                    void refreshDieselLedger();
+                    return;
+                  }
                   void financeUtils.finance.invalidate();
                   void financeUtils.settlementPayment.invalidate();
                   void financeUtils.projectRisk.financeCategoryAnalysis.invalidate();
-                  if (
-                    financeTab === "overview" ||
-                    financeTab === "ledger" ||
-                    isDiesel
-                  )
+                  if (financeTab === "overview" || financeTab === "ledger")
                     void financeSummary.refetch();
                   if (financeTab === "overview")
                     void financeBusinessSummary.refetch();
-                  if (
-                    financeTab === "overview" ||
-                    financeTab === "invoices" ||
-                    isDiesel
-                  )
+                  if (financeTab === "overview" || financeTab === "invoices")
                     void financeInvoices.refetch();
                   if (financeTab === "overview" || financeTab === "costs")
                     void riskFinanceAnalysis.refetch();
@@ -21042,7 +21072,7 @@ export default function AdminPage({
               </details>
             </FinanceRetainedPanel>
             <FinanceRetainedPanel
-              active={isDiesel || financeTab === "ledger"}
+              active={!isDiesel && financeTab === "ledger"}
               label="收支账本"
             >
               <Card className="border-[#d8e3e0] shadow-sm">
@@ -22223,14 +22253,32 @@ export default function AdminPage({
               </Dialog>
             ) : null}
             <FinanceRetainedPanel active={isDiesel} label="柴油管理">
-              <Card className="border-[#d8e3e0] shadow-sm print:border-0 print:shadow-none">
+              <Tabs
+                value={dieselTab}
+                onValueChange={value => {
+                  if (dieselRefuelDialogOpen || dieselPriceDialogOpen) return;
+                  setDieselTab(value as typeof dieselTab);
+                  setDieselPrintOpen(false);
+                }}
+              >
+                <TabsList
+                  aria-label="柴油工作区栏目"
+                  className="grid h-auto w-full grid-cols-2 gap-2 bg-muted/40 p-2 lg:grid-cols-4"
+                >
+                  <TabsTrigger value="ledger">加油台账</TabsTrigger>
+                  <TabsTrigger value="prices">油价与预警</TabsTrigger>
+                  <TabsTrigger value="suppliers">供应商对账</TabsTrigger>
+                  <TabsTrigger value="receipts">柴油票据</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <Card className="border-[#d8e3e0] shadow-sm">
                 <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
                       项目部供油 · 运输扣款 · 机械油料成本
                     </p>
                     <CardTitle className="mt-1 text-base">
-                      柴油领用与每日结算
+                      柴油业务工作台
                     </CardTitle>
                     <CardDescription className="mt-1">
                       项目部供油按有效指导单价计价；加油站加油按实际单价入账。关联渣土车趟次且勾选“结算扣油”后，财务结算自动从总运费扣除油款并锁定明细。
@@ -22270,300 +22318,471 @@ export default function AdminPage({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div
-                    className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"
-                    data-diesel-current-print
+                  <FinanceRetainedPanel
+                    active={
+                      isDiesel &&
+                      (dieselTab === "ledger" || dieselTab === "receipts")
+                    }
+                    label="柴油共同筛选与汇总"
                   >
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold text-[#29483e]">
-                          柴油组合筛选
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          首次进入与恢复筛选后默认显示当天；可按需改为日期范围、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。
-                        </p>
+                    <div
+                      className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3"
+                      data-diesel-current-print
+                    >
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-[#29483e]">
+                            柴油组合筛选
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            首次进入与恢复筛选后默认显示当天；可按需改为日期范围、车牌、机械、供油方式或供应商，再直接打印当前真实筛选结果。
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const today = toLocalDateInput();
+                            setDieselLedgerFilter({
+                              plateNo: "",
+                              dateFrom: today,
+                              dateTo: today,
+                              month: "",
+                              supplyMethod: "all",
+                              assetType: "all",
+                              supplierName: "",
+                            });
+                            setDieselMachineName("");
+                          }}
+                        >
+                          恢复当天筛选
+                        </Button>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          const today = toLocalDateInput();
-                          setDieselLedgerFilter({
-                            plateNo: "",
-                            dateFrom: today,
-                            dateTo: today,
-                            month: "",
-                            supplyMethod: "all",
-                            assetType: "all",
-                            supplierName: "",
-                          });
-                          setDieselMachineName("");
-                        }}
-                      >
-                        恢复当天筛选
-                      </Button>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <Select
-                        value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"}
-                        disabled={dieselLedgerFilter.assetType === "machine"}
-                        onValueChange={value =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            plateNo: value === "ALL_VEHICLES" ? "" : value,
-                            assetType:
-                              value === "ALL_VEHICLES"
-                                ? current.assetType
-                                : "vehicle",
-                          }))
-                        }
-                      >
-                        <SelectTrigger aria-label="柴油筛选车牌">
-                          <SelectValue placeholder="全部车辆" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="ALL_VEHICLES">全部车辆</SelectItem>
-                          {(dieselVehicleOptions.data ?? [])
-                            .filter(
-                              vehicle =>
-                                String(vehicle.projectId) === financeProjectId
-                            )
-                            .map(vehicle => (
-                              <SelectItem
-                                key={vehicle.id}
-                                value={vehicle.plateNo}
-                              >
-                                {vehicle.plateNo}
-                              </SelectItem>
-                            ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="date"
-                        max={dieselLedgerFilter.dateTo || undefined}
-                        value={dieselLedgerFilter.dateFrom}
-                        aria-label="柴油加油开始日期"
-                        onChange={event =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            dateFrom: event.target.value,
-                          }))
-                        }
-                      />
-                      <Input
-                        type="date"
-                        min={dieselLedgerFilter.dateFrom || undefined}
-                        value={dieselLedgerFilter.dateTo}
-                        aria-label="柴油加油结束日期"
-                        onChange={event =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            dateTo: event.target.value,
-                          }))
-                        }
-                      />
-                      <Input
-                        type="month"
-                        value={dieselLedgerFilter.month}
-                        aria-label="柴油加油月份"
-                        onChange={event =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            month: event.target.value,
-                          }))
-                        }
-                      />
-                      <Select
-                        value={dieselLedgerFilter.supplyMethod}
-                        onValueChange={value =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            supplyMethod: value,
-                          }))
-                        }
-                      >
-                        <SelectTrigger aria-label="柴油供油方式">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">全部供油方式</SelectItem>
-                          <SelectItem value="project_supply">
-                            项目部供油
-                          </SelectItem>
-                          <SelectItem value="external_station">
-                            加油站现金加油
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Select
-                        value={dieselLedgerFilter.assetType}
-                        onValueChange={value =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            assetType: value,
-                            plateNo: value === "machine" ? "" : current.plateNo,
-                          }))
-                        }
-                      >
-                        <SelectTrigger aria-label="柴油车辆机械">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">全部车辆 / 机械</SelectItem>
-                          <SelectItem value="vehicle">仅车辆</SelectItem>
-                          <SelectItem value="machine">仅机械</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        value={dieselMachineName}
-                        aria-label="柴油顶部机械名称筛选"
-                        placeholder="机械名称 / 编号（可选）"
-                        disabled={dieselLedgerFilter.assetType === "vehicle"}
-                        onChange={event => {
-                          setDieselMachineName(event.target.value);
-                          if (event.target.value.trim())
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        <Select
+                          value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"}
+                          disabled={dieselLedgerFilter.assetType === "machine"}
+                          onValueChange={value =>
                             setDieselLedgerFilter(current => ({
                               ...current,
-                              assetType: "machine",
-                              plateNo: "",
-                            }));
-                        }}
-                      />
-                      <Input
-                        value={dieselLedgerFilter.supplierName}
-                        aria-label="柴油筛选供应商"
-                        placeholder="供应商 / 加油站（可选）"
-                        onChange={event =>
-                          setDieselLedgerFilter(current => ({
-                            ...current,
-                            supplierName: event.target.value,
-                          }))
-                        }
-                      />
+                              plateNo: value === "ALL_VEHICLES" ? "" : value,
+                              assetType:
+                                value === "ALL_VEHICLES"
+                                  ? current.assetType
+                                  : "vehicle",
+                            }))
+                          }
+                        >
+                          <SelectTrigger aria-label="柴油筛选车牌">
+                            <SelectValue placeholder="全部车辆" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ALL_VEHICLES">
+                              全部车辆
+                            </SelectItem>
+                            {(dieselVehicleOptions.data ?? [])
+                              .filter(
+                                vehicle =>
+                                  String(vehicle.projectId) === financeProjectId
+                              )
+                              .map(vehicle => (
+                                <SelectItem
+                                  key={vehicle.id}
+                                  value={vehicle.plateNo}
+                                >
+                                  {vehicle.plateNo}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="date"
+                          max={dieselLedgerFilter.dateTo || undefined}
+                          value={dieselLedgerFilter.dateFrom}
+                          aria-label="柴油加油开始日期"
+                          onChange={event =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              dateFrom: event.target.value,
+                            }))
+                          }
+                        />
+                        <Input
+                          type="date"
+                          min={dieselLedgerFilter.dateFrom || undefined}
+                          value={dieselLedgerFilter.dateTo}
+                          aria-label="柴油加油结束日期"
+                          onChange={event =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              dateTo: event.target.value,
+                            }))
+                          }
+                        />
+                        <Input
+                          type="month"
+                          value={dieselLedgerFilter.month}
+                          aria-label="柴油加油月份"
+                          onChange={event =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              month: event.target.value,
+                            }))
+                          }
+                        />
+                        <Select
+                          value={dieselLedgerFilter.supplyMethod}
+                          onValueChange={value =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              supplyMethod: value,
+                            }))
+                          }
+                        >
+                          <SelectTrigger aria-label="柴油供油方式">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">全部供油方式</SelectItem>
+                            <SelectItem value="project_supply">
+                              项目部供油
+                            </SelectItem>
+                            <SelectItem value="external_station">
+                              加油站现金加油
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={dieselLedgerFilter.assetType}
+                          onValueChange={value =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              assetType: value,
+                              plateNo:
+                                value === "machine" ? "" : current.plateNo,
+                            }))
+                          }
+                        >
+                          <SelectTrigger aria-label="柴油车辆机械">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">全部车辆 / 机械</SelectItem>
+                            <SelectItem value="vehicle">仅车辆</SelectItem>
+                            <SelectItem value="machine">仅机械</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={dieselMachineName}
+                          aria-label="柴油顶部机械名称筛选"
+                          placeholder="机械名称 / 编号（可选）"
+                          disabled={dieselLedgerFilter.assetType === "vehicle"}
+                          onChange={event => {
+                            setDieselMachineName(event.target.value);
+                            if (event.target.value.trim())
+                              setDieselLedgerFilter(current => ({
+                                ...current,
+                                assetType: "machine",
+                                plateNo: "",
+                              }));
+                          }}
+                        />
+                        <Input
+                          value={dieselLedgerFilter.supplierName}
+                          aria-label="柴油筛选供应商"
+                          placeholder="供应商 / 加油站（可选）"
+                          onChange={event =>
+                            setDieselLedgerFilter(current => ({
+                              ...current,
+                              supplierName: event.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#d8e3e0] pt-3 print:hidden">
+                        <p className="text-xs text-slate-500">
+                          打印、导出和台账始终使用以上当前筛选条件。
+                        </p>
+                        <Button
+                          disabled={!dieselRefuelRecords.data?.length}
+                          onClick={() => {
+                            setDieselPrintMode(
+                              dieselLedgerFilter.assetType === "vehicle"
+                                ? "vehicle"
+                                : dieselLedgerFilter.assetType === "machine"
+                                  ? "machine"
+                                  : "current"
+                            );
+                            setDieselPrintOpen(true);
+                          }}
+                        >
+                          打印当前筛选明细与汇总
+                        </Button>
+                      </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#d8e3e0] pt-3 print:hidden">
-                      <p className="text-xs text-slate-500">
-                        打印、导出和台账始终使用以上当前筛选条件。
-                      </p>
+                    <div className="flex flex-wrap justify-end gap-2">
                       <Button
-                        disabled={!dieselRefuelRecords.data?.length}
+                        variant="outline"
                         onClick={() => {
-                          setDieselPrintMode(
-                            dieselLedgerFilter.assetType === "vehicle"
-                              ? "vehicle"
-                              : dieselLedgerFilter.assetType === "machine"
-                                ? "machine"
-                                : "current"
-                          );
-                          setDieselPrintOpen(true);
+                          void refreshDieselLedger();
                         }}
                       >
-                        打印当前筛选明细与汇总
+                        刷新当前筛选台账
+                      </Button>
+                      <Button
+                        variant="outline"
+                        disabled={!dieselRefuelRecords.data?.length}
+                        onClick={() =>
+                          downloadCsvFile(
+                            `柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || "当前筛选"}.csv`,
+                            [
+                              "单号",
+                              "资源",
+                              "资源类型",
+                              "供油方式",
+                              "供应商/供油点",
+                              "加油员",
+                              "升数",
+                              "适用单价",
+                              "金额",
+                              "是否扣运费",
+                              "加油时间",
+                              "状态",
+                            ],
+                            (dieselRefuelRecords.data ?? []).map(item => [
+                              item.recordNo,
+                              item.assetName,
+                              item.assetType === "vehicle" ? "车辆" : "机械",
+                              item.supplyMethod === "project_supply"
+                                ? "项目部供油"
+                                : "加油站加油",
+                              item.stationOrSupplierName ?? "",
+                              item.refuelerName ?? "未登记",
+                              Number(item.liters),
+                              Number(item.appliedUnitPrice),
+                              Number(item.amount),
+                              item.deductFromFreight ? "是" : "否",
+                              displayDate(item.refueledAt),
+                              getBusinessStatusLabel(item.status),
+                            ])
+                          )
+                        }
+                      >
+                        导出当前筛选明细
                       </Button>
                     </div>
-                  </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        void refreshDieselLedger();
-                      }}
-                    >
-                      刷新当前筛选台账
-                    </Button>
-                    <Button
-                      variant="outline"
-                      disabled={!dieselRefuelRecords.data?.length}
-                      onClick={() =>
-                        downloadCsvFile(
-                          `柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || "当前筛选"}.csv`,
-                          [
-                            "单号",
-                            "资源",
-                            "资源类型",
-                            "供油方式",
-                            "供应商/供油点",
-                            "加油员",
-                            "升数",
-                            "适用单价",
-                            "金额",
-                            "是否扣运费",
-                            "加油时间",
-                            "状态",
-                          ],
-                          (dieselRefuelRecords.data ?? []).map(item => [
-                            item.recordNo,
-                            item.assetName,
-                            item.assetType === "vehicle" ? "车辆" : "机械",
-                            item.supplyMethod === "project_supply"
-                              ? "项目部供油"
-                              : "加油站加油",
-                            item.stationOrSupplierName ?? "",
-                            item.refuelerName ?? "未登记",
-                            Number(item.liters),
-                            Number(item.appliedUnitPrice),
-                            Number(item.amount),
-                            item.deductFromFreight ? "是" : "否",
-                            displayDate(item.refueledAt),
-                            getBusinessStatusLabel(item.status),
-                          ])
+                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                      <MetricCard
+                        title="当前筛选供油量"
+                        value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
+                        description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
+                        icon={Truck}
+                      />
+                      <MetricCard
+                        title="当前筛选柴油金额"
+                        value={dieselCurrentSummary.totalAmount}
+                        description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
+                        icon={BarChart3}
+                      />
+                      <MetricCard
+                        title="车辆 / 机械领用"
+                        value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
+                        description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
+                        icon={Settings2}
+                      />
+                      <MetricCard
+                        title="待扣运费油款"
+                        value={dieselCurrentSummary.deductibleAmount}
+                        description="同当前筛选；结算运输趟次时从总运费扣减"
+                        icon={ScrollText}
+                      />
+                    </div>
+                  </FinanceRetainedPanel>
+                  <FinanceRetainedPanel
+                    active={isDiesel && dieselTab === "ledger"}
+                    label="加油台账"
+                  >
+                    <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]">
+                      <p>
+                        <span className="font-medium">项目部供油：</span>
+                        {dieselGuidelinePrices.data?.find(
+                          price => price.status === "active"
                         )
+                          ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）`
+                          : "尚未维护有效指导价；项目部供油登记前请先维护。"}
+                      </p>
+                      <p className="mt-1">
+                        <span className="font-medium">加油站现金加油：</span>
+                        每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
+                      </p>
+                    </div>
+                    <LedgerTable
+                      title="每日柴油领用明细"
+                      description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
+                      loading={
+                        dieselRefuelRecords.isLoading ||
+                        dieselRefuelRecords.isFetching
                       }
-                    >
-                      导出当前筛选明细
-                    </Button>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <MetricCard
-                      title="当前筛选供油量"
-                      value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
-                      description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
-                      icon={Truck}
+                      columns={[
+                        "单号/资源",
+                        "供油方式",
+                        "油量 / 单价",
+                        "金额",
+                        "凭证 / 预警",
+                        "运输扣油",
+                        "加油时间",
+                        "状态",
+                      ]}
+                      rows={dieselLedgerPagination.pageRows.map(item => ({
+                        id: Number(item.id),
+                        cells: [
+                          <div>
+                            <p>{item.recordNo}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              {item.assetName}
+                            </p>
+                          </div>,
+                          item.supplyMethod === "project_supply"
+                            ? "项目部供油"
+                            : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
+                          `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
+                          `¥ ${displayMoney(item.amount)}`,
+                          <div className="space-y-1">
+                            {item.receiptEvidence?.url ? (
+                              <ProtectedImagePreview
+                                file={{
+                                  url: item.receiptEvidence.url!,
+                                  fileName: item.receiptEvidence.fileName,
+                                  mimeType: item.receiptEvidence.mimeType,
+                                }}
+                                title="柴油加油小票"
+                                description="小票照片仅在当前授权范围内站内预览。"
+                                className="text-xs font-medium text-[#2b6660] underline"
+                              >
+                                查看小票照片
+                              </ProtectedImagePreview>
+                            ) : (
+                              <p className="text-xs text-slate-500">
+                                无小票照片
+                              </p>
+                            )}
+                            {item.priceAlert?.isAlert ? (
+                              <p className="text-xs font-medium text-rose-700">
+                                价格波动 {item.priceAlert.deviationPercent}%
+                              </p>
+                            ) : item.supplyMethod === "external_station" ? (
+                              <p className="text-xs text-emerald-700">
+                                价格正常
+                              </p>
+                            ) : null}
+                          </div>,
+                          item.deductFromFreight
+                            ? item.tripNo
+                              ? `扣 ${item.tripNo}`
+                              : "待关联趟次"
+                            : "不扣",
+                          displayDate(item.refueledAt),
+                          <BusinessStatusBadge status={item.status} />,
+                        ],
+                        onOpen: () =>
+                          setDesktopRecordDetail({
+                            title: `柴油领用 ${item.recordNo}`,
+                            description:
+                              "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
+                            fields: [
+                              { label: "资源", value: item.assetName },
+                              {
+                                label: "供油方式",
+                                value:
+                                  item.supplyMethod === "project_supply"
+                                    ? "项目部供油"
+                                    : "加油站现金加油",
+                              },
+                              {
+                                label: "加油量",
+                                value: `${Number(item.liters).toFixed(2)} L`,
+                              },
+                              {
+                                label: "适用单价",
+                                value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
+                              },
+                              {
+                                label: "金额",
+                                value: `¥ ${displayMoney(item.amount)}`,
+                              },
+                              {
+                                label: "价格预警",
+                                value: item.priceAlert?.isAlert
+                                  ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
+                                  : item.supplyMethod === "external_station"
+                                    ? "未触发预警"
+                                    : "项目部指导价供油，不参与现金价格预警",
+                              },
+                              {
+                                label: "现金小票",
+                                value: item.receiptEvidence?.url ? (
+                                  <ProtectedImagePreview
+                                    file={{
+                                      url: item.receiptEvidence.url!,
+                                      fileName: item.receiptEvidence.fileName,
+                                      mimeType: item.receiptEvidence.mimeType,
+                                    }}
+                                    title="柴油加油小票"
+                                    description="小票照片仅在当前授权范围内站内预览。"
+                                    className="font-medium text-[#2b6660] underline"
+                                  >
+                                    查看受控小票影像：
+                                    {item.receiptEvidence.fileName}
+                                  </ProtectedImagePreview>
+                                ) : (
+                                  "未关联小票照片"
+                                ),
+                              },
+                              {
+                                label: "运输扣款",
+                                value: item.deductFromFreight
+                                  ? (item.tripNo ?? "待关联趟次")
+                                  : "不扣减运费",
+                              },
+                              {
+                                label: "时间",
+                                value: displayDate(item.refueledAt),
+                              },
+                              {
+                                label: "状态",
+                                value: getBusinessStatusLabel(item.status),
+                              },
+                            ],
+                          }),
+                      }))}
                     />
-                    <MetricCard
-                      title="当前筛选柴油金额"
-                      value={dieselCurrentSummary.totalAmount}
-                      description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
-                      icon={BarChart3}
+                    <FinancePagination
+                      page={dieselLedgerPagination.page}
+                      pageSize={dieselLedgerPagination.pageSize}
+                      total={dieselLedgerPagination.total}
+                      onPageChange={dieselLedgerPagination.setPage}
+                      onPageSizeChange={dieselLedgerPagination.setPageSize}
+                      label="加油台账"
                     />
-                    <MetricCard
-                      title="车辆 / 机械领用"
-                      value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
-                      description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
-                      icon={Settings2}
-                    />
-                    <MetricCard
-                      title="待扣运费油款"
-                      value={dieselCurrentSummary.deductibleAmount}
-                      description="同当前筛选；结算运输趟次时从总运费扣减"
-                      icon={ScrollText}
-                    />
-                  </div>
-                  <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]">
-                    <p>
-                      <span className="font-medium">项目部供油：</span>
-                      {dieselGuidelinePrices.data?.find(
-                        price => price.status === "active"
-                      )
-                        ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）`
-                        : "尚未维护有效指导价；项目部供油登记前请先维护。"}
-                    </p>
-                    <p className="mt-1">
-                      <span className="font-medium">加油站现金加油：</span>
-                      每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
-                    </p>
-                    <DieselRefuelPrintDialog
-                      open={dieselPrintOpen}
-                      onOpenChange={setDieselPrintOpen}
-                      mode={dieselPrintMode}
-                      projectName={selectedWorkspaceProject?.name ?? "当前项目"}
-                      dateLabel={dieselCurrentFilterLabel}
-                      records={
-                        (dieselRefuelRecords.data ?? []) as DieselPrintRecord[]
-                      }
-                    />
-                  </div>
-                  <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+                  </FinanceRetainedPanel>
+                  <FinanceRetainedPanel
+                    active={isDiesel && dieselTab === "prices"}
+                    label="油价与预警"
+                  >
+                    <div className="rounded-xl border border-[#d8e3e0] bg-[#f8fbf8] p-3 text-sm text-[#29483e]">
+                      <p>
+                        <span className="font-medium">项目部供油：</span>
+                        {dieselGuidelinePrices.data?.find(
+                          price => price.status === "active"
+                        )
+                          ? `¥ ${displayMoney(dieselGuidelinePrices.data.find(price => price.status === "active")?.pricePerLiter)} / L（生效 ${toBusinessDateInput(dieselGuidelinePrices.data.find(price => price.status === "active")?.effectiveFrom)}，按加油日期由服务端匹配并固化）`
+                          : "尚未维护有效指导价；项目部供油登记前请先维护。"}
+                      </p>
+                      <p className="mt-1">
+                        <span className="font-medium">加油站现金加油：</span>
+                        每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
+                      </p>
+                    </div>
                     <Card className="border-amber-200 bg-amber-50/50 shadow-none">
                       <CardHeader className="pb-3">
                         <CardTitle className="text-sm">
@@ -22614,255 +22833,80 @@ export default function AdminPage({
                         </p>
                       </CardContent>
                     </Card>
-                    <Card className="border-[#d8e3e0] shadow-none">
-                      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                        <div>
-                          <CardTitle className="text-sm">
-                            供应商柴油采购对账
-                          </CardTitle>
-                          <CardDescription>
-                            按当前会计期间汇总加油站现金采购的升数、金额、加权均价、凭证和异常数量。
-                          </CardDescription>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!dieselSupplierReconciliation.data?.length}
-                          onClick={() =>
-                            downloadCsvFile(
-                              `柴油供应商对账-${financePeriod}.csv`,
-                              [
-                                "供应商",
-                                "笔数",
-                                "升数",
-                                "金额",
-                                "加权均价",
-                                "最低单价",
-                                "最高单价",
-                                "价差",
-                                "凭证数",
-                                "异常数",
-                              ],
-                              (dieselSupplierReconciliation.data ?? []).map(
-                                item => [
-                                  item.supplierName,
-                                  item.recordCount,
-                                  item.liters.toFixed(3),
-                                  item.amount.toFixed(2),
-                                  item.averageUnitPrice.toFixed(2),
-                                  item.minUnitPrice.toFixed(2),
-                                  item.maxUnitPrice.toFixed(2),
-                                  item.priceSpread.toFixed(2),
-                                  item.receiptCount,
-                                  item.alertCount,
-                                ]
-                              )
-                            )
-                          }
-                        >
-                          导出对账
-                        </Button>
-                      </CardHeader>
-                      <CardContent>
-                        {dieselSupplierReconciliation.isLoading ? (
-                          <p className="text-sm text-slate-500">
-                            正在汇总供应商采购…
-                          </p>
-                        ) : dieselSupplierReconciliation.data?.length ? (
-                          <div className="overflow-x-auto">
-                            <Table className="min-w-[760px] text-xs">
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead>供应商</TableHead>
-                                  <TableHead>升数 / 金额</TableHead>
-                                  <TableHead>加权均价</TableHead>
-                                  <TableHead>价格区间</TableHead>
-                                  <TableHead>凭证</TableHead>
-                                  <TableHead>异常</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {dieselSupplierReconciliation.data.map(item => (
-                                  <TableRow key={item.supplierName}>
-                                    <TableCell className="font-medium">
-                                      {item.supplierName}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.liters.toFixed(2)} L / ¥
-                                      {displayMoney(item.amount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.averageUnitPrice)}/L
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.minUnitPrice)}–
-                                      {displayMoney(item.maxUnitPrice)}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.receiptCount} / {item.recordCount}
-                                    </TableCell>
-                                    <TableCell
-                                      className={
-                                        item.alertCount
-                                          ? "font-medium text-rose-700"
-                                          : "text-emerald-700"
-                                      }
-                                    >
-                                      {item.alertCount
-                                        ? `${item.alertCount} 条预警`
-                                        : "无异常"}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        ) : (
-                          <p className="text-sm text-slate-500">
-                            当前期间暂无加油站现金采购记录。
-                          </p>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </div>
-                  <LedgerTable
-                    title="每日柴油领用明细"
-                    description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
-                    loading={dieselRefuelRecords.isLoading}
-                    columns={[
-                      "单号/资源",
-                      "供油方式",
-                      "油量 / 单价",
-                      "金额",
-                      "凭证 / 预警",
-                      "运输扣油",
-                      "加油时间",
-                      "状态",
-                    ]}
-                    rows={(dieselRefuelRecords.data ?? []).map(item => ({
-                      id: Number(item.id),
-                      cells: [
-                        <div>
-                          <p>{item.recordNo}</p>
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            {item.assetName}
-                          </p>
-                        </div>,
-                        item.supplyMethod === "project_supply"
-                          ? "项目部供油"
-                          : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
-                        `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
-                        `¥ ${displayMoney(item.amount)}`,
-                        <div className="space-y-1">
-                          {item.receiptEvidence?.url ? (
-                            <ProtectedImagePreview
-                              file={{
-                                url: item.receiptEvidence.url!,
-                                fileName: item.receiptEvidence.fileName,
-                                mimeType: item.receiptEvidence.mimeType,
-                              }}
-                              title="柴油加油小票"
-                              description="小票照片仅在当前授权范围内站内预览。"
-                              className="text-xs font-medium text-[#2b6660] underline"
-                            >
-                              查看小票照片
-                            </ProtectedImagePreview>
-                          ) : (
-                            <p className="text-xs text-slate-500">无小票照片</p>
-                          )}
-                          {item.priceAlert?.isAlert ? (
-                            <p className="text-xs font-medium text-rose-700">
-                              价格波动 {item.priceAlert.deviationPercent}%
-                            </p>
-                          ) : item.supplyMethod === "external_station" ? (
-                            <p className="text-xs text-emerald-700">价格正常</p>
-                          ) : null}
-                        </div>,
-                        item.deductFromFreight
-                          ? item.tripNo
-                            ? `扣 ${item.tripNo}`
-                            : "待关联趟次"
-                          : "不扣",
-                        displayDate(item.refueledAt),
-                        <BusinessStatusBadge status={item.status} />,
-                      ],
-                      onOpen: () =>
-                        setDesktopRecordDetail({
-                          title: `柴油领用 ${item.recordNo}`,
-                          description:
-                            "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
-                          fields: [
-                            { label: "资源", value: item.assetName },
-                            {
-                              label: "供油方式",
-                              value:
-                                item.supplyMethod === "project_supply"
-                                  ? "项目部供油"
-                                  : "加油站现金加油",
-                            },
-                            {
-                              label: "加油量",
-                              value: `${Number(item.liters).toFixed(2)} L`,
-                            },
-                            {
-                              label: "适用单价",
-                              value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
-                            },
-                            {
-                              label: "金额",
-                              value: `¥ ${displayMoney(item.amount)}`,
-                            },
-                            {
-                              label: "价格预警",
-                              value: item.priceAlert?.isAlert
-                                ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
-                                : item.supplyMethod === "external_station"
-                                  ? "未触发预警"
-                                  : "项目部指导价供油，不参与现金价格预警",
-                            },
-                            {
-                              label: "现金小票",
-                              value: item.receiptEvidence?.url ? (
-                                <ProtectedImagePreview
-                                  file={{
-                                    url: item.receiptEvidence.url!,
-                                    fileName: item.receiptEvidence.fileName,
-                                    mimeType: item.receiptEvidence.mimeType,
-                                  }}
-                                  title="柴油加油小票"
-                                  description="小票照片仅在当前授权范围内站内预览。"
-                                  className="font-medium text-[#2b6660] underline"
-                                >
-                                  查看受控小票影像：
-                                  {item.receiptEvidence.fileName}
-                                </ProtectedImagePreview>
-                              ) : (
-                                "未关联小票照片"
-                              ),
-                            },
-                            {
-                              label: "运输扣款",
-                              value: item.deductFromFreight
-                                ? (item.tripNo ?? "待关联趟次")
-                                : "不扣减运费",
-                            },
-                            {
-                              label: "时间",
-                              value: displayDate(item.refueledAt),
-                            },
-                            {
-                              label: "状态",
-                              value: getBusinessStatusLabel(item.status),
-                            },
-                          ],
-                        }),
-                    }))}
+                    <DieselPriceHistory
+                      rows={dieselGuidelinePrices.data ?? []}
+                      loading={
+                        dieselGuidelinePrices.isLoading ||
+                        dieselGuidelinePrices.isFetching
+                      }
+                      error={dieselGuidelinePrices.isError}
+                      projectName={dieselProjectName}
+                      enabled={isDiesel && dieselTab === "prices"}
+                    />
+                  </FinanceRetainedPanel>
+                  <FinanceRetainedPanel
+                    active={isDiesel && dieselTab === "suppliers"}
+                    label="供应商对账"
+                  >
+                    <DieselSupplierReport
+                      rows={dieselSupplierReconciliation.data ?? []}
+                      loading={
+                        dieselSupplierReconciliation.isLoading ||
+                        dieselSupplierReconciliation.isFetching
+                      }
+                      error={dieselSupplierReconciliation.isError}
+                      projectName={dieselProjectName}
+                      period={financePeriod}
+                      enabled={isDiesel && dieselTab === "suppliers"}
+                    />
+                  </FinanceRetainedPanel>
+                  <FinanceRetainedPanel
+                    active={isDiesel && dieselTab === "receipts"}
+                    label="柴油票据"
+                  >
+                    <DieselReceiptLedger
+                      records={dieselRefuelRecords.data ?? []}
+                      loading={
+                        dieselRefuelRecords.isLoading ||
+                        dieselRefuelRecords.isFetching
+                      }
+                      error={dieselRefuelRecords.isError}
+                      projectName={dieselProjectName}
+                      filterLabel={dieselCurrentFilterLabel}
+                      enabled={isDiesel && dieselTab === "receipts"}
+                    />
+                  </FinanceRetainedPanel>
+                  <DieselRefuelPrintDialog
+                    open={
+                      dieselPrintOpen &&
+                      isDiesel &&
+                      (dieselTab === "ledger" || dieselTab === "receipts")
+                    }
+                    onOpenChange={setDieselPrintOpen}
+                    mode={dieselPrintMode}
+                    projectName={dieselProjectName}
+                    dateLabel={dieselCurrentFilterLabel}
+                    records={
+                      (dieselRefuelRecords.data ?? []) as DieselPrintRecord[]
+                    }
                   />
+                  <p className="rounded-lg border bg-slate-50 p-3 text-xs text-slate-600">
+                    柴油台账统计不等同于全项目会计日结；加油小票不等同于正式发票或已抵扣凭证。财务发票、封账和财税资料统一在财务管理维护。
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setFinanceTab("invoices");
+                      setLocation("/admin/finance");
+                    }}
+                  >
+                    前往财务发票管理
+                  </Button>
                 </CardContent>
               </Card>
             </FinanceRetainedPanel>
             <FinanceRetainedPanel
-              active={isDiesel || financeTab === "invoices"}
+              active={!isDiesel && financeTab === "invoices"}
               label="发票管理"
             >
               <Card className="w-full border-[#d8e3e0] shadow-sm">
@@ -23092,8 +23136,9 @@ export default function AdminPage({
             </FinanceRetainedPanel>
             <FinanceRetainedPanel
               active={
-                isDiesel ||
-                (financeTab === "closing" && financeClosingView === "daily")
+                !isDiesel &&
+                financeTab === "closing" &&
+                financeClosingView === "daily"
               }
               label="日结封存"
             >

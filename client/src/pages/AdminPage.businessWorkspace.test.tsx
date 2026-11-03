@@ -740,12 +740,17 @@ describe("统一后台业务工作区范围保护", () => {
       source,
       "trpc.admin.diesel.getPriceAlertRule.useQuery"
     );
-    expectSourceToContain(source, "供应商柴油采购对账");
+    expectSourceToContain(source, "<DieselSupplierReport");
+    const supplierReport = readSource(
+      new URL("../components/DieselSupportingReports.tsx", import.meta.url)
+    );
+    expectSourceToContain(supplierReport, "供应商");
+    expectSourceToContain(supplierReport, "downloadCurrentFilteredCsv");
     expectSourceToContain(
       source,
       "trpc.admin.diesel.supplierReconciliation.useQuery"
     );
-    expectSourceToContain(source, "柴油供应商对账-");
+    expectSourceToContain(supplierReport, "柴油供应商汇总-");
   });
 
   it("将柴油指导价项目选择独占整行，避免与指导单价在窄屏弹窗重叠", () => {

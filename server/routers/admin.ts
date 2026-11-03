@@ -1,4 +1,10 @@
-import { saveResourceBinding, resolveResourcePerson, assertLegacyCoreEditSafe, omitUnchangedLegacyFields, getLegacyCompensation } from "../services/personnelLegacyBridge";
+import {
+  saveResourceBinding,
+  resolveResourcePerson,
+  assertLegacyCoreEditSafe,
+  omitUnchangedLegacyFields,
+  getLegacyCompensation,
+} from "../services/personnelLegacyBridge";
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookie } from "cookie";
@@ -54,7 +60,10 @@ import {
   users,
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
-import { assertCertificateFileSignature, calculateTheoreticalVolume } from "../../shared/domain";
+import {
+  assertCertificateFileSignature,
+  calculateTheoreticalVolume,
+} from "../../shared/domain";
 import { COOKIE_NAME } from "../../shared/const";
 import {
   normalizeEvidenceWatermarkTemplate,
@@ -151,7 +160,11 @@ import {
   normalizeLocalManagerUsername,
 } from "../localAuth";
 import { storageGetSignedUrl, storagePut } from "../storage";
-import { createHeartbeatJob, listHeartbeatJobs, updateHeartbeatJob } from "../_core/heartbeat";
+import {
+  createHeartbeatJob,
+  listHeartbeatJobs,
+  updateHeartbeatJob,
+} from "../_core/heartbeat";
 import {
   buildMonthlyPayrollGenerationCron,
   generatePayrollDraftForEmployeeProfile,
@@ -420,7 +433,12 @@ const employeeProfileInput = z
       .regex(/^[0-9+\-\s()]{7,24}$/, "请输入有效手机号")
       .nullable()
       .optional(),
-    bankAccount: z.string().trim().regex(/^\d{8,32}$/, "请输入有效银行卡号").nullable().optional(),
+    bankAccount: z
+      .string()
+      .trim()
+      .regex(/^\d{8,32}$/, "请输入有效银行卡号")
+      .nullable()
+      .optional(),
     bankName: z.string().trim().max(128).nullable().optional(),
     remarks: z.string().trim().max(500).nullable().optional(),
   })
@@ -452,9 +470,11 @@ function compareEmployeeProfileRecency(
   left: CompanyRosterProfile,
   right: CompanyRosterProfile
 ) {
-  const updatedAtDifference = right.updatedAt.getTime() - left.updatedAt.getTime();
+  const updatedAtDifference =
+    right.updatedAt.getTime() - left.updatedAt.getTime();
   if (updatedAtDifference) return updatedAtDifference;
-  const createdAtDifference = right.createdAt.getTime() - left.createdAt.getTime();
+  const createdAtDifference =
+    right.createdAt.getTime() - left.createdAt.getTime();
   if (createdAtDifference) return createdAtDifference;
   return right.id - left.id;
 }
@@ -486,12 +506,15 @@ function selectCanonicalCompanyRosterProfiles<T extends CompanyRosterProfile>(
   const selectedByIdentity = new Map<string, T>();
   for (const profile of [...profileRows].sort(compareEmployeeProfileRecency)) {
     const identity = getCompanyRosterIdentity(profile, accountIds, workerIds);
-    if (!selectedByIdentity.has(identity)) selectedByIdentity.set(identity, profile);
+    if (!selectedByIdentity.has(identity))
+      selectedByIdentity.set(identity, profile);
   }
-  return Array.from(selectedByIdentity.entries()).map(([identity, profile]) => ({
-    identity,
-    profile,
-  }));
+  return Array.from(selectedByIdentity.entries()).map(
+    ([identity, profile]) => ({
+      identity,
+      profile,
+    })
+  );
 }
 
 /** 显式补齐全部次级排序键，避免数据库返回顺序或同名人员造成花名册顺序抖动。 */
@@ -516,7 +539,9 @@ function compareCompanyRosterEntries(
     "zh-CN"
   );
   if (displayNameDifference) return displayNameDifference;
-  const employeeTypeDifference = left.employeeType.localeCompare(right.employeeType);
+  const employeeTypeDifference = left.employeeType.localeCompare(
+    right.employeeType
+  );
   if (employeeTypeDifference) return employeeTypeDifference;
   const leftProjectId = left.projectId ?? Number.MAX_SAFE_INTEGER;
   const rightProjectId = right.projectId ?? Number.MAX_SAFE_INTEGER;
@@ -563,7 +588,12 @@ const employeeInsuranceInput = z
     policyReference: z.string().trim().max(128).nullable().optional(),
     evidenceId: z.number().int().positive().nullable().optional(),
     premiumAmount: z.number().min(0).max(999999999999.99).nullable().optional(),
-    coverageAmount: z.number().min(0).max(999999999999.99).nullable().optional(),
+    coverageAmount: z
+      .number()
+      .min(0)
+      .max(999999999999.99)
+      .nullable()
+      .optional(),
     purchasedAt: z.string().date(),
     expiresAt: z.string().date(),
     status: z.enum(["active", "expired", "cancelled"]),
@@ -1348,8 +1378,15 @@ export const adminRouter = router({
           updatedAt: departmentBusinessScopes.updatedAt,
         })
         .from(departmentBusinessScopes)
-        .innerJoin(projects, eq(departmentBusinessScopes.projectId, projects.id))
-        .orderBy(projects.sortOrder, projects.id, departmentBusinessScopes.module);
+        .innerJoin(
+          projects,
+          eq(departmentBusinessScopes.projectId, projects.id)
+        )
+        .orderBy(
+          projects.sortOrder,
+          projects.id,
+          departmentBusinessScopes.module
+        );
       return [
         ...validOrganizationRows.map(row => ({
           ...row,
@@ -1383,7 +1420,11 @@ export const adminRouter = router({
         const isOrganizationScope = input.scopeType === "organization";
         if (isOrganizationScope) {
           const [department] = await db
-            .select({ id: organizations.id, type: organizations.type, status: organizations.status })
+            .select({
+              id: organizations.id,
+              type: organizations.type,
+              status: organizations.status,
+            })
             .from(organizations)
             .where(eq(organizations.id, input.scopeId))
             .limit(1);
@@ -1431,15 +1472,13 @@ export const adminRouter = router({
             .set({ status: input.status, configuredBy: admin.id })
             .where(eq(departmentBusinessScopes.id, existing.id));
         } else {
-          await db
-            .insert(departmentBusinessScopes)
-            .values({
-              organizationId: isOrganizationScope ? input.scopeId : null,
-              projectId: isOrganizationScope ? null : input.scopeId,
-              module: input.module,
-              status: input.status,
-              configuredBy: admin.id,
-            });
+          await db.insert(departmentBusinessScopes).values({
+            organizationId: isOrganizationScope ? input.scopeId : null,
+            projectId: isOrganizationScope ? null : input.scopeId,
+            module: input.module,
+            status: input.status,
+            configuredBy: admin.id,
+          });
         }
         await db.insert(auditLogs).values({
           userId: admin.id,
@@ -1710,9 +1749,7 @@ export const adminRouter = router({
       // 员工档案的历史重复记录必须保留审计，但日常台账、导出和维护只能
       // 使用同一有效身份最近维护的规范档案。绝不按姓名、手机号或银行卡猜测身份。
       const [accountRows, workerRows, policyRows] = await Promise.all([
-        db
-          .select({ id: users.id, name: users.name })
-          .from(users),
+        db.select({ id: users.id, name: users.name }).from(users),
         db
           .select({
             id: laborWorkers.id,
@@ -1731,20 +1768,27 @@ export const adminRouter = router({
             )
           ),
       ]);
-      const accountById = new Map(accountRows.map(account => [account.id, account]));
+      const accountById = new Map(
+        accountRows.map(account => [account.id, account])
+      );
       const workerById = new Map(workerRows.map(worker => [worker.id, worker]));
       const accountIds = new Set(accountById.keys());
       const workerIds = new Set(workerById.keys());
       const profilesByIdentity = new Map<string, typeof rows>();
       for (const profile of rows) {
-        const identity = getCompanyRosterIdentity(profile, accountIds, workerIds);
+        const identity = getCompanyRosterIdentity(
+          profile,
+          accountIds,
+          workerIds
+        );
         const groupedProfiles = profilesByIdentity.get(identity) ?? [];
         groupedProfiles.push(profile);
         profilesByIdentity.set(identity, groupedProfiles);
       }
       const policiesByProfileId = new Map<number, typeof policyRows>();
       for (const policy of policyRows) {
-        const policies = policiesByProfileId.get(policy.employeeProfileId) ?? [];
+        const policies =
+          policiesByProfileId.get(policy.employeeProfileId) ?? [];
         policies.push(policy);
         policiesByProfileId.set(policy.employeeProfileId, policies);
       }
@@ -1769,10 +1813,31 @@ export const adminRouter = router({
                 new Date(right.expiresAt).getTime() -
                 new Date(left.expiresAt).getTime()
             );
-          const policyViews = await Promise.all(policies.map(async policy => {
-            const [evidence] = policy.evidenceId ? await db.select({ fileKey: evidenceRecords.fileKey, fileName: evidenceRecords.fileName, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, policy.evidenceId)).limit(1) : [];
-            return { ...policy, evidence: evidence?.status === "active" ? { fileName: evidence.fileName || "保单附件", url: await storageGetSignedUrl(evidence.fileKey) } : null };
-          }));
+          const policyViews = await Promise.all(
+            policies.map(async policy => {
+              const [evidence] = policy.evidenceId
+                ? await db
+                    .select({
+                      fileKey: evidenceRecords.fileKey,
+                      fileName: evidenceRecords.fileName,
+                      status: evidenceRecords.status,
+                    })
+                    .from(evidenceRecords)
+                    .where(eq(evidenceRecords.id, policy.evidenceId))
+                    .limit(1)
+                : [];
+              return {
+                ...policy,
+                evidence:
+                  evidence?.status === "active"
+                    ? {
+                        fileName: evidence.fileName || "保单附件",
+                        url: await storageGetSignedUrl(evidence.fileKey),
+                      }
+                    : null,
+              };
+            })
+          );
           const today = new Date().toISOString().slice(0, 10);
           const expiringCutoff = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
             .toISOString()
@@ -1948,7 +2013,11 @@ export const adminRouter = router({
       }
       const resolveRosterCategory = (input: {
         userId: number | null;
-        workerCategory: "company_admin" | "labor_team" | "temporary_daily" | null;
+        workerCategory:
+          | "company_admin"
+          | "labor_team"
+          | "temporary_daily"
+          | null;
         employeeType: "management" | "operator" | "construction_worker" | null;
         loginMethod: string | null | undefined;
       }): {
@@ -1966,10 +2035,7 @@ export const adminRouter = router({
             roleSources: ["labor_team_worker" as const],
           };
         const roleSources: CompanyRosterCategory[] = [];
-        if (
-          input.userId &&
-          dumpTruckProjectsByDriverId.has(input.userId)
-        )
+        if (input.userId && dumpTruckProjectsByDriverId.has(input.userId))
           roleSources.push("dump_truck_driver");
         if (
           input.userId &&
@@ -2082,11 +2148,13 @@ export const adminRouter = router({
             ? maskSecret(decryptSecret(worker.bankAccountEncrypted))
             : userProfile?.bankAccountEncrypted
               ? maskSecret(decryptSecret(userProfile.bankAccountEncrypted))
-            : null,
+              : null,
           bankName: worker?.bankName ?? userProfile?.bankName ?? null,
-          tradeName: profileTradeName || (userProfile?.positionId
-            ? (positionNameById.get(userProfile.positionId) ?? null)
-            : (worker?.teamName ?? null)),
+          tradeName:
+            profileTradeName ||
+            (userProfile?.positionId
+              ? (positionNameById.get(userProfile.positionId) ?? null)
+              : (worker?.teamName ?? null)),
           baseSalary,
           attendanceDays: workerAttendance.length,
           workHours: workerAttendance.reduce(
@@ -2260,44 +2328,115 @@ export const adminRouter = router({
       ].sort(compareCompanyRosterEntries);
     }),
     compensationDetails: protectedProcedure
-      .input(z.object({
-        employeeProfileId: z.number().int().positive(),
-        period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
-        asOfDate: z.string().date().optional(),
-      }))
+      .input(
+        z.object({
+          employeeProfileId: z.number().int().positive(),
+          period: z
+            .string()
+            .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+            .optional(),
+          asOfDate: z.string().date().optional(),
+        })
+      )
       .query(async ({ ctx, input }) => {
         await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) return { payroll: [], dailyWage: [], advances: [], accrual: null };
+        if (!db)
+          return { payroll: [], dailyWage: [], advances: [], accrual: null };
         const [profile] = await db
-          .select({ id: employeeProfiles.id, laborWorkerId: employeeProfiles.laborWorkerId })
+          .select({
+            id: employeeProfiles.id,
+            laborWorkerId: employeeProfiles.laborWorkerId,
+          })
           .from(employeeProfiles)
           .where(eq(employeeProfiles.id, input.employeeProfileId))
           .limit(1);
-        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+        if (!profile)
+          throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
         const workerId = profile.laborWorkerId;
         const period = input.period ?? chinaBusinessMonth(new Date());
         const asOfDate = input.asOfDate ?? chinaBusinessDate(new Date());
         const [payroll, dailyWage, advances, accrual] = await Promise.all([
           workerId
-            ? db.select({ id: payrollStatements.id, period: payrollStatements.period, payableAmount: payrollStatements.payableAmount, deductionAmount: payrollStatements.deductionAmount, actualAmount: payrollStatements.actualAmount, status: payrollStatements.status, paidAt: payrollStatements.paidAt }).from(payrollStatements).where(eq(payrollStatements.workerId, workerId)).orderBy(desc(payrollStatements.period))
+            ? db
+                .select({
+                  id: payrollStatements.id,
+                  period: payrollStatements.period,
+                  payableAmount: payrollStatements.payableAmount,
+                  deductionAmount: payrollStatements.deductionAmount,
+                  actualAmount: payrollStatements.actualAmount,
+                  status: payrollStatements.status,
+                  paidAt: payrollStatements.paidAt,
+                })
+                .from(payrollStatements)
+                .where(eq(payrollStatements.workerId, workerId))
+                .orderBy(desc(payrollStatements.period))
             : Promise.resolve([]),
           workerId
-            ? db.select({ id: temporaryDailyWageSettlements.id, settlementDate: temporaryDailyWageSettlements.settlementDate, payableAmount: temporaryDailyWageSettlements.payableAmount, actualAmount: temporaryDailyWageSettlements.actualAmount, status: temporaryDailyWageSettlements.status, paidAt: temporaryDailyWageSettlements.paidAt }).from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.workerId, workerId)).orderBy(desc(temporaryDailyWageSettlements.settlementDate))
+            ? db
+                .select({
+                  id: temporaryDailyWageSettlements.id,
+                  settlementDate: temporaryDailyWageSettlements.settlementDate,
+                  payableAmount: temporaryDailyWageSettlements.payableAmount,
+                  actualAmount: temporaryDailyWageSettlements.actualAmount,
+                  status: temporaryDailyWageSettlements.status,
+                  paidAt: temporaryDailyWageSettlements.paidAt,
+                })
+                .from(temporaryDailyWageSettlements)
+                .where(eq(temporaryDailyWageSettlements.workerId, workerId))
+                .orderBy(desc(temporaryDailyWageSettlements.settlementDate))
             : Promise.resolve([]),
-          db.select({ id: employeePayrollAdvances.id, advanceDate: employeePayrollAdvances.advanceDate, amount: employeePayrollAdvances.amount, status: employeePayrollAdvances.status, remarks: employeePayrollAdvances.remarks, createdAt: employeePayrollAdvances.createdAt }).from(employeePayrollAdvances).where(eq(employeePayrollAdvances.employeeProfileId, input.employeeProfileId)).orderBy(desc(employeePayrollAdvances.advanceDate)),
-          getEmployeePayrollAccrualPreview(input.employeeProfileId, period, asOfDate),
+          db
+            .select({
+              id: employeePayrollAdvances.id,
+              advanceDate: employeePayrollAdvances.advanceDate,
+              amount: employeePayrollAdvances.amount,
+              status: employeePayrollAdvances.status,
+              remarks: employeePayrollAdvances.remarks,
+              createdAt: employeePayrollAdvances.createdAt,
+            })
+            .from(employeePayrollAdvances)
+            .where(
+              eq(
+                employeePayrollAdvances.employeeProfileId,
+                input.employeeProfileId
+              )
+            )
+            .orderBy(desc(employeePayrollAdvances.advanceDate)),
+          getEmployeePayrollAccrualPreview(
+            input.employeeProfileId,
+            period,
+            asOfDate
+          ),
         ]);
         const approvedAdvanceAmount = advances
-          .filter(item => item.status === "approved" && chinaBusinessDate(item.advanceDate) <= asOfDate)
+          .filter(
+            item =>
+              item.status === "approved" &&
+              chinaBusinessDate(item.advanceDate) <= asOfDate
+          )
           .reduce((sum, item) => sum + Number(item.amount), 0);
-        return { payroll, dailyWage, advances, accrual: { ...accrual, approvedAdvanceAmount } };
+        return {
+          payroll,
+          dailyWage,
+          advances,
+          accrual: { ...accrual, approvedAdvanceAmount },
+        };
       }),
     generatePayrollDraft: protectedProcedure
-      .input(z.object({ employeeProfileId: z.number().int().positive(), period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }))
+      .input(
+        z.object({
+          employeeProfileId: z.number().int().positive(),
+          period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+        })
+      )
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
-        const result = await generatePayrollDraftForEmployeeProfile({ ...input, actorUserId: admin.id, source: "manual" });
+        const result = await generatePayrollDraftForEmployeeProfile({
+          ...input,
+          actorUserId: admin.id,
+          source: "manual",
+        });
         if (result.status === "blocked") {
           throw new TRPCError({ code: "BAD_REQUEST", message: result.reason });
         }
@@ -2307,56 +2446,171 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return null;
-      const [schedule] = await db.select().from(payrollGenerationSchedules).where(eq(payrollGenerationSchedules.scopeKey, PAYROLL_GENERATION_SCOPE_KEY)).limit(1);
-      return schedule ?? {
-        enabled: false,
-        timezone: "Asia/Shanghai",
-        generationDay: 1,
-        generationHour: 9,
-        generationMinute: 5,
-        scheduleCronTaskUid: null,
-        lastAttemptedAt: null,
-        lastSuccessfulPeriod: null,
-        lastResultJson: null,
-      };
+      const [schedule] = await db
+        .select()
+        .from(payrollGenerationSchedules)
+        .where(
+          eq(payrollGenerationSchedules.scopeKey, PAYROLL_GENERATION_SCOPE_KEY)
+        )
+        .limit(1);
+      return (
+        schedule ?? {
+          enabled: false,
+          timezone: "Asia/Shanghai",
+          generationDay: 1,
+          generationHour: 9,
+          generationMinute: 5,
+          scheduleCronTaskUid: null,
+          lastAttemptedAt: null,
+          lastSuccessfulPeriod: null,
+          lastResultJson: null,
+        }
+      );
     }),
     savePayrollGenerationSchedule: protectedProcedure
-      .input(z.object({ enabled: z.boolean(), generationDay: z.number().int().min(1).max(28).default(1), generationHour: z.number().int().min(0).max(23).default(9), generationMinute: z.number().int().min(0).max(59).default(5) }))
+      .input(
+        z.object({
+          enabled: z.boolean(),
+          generationDay: z.number().int().min(1).max(28).default(1),
+          generationHour: z.number().int().min(0).max(23).default(9),
+          generationMinute: z.number().int().min(0).max(59).default(5),
+        })
+      )
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-        const [existing] = await db.select().from(payrollGenerationSchedules).where(eq(payrollGenerationSchedules.scopeKey, PAYROLL_GENERATION_SCOPE_KEY)).limit(1);
+        if (!db)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "数据库连接暂不可用",
+          });
+        const [existing] = await db
+          .select()
+          .from(payrollGenerationSchedules)
+          .where(
+            eq(
+              payrollGenerationSchedules.scopeKey,
+              PAYROLL_GENERATION_SCOPE_KEY
+            )
+          )
+          .limit(1);
         let taskUid = existing?.scheduleCronTaskUid ?? null;
-        const sessionValue = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+        const sessionValue =
+          parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
         const sessionToken = decodeURIComponent(sessionValue);
         if (input.enabled) {
           if (process.env.NODE_ENV !== "production") {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "请先发布本版本到正式站点，再启用每月自动工资草稿任务" });
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "请先发布本版本到正式站点，再启用每月自动工资草稿任务",
+            });
           }
-          const cron = buildMonthlyPayrollGenerationCron(input.generationDay, input.generationHour, input.generationMinute);
+          const cron = buildMonthlyPayrollGenerationCron(
+            input.generationDay,
+            input.generationHour,
+            input.generationMinute
+          );
           if (taskUid) {
-            await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿", enable: true }, sessionToken);
+            await updateHeartbeatJob(
+              taskUid,
+              {
+                cron,
+                path: "/api/scheduled/monthly-payroll-draft-generation",
+                method: "POST",
+                payload: {},
+                description: "每月按已确认考勤生成上一自然月工资草稿",
+                enable: true,
+              },
+              sessionToken
+            );
           } else {
             try {
-              const created = await createHeartbeatJob({ name: "monthly-payroll-draft-generation", cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿" }, sessionToken);
+              const created = await createHeartbeatJob(
+                {
+                  name: "monthly-payroll-draft-generation",
+                  cron,
+                  path: "/api/scheduled/monthly-payroll-draft-generation",
+                  method: "POST",
+                  payload: {},
+                  description: "每月按已确认考勤生成上一自然月工资草稿",
+                },
+                sessionToken
+              );
               taskUid = created.taskUid;
             } catch (error) {
-              if (!(error instanceof Error) || !error.message.includes("already_exists")) throw error;
-              const jobs = await listHeartbeatJobs(sessionToken, { page: 1, pageSize: 100 });
-              const matched = jobs.jobs.find(job => job.name === "monthly-payroll-draft-generation" && job.callbackPath === "/api/scheduled/monthly-payroll-draft-generation");
-              if (!matched) throw new TRPCError({ code: "CONFLICT", message: "工资草稿定时任务已存在但未读取到任务标识，请刷新后重试" });
+              if (
+                !(error instanceof Error) ||
+                !error.message.includes("already_exists")
+              )
+                throw error;
+              const jobs = await listHeartbeatJobs(sessionToken, {
+                page: 1,
+                pageSize: 100,
+              });
+              const matched = jobs.jobs.find(
+                job =>
+                  job.name === "monthly-payroll-draft-generation" &&
+                  job.callbackPath ===
+                    "/api/scheduled/monthly-payroll-draft-generation"
+              );
+              if (!matched)
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message:
+                    "工资草稿定时任务已存在但未读取到任务标识，请刷新后重试",
+                });
               taskUid = matched.taskUid;
-              await updateHeartbeatJob(taskUid, { cron, path: "/api/scheduled/monthly-payroll-draft-generation", method: "POST", payload: {}, description: "每月按已确认考勤生成上一自然月工资草稿", enable: true }, sessionToken);
+              await updateHeartbeatJob(
+                taskUid,
+                {
+                  cron,
+                  path: "/api/scheduled/monthly-payroll-draft-generation",
+                  method: "POST",
+                  payload: {},
+                  description: "每月按已确认考勤生成上一自然月工资草稿",
+                  enable: true,
+                },
+                sessionToken
+              );
             }
           }
         } else if (taskUid) {
           await updateHeartbeatJob(taskUid, { enable: false }, sessionToken);
         }
-        const values = { enabled: input.enabled, timezone: "Asia/Shanghai", generationDay: input.generationDay, generationHour: input.generationHour, generationMinute: input.generationMinute, scheduleCronTaskUid: taskUid, updatedBy: admin.id };
-        if (existing) await db.update(payrollGenerationSchedules).set(values).where(eq(payrollGenerationSchedules.id, existing.id));
-        else await db.insert(payrollGenerationSchedules).values({ scopeKey: PAYROLL_GENERATION_SCOPE_KEY, ...values, createdBy: admin.id });
-        await db.insert(auditLogs).values({ userId: admin.id, module: "labor", action: "save_payroll_generation_schedule", targetType: "payroll_generation_schedule", targetId: PAYROLL_GENERATION_SCOPE_KEY, summary: input.enabled ? `启用每月 ${input.generationDay} 日 ${String(input.generationHour).padStart(2, "0")}:${String(input.generationMinute).padStart(2, "0")} 自动生成上月工资草稿` : "停用每月自动工资草稿生成" });
+        const values = {
+          enabled: input.enabled,
+          timezone: "Asia/Shanghai",
+          generationDay: input.generationDay,
+          generationHour: input.generationHour,
+          generationMinute: input.generationMinute,
+          scheduleCronTaskUid: taskUid,
+          updatedBy: admin.id,
+        };
+        if (existing)
+          await db
+            .update(payrollGenerationSchedules)
+            .set(values)
+            .where(eq(payrollGenerationSchedules.id, existing.id));
+        else
+          await db
+            .insert(payrollGenerationSchedules)
+            .values({
+              scopeKey: PAYROLL_GENERATION_SCOPE_KEY,
+              ...values,
+              createdBy: admin.id,
+            });
+        await db
+          .insert(auditLogs)
+          .values({
+            userId: admin.id,
+            module: "labor",
+            action: "save_payroll_generation_schedule",
+            targetType: "payroll_generation_schedule",
+            targetId: PAYROLL_GENERATION_SCOPE_KEY,
+            summary: input.enabled
+              ? `启用每月 ${input.generationDay} 日 ${String(input.generationHour).padStart(2, "0")}:${String(input.generationMinute).padStart(2, "0")} 自动生成上月工资草稿`
+              : "停用每月自动工资草稿生成",
+          });
         return { success: true, taskUid };
       }),
     saveAdvance: protectedProcedure
@@ -2364,11 +2618,44 @@ export const adminRouter = router({
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-        const [profile] = await db.select({ id: employeeProfiles.id, laborWorkerId: employeeProfiles.laborWorkerId, projectId: employeeProfiles.projectId }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
-        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
-        const [created] = await db.insert(employeePayrollAdvances).values({ employeeProfileId: profile.id, laborWorkerId: profile.laborWorkerId, projectId: profile.projectId, advanceDate: new Date(`${input.advanceDate}T00:00:00Z`), amount: String(input.amount), status: input.status, remarks: input.remarks ?? null, createdBy: admin.id });
-        await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: "create_payroll_advance", targetType: "employee_profile", targetId: String(profile.id), summary: "新增员工工资预支记录" });
+        if (!db)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "数据库连接暂不可用",
+          });
+        const [profile] = await db
+          .select({
+            id: employeeProfiles.id,
+            laborWorkerId: employeeProfiles.laborWorkerId,
+            projectId: employeeProfiles.projectId,
+          })
+          .from(employeeProfiles)
+          .where(eq(employeeProfiles.id, input.employeeProfileId))
+          .limit(1);
+        if (!profile)
+          throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+        const [created] = await db
+          .insert(employeePayrollAdvances)
+          .values({
+            employeeProfileId: profile.id,
+            laborWorkerId: profile.laborWorkerId,
+            projectId: profile.projectId,
+            advanceDate: new Date(`${input.advanceDate}T00:00:00Z`),
+            amount: String(input.amount),
+            status: input.status,
+            remarks: input.remarks ?? null,
+            createdBy: admin.id,
+          });
+        await db
+          .insert(auditLogs)
+          .values({
+            userId: admin.id,
+            module: "personnel",
+            action: "create_payroll_advance",
+            targetType: "employee_profile",
+            targetId: String(profile.id),
+            summary: "新增员工工资预支记录",
+          });
         return { success: true, id: created.insertId };
       }),
     saveProfile: protectedProcedure
@@ -2427,14 +2714,26 @@ export const adminRouter = router({
         if (normalizedPhoneNumber) {
           const phoneFingerprint = fingerprintSecret(normalizedPhoneNumber);
           const [duplicateWorker, duplicateProfile] = await Promise.all([
-            db.select({ id: laborWorkers.id }).from(laborWorkers).where(eq(laborWorkers.phoneFingerprint, phoneFingerprint)).limit(1),
-            db.select({ userId: userProfiles.userId }).from(userProfiles).where(eq(userProfiles.phoneFingerprint, phoneFingerprint)).limit(1),
+            db
+              .select({ id: laborWorkers.id })
+              .from(laborWorkers)
+              .where(eq(laborWorkers.phoneFingerprint, phoneFingerprint))
+              .limit(1),
+            db
+              .select({ userId: userProfiles.userId })
+              .from(userProfiles)
+              .where(eq(userProfiles.phoneFingerprint, phoneFingerprint))
+              .limit(1),
           ]);
           if (
-            (duplicateWorker[0] && duplicateWorker[0].id !== input.laborWorkerId) ||
+            (duplicateWorker[0] &&
+              duplicateWorker[0].id !== input.laborWorkerId) ||
             (duplicateProfile[0] && duplicateProfile[0].userId !== input.userId)
           )
-            throw new TRPCError({ code: "CONFLICT", message: "该手机号已被其他员工使用，请更换手机号" });
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "该手机号已被其他员工使用，请更换手机号",
+            });
         }
         if (resolvedProjectId) {
           const [project] = await db
@@ -2461,12 +2760,38 @@ export const adminRouter = router({
             message: "员工档案不存在",
           });
         if (existing) {
-          const [sensitiveWorker] = existing.laborWorkerId ? await db.select().from(laborWorkers).where(eq(laborWorkers.id, existing.laborWorkerId)).limit(1) : [];
-          const [sensitiveUser] = existing.userId ? await db.select().from(userProfiles).where(eq(userProfiles.userId, existing.userId)).limit(1) : [];
-          await assertLegacyCoreEditSafe(db, "profile", existing.id, input, { ...existing, ...(sensitiveWorker ?? sensitiveUser ?? {}), id: existing.id });
-          if (existing.salaryBasis !== input.salaryBasis || (input.baseSalary !== undefined && Number(existing.baseSalary) !== Number(input.baseSalary))) throw new TRPCError({ code: "BAD_REQUEST", message: "薪资变更必须通过统一人员档案设置生效日期，不能用今天薪资覆盖过去工资" });
+          const [sensitiveWorker] = existing.laborWorkerId
+            ? await db
+                .select()
+                .from(laborWorkers)
+                .where(eq(laborWorkers.id, existing.laborWorkerId))
+                .limit(1)
+            : [];
+          const [sensitiveUser] = existing.userId
+            ? await db
+                .select()
+                .from(userProfiles)
+                .where(eq(userProfiles.userId, existing.userId))
+                .limit(1)
+            : [];
+          await assertLegacyCoreEditSafe(db, "profile", existing.id, input, {
+            ...existing,
+            ...(sensitiveWorker ?? sensitiveUser ?? {}),
+            id: existing.id,
+          });
+          if (
+            existing.salaryBasis !== input.salaryBasis ||
+            (input.baseSalary !== undefined &&
+              Number(existing.baseSalary) !== Number(input.baseSalary))
+          )
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "薪资变更必须通过统一人员档案设置生效日期，不能用今天薪资覆盖过去工资",
+            });
         }
-        if (input.projectId === undefined && existing && !input.laborWorkerId) resolvedProjectId = existing.projectId;
+        if (input.projectId === undefined && existing && !input.laborWorkerId)
+          resolvedProjectId = existing.projectId;
         const keepsExistingIdentity = Boolean(
           existing &&
             existing.userId === (input.userId ?? null) &&
@@ -2483,7 +2808,9 @@ export const adminRouter = router({
             : await db
                 .select({ id: employeeProfiles.id })
                 .from(employeeProfiles)
-                .where(eq(employeeProfiles.laborWorkerId, input.laborWorkerId!));
+                .where(
+                  eq(employeeProfiles.laborWorkerId, input.laborWorkerId!)
+                );
           if (occupiedProfiles.some(profile => profile.id !== input.id))
             throw new TRPCError({
               code: "CONFLICT",
@@ -2498,15 +2825,25 @@ export const adminRouter = router({
           tradeName: input.tradeName,
           teamName: input.teamName,
           employmentStatus: input.employmentStatus,
-          joinedAt: input.joinedAt === undefined ? undefined : input.joinedAt
-            ? new Date(`${input.joinedAt}T00:00:00Z`)
-            : null,
-          leftAt: input.leftAt === undefined ? undefined : input.leftAt ? new Date(`${input.leftAt}T00:00:00Z`) : null,
+          joinedAt:
+            input.joinedAt === undefined
+              ? undefined
+              : input.joinedAt
+                ? new Date(`${input.joinedAt}T00:00:00Z`)
+                : null,
+          leftAt:
+            input.leftAt === undefined
+              ? undefined
+              : input.leftAt
+                ? new Date(`${input.leftAt}T00:00:00Z`)
+                : null,
           salaryBasis: input.salaryBasis,
           baseSalary:
-            input.baseSalary === undefined ? undefined : input.baseSalary === null
-              ? null
-              : String(input.baseSalary),
+            input.baseSalary === undefined
+              ? undefined
+              : input.baseSalary === null
+                ? null
+                : String(input.baseSalary),
           remarks: input.remarks,
         };
         if (input.id) {
@@ -2537,10 +2874,10 @@ export const adminRouter = router({
               : {}),
           };
           if (Object.keys(laborWorkerSensitiveValues).length) {
-          await db
-            .update(laborWorkers)
-            .set(laborWorkerSensitiveValues)
-            .where(eq(laborWorkers.id, input.laborWorkerId));
+            await db
+              .update(laborWorkers)
+              .set(laborWorkerSensitiveValues)
+              .where(eq(laborWorkers.id, input.laborWorkerId));
           }
         } else if (input.userId) {
           const userProfileSensitiveValues = {
@@ -2567,10 +2904,10 @@ export const adminRouter = router({
               : {}),
           };
           if (Object.keys(userProfileSensitiveValues).length) {
-          await db
-            .update(userProfiles)
-            .set(userProfileSensitiveValues)
-            .where(eq(userProfiles.userId, input.userId));
+            await db
+              .update(userProfiles)
+              .set(userProfileSensitiveValues)
+              .where(eq(userProfiles.userId, input.userId));
           }
         }
         await db.insert(auditLogs).values({
@@ -2590,19 +2927,86 @@ export const adminRouter = router({
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-        const [profile] = await db.select({ id: employeeProfiles.id, projectId: employeeProfiles.projectId }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
-        if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在，不能上传保单" });
-        const encoded = input.base64Data.includes(",") ? input.base64Data.slice(input.base64Data.indexOf(",") + 1) : input.base64Data;
-        if (!/^[A-Za-z0-9+/\s]*={0,2}$/.test(encoded)) throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件编码无效" });
+        if (!db)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "数据库连接暂不可用",
+          });
+        const [profile] = await db
+          .select({
+            id: employeeProfiles.id,
+            projectId: employeeProfiles.projectId,
+          })
+          .from(employeeProfiles)
+          .where(eq(employeeProfiles.id, input.employeeProfileId))
+          .limit(1);
+        if (!profile)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "员工档案不存在，不能上传保单",
+          });
+        const encoded = input.base64Data.includes(",")
+          ? input.base64Data.slice(input.base64Data.indexOf(",") + 1)
+          : input.base64Data;
+        if (!/^[A-Za-z0-9+/\s]*={0,2}$/.test(encoded))
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "保单附件编码无效",
+          });
         const bytes = Buffer.from(encoded.replace(/\s/g, ""), "base64");
-        if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件不能为空且不能超过 15MB" });
-        try { assertCertificateFileSignature(bytes, input.mimeType); } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件内容与声明格式不一致" }); }
-        const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_").slice(-160) || "insurance-policy";
-        const stored = await storagePut(`employee-insurance/${profile.id}/${Date.now()}-${safeFileName}`, bytes, input.mimeType);
-        const [created] = await db.insert(evidenceRecords).values({ projectId: profile.projectId ?? null, sourceType: "employee_insurance_policy", sourceId: String(profile.id), fileKey: stored.key, fileName: safeFileName, mimeType: input.mimeType, contentSha256: createHash("sha256").update(bytes).digest("hex"), contentBytes: bytes.length, capturedAt: new Date(), status: "active", uploadedBy: admin.id }).$returningId();
-        await db.insert(auditLogs).values({ userId: admin.id, module: "personnel", action: "upload_employee_insurance_policy", targetType: "employee_insurance_policy", targetId: String(profile.id), summary: "上传员工保单受控附件" });
-        return { success: true, evidenceId: created?.id ?? 0, fileName: safeFileName };
+        if (!bytes.length || bytes.length > 15 * 1024 * 1024)
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "保单附件不能为空且不能超过 15MB",
+          });
+        try {
+          assertCertificateFileSignature(bytes, input.mimeType);
+        } catch {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "保单附件内容与声明格式不一致",
+          });
+        }
+        const safeFileName =
+          input.fileName
+            .replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_")
+            .slice(-160) || "insurance-policy";
+        const stored = await storagePut(
+          `employee-insurance/${profile.id}/${Date.now()}-${safeFileName}`,
+          bytes,
+          input.mimeType
+        );
+        const [created] = await db
+          .insert(evidenceRecords)
+          .values({
+            projectId: profile.projectId ?? null,
+            sourceType: "employee_insurance_policy",
+            sourceId: String(profile.id),
+            fileKey: stored.key,
+            fileName: safeFileName,
+            mimeType: input.mimeType,
+            contentSha256: createHash("sha256").update(bytes).digest("hex"),
+            contentBytes: bytes.length,
+            capturedAt: new Date(),
+            status: "active",
+            uploadedBy: admin.id,
+          })
+          .$returningId();
+        await db
+          .insert(auditLogs)
+          .values({
+            userId: admin.id,
+            module: "personnel",
+            action: "upload_employee_insurance_policy",
+            targetType: "employee_insurance_policy",
+            targetId: String(profile.id),
+            summary: "上传员工保单受控附件",
+          });
+        return {
+          success: true,
+          evidenceId: created?.id ?? 0,
+          fileName: safeFileName,
+        };
       }),
     saveInsurance: protectedProcedure
       .input(employeeInsuranceInput)
@@ -2615,7 +3019,10 @@ export const adminRouter = router({
             message: "数据库连接暂不可用",
           });
         const [profile] = await db
-          .select({ id: employeeProfiles.id, projectId: employeeProfiles.projectId })
+          .select({
+            id: employeeProfiles.id,
+            projectId: employeeProfiles.projectId,
+          })
           .from(employeeProfiles)
           .where(eq(employeeProfiles.id, input.employeeProfileId))
           .limit(1);
@@ -2625,9 +3032,28 @@ export const adminRouter = router({
             message: "请先建立有效员工档案",
           });
         if (input.evidenceId) {
-          const [evidence] = await db.select({ id: evidenceRecords.id, projectId: evidenceRecords.projectId, sourceType: evidenceRecords.sourceType, sourceId: evidenceRecords.sourceId, status: evidenceRecords.status }).from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1);
-          if (!evidence || evidence.status !== "active" || evidence.sourceType !== "employee_insurance_policy" || evidence.sourceId !== String(profile.id) || evidence.projectId !== (profile.projectId ?? null)) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "保单附件不存在、已失效或不属于当前员工档案" });
+          const [evidence] = await db
+            .select({
+              id: evidenceRecords.id,
+              projectId: evidenceRecords.projectId,
+              sourceType: evidenceRecords.sourceType,
+              sourceId: evidenceRecords.sourceId,
+              status: evidenceRecords.status,
+            })
+            .from(evidenceRecords)
+            .where(eq(evidenceRecords.id, input.evidenceId))
+            .limit(1);
+          if (
+            !evidence ||
+            evidence.status !== "active" ||
+            evidence.sourceType !== "employee_insurance_policy" ||
+            evidence.sourceId !== String(profile.id) ||
+            evidence.projectId !== (profile.projectId ?? null)
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "保单附件不存在、已失效或不属于当前员工档案",
+            });
           }
         }
         const values = {
@@ -2636,8 +3062,14 @@ export const adminRouter = router({
           providerName: input.providerName ?? null,
           policyReference: input.policyReference ?? null,
           evidenceId: input.evidenceId ?? null,
-          premiumAmount: input.premiumAmount === null || input.premiumAmount === undefined ? null : String(input.premiumAmount),
-          coverageAmount: input.coverageAmount === null || input.coverageAmount === undefined ? null : String(input.coverageAmount),
+          premiumAmount:
+            input.premiumAmount === null || input.premiumAmount === undefined
+              ? null
+              : String(input.premiumAmount),
+          coverageAmount:
+            input.coverageAmount === null || input.coverageAmount === undefined
+              ? null
+              : String(input.coverageAmount),
           purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`),
           expiresAt: new Date(`${input.expiresAt}T00:00:00Z`),
           status: input.status,
@@ -3240,16 +3672,35 @@ export const adminRouter = router({
             const [evidence] = row.evidenceId
               ? await db
                   .select({
+                    id: evidenceRecords.id,
+                    projectId: evidenceRecords.projectId,
+                    sourceType: evidenceRecords.sourceType,
+                    status: evidenceRecords.status,
                     fileName: evidenceRecords.fileName,
                     fileKey: evidenceRecords.fileKey,
                     mimeType: evidenceRecords.mimeType,
                   })
                   .from(evidenceRecords)
-                  .where(eq(evidenceRecords.id, row.evidenceId))
+                  .where(
+                    and(
+                      eq(evidenceRecords.id, row.evidenceId),
+                      eq(evidenceRecords.projectId, row.projectId),
+                      eq(evidenceRecords.sourceType, "diesel_receipt"),
+                      eq(evidenceRecords.status, "active")
+                    )
+                  )
                   .limit(1)
               : [];
-            const receiptImageUrl = evidence
-              ? await storageGetSignedUrl(evidence.fileKey)
+            const receiptEvidence =
+              evidence &&
+              evidence.id === row.evidenceId &&
+              evidence.projectId === row.projectId &&
+              evidence.sourceType === "diesel_receipt" &&
+              evidence.status === "active"
+                ? evidence
+                : null;
+            const receiptImageUrl = receiptEvidence
+              ? await storageGetSignedUrl(receiptEvidence.fileKey)
               : null;
             return {
               ...row,
@@ -3261,8 +3712,16 @@ export const adminRouter = router({
               tripNo: trip?.tripNo ?? null,
               grossFreightAmount: trip?.calculatedAmount ?? null,
               refuelerName: refuelerNames.get(row.createdBy) ?? null,
-              receiptEvidence: evidence
-                ? { ...evidence, url: receiptImageUrl }
+              hasReceipt: Boolean(row.receiptNo?.trim() || receiptEvidence),
+              formalInvoice: null,
+              invoiceLinkage: "no_linkage" as const,
+              receiptEvidence: receiptEvidence
+                ? {
+                    id: receiptEvidence.id,
+                    fileName: receiptEvidence.fileName,
+                    mimeType: receiptEvidence.mimeType,
+                    url: receiptImageUrl,
+                  }
                 : null,
               priceAlert: calculateDieselPriceAlert(row, rows, alertRule),
             };
@@ -3793,199 +4252,232 @@ export const adminRouter = router({
           });
 
         return db.transaction(async db => {
-        const [project] = await db
-          .select({ id: projects.id, status: projects.status })
-          .from(projects)
-          .where(eq(projects.id, input.projectId))
-          .limit(1);
-        if (!project || project.status === "archived") {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "车辆必须归属未归档的有效项目节点",
-          });
-        }
-        if (input.organizationId) {
-          const [organization] = await db
-            .select({ id: organizations.id, status: organizations.status })
-            .from(organizations)
-            .where(eq(organizations.id, input.organizationId))
+          const [project] = await db
+            .select({ id: projects.id, status: projects.status })
+            .from(projects)
+            .where(eq(projects.id, input.projectId))
             .limit(1);
-          if (!organization || organization.status !== "active") {
+          if (!project || project.status === "archived") {
             throw new TRPCError({
               code: "BAD_REQUEST",
-              message: "车辆所属单位必须是已启用的组织节点",
+              message: "车辆必须归属未归档的有效项目节点",
             });
           }
-        }
-        if (input.driverUserId) {
-          const [driver] = await db
-            .select({ id: users.id })
-            .from(users)
-            .where(eq(users.id, input.driverUserId))
-            .limit(1);
-          if (!driver)
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "请选择已存在的司机账号",
-            });
-        }
-        const plateMatches = await db
-          .select({ id: transportVehicles.id })
-          .from(transportVehicles)
-          .where(eq(transportVehicles.plateNo, input.plateNo));
-        if (plateMatches.some(vehicle => vehicle.id !== input.id)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "该车牌已存在，不能重复建档",
-          });
-        }
-
-        let existing: typeof transportVehicles.$inferSelect | undefined;
-        if (input.id) {
-          [existing] = await db
-            .select()
-            .from(transportVehicles)
-            .where(eq(transportVehicles.id, input.id))
-            .limit(1).for("update");
-          if (!existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "运输车辆不存在",
-            });
-          if (input.status === "disabled" && existing.status !== "disabled") {
-            const openTrips = await db
-              .select({ id: transportTrips.id, status: transportTrips.status })
-              .from(transportTrips)
-              .where(eq(transportTrips.vehicleId, input.id));
-            if (
-              openTrips.some(trip =>
-                ["draft", "submitted", "verified"].includes(trip.status)
-              )
-            ) {
+          if (input.organizationId) {
+            const [organization] = await db
+              .select({ id: organizations.id, status: organizations.status })
+              .from(organizations)
+              .where(eq(organizations.id, input.organizationId))
+              .limit(1);
+            if (!organization || organization.status !== "active") {
               throw new TRPCError({
                 code: "BAD_REQUEST",
-                message:
-                  "车辆存在未结算趟次，不能直接停用；请先完成或作废相关趟次",
+                message: "车辆所属单位必须是已启用的组织节点",
               });
             }
           }
-        }
-
-        const targetPersonId = input.driverPersonId === undefined ? existing?.driverPersonId ?? null : input.driverPersonId;
-        if (targetPersonId) await resolveResourcePerson(db, { personId: targetPersonId, assetType: "vehicle", projectId: input.projectId, previousUserId: existing?.driverUserId ?? null, requestedUserId: input.driverUserId });
-        const values = {
-          projectId: input.projectId,
-          organizationId: input.organizationId ?? null,
-          plateNo: input.plateNo,
-          vehicleType: input.vehicleType,
-          ownership: input.ownership,
-          ownerName: input.ownerName ?? null,
-          driverUserId: targetPersonId !== null || existing?.driverPersonId ? existing?.driverUserId ?? null : input.driverUserId === undefined ? existing?.driverUserId ?? null : input.driverUserId,
-          driverName: input.driverName === undefined || input.driverName === "" ? existing?.driverName ?? null : input.driverName,
-          driverPhoneEncrypted:
-            (input.driverPhone === undefined || input.driverPhone === "")
-              ? (existing?.driverPhoneEncrypted ?? null)
-              : input.driverPhone
-                ? encryptSecret(input.driverPhone)
-                : null,
-          driverPhoneMasked:
-            (input.driverPhone === undefined || input.driverPhone === "")
-              ? (existing?.driverPhoneMasked ?? null)
-              : input.driverPhone
-                ? maskSecret(input.driverPhone)
-                : null,
-          boxLengthMeters: String(input.boxLengthMeters),
-          boxWidthMeters: String(input.boxWidthMeters),
-          boxHeightMeters: String(input.boxHeightMeters),
-          loadFactor: String(input.loadFactor),
-          payloadTons:
-            input.payloadTons === null || input.payloadTons === undefined
-              ? null
-              : String(input.payloadTons),
-          fuelTankCapacityLiters:
-            input.fuelTankCapacityLiters === null ||
-            input.fuelTankCapacityLiters === undefined
-              ? null
-              : String(input.fuelTankCapacityLiters),
-          status: input.status,
-        };
-        let vehicleId = input.id;
-        if (existing)
-          await db
-            .update(transportVehicles)
-            .set(values)
-            .where(eq(transportVehicles.id, existing.id));
-        else {
-          await db.insert(transportVehicles).values(values);
-          const [created] = await db
+          if (input.driverUserId) {
+            const [driver] = await db
+              .select({ id: users.id })
+              .from(users)
+              .where(eq(users.id, input.driverUserId))
+              .limit(1);
+            if (!driver)
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "请选择已存在的司机账号",
+              });
+          }
+          const plateMatches = await db
             .select({ id: transportVehicles.id })
             .from(transportVehicles)
-            .where(eq(transportVehicles.plateNo, input.plateNo))
-            .limit(1);
-          if (!created)
+            .where(eq(transportVehicles.plateNo, input.plateNo));
+          if (plateMatches.some(vehicle => vehicle.id !== input.id)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "该车牌已存在，不能重复建档",
+            });
+          }
+
+          let existing: typeof transportVehicles.$inferSelect | undefined;
+          if (input.id) {
+            [existing] = await db
+              .select()
+              .from(transportVehicles)
+              .where(eq(transportVehicles.id, input.id))
+              .limit(1)
+              .for("update");
+            if (!existing)
+              throw new TRPCError({
+                code: "NOT_FOUND",
+                message: "运输车辆不存在",
+              });
+            if (input.status === "disabled" && existing.status !== "disabled") {
+              const openTrips = await db
+                .select({
+                  id: transportTrips.id,
+                  status: transportTrips.status,
+                })
+                .from(transportTrips)
+                .where(eq(transportTrips.vehicleId, input.id));
+              if (
+                openTrips.some(trip =>
+                  ["draft", "submitted", "verified"].includes(trip.status)
+                )
+              ) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message:
+                    "车辆存在未结算趟次，不能直接停用；请先完成或作废相关趟次",
+                });
+              }
+            }
+          }
+
+          const targetPersonId =
+            input.driverPersonId === undefined
+              ? (existing?.driverPersonId ?? null)
+              : input.driverPersonId;
+          if (targetPersonId)
+            await resolveResourcePerson(db, {
+              personId: targetPersonId,
+              assetType: "vehicle",
+              projectId: input.projectId,
+              previousUserId: existing?.driverUserId ?? null,
+              requestedUserId: input.driverUserId,
+            });
+          const values = {
+            projectId: input.projectId,
+            organizationId: input.organizationId ?? null,
+            plateNo: input.plateNo,
+            vehicleType: input.vehicleType,
+            ownership: input.ownership,
+            ownerName: input.ownerName ?? null,
+            driverUserId:
+              targetPersonId !== null || existing?.driverPersonId
+                ? (existing?.driverUserId ?? null)
+                : input.driverUserId === undefined
+                  ? (existing?.driverUserId ?? null)
+                  : input.driverUserId,
+            driverName:
+              input.driverName === undefined || input.driverName === ""
+                ? (existing?.driverName ?? null)
+                : input.driverName,
+            driverPhoneEncrypted:
+              input.driverPhone === undefined || input.driverPhone === ""
+                ? (existing?.driverPhoneEncrypted ?? null)
+                : input.driverPhone
+                  ? encryptSecret(input.driverPhone)
+                  : null,
+            driverPhoneMasked:
+              input.driverPhone === undefined || input.driverPhone === ""
+                ? (existing?.driverPhoneMasked ?? null)
+                : input.driverPhone
+                  ? maskSecret(input.driverPhone)
+                  : null,
+            boxLengthMeters: String(input.boxLengthMeters),
+            boxWidthMeters: String(input.boxWidthMeters),
+            boxHeightMeters: String(input.boxHeightMeters),
+            loadFactor: String(input.loadFactor),
+            payloadTons:
+              input.payloadTons === null || input.payloadTons === undefined
+                ? null
+                : String(input.payloadTons),
+            fuelTankCapacityLiters:
+              input.fuelTankCapacityLiters === null ||
+              input.fuelTankCapacityLiters === undefined
+                ? null
+                : String(input.fuelTankCapacityLiters),
+            status: input.status,
+          };
+          let vehicleId = input.id;
+          if (existing)
+            await db
+              .update(transportVehicles)
+              .set(values)
+              .where(eq(transportVehicles.id, existing.id));
+          else {
+            await db.insert(transportVehicles).values(values);
+            const [created] = await db
+              .select({ id: transportVehicles.id })
+              .from(transportVehicles)
+              .where(eq(transportVehicles.plateNo, input.plateNo))
+              .limit(1);
+            if (!created)
+              throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: "车辆台账保存后未找到记录",
+              });
+            vehicleId = created.id;
+          }
+          if (!vehicleId)
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
-              message: "车辆台账保存后未找到记录",
+              message: "车辆台账标识无效",
             });
-          vehicleId = created.id;
-        }
-        if (!vehicleId)
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "车辆台账标识无效",
-          });
-        if (targetPersonId !== null || existing?.driverPersonId) await saveResourceBinding(db, { personId: targetPersonId, assetType: "vehicle", assetId: vehicleId, projectId: input.projectId, actorUserId: admin.id, effectiveFrom: chinaBusinessDate(new Date()), requestedUserId: input.driverUserId });
-        const existingRules = await db
-          .select()
-          .from(transportVehicleLeaseRules)
-          .where(eq(transportVehicleLeaseRules.vehicleId, vehicleId))
-          .orderBy(desc(transportVehicleLeaseRules.updatedAt));
-        const activeRule = existingRules.find(
-          rule => rule.projectId === input.projectId && rule.status === "active"
-        );
-        if (input.ownership === "leased" && input.leaseTerms) {
-          const leaseValues = {
-            vehicleId,
-            projectId: input.projectId,
-            billingType: input.leaseTerms.billingType,
-            rate: String(input.leaseTerms.rate),
-            effectiveFrom: new Date(
-              `${input.leaseTerms.effectiveFrom}T00:00:00Z`
-            ),
-            effectiveTo: input.leaseTerms.effectiveTo
-              ? new Date(`${input.leaseTerms.effectiveTo}T00:00:00Z`)
-              : null,
-            status: "active" as const,
-          };
-          if (activeRule)
+          if (targetPersonId !== null || existing?.driverPersonId)
+            await saveResourceBinding(db, {
+              personId: targetPersonId,
+              assetType: "vehicle",
+              assetId: vehicleId,
+              projectId: input.projectId,
+              actorUserId: admin.id,
+              effectiveFrom: chinaBusinessDate(new Date()),
+              requestedUserId: input.driverUserId,
+            });
+          const existingRules = await db
+            .select()
+            .from(transportVehicleLeaseRules)
+            .where(eq(transportVehicleLeaseRules.vehicleId, vehicleId))
+            .orderBy(desc(transportVehicleLeaseRules.updatedAt));
+          const activeRule = existingRules.find(
+            rule =>
+              rule.projectId === input.projectId && rule.status === "active"
+          );
+          if (input.ownership === "leased" && input.leaseTerms) {
+            const leaseValues = {
+              vehicleId,
+              projectId: input.projectId,
+              billingType: input.leaseTerms.billingType,
+              rate: String(input.leaseTerms.rate),
+              effectiveFrom: new Date(
+                `${input.leaseTerms.effectiveFrom}T00:00:00Z`
+              ),
+              effectiveTo: input.leaseTerms.effectiveTo
+                ? new Date(`${input.leaseTerms.effectiveTo}T00:00:00Z`)
+                : null,
+              status: "active" as const,
+            };
+            if (activeRule)
+              await db
+                .update(transportVehicleLeaseRules)
+                .set(leaseValues)
+                .where(eq(transportVehicleLeaseRules.id, activeRule.id));
+            else
+              await db.insert(transportVehicleLeaseRules).values(leaseValues);
+          } else if (activeRule) {
             await db
               .update(transportVehicleLeaseRules)
-              .set(leaseValues)
+              .set({ status: "disabled" })
               .where(eq(transportVehicleLeaseRules.id, activeRule.id));
-          else await db.insert(transportVehicleLeaseRules).values(leaseValues);
-        } else if (activeRule) {
-          await db
-            .update(transportVehicleLeaseRules)
-            .set({ status: "disabled" })
-            .where(eq(transportVehicleLeaseRules.id, activeRule.id));
-        }
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "transport",
-          action: input.id ? "admin_update_vehicle" : "admin_create_vehicle",
-          targetType: "transport_vehicle",
-          targetId: String(vehicleId),
-          summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}${input.ownership === "leased" ? "，已维护外租租金与租期" : input.ownership === "trip_settlement" ? "，渣土车按趟结算且不计租金" : ""}`,
-        });
-        return {
-          success: true,
-          theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
-            input.boxLengthMeters,
-            input.boxWidthMeters,
-            input.boxHeightMeters,
-            input.loadFactor
-          ),
-        };
+          }
+          await db.insert(auditLogs).values({
+            userId: admin.id,
+            module: "transport",
+            action: input.id ? "admin_update_vehicle" : "admin_create_vehicle",
+            targetType: "transport_vehicle",
+            targetId: String(vehicleId),
+            summary: `${input.id ? "维护" : "新建"}车辆台账：${input.plateNo}${input.ownership === "leased" ? "，已维护外租租金与租期" : input.ownership === "trip_settlement" ? "，渣土车按趟结算且不计租金" : ""}`,
+          });
+          return {
+            success: true,
+            theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
+              input.boxLengthMeters,
+              input.boxWidthMeters,
+              input.boxHeightMeters,
+              input.loadFactor
+            ),
+          };
         });
       }),
     revokeDriverWechatBinding: protectedProcedure
@@ -6076,15 +6568,21 @@ export const adminRouter = router({
       .input(z.object({ eventCode: smsEventCode }))
       .query(async ({ ctx, input }) => {
         await assertSuperAdmin(ctx);
-        const result = await inspectAliyunSmsTemplateVariableContract(input.eventCode);
+        const result = await inspectAliyunSmsTemplateVariableContract(
+          input.eventCode
+        );
         const messageByReason: Record<typeof result.reason, string> = {
           verified: "阿里云已审核通过，模板变量与当前业务事件完全一致。",
-          configuration_not_ready: "当前事件尚未完成可发送配置，无法实查阿里云模板。",
-          provider_rejected: "阿里云未返回可用模板详情，请检查模板编码和RAM读取权限。",
+          configuration_not_ready:
+            "当前事件尚未完成可发送配置，无法实查阿里云模板。",
+          provider_rejected:
+            "阿里云未返回可用模板详情，请检查模板编码和RAM读取权限。",
           template_not_approved: "该模板尚未审核通过，暂不可作为业务短信模板。",
           template_content_unavailable: "阿里云未返回模板正文，无法验证变量。",
-          variable_contract_invalid: "模板变量与当前事件不一致，请按提示在阿里云新建或更新审核模板。",
-          provider_request_failed: "查询阿里云模板失败，请检查网络、密钥权限和服务商状态。",
+          variable_contract_invalid:
+            "模板变量与当前事件不一致，请按提示在阿里云新建或更新审核模板。",
+          provider_request_failed:
+            "查询阿里云模板失败，请检查网络、密钥权限和服务商状态。",
         };
         return {
           ...result,
