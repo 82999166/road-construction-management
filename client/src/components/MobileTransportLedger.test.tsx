@@ -39,4 +39,16 @@ describe("移动运输运单台账", () => {
     expect(source).not.toContain("longitude");
     expect(source).not.toContain("latitude");
   });
+
+  it("刷卡与拍照发票都按运输状态提供两种卸土入口", () => {
+    const source = readFileSync(new URL("./MobileTransportLedger.tsx", import.meta.url), "utf8");
+    const condition = source.slice(source.indexOf("function canConfirmPhotoUnload"), source.indexOf("export function MobileTransportLedger"));
+    expect(condition).toContain("Boolean(trip.loadConfirmedAt)");
+    expect(condition).toContain("!trip.unloadConfirmedAt");
+    expect(condition).not.toContain("invoiceMode");
+    expect(source).toContain("onConfirmCardUnload?.(tripId)");
+    expect(source).toContain("刷卡卸土");
+    expect(source).toContain("刷车辆卡确认卸土");
+    expect(source).toContain("拍照卸土");
+  });
 });

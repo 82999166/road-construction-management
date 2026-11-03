@@ -15,7 +15,7 @@ describe("运输拍照卸土闭环", () => {
     expect(source).toContain("activeVehicleTransitKey: null");
     expect(source).toContain("transport_unload_completed");
     expect(source).toContain('unloadConfirmationMode: "photo"');
-    expect(source).toContain('status: "submitted"');
+    expect(source).toContain('status: trip.status === "draft" ? "submitted" : trip.status');
     expect(source).not.toContain('message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认"');
   });
 });

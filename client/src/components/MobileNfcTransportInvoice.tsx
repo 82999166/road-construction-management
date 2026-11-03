@@ -38,7 +38,7 @@ function getNfcToken(record: NdefRecord) {
   }
 }
 
-export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: { open: boolean; onOpenChange: (open: boolean) => void; initialToken?: string }) {
+export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, expectedUnloadTripId }: { open: boolean; onOpenChange: (open: boolean) => void; initialToken?: string; expectedUnloadTripId?: number }) {
   const utils = trpc.useUtils();
   const [token, setToken] = useState(initialToken?.trim() || "");
   const [routePresetId, setRoutePresetId] = useState("");
@@ -231,6 +231,12 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   }, [preview.data]);
 
   const submit = async () => {
+    if (expectedUnloadTripId && preview.data?.activeTrip?.id !== expectedUnloadTripId) {
+      const message = "所刷车辆卡与待卸土运单不一致，请刷本运单对应的车辆卡。";
+      setOperationError(message);
+      toast.error(message);
+      return;
+    }
     if (!token || !preview.data) return;
     setOperationError("");
     if (!preview.data.activeTrip && !routePresetId) return toast.error("请先选择运输线路");
@@ -247,11 +253,15 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
         return toast.error("未取得卸土定位，不能确认已到达卸土点。请允许定位权限后重试");
       }
     }
-    issue.mutate({ token, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
+    issue.mutate({ token, expectedUnloadTripId, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
   };
 
   const autoConfirmUnload = async () => {
     if (!token || !preview.data?.activeTrip) return;
+    if (expectedUnloadTripId && preview.data.activeTrip.id !== expectedUnloadTripId) {
+      setOperationError("所刷车辆卡与待卸土运单不一致，请刷本运单对应的车辆卡。");
+      return;
+    }
     setOperationError("");
     setScanStatus("已识别为卸土点补刷卡，正在核验最短运输时间与现场定位…");
     unlockSpeech();
@@ -263,7 +273,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
     }
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 }));
-      issue.mutate({ token, idempotencyKey: `mobile-nfc-unload-${crypto.randomUUID()}`, latitude: position.coords.latitude, longitude: position.coords.longitude, occurredAt: new Date().toISOString() });
+      issue.mutate({ token, expectedUnloadTripId, idempotencyKey: `mobile-nfc-unload-${crypto.randomUUID()}`, latitude: position.coords.latitude, longitude: position.coords.longitude, occurredAt: new Date().toISOString() });
     } catch {
       const message = "未取得卸土定位，不能自动确认卸土。请允许定位权限后重新刷卡";
       setOperationError(message);
@@ -290,7 +300,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken }: 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md border-[#8eb6c7] bg-[#f4fbfe]">
-        <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />{unloadOnlyAutoClose ? "正在确认卸土刷卡" : "刷 NFC 卡发票"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle className="flex items-center gap-2 text-[#194d64]"><Radio className="h-5 w-5" />{unloadOnlyAutoClose ? "正在确认卸土刷卡" : expectedUnloadTripId ? "刷卡卸土" : "刷 NFC 卡发票"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <p className="text-xs leading-5 text-[#38677a]">页面内读取车辆卡前，请先点击“开始读取车辆卡”。已写入 HTTPS 安全链接的车辆卡也可直接触碰手机，由 Android 自动打开本页。</p>
           <Button type="button" variant="outline" size="sm" className="w-full border-[#a9ccd9] bg-white text-[#24546b]" onClick={testSpeech}>

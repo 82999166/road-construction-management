@@ -34,7 +34,7 @@ describe("运输卸土点补刷卡闭环", () => {
   it("仅以条件写入关闭新建趟次，保留事件、审计、风险扫描和待核验状态", () => {
     expect(routerSource).toContain("nfc_unload_only_create_and_close_trip");
     expect(routerSource).toContain("isNull(transportTrips.unloadConfirmedAt)");
-    expect(routerSource).toContain("status: \"submitted\"");
+    expect(routerSource).toContain('status: trip.status === "draft" ? "submitted" : trip.status');
     expect(routerSource).toContain("triggerTransportRiskScan(input.projectId)");
     expect(routerSource).toContain("卸土点补刷卡闭环完成");
   });

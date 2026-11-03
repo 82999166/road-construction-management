@@ -65,4 +65,14 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain("!unloadOnlyAutoClose ? <Button");
     expect(source).toContain("正在确认卸土刷卡");
   });
+
+  it("从台账刷卡卸土时核对服务端在途运单，错卡不得进入确认请求", () => {
+    const source = readFileSync(new URL("./MobileNfcTransportInvoice.tsx", import.meta.url), "utf8");
+    const submit = source.slice(source.indexOf("const submit = async"), source.indexOf("const autoConfirmUnload"));
+    expect(submit).toContain("preview.data?.activeTrip?.id !== expectedUnloadTripId");
+    expect(submit.indexOf("所刷车辆卡与待卸土运单不一致")).toBeLessThan(submit.indexOf("issue.mutate"));
+    const automatic = source.slice(source.indexOf("const autoConfirmUnload"), source.indexOf("const successReceiptText"));
+    expect(automatic).toContain("preview.data.activeTrip.id !== expectedUnloadTripId");
+    expect(source).toContain('expectedUnloadTripId ? "刷卡卸土"');
+  });
 });

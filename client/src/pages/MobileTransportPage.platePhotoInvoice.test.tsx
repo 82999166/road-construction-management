@@ -29,11 +29,27 @@ describe("移动端拍照车牌发票", () => {
   });
 
   it("拍照发票成功和直拍卸土成功后使用中文语音播报", () => {
-    expect(source).toContain("function speakTransportReceipt");
-    expect(source).toContain('utterance.lang = "zh-CN"');
+    const speech = readFileSync(new URL("../lib/transportReceiptSpeech.ts", import.meta.url), "utf8");
+    expect(source).toContain("useTransportReceiptSpeech()");
+    expect(speech).toContain('utterance.lang = "zh-CN"');
     expect(source).toContain("拍照发票成功");
     expect(source).toContain("卸土成功");
     expect(source).toContain("speakTransportReceipt");
+  });
+
+  it("拍照提交和卸土确认在异步处理前解锁语音，提供无业务提交的测试与成功重播", () => {
+    const submit = source.slice(source.indexOf("async function submitTrip()"), source.indexOf("function openTripDialog"));
+    const unload = source.slice(source.indexOf("async function confirmPlatePhotoTripUnload"), source.indexOf("if (loading || !isAuthenticated"));
+    expect(submit.indexOf("prepareSpeech()")).toBeLessThan(submit.indexOf("await createWatermarkedTransportImage"));
+    expect(unload.indexOf("prepareSpeech()")).toBeLessThan(unload.indexOf("navigator.geolocation.getCurrentPosition"));
+    expect(source).toContain('aria-label="运输成功语音回执"');
+    expect(source).toContain("测试语音播报（不提交发票）");
+    expect(source).toContain('onClick={replaySpeech}');
+    expect(source).toContain("closePlatePhotoUnloadForm()");
+    const hook = readFileSync(new URL("../hooks/useTransportReceiptSpeech.ts", import.meta.url), "utf8");
+    expect(hook).not.toContain("trpc");
+    expect(hook).not.toContain("mutate");
+    expect(hook).toContain("controller.speakTransportReceipt(lastMessage, true)");
   });
 
   it("禁止相册选择并在直拍开票后显示成功反馈", () => {

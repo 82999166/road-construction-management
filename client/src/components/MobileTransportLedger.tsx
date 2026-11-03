@@ -15,6 +15,7 @@ type MobileTransportLedgerProps = {
   workDate: string;
   vehicles: Array<{ id: number; plateNo: string }>;
   onConfirmPlatePhotoUnload?: (tripId: number) => void;
+  onConfirmCardUnload?: (tripId: number) => void;
 };
 
 function formatMoney(value: string | number | null | undefined) { return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
@@ -34,7 +35,7 @@ function canConfirmPhotoUnload(trip: any) {
     && !["void", "settled"].includes(trip.status);
 }
 
-export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirmPlatePhotoUnload }: MobileTransportLedgerProps) {
+export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirmPlatePhotoUnload, onConfirmCardUnload }: MobileTransportLedgerProps) {
   const [period, setPeriod] = useState<"day" | "month">("day");
   const [vehicleId, setVehicleId] = useState("all");
   const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
@@ -63,6 +64,11 @@ export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirm
     onConfirmPlatePhotoUnload?.(tripId);
   };
 
+  const openCardUnload = (tripId: number) => {
+    setSelectedTripId(null);
+    onConfirmCardUnload?.(tripId);
+  };
+
   return <section className="space-y-3 print:hidden">
     <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">司机运输台账</h2><p className="mt-0.5 text-xs text-[#8f7566]">真实趟次、运输费用、柴油扣款和现场进度。</p></div><FileText className="h-5 w-5 text-[#9a5128]" /></div>
     <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#f0e5d7] p-2"><Button size="sm" variant={period === "day" ? "default" : "ghost"} className={period === "day" ? "bg-[#9a5128] hover:bg-[#7e3d1c]" : "text-[#765a49]"} onClick={() => { setPeriod("day"); setInTransitOnly(false); }}>当日台账</Button><Button size="sm" variant={period === "month" ? "default" : "ghost"} className={period === "month" ? "bg-[#9a5128] hover:bg-[#7e3d1c]" : "text-[#765a49]"} onClick={() => { setPeriod("month"); setInTransitOnly(false); }}>当月汇总</Button></div>
@@ -83,13 +89,14 @@ export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirm
         <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-[#8f7566]">
           <span>{Number(trip.volumeCubicMeters ?? 0).toFixed(2)} m³ · {formatMoney(trip.calculatedAmount)}</span>
           <div className="flex shrink-0 items-center gap-1.5">
+            {onConfirmCardUnload && canConfirmPhotoUnload(trip) ? <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-semibold text-[#47754d]" onClick={() => openCardUnload(trip.id)}>刷卡卸土</Button> : null}
             {showUnload ? <Button type="button" size="sm" className="h-8 bg-[#47754d] px-3 text-xs font-semibold text-white hover:bg-[#39623e]" onClick={() => openPhotoUnload(trip.id)}>拍照卸土</Button> : null}
             <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs text-[#8f7566]" onClick={() => setSelectedTripId(trip.id)}>详情 <ChevronRight className="ml-0.5 h-3.5 w-3.5" /></Button>
           </div>
         </div>
       </div>;
     })}</div>}
-    <Dialog open={Boolean(selectedTrip)} onOpenChange={open => { if (!open) setSelectedTripId(null); }}><DialogContent className="max-h-[88vh] overflow-y-auto"><DialogHeader><DialogTitle>运输运单详情</DialogTitle></DialogHeader>{selectedTrip ? <TripDetail trip={selectedTrip} onConfirmPlatePhotoUnload={onConfirmPlatePhotoUnload ? openPhotoUnload : undefined} /> : null}</DialogContent></Dialog>
+    <Dialog open={Boolean(selectedTrip)} onOpenChange={open => { if (!open) setSelectedTripId(null); }}><DialogContent className="max-h-[88vh] overflow-y-auto"><DialogHeader><DialogTitle>运输运单详情</DialogTitle></DialogHeader>{selectedTrip ? <TripDetail trip={selectedTrip} onConfirmPlatePhotoUnload={onConfirmPlatePhotoUnload ? openPhotoUnload : undefined} onConfirmCardUnload={onConfirmCardUnload ? openCardUnload : undefined} /> : null}</DialogContent></Dialog>
     <Dialog open={fuelDetailOpen} onOpenChange={setFuelDetailOpen}><DialogContent className="max-h-[88vh] overflow-y-auto"><DialogHeader><DialogTitle>柴油扣款详情</DialogTitle></DialogHeader><p className="text-xs leading-5 text-[#8f7566]">仅显示 {workDate} 当前可见车辆的有效运输扣油记录；“未记录”表示当次加油未填写加油机表数。</p>{fuelDeductionDetails.isLoading ? <p className="py-6 text-center text-sm text-[#8f7566]">正在加载真实柴油扣款记录…</p> : fuelDeductionDetails.error ? <p className="rounded-xl bg-[#fff5ed] p-3 text-sm text-[#9c4d27]">柴油明细加载失败：{getUserFacingErrorMessage(fuelDeductionDetails.error, "暂无法读取柴油扣款明细，请稍后重试")}</p> : !fuelDeductionDetails.data?.records.length ? <p className="py-6 text-center text-sm text-[#8f7566]">当日暂无运输扣油记录。</p> : <div className="space-y-3">{fuelDeductionDetails.data.records.map(record => <FuelDeductionDetail key={record.id} record={record} />)}</div>}</DialogContent></Dialog>
   </section>;
 }
@@ -99,7 +106,7 @@ function LedgerMetric({ label, value, warning, success, onClick, active }: { lab
   return <Card className={className} onClick={onClick}><CardContent className="p-2 text-center"><p className={`text-sm font-bold ${warning ? "text-[#a55f25]" : success ? "text-[#3f7549]" : "text-[#43291e]"}`}>{value}</p><p className="mt-1 text-[10px] text-[#8f7566]">{label}</p></CardContent></Card>;
 }
 
-function TripDetail({ trip, onConfirmPlatePhotoUnload }: { trip: any; onConfirmPlatePhotoUnload?: (tripId: number) => void }) {
+function TripDetail({ trip, onConfirmPlatePhotoUnload, onConfirmCardUnload }: { trip: any; onConfirmPlatePhotoUnload?: (tripId: number) => void; onConfirmCardUnload?: (tripId: number) => void }) {
   const progress = tripProgress(trip);
   const cardEventRows: Array<[string, string]> = trip.cardEvents?.length
     ? trip.cardEvents.map((event: any) => {
@@ -110,7 +117,7 @@ function TripDetail({ trip, onConfirmPlatePhotoUnload }: { trip: any; onConfirmP
       ];
     })
     : [["刷卡记录", "暂无刷卡记录"]];
-  return <div className="space-y-3 text-sm"><div className="rounded-xl bg-[#f8ead8] p-3"><p className="font-bold">{trip.tripNo}</p><p className="mt-1 text-xs text-[#765a49]">{trip.vehiclePlateNo} · 司机 {trip.vehicle?.driverName || "未录入"}</p><p className="mt-1 text-xs text-[#765a49]">发票类型：{trip.invoiceMode === "plate_photo" ? "拍照发票" : "刷卡发票"}</p><p className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-semibold ${progress.tone}`}>{progress.label} · {progress.action}</p></div><DetailBlock title="装卸地点与责任人" rows={[["装土点", `${trip.loadLocation.name} · ${trip.loadLocation.address}`], ["装土发票管理员", trip.loadConfirmation?.administratorName ?? "未确认"], ["装土确认时间", formatDateTime(trip.loadConfirmation?.confirmedAt ?? trip.loadConfirmedAt)], ["卸土点", `${trip.unloadLocation.name} · ${trip.unloadLocation.address}`], ["卸土确认管理员", trip.unloadConfirmation?.administratorName ?? "未确认"], ["卸土确认时间", formatDateTime(trip.unloadConfirmation?.confirmedAt ?? trip.unloadConfirmedAt)]]} /><DetailBlock title="运输与结算" rows={[["开票时间", formatDateTime(trip.startAt)], ["里程 / 方量", `${trip.actualDistanceKm ?? "—"} km / ${trip.volumeCubicMeters ?? "—"} m³`], ["应付运费", formatMoney(trip.calculatedAmount)], ["柴油扣款 / 净额", `${formatMoney(trip.fuelDeductionAmount)} / ${formatMoney(Number(trip.calculatedAmount ?? 0) - Number(trip.fuelDeductionAmount ?? 0))}`]]} /><DetailBlock title="现场刷卡与异常" rows={cardEventRows} />{trip.anomalies?.length ? <div className="rounded-xl border border-[#f2d8bd] bg-[#fff9f3] p-3"><p className="flex items-center gap-1 font-semibold text-[#9c4d27]"><CircleAlert className="h-4 w-4" />待核验提示</p><div className="mt-2 space-y-1 text-xs text-[#80543d]">{trip.anomalies.map((item: any, index: number) => <p key={`${String(item)}-${index}`}>{typeof item === "string" ? item : item.label || item.message || "需人工核验"}</p>)}</div></div> : null}{onConfirmPlatePhotoUnload && canConfirmPhotoUnload(trip) ? <Button type="button" className="w-full bg-[#47754d] text-white hover:bg-[#39623e]" onClick={() => onConfirmPlatePhotoUnload(trip.id)}>拍摄卸土现场并确认卸土</Button> : null}</div>;
+  return <div className="space-y-3 text-sm"><div className="rounded-xl bg-[#f8ead8] p-3"><p className="font-bold">{trip.tripNo}</p><p className="mt-1 text-xs text-[#765a49]">{trip.vehiclePlateNo} · 司机 {trip.vehicle?.driverName || "未录入"}</p><p className="mt-1 text-xs text-[#765a49]">发票类型：{trip.invoiceMode === "plate_photo" ? "拍照发票" : "刷卡发票"}</p><p className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-semibold ${progress.tone}`}>{progress.label} · {progress.action}</p></div><DetailBlock title="装卸地点与责任人" rows={[["装土点", `${trip.loadLocation.name} · ${trip.loadLocation.address}`], ["装土发票管理员", trip.loadConfirmation?.administratorName ?? "未确认"], ["装土确认时间", formatDateTime(trip.loadConfirmation?.confirmedAt ?? trip.loadConfirmedAt)], ["卸土点", `${trip.unloadLocation.name} · ${trip.unloadLocation.address}`], ["卸土确认管理员", trip.unloadConfirmation?.administratorName ?? "未确认"], ["卸土确认时间", formatDateTime(trip.unloadConfirmation?.confirmedAt ?? trip.unloadConfirmedAt)]]} /><DetailBlock title="运输与结算" rows={[["开票时间", formatDateTime(trip.startAt)], ["里程 / 方量", `${trip.actualDistanceKm ?? "—"} km / ${trip.volumeCubicMeters ?? "—"} m³`], ["应付运费", formatMoney(trip.calculatedAmount)], ["柴油扣款 / 净额", `${formatMoney(trip.fuelDeductionAmount)} / ${formatMoney(Number(trip.calculatedAmount ?? 0) - Number(trip.fuelDeductionAmount ?? 0))}`]]} /><DetailBlock title="现场刷卡与异常" rows={cardEventRows} />{trip.anomalies?.length ? <div className="rounded-xl border border-[#f2d8bd] bg-[#fff9f3] p-3"><p className="flex items-center gap-1 font-semibold text-[#9c4d27]"><CircleAlert className="h-4 w-4" />待核验提示</p><div className="mt-2 space-y-1 text-xs text-[#80543d]">{trip.anomalies.map((item: any, index: number) => <p key={`${String(item)}-${index}`}>{typeof item === "string" ? item : item.label || item.message || "需人工核验"}</p>)}</div></div> : null}{onConfirmCardUnload && canConfirmPhotoUnload(trip) ? <Button type="button" variant="outline" className="w-full text-[#47754d]" onClick={() => onConfirmCardUnload(trip.id)}>刷车辆卡确认卸土</Button> : null}{onConfirmPlatePhotoUnload && canConfirmPhotoUnload(trip) ? <Button type="button" className="w-full bg-[#47754d] text-white hover:bg-[#39623e]" onClick={() => onConfirmPlatePhotoUnload(trip.id)}>拍摄卸土现场并确认卸土</Button> : null}</div>;
 }
 
 function FuelDeductionDetail({ record }: { record: any }) {

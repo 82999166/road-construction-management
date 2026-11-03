@@ -338,6 +338,7 @@ const transportNfcLinkScanInput = z.object({
 const mobileNfcInvoicePreviewInput = z.object({ token: z.string().trim().min(12).max(1024) });
 const mobileNfcInvoiceConfirmInput = mobileNfcInvoicePreviewInput.extend({
   routePresetId: z.number().int().positive().optional(),
+  expectedUnloadTripId: z.number().int().positive().optional(),
   idempotencyKey: z.string().trim().min(8).max(160),
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
@@ -870,7 +871,8 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
   const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, input.tripId)).limit(1);
   if (!trip || trip.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "运输趟次不存在或不属于当前项目" });
-  if ((trip.invoiceMode ?? "nfc_card") !== "nfc_card") throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票不进入 NFC 刷卡流程，请由主管按影像和车辆信息核验" });
+  if (eventType === "load" && (trip.invoiceMode ?? "nfc_card") !== "nfc_card") throw new TRPCError({ code: "BAD_REQUEST", message: "拍照车牌发票不进入 NFC 刷卡流程，请由主管按影像和车辆信息核验" });
+  if (eventType === "unload" && trip.invoiceMode === "plate_photo" && !input.cardFingerprint) throw new TRPCError({ code: "BAD_REQUEST", message: "拍照开票运单刷卡卸土必须读取并核验当前车辆有效绑定卡" });
   const { vehicle } = await getScopedVehicle(ctx, trip.vehicleId, input.projectId, roleCodes);
   const occurredAt = new Date(input.occurredAt);
   const payloadFingerprint = createCardEventPayloadFingerprint(input, eventType);
@@ -894,7 +896,16 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
     if (existing.tripId !== input.tripId || existing.eventType !== eventType || existing.payloadFingerprint !== payloadFingerprint) {
       throw new TRPCError({ code: "CONFLICT", message: "该刷卡幂等键已用于其他事件，已拒绝重复写入" });
     }
+    if (eventType === "unload" && existing.validationStatus === "accepted" && trip.unloadEventId !== existing.id) throw new TRPCError({ code: "CONFLICT", message: "卸土刷卡确认尚未完成，请刷新后核验" });
     return { success: existing.validationStatus === "accepted" || existing.validationStatus === "duplicate", duplicate: true, needsReview: existing.validationStatus === "needs_review", eventId: existing.id, validationStatus: existing.validationStatus, reason: existing.validationReason ?? undefined, driverNotificationQueued: Boolean(vehicle.driverUserId) };
+  }
+  // 已由任一通道完成卸土时，新确认也只返回原闭环；不新增事件、车数或短信。
+  if (eventType === "unload" && trip.unloadConfirmedAt && trip.status !== "void") {
+    if (input.cardFingerprint) {
+      const [boundCard] = await db.select({ id: transportVehicleRfidCards.id }).from(transportVehicleRfidCards).where(and(eq(transportVehicleRfidCards.vehicleId, trip.vehicleId), eq(transportVehicleRfidCards.projectId, input.projectId), eq(transportVehicleRfidCards.cardUidFingerprint, input.cardFingerprint), eq(transportVehicleRfidCards.status, "active"))).limit(1);
+      if (!boundCard) throw new TRPCError({ code: "BAD_REQUEST", message: "读取的射频卡未与当前车辆完成有效绑定，或该卡已被停用/挂失" });
+    }
+    return { success: true, duplicate: true, needsReview: false, eventId: trip.unloadEventId, validationStatus: "accepted" as const, vehiclePlateNo: vehicle.plateNo, driverNotificationQueued: Boolean(vehicle.driverUserId) };
   }
   try {
     await db.insert(transportCardEvents).values({
@@ -917,6 +928,10 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   } catch {
     const [concurrent] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
     if (concurrent && concurrent.tripId === input.tripId && concurrent.eventType === eventType && concurrent.payloadFingerprint === payloadFingerprint) {
+      if (eventType === "unload" && concurrent.validationStatus === "accepted") {
+        const [currentTrip] = await db.select().from(transportTrips).where(eq(transportTrips.id, trip.id)).limit(1);
+        if (!currentTrip || currentTrip.unloadEventId !== concurrent.id) throw new TRPCError({ code: "CONFLICT", message: "卸土刷卡确认尚未完成，请刷新后核验" });
+      }
       return { success: concurrent.validationStatus === "accepted" || concurrent.validationStatus === "duplicate", duplicate: true, needsReview: concurrent.validationStatus === "needs_review", eventId: concurrent.id, validationStatus: concurrent.validationStatus, reason: concurrent.validationReason ?? undefined, driverNotificationQueued: Boolean(vehicle.driverUserId) };
     }
     throw new TRPCError({ code: "CONFLICT", message: "刷卡事件写入冲突，请使用新的读卡事件重试" });
@@ -991,7 +1006,7 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
 
   const updateResult = eventType === "load"
     ? await db.update(transportTrips).set({ loadConfirmedAt: occurredAt, loadEventId: event.id, loadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")))
-    : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id, unloadConfirmedBy: user.id }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+    : await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadEventId: event.id, unloadConfirmedBy: user.id, nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: trip.status === "draft" ? "submitted" : trip.status, routeSnapshot: { ...getRouteSnapshot(trip.routeSnapshot), unloadConfirmationMode: "nfc_card" } }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.projectId, input.projectId), eq(transportTrips.vehicleId, vehicle.id), eq(transportTrips.status, trip.status), options.unloadOnlyClose ? undefined : isNotNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
   if (!didConditionalWriteApply(updateResult)) return markNeedsReview("趟次已被其他刷卡事件更新，请人工核验事件顺序");
   const dailyVehicleTripOrdinal = await getDailyVehicleStageOrdinal(db, {
     projectId: input.projectId,
@@ -1038,6 +1053,13 @@ async function recordTransportCardEvent(ctx: Parameters<typeof requireAuthentica
   return { success: true, duplicate: false, needsReview: false, eventId: event.id, validationStatus: "accepted" as const, vehiclePlateNo: vehicle.plateNo, dailyVehicleTripOrdinal, driverNotificationQueued };
 }
 
+/** 查找项目内真实车辆的在途票据，兼容尚未回填锁字段的历史票据，不以开票方式或卡会话键分流。 */
+async function findActiveVehicleTransportTrip(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId: number, vehicleId: number) {
+  const rows = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, projectId), eq(transportTrips.vehicleId, vehicleId), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled"))).orderBy(desc(transportTrips.id)).limit(2);
+  if (rows.length > 1) throw new TRPCError({ code: "CONFLICT", message: "当前车辆存在多张未卸土运单，不能安全判断本趟运输，请先由主管核验" });
+  return rows[0] ?? null;
+}
+
 /**
  * 双设备闭环入口：装土点读卡设备的首次刷卡创建唯一在途 NFC 票据；卸土点设备只匹配并关闭同一车辆当前在途票据。
  * 设备、地点、管理员和卡片均由服务端复核，浏览器无权指定趟次、路线、方量或价格。
@@ -1051,15 +1073,6 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   const occurredAt = new Date(input.occurredAt);
 
   const [replayedEvent] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
-  if (replayedEvent) {
-    if (replayedEvent.projectId !== input.projectId || replayedEvent.cardFingerprint !== input.cardFingerprint || replayedEvent.deviceId !== input.readerDeviceCode) {
-      throw new TRPCError({ code: "CONFLICT", message: "该读卡幂等键已用于其他事件，已拒绝重放" });
-    }
-    const [replayedTrip] = replayedEvent.tripId ? await db.select({ routeSnapshot: transportTrips.routeSnapshot }).from(transportTrips).where(eq(transportTrips.id, replayedEvent.tripId)).limit(1) : [];
-    const singleScanClosed = replayedEvent.eventType === "load" && Boolean(replayedTrip && getRouteSnapshot(replayedTrip.routeSnapshot).nfcSingleScanClosed);
-    return { success: replayedEvent.validationStatus === "accepted" || replayedEvent.validationStatus === "duplicate", duplicate: true, needsReview: replayedEvent.validationStatus === "needs_review", stage: replayedEvent.eventType === "load" ? singleScanClosed ? "completed" as const : "in_transit" as const : "completed" as const, singleScanClosed, tripId: replayedEvent.tripId, eventId: replayedEvent.id, reason: replayedEvent.validationReason ?? undefined };
-  }
-
   const [reader] = await db.select().from(transportReaderDevices).where(and(eq(transportReaderDevices.projectId, input.projectId), eq(transportReaderDevices.deviceCode, input.readerDeviceCode))).limit(1);
   if (!reader || reader.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前读卡设备未登记、未启用或不属于该项目" });
   const [site] = await db.select().from(transportSites).where(eq(transportSites.id, reader.siteId)).limit(1);
@@ -1073,8 +1086,16 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   if (!card || !card.vehicleId) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卡未绑定有效车辆、已停用或不属于本项目" });
   const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, input.projectId, roleCodes);
   if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态，不能进入运输闭环" });
+  if (replayedEvent) {
+    const [replayedTrip] = await db.select().from(transportTrips).where(eq(transportTrips.id, replayedEvent.tripId)).limit(1);
+    const replayInput = { tripId: replayedEvent.tripId, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude, longitude: input.longitude, occurredAt: input.occurredAt };
+    if (!replayedTrip || replayedTrip.projectId !== input.projectId || replayedTrip.vehicleId !== vehicle.id || site.siteType !== replayedEvent.eventType || replayedEvent.payloadFingerprint !== createCardEventPayloadFingerprint(replayInput, replayedEvent.eventType)) throw new TRPCError({ code: "CONFLICT", message: "该读卡幂等键已用于其他事件，已拒绝重放" });
+    if (replayedEvent.validationStatus === "accepted" && (replayedEvent.eventType === "load" ? replayedTrip.loadEventId : replayedTrip.unloadEventId) !== replayedEvent.id) throw new TRPCError({ code: "CONFLICT", message: "读卡确认尚未完成，请刷新后核验" });
+    const singleScanClosed = replayedEvent.eventType === "load" && Boolean(getRouteSnapshot(replayedTrip.routeSnapshot).nfcSingleScanClosed);
+    return { success: replayedEvent.validationStatus === "accepted" || replayedEvent.validationStatus === "duplicate", duplicate: true, needsReview: replayedEvent.validationStatus === "needs_review", stage: replayedEvent.eventType === "load" && !singleScanClosed ? "in_transit" as const : "completed" as const, singleScanClosed, tripId: replayedEvent.tripId, eventId: replayedEvent.id, reason: replayedEvent.validationReason ?? undefined };
+  }
   const transitKey = `nfc:${input.projectId}:${card.id}`;
-  const [activeTrip] = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, input.projectId), eq(transportTrips.nfcTransitKey, transitKey), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled"))).orderBy(desc(transportTrips.id)).limit(1);
+  const activeTrip = await findActiveVehicleTransportTrip(db, input.projectId, vehicle.id);
 
   if (site.siteType === "load") {
     if (activeTrip) throw new TRPCError({ code: "CONFLICT", message: `车辆 ${vehicle.plateNo} 已有在途票据 ${activeTrip.tripNo}，请在对应卸土点完成第二次刷卡后再发车` });
@@ -1179,9 +1200,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
     const [createdTrip] = await db.select().from(transportTrips).where(eq(transportTrips.tripNo, tripNo)).limit(1);
     if (!createdTrip) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "卸土补刷卡运输票据创建失败" });
     const event = await recordTransportCardEvent(ctx, { tripId: createdTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "unload", { unloadOnlyClose: true, initialSafetyNotice });
-    if (event.success && !event.needsReview) {
-      const updateResult = await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, createdTrip.id), eq(transportTrips.nfcTransitKey, transitKeyForNewTrip), isNull(transportTrips.unloadConfirmedAt)));
-      if (!didConditionalWriteApply(updateResult)) throw new TRPCError({ code: "CONFLICT", message: "卸土补刷卡状态未能最终写入，请刷新后核验" });
+    if (event.success && !event.needsReview && !event.duplicate) {
       await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_unload_only_create_and_close_trip", targetType: "transport_trip", targetId: String(createdTrip.id), summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 按补刷卡规则创建并闭环票据 ${tripNo}；未记录装土刷卡` });
       triggerTransportRiskScan(input.projectId);
     }
@@ -1189,8 +1208,7 @@ async function recordTransportNfcReaderScan(ctx: Parameters<typeof requireAuthen
   }
   if (activeTrip.unloadSiteId !== site.id) throw new TRPCError({ code: "BAD_REQUEST", message: "当前卸土设备与在途票据的路线卸土点不一致，已拒绝闭环" });
   const event = await recordTransportCardEvent(ctx, { tripId: activeTrip.id, projectId: input.projectId, siteId: site.id, idempotencyKey: input.idempotencyKey, deviceId: reader.deviceCode, cardFingerprint: input.cardFingerprint, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: input.occurredAt }, "unload");
-  if (event.success && !event.needsReview) {
-    await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, activeTrip.id), eq(transportTrips.nfcTransitKey, transitKey)));
+  if (event.success && !event.needsReview && !event.duplicate) {
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: "nfc_unload_close_transit_trip", targetType: "transport_trip", targetId: String(activeTrip.id), summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 闭环运输票据 ${activeTrip.tripNo}` });
     const loadAdministratorUserId = (activeTrip.routeSnapshot as { loadSite?: { administratorUserId?: number | null } } | null)?.loadSite?.administratorUserId ?? null;
     const unloadRecipientUserIds = Array.from(new Set([loadAdministratorUserId, site.administratorUserId, vehicle.driverUserId].filter((value): value is number => typeof value === "number" && value > 0)));
@@ -1239,8 +1257,7 @@ async function resolveMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   }
   const { vehicle } = await getScopedVehicle(ctx, card.vehicleId, parsed.projectId, roleCodes);
   if (vehicle.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "当前车辆未处于可调度状态，不能开具运输发票" });
-  const transitKey = `nfc:${parsed.projectId}:${card.id}`;
-  const [activeTrip] = await db.select().from(transportTrips).where(and(eq(transportTrips.projectId, parsed.projectId), eq(transportTrips.nfcTransitKey, transitKey), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled"))).orderBy(desc(transportTrips.id)).limit(1);
+  const activeTrip = await findActiveVehicleTransportTrip(db, parsed.projectId, vehicle.id);
   const activeRoutePresetId = activeTrip
     ? Number((activeTrip.routeSnapshot as { routePresetId?: unknown } | null)?.routePresetId)
     : 0;
@@ -1257,7 +1274,7 @@ async function resolveMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
     cardFingerprint: card.cardUidFingerprint,
     vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: null },
     routes: routeRows.map(route => ({ id: route.id, isDefault: route.isDefault, distanceKm: route.presetDistanceKm, loadSiteName: siteById.get(route.loadSiteId)?.name ?? "装土点", unloadSiteName: siteById.get(route.unloadSiteId)?.name ?? "卸土点" })),
-    activeTrip: activeTrip ? { id: activeTrip.id, tripNo: activeTrip.tripNo, loadSiteName: siteById.get(activeTrip.loadSiteId ?? 0)?.name ?? "装土点", unloadSiteName: siteById.get(activeTrip.unloadSiteId ?? 0)?.name ?? "卸土点", unloadOnlyCloseEnabled: Boolean(activeRoute?.unloadOnlyCloseEnabled) } : null,
+    activeTrip: activeTrip ? { id: activeTrip.id, tripNo: activeTrip.tripNo, invoiceMode: activeTrip.invoiceMode ?? "nfc_card", loadConfirmed: Boolean(activeTrip.loadConfirmedAt), loadSiteName: siteById.get(activeTrip.loadSiteId ?? 0)?.name ?? "装土点", unloadSiteName: siteById.get(activeTrip.unloadSiteId ?? 0)?.name ?? "卸土点", unloadOnlyCloseEnabled: Boolean(activeRoute?.unloadOnlyCloseEnabled) } : null,
   };
 }
 
@@ -1269,19 +1286,29 @@ async function confirmMobileNfcInvoice(ctx: Parameters<typeof requireAuthenticat
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
   const occurredAt = new Date(input.occurredAt);
   const [card] = await db.select().from(transportVehicleRfidCards).where(eq(transportVehicleRfidCards.id, resolved.cardId)).limit(1);
-  if (!card) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆卡已失效，请重新刷卡" });
+  if (!card || card.projectId !== resolved.projectId || card.vehicleId !== resolved.vehicle.id || card.status !== "active" || card.cardUidFingerprint !== resolved.cardFingerprint) throw new TRPCError({ code: "BAD_REQUEST", message: "车辆卡已失效或绑定已变更，请重新刷卡" });
+  // 先识别该确认的重放，再决定开票/卸土；已闭环重试不能落入创建下一趟的分支。
+  const [replayedEvent] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
+  if (replayedEvent) {
+    const [replayedTrip] = await db.select().from(transportTrips).where(eq(transportTrips.id, replayedEvent.tripId)).limit(1);
+    const replayInput = { tripId: replayedEvent.tripId, projectId: resolved.projectId, siteId: replayedEvent.siteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, latitude: replayedEvent.eventType === "unload" ? input.latitude : undefined, longitude: replayedEvent.eventType === "unload" ? input.longitude : undefined, occurredAt: input.occurredAt };
+    if (!replayedTrip || replayedTrip.projectId !== resolved.projectId || replayedTrip.vehicleId !== resolved.vehicle.id || (input.expectedUnloadTripId !== undefined && (input.expectedUnloadTripId !== replayedTrip.id || replayedEvent.eventType !== "unload")) || replayedEvent.payloadFingerprint !== createCardEventPayloadFingerprint(replayInput, replayedEvent.eventType)) {
+      throw new TRPCError({ code: "CONFLICT", message: "该刷卡幂等键已用于其他确认，已拒绝重放" });
+    }
+    if (replayedEvent.validationStatus === "needs_review") throw new TRPCError({ code: "BAD_REQUEST", message: replayedEvent.validationReason || "刷卡异常，当前运单仍需人工核验" });
+    if (replayedTrip.status === "void" || (replayedEvent.eventType === "unload" ? replayedTrip.unloadEventId : replayedTrip.loadEventId) !== replayedEvent.id) throw new TRPCError({ code: "CONFLICT", message: "刷卡确认尚未完成或状态已变更，请刷新后核验" });
+    const singleScanClosed = replayedEvent.eventType === "load" && Boolean(getRouteSnapshot(replayedTrip.routeSnapshot).nfcSingleScanClosed);
+    return { success: true, duplicate: true, needsReview: false, eventId: replayedEvent.id, stage: replayedEvent.eventType === "unload" || singleScanClosed ? "completed" as const : "in_transit" as const, singleScanClosed, tripNo: replayedTrip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
+  }
+  if (input.expectedUnloadTripId !== undefined && resolved.activeTrip?.id !== input.expectedUnloadTripId) throw new TRPCError({ code: "BAD_REQUEST", message: "读取车辆卡与待卸土运单不一致，或该运单已完成卸土，请刷新后重新确认" });
   if (resolved.activeTrip) {
     const [trip] = await db.select().from(transportTrips).where(eq(transportTrips.id, resolved.activeTrip.id)).limit(1);
-    if (!trip) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在" });
+    if (!trip || trip.projectId !== resolved.projectId || trip.vehicleId !== resolved.vehicle.id) throw new TRPCError({ code: "NOT_FOUND", message: "当前在途运单不存在或车辆绑定已变更" });
     const event = await recordTransportCardEvent(ctx, { tripId: trip.id, projectId: resolved.projectId, siteId: trip.unloadSiteId, idempotencyKey: input.idempotencyKey, deviceId: "MOBILE-NFC", cardFingerprint: card.cardUidFingerprint, latitude: input.latitude, longitude: input.longitude, occurredAt: input.occurredAt }, "unload");
     if (!event.success || event.needsReview) {
       throw new TRPCError({ code: "BAD_REQUEST", message: event.reason || "卸土异常，当前运单仍在运输中，不能显示卸土成功" });
     }
-    const updateResult = await db.update(transportTrips).set({ nfcTransitKey: null, activeVehicleTransitKey: null, endAt: occurredAt, status: "submitted" }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.nfcTransitKey, `nfc:${resolved.projectId}:${card.id}`)));
-    if (!didConditionalWriteApply(updateResult)) {
-      throw new TRPCError({ code: "CONFLICT", message: "卸土状态未能最终写入，当前运单仍在运输中，请刷新后核验" });
-    }
-    triggerTransportRiskScan(resolved.projectId);
+    if (!event.duplicate) triggerTransportRiskScan(resolved.projectId);
     return { ...event, stage: "completed" as const, singleScanClosed: false, tripNo: trip.tripNo, vehiclePlateNo: resolved.vehicle.plateNo };
   }
   if (!input.routePresetId) throw new TRPCError({ code: "BAD_REQUEST", message: "请先选择运输线路" });
@@ -3367,9 +3394,11 @@ export const transportRouter = router({
     const [unloadEvidence] = await db.select().from(evidenceRecords).where(and(eq(evidenceRecords.id, input.unloadEvidenceId), eq(evidenceRecords.projectId, input.projectId))).limit(1);
     if (!unloadEvidence || unloadEvidence.sourceType !== "transport") throw new TRPCError({ code: "BAD_REQUEST", message: "请先使用后置相机拍摄并上传卸土现场照片" });
     const occurredAt = new Date(input.occurredAt);
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ source: "photo-unload", tripId: trip.id, projectId: input.projectId, unloadEvidenceId: input.unloadEvidenceId, latitude: input.latitude, longitude: input.longitude, occurredAt: occurredAt.toISOString() })).digest("hex");
     const [existing] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
     if (existing) {
-      if (existing.tripId !== trip.id || existing.eventType !== "unload") throw new TRPCError({ code: "CONFLICT", message: "该卸土确认编号已用于其他业务事件" });
+      if (existing.tripId !== trip.id || existing.eventType !== "unload" || existing.source !== "manual_review" || existing.payloadFingerprint !== payloadFingerprint) throw new TRPCError({ code: "CONFLICT", message: "该卸土确认编号已用于其他业务事件或凭证已变更" });
+      if (existing.validationStatus === "accepted" && trip.unloadEventId !== existing.id) throw new TRPCError({ code: "CONFLICT", message: "卸土确认尚未完成，请刷新后核验" });
       return { success: existing.validationStatus === "accepted", duplicate: true, needsReview: existing.validationStatus === "needs_review" };
     }
     if (trip.unloadConfirmedAt) return { success: true, duplicate: true, needsReview: false };
@@ -3378,18 +3407,21 @@ export const transportRouter = router({
       routePresetId ? db.select().from(transportRoutePresets).where(eq(transportRoutePresets.id, routePresetId)).limit(1) : Promise.resolve([]),
       trip.unloadSiteId ? db.select().from(transportSites).where(eq(transportSites.id, trip.unloadSiteId)).limit(1) : Promise.resolve([]),
     ]);
-    if (!route || !unloadSite || unloadSite.projectId !== input.projectId || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土路线或地点配置无效，不能确认卸土" });
+    if (!route || route.projectId !== input.projectId || !unloadSite || unloadSite.projectId !== input.projectId || unloadSite.siteType !== "unload" || unloadSite.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "卸土路线或地点配置无效，不能确认卸土" });
     const elapsedMinutes = Math.max(0, Math.floor((occurredAt.getTime() - new Date(trip.loadConfirmedAt).getTime()) / 60_000));
     if (elapsedMinutes < unloadSite.minimumTransitMinutes && unloadSite.minimumTransitEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: `卸土异常：已运输 ${elapsedMinutes} 分钟，未达到最短运输时间 ${unloadSite.minimumTransitMinutes} 分钟` });
     if (unloadSite.latitude === null || unloadSite.longitude === null) throw new TRPCError({ code: "BAD_REQUEST", message: "卸土点中文详细地址尚未完成地图定位校验，不能直接确认卸土" });
     const distanceMeters = Math.round(calculateCoordinateDistanceMeters(input.latitude, input.longitude, Number(unloadSite.latitude), Number(unloadSite.longitude)));
     if (distanceMeters > unloadSite.unloadGeofenceMeters && unloadSite.unloadGeofenceEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: `未达到卸土点：当前距卸土点约 ${distanceMeters} 米，允许偏差 ${unloadSite.unloadGeofenceMeters} 米` });
-    const payloadFingerprint = createHash("sha256").update(`photo-unload:${trip.id}:${input.latitude.toFixed(6)}:${input.longitude.toFixed(6)}:${input.occurredAt}`).digest("hex");
-    await db.insert(transportCardEvents).values({ tripId: trip.id, vehicleId: trip.vehicleId, projectId: input.projectId, eventType: "unload", siteId: unloadSite.id, operatorUserId: user.id, source: "manual_review", idempotencyKey: input.idempotencyKey, latitude: String(input.latitude), longitude: String(input.longitude), payloadFingerprint, occurredAt, validationStatus: "accepted", validationReason: `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据拍照卸土现场确认` });
+    try {
+      await db.insert(transportCardEvents).values({ tripId: trip.id, vehicleId: trip.vehicleId, projectId: input.projectId, eventType: "unload", siteId: unloadSite.id, operatorUserId: user.id, source: "manual_review", idempotencyKey: input.idempotencyKey, latitude: String(input.latitude), longitude: String(input.longitude), payloadFingerprint, occurredAt, validationStatus: "accepted", validationReason: `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据拍照卸土现场确认` });
+    } catch {
+      throw new TRPCError({ code: "CONFLICT", message: "卸土确认编号已被其他请求使用，请刷新后核验，不要重复确认" });
+    }
     const [event] = await db.select().from(transportCardEvents).where(eq(transportCardEvents.idempotencyKey, input.idempotencyKey)).limit(1);
     if (!event) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "卸土确认审计记录创建失败" });
     const routeSnapshot = { ...((trip.routeSnapshot as Record<string, unknown> | null) ?? {}), unloadPhotoEvidenceId: input.unloadEvidenceId, unloadPhotoConfirmedAt: occurredAt.toISOString(), unloadPhotoConfirmedBy: user.id, unloadConfirmationMode: "photo" };
-    const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, endAt: occurredAt, activeVehicleTransitKey: null, status: "submitted", routeSnapshot }).where(and(eq(transportTrips.id, trip.id), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
+    const result = await db.update(transportTrips).set({ unloadConfirmedAt: occurredAt, unloadConfirmedBy: user.id, unloadEventId: event.id, endAt: occurredAt, activeVehicleTransitKey: null, nfcTransitKey: null, status: trip.status === "draft" ? "submitted" : trip.status, routeSnapshot }).where(and(eq(transportTrips.id, trip.id), eq(transportTrips.projectId, input.projectId), eq(transportTrips.vehicleId, vehicle.id), eq(transportTrips.status, trip.status), isNotNull(transportTrips.loadConfirmedAt), isNull(transportTrips.unloadConfirmedAt), ne(transportTrips.status, "void"), ne(transportTrips.status, "settled")));
     if (!didConditionalWriteApply(result)) throw new TRPCError({ code: "CONFLICT", message: "运单已被其他卸土确认更新，请刷新后查看" });
     const dailyVehicleTripOrdinal = await getDailyVehicleStageOrdinal(db, {
       projectId: input.projectId,
