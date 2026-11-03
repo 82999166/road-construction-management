@@ -1028,6 +1028,8 @@ export const employeeInsurancePolicies = mysqlTable(
 export const machines = mysqlTable(
   "machines",
   {
+    /** 统一人员身份关联，不改变原操作员账号与权限。 */
+    operatorPersonId: int("operatorPersonId"),
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId"),
     /** 机械操作员/司机的登录用户标识；允许为空以兼容外租机械暂未绑定人员的场景。 */
@@ -1053,6 +1055,7 @@ export const machines = mysqlTable(
   table => ({
     codeUnique: uniqueIndex("machines_code_unique").on(table.code),
     ownerProjectIndex: index("machines_owner_project_index").on(table.ownerUserId, table.projectId),
+    operatorPersonIndex: index("machines_operator_person_index").on(table.operatorPersonId),
   }),
 );
 
@@ -1262,6 +1265,8 @@ export const assetMaintenanceRecords = mysqlTable(
 export const transportVehicles = mysqlTable(
   "transport_vehicles",
   {
+    /** 统一人员身份关联，不改变原司机账号与权限。 */
+    driverPersonId: int("driverPersonId"),
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     /** 车辆所属组织由超级管理员维护，用于归属治理；运输趟次仍以 projectId 作为实际业务范围。 */
@@ -1287,7 +1292,7 @@ export const transportVehicles = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo) }),
+  table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo), driverPersonIndex: index("transport_vehicles_driver_person_index").on(table.driverPersonId) }),
 );
 
 /** 外部渣土车司机关注服务号后的车辆通知绑定；不创建系统账号，OpenID 只保存密文与不可逆指纹。 */
@@ -2731,3 +2736,62 @@ export const evidenceRecords = mysqlTable(
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/** 人员主档独立于账号与工资旧主体；敏感原文只存服务端密文。 */
+export const personnelPeople = mysqlTable("personnel_people", {
+  id: int("id").autoincrement().primaryKey(),
+  personNo: varchar("personNo", { length: 48 }).notNull(),
+  name: varchar("name", { length: 128 }).notNull(),
+  affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
+  employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).default("active").notNull(),
+  primaryPositionId: int("primaryPositionId"),
+  secondaryPositionIds: json("secondaryPositionIds").$type<number[]>().notNull(),
+  projectId: int("projectId"), teamId: int("teamId"),
+  entryDate: date("entryDate", { mode: "string" }), exitDate: date("exitDate", { mode: "string" }),
+  gender: mysqlEnum("gender", ["male", "female", "unspecified"]), birthDate: date("birthDate", { mode: "string" }),
+  address: varchar("address", { length: 500 }), emergencyContactName: varchar("emergencyContactName", { length: 128 }),
+  emergencyContactPhoneEncrypted: text("emergencyContactPhoneEncrypted"), emergencyContactPhoneMasked: varchar("emergencyContactPhoneMasked", { length: 64 }),
+  remarks: varchar("remarks", { length: 1000 }), avatarEvidenceId: bigint("avatarEvidenceId", { mode: "number" }),
+  payrollEnabled: boolean("payrollEnabled").default(false).notNull(),
+  phoneEncrypted: text("phoneEncrypted"), phoneFingerprint: varchar("phoneFingerprint", { length: 64 }), phoneMasked: varchar("phoneMasked", { length: 64 }),
+  identityNoEncrypted: text("identityNoEncrypted"), identityNoFingerprint: varchar("identityNoFingerprint", { length: 64 }), identityMasked: varchar("identityMasked", { length: 64 }),
+  bankAccountEncrypted: text("bankAccountEncrypted"), bankAccountFingerprint: varchar("bankAccountFingerprint", { length: 64 }), bankMasked: varchar("bankMasked", { length: 64 }), bankName: varchar("bankName", { length: 128 }),
+  userId: int("userId"), legacyProfileId: int("legacyProfileId"), legacyWorkerId: int("legacyWorkerId"),
+  version: int("version").default(1).notNull(), createdBy: int("createdBy").notNull(), updatedBy: int("updatedBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, t => ({ personNoUnique: uniqueIndex("personnel_people_no_unique").on(t.personNo), userUnique: uniqueIndex("personnel_people_user_unique").on(t.userId), phoneUnique: uniqueIndex("personnel_people_phone_unique").on(t.phoneFingerprint), identityUnique: uniqueIndex("personnel_people_identity_unique").on(t.identityNoFingerprint), projectIndex: index("personnel_people_project_index").on(t.projectId, t.employmentStatus) }));
+export const personnelPositions = mysqlTable("personnel_positions", {
+  id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 128 }).notNull(),
+  category: mysqlEnum("category", ["management", "technical", "business", "driver", "operator", "construction", "other"]).notNull(),
+  status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, t => ({ nameUnique: uniqueIndex("personnel_positions_name_unique").on(t.name) }));
+export const personnelTeams = mysqlTable("personnel_teams", {
+  id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 128 }).notNull(), projectId: int("projectId").notNull(),
+  leaderName: varchar("leaderName", { length: 128 }), remarks: varchar("remarks", { length: 1000 }), status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, t => ({ projectNameUnique: uniqueIndex("personnel_teams_project_name_unique").on(t.projectId, t.name) }));
+export const personnelSourceLinks = mysqlTable("personnel_source_links", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), sourceType: mysqlEnum("sourceType", ["user", "profile", "worker"]).notNull(), sourceId: int("sourceId").notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ sourceUnique: uniqueIndex("personnel_source_unique").on(t.sourceType, t.sourceId), personIndex: index("personnel_source_person_index").on(t.personId) }));
+export const personnelAssignments = mysqlTable("personnel_assignments", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
+  primaryPositionId: int("primaryPositionId"), secondaryPositionIds: json("secondaryPositionIds").$type<number[]>().notNull(), projectId: int("projectId"), teamId: int("teamId"), employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).notNull(),
+  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), version: int("version").notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ personVersionUnique: uniqueIndex("personnel_assignments_person_version_unique").on(t.personId, t.version) }));
+export const personnelSalaryHistory = mysqlTable("personnel_salary_history", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), salaryBasis: mysqlEnum("salaryBasis", ["monthly", "daily", "hourly", "piecework"]).notNull(), baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }), payrollEnabled: boolean("payrollEnabled").notNull(),
+  affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
+  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ personEffectiveUnique: uniqueIndex("personnel_salary_person_effective_unique").on(t.personId, t.effectiveFrom) }));
+export const personnelResourceBindings = mysqlTable("personnel_resource_bindings", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(), assetId: int("assetId").notNull(), projectId: int("projectId"),
+  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), effectiveTo: date("effectiveTo", { mode: "string" }), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ assetDateIndex: index("personnel_resource_asset_date_index").on(t.assetType, t.assetId, t.effectiveFrom), personIndex: index("personnel_resource_person_index").on(t.personId) }));
+export const personnelDocuments = mysqlTable("personnel_documents", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), projectId: int("projectId"), documentType: mysqlEnum("documentType", ["portrait", "identity", "driver_license", "operator_certificate", "contract", "insurance", "other"]).notNull(),
+  name: varchar("name", { length: 128 }).notNull(), expiresAt: date("expiresAt", { mode: "string" }), evidenceId: bigint("evidenceId", { mode: "number" }).notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ personIndex: index("personnel_documents_person_index").on(t.personId), evidenceUnique: uniqueIndex("personnel_documents_evidence_unique").on(t.evidenceId) }));
+export const personnelChanges = mysqlTable("personnel_changes", {
+  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), action: varchar("action", { length: 64 }).notNull(), version: int("version").notNull(), changes: json("changes").$type<Record<string, { before: unknown; after: unknown }>>().notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ personIndex: index("personnel_changes_person_index").on(t.personId, t.createdAt) }));

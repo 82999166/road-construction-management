@@ -8,9 +8,13 @@ import {
   payrollGenerationSchedules,
   payrollStatements,
   projects,
+  personnelPeople,
+  personnelSourceLinks,
+  personnelSalaryHistory,
 } from "../../drizzle/schema";
 import { calculateEmployeePayrollAccrual } from "../../shared/domain";
 import { getDb } from "../db";
+import { assertCompensationChannel, type BridgeDb } from "./personnelLegacyBridge";
 import { chinaBusinessDate, chinaBusinessMonth } from "./chinaBusinessTime";
 import { decryptSecret, maskSecret } from "./secretVault";
 
@@ -79,6 +83,7 @@ export function buildPayrollAccrualPreview(params: {
   attendanceRows: AttendanceForAccrual[];
   existingPayroll?: { id: number; status: string; payableAmount: string | number; actualAmount: string | number } | null;
   approvedAdvanceAmount?: number;
+  salaryHistory?: SalaryVersion[];
 }): PayrollAccrualPreview {
   assertPayrollPeriod(params.period);
   const range = clampEligibleRange(params.profile, params.period, params.asOfDate);
@@ -88,7 +93,13 @@ export function buildPayrollAccrualPreview(params: {
         return Boolean(attendanceDate && attendanceDate >= range.start && attendanceDate <= range.end);
       })
     : [];
-  const eligibleAttendance = inRange.filter(row => row.status === "confirmed" || row.status === "locked");
+  const versions = params.salaryHistory === undefined ? undefined : [...params.salaryHistory].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+  const eligibleAttendance = inRange.filter(row => {
+    if (row.status !== "confirmed" && row.status !== "locked") return false;
+    const version = versions?.find(v => v.effectiveFrom <= dateKey(row.attendanceDate)!);
+    // 无覆盖历史必须保留给核算函数明确阻断；已证明关停/外部/日结阶段不属于月薪。
+    return !version || version.payrollEnabled && version.affiliation !== "external" && version.affiliation !== "temporary";
+  });
   const confirmedAttendanceDays = eligibleAttendance.length;
   const lockedAttendanceDays = eligibleAttendance.filter(row => row.status === "locked").length;
   const normalHours = eligibleAttendance.reduce((sum, row) => sum + Number(row.workHours), 0);
@@ -156,7 +167,9 @@ export function buildPayrollAccrualPreview(params: {
       approvedAdvanceAmount: params.approvedAdvanceAmount ?? 0,
     };
   }
-  const calculation = calculateEmployeePayrollAccrual({
+  const calculation = params.salaryHistory !== undefined
+    ? calculateEffectiveSalaryAccrual(eligibleAttendance, params.salaryHistory)
+    : calculateEmployeePayrollAccrual({
     salaryBasis: params.profile.salaryBasis,
     baseSalary: params.profile.baseSalary === null ? null : Number(params.profile.baseSalary),
     confirmedAttendanceDays,
@@ -178,20 +191,56 @@ export function buildPayrollAccrualPreview(params: {
   };
 }
 
-async function getProfileAccrualData(profile: EmployeeProfileForAccrual, period: string, asOfDate: string) {
-  const db = await getDb();
+export type SalaryVersion = { effectiveFrom: string; salaryBasis: "monthly" | "daily" | "hourly" | "piecework"; baseSalary: string | number | null; payrollEnabled: boolean; affiliation?: string };
+
+/** 同月调薪逐考勤日匹配生效版本，不以今天mirror回写历史。月薪沿用现有30天折算。 */
+export function calculateEffectiveSalaryAccrual(attendance: AttendanceForAccrual[], history: SalaryVersion[]) {
+  const versions = [...history].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+  let total = 0;
+  for (const row of attendance) {
+    const date = dateKey(row.attendanceDate)!;
+    const version = versions.find(v => v.effectiveFrom <= date);
+    if (!version) return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "考勤日期缺少生效薪资历史，不能用今天薪资猜算过去工资" };
+    if (!version.payrollEnabled || version.affiliation === "external" || version.affiliation === "temporary") return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "考勤当日未启用月度工资或属于外部/临时日结人员" };
+    // 避免每日四舍五入累积；先校验单日规则，再按未舍入金额汇总。
+    const calculation = calculateEmployeePayrollAccrual({ salaryBasis: version.salaryBasis, baseSalary: version.baseSalary === null ? null : Number(version.baseSalary), confirmedAttendanceDays: 1, normalHours: Number(row.workHours), overtimeHours: Number(row.overtimeHours) });
+    if (!calculation.calculable) return calculation;
+    const rate = Number(version.baseSalary);
+    total += version.salaryBasis === "monthly" ? rate / 30 : version.salaryBasis === "daily" ? rate : rate * (Number(row.workHours) + Number(row.overtimeHours));
+  }
+  return { calculable: true, payableAmount: Math.round((total + Number.EPSILON) * 100) / 100, calculationLabel: "按每条已确认考勤日期的生效薪资版本核算（月薪按30天折算）", blockedReason: null };
+}
+
+async function getProfileAccrualData(profile: EmployeeProfileForAccrual, period: string, asOfDate: string, suppliedDb?: BridgeDb) {
+  const db = suppliedDb ?? await getDb();
   if (!db) throw new Error("database_unavailable");
-  if (!profile.laborWorkerId || !profile.projectId) return buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows: [] });
+  const empty = () => buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows: [] });
+  if (!profile.laborWorkerId || !profile.projectId) return empty();
+  let channel;
+  try { channel = await assertCompensationChannel(db, { workerId: profile.laborWorkerId, projectId: profile.projectId, period, channel: "monthly", lock: Boolean(suppliedDb), historicalEligibility: true }); }
+  catch (error) { return { ...empty(), calculable: false, payableAmount: null, blockedReason: error instanceof Error ? error.message : "工资主体校验失败" }; }
+  if (suppliedDb) {
+    // 锁master/worker后使用current read，不能沿用事务开始时读到的转人前任职范围。
+    const [currentProfile] = await db.select().from(employeeProfiles).where(eq(employeeProfiles.id, profile.id)).limit(1).for("update");
+    if (!currentProfile || currentProfile.laborWorkerId !== profile.laborWorkerId || currentProfile.projectId !== profile.projectId) return { ...empty(), calculable: false, payableAmount: null, blockedReason: "工资主体归属已变化，请刷新后重试" };
+    profile = currentProfile;
+  }
+  if (!profile.laborWorkerId || !profile.projectId) return empty();
+  const existingQuery = db.select({ id: payrollStatements.id, status: payrollStatements.status, payableAmount: payrollStatements.payableAmount, actualAmount: payrollStatements.actualAmount }).from(payrollStatements).where(and(eq(payrollStatements.workerId, profile.laborWorkerId), eq(payrollStatements.projectId, profile.projectId), eq(payrollStatements.period, period))).limit(1);
   const [attendanceRows, existingRows] = await Promise.all([
-    db.select({ attendanceDate: attendanceRecords.attendanceDate, workHours: attendanceRecords.workHours, overtimeHours: attendanceRecords.overtimeHours, status: attendanceRecords.status })
-      .from(attendanceRecords)
-      .where(and(eq(attendanceRecords.workerId, profile.laborWorkerId), eq(attendanceRecords.projectId, profile.projectId))),
-    db.select({ id: payrollStatements.id, status: payrollStatements.status, payableAmount: payrollStatements.payableAmount, actualAmount: payrollStatements.actualAmount })
-      .from(payrollStatements)
-      .where(and(eq(payrollStatements.workerId, profile.laborWorkerId), eq(payrollStatements.projectId, profile.projectId), eq(payrollStatements.period, period)))
-      .limit(1),
+    db.select({ attendanceDate: attendanceRecords.attendanceDate, workHours: attendanceRecords.workHours, overtimeHours: attendanceRecords.overtimeHours, status: attendanceRecords.status }).from(attendanceRecords).where(and(eq(attendanceRecords.workerId, profile.laborWorkerId), eq(attendanceRecords.projectId, profile.projectId))),
+    suppliedDb ? existingQuery.for("update") : existingQuery,
   ]);
-  return buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows, existingPayroll: existingRows[0] ?? null });
+  let salaryHistory: SalaryVersion[];
+  if (channel.person) {
+    const salaryQuery = db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, channel.person.id));
+    salaryHistory = await (suppliedDb ? salaryQuery.for("update") : salaryQuery);
+  } else {
+    // 未采用旧档案没有历史版本，仅创建时间及以后可证明适用当前旧薪资，早于该日期不可猜算。
+    const [original] = await db.select().from(employeeProfiles).where(eq(employeeProfiles.id, profile.id)).limit(1);
+    salaryHistory = original ? [{ effectiveFrom: dateKey(original.joinedAt ?? original.createdAt)!, salaryBasis: original.salaryBasis, baseSalary: original.baseSalary, payrollEnabled: true }] : [];
+  }
+  return buildPayrollAccrualPreview({ profile, period, asOfDate, attendanceRows, existingPayroll: existingRows[0] ?? null, salaryHistory });
 }
 
 /** 单人员详情使用：数据按人员、期间按需读取，避免花名册全量扫描用于工资核算。 */
@@ -215,7 +264,9 @@ export async function getEmployeePayrollAccrualPreview(employeeProfileId: number
 export async function generatePayrollDraftForEmployeeProfile(input: { employeeProfileId: number; period: string; actorUserId: number; source: "manual" | "schedule" }) {
   const db = await getDb();
   if (!db) throw new Error("database_unavailable");
-  const [profile] = await db.select({
+  assertPayrollPeriod(input.period);
+  return db.transaction(async tx => {
+  const [profile] = await tx.select({
     id: employeeProfiles.id,
     laborWorkerId: employeeProfiles.laborWorkerId,
     projectId: employeeProfiles.projectId,
@@ -227,13 +278,13 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
   }).from(employeeProfiles).where(eq(employeeProfiles.id, input.employeeProfileId)).limit(1);
   if (!profile) throw new Error("employee_profile_not_found");
   const asOfDate = `${input.period}-${new Date(Date.UTC(Number(input.period.slice(0, 4)), Number(input.period.slice(5, 7)), 0)).getUTCDate().toString().padStart(2, "0")}`;
-  const preview = await getProfileAccrualData(profile, input.period, asOfDate);
+  const preview = await getProfileAccrualData(profile, input.period, asOfDate, tx);
   if (preview.existingPayroll) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
   if (!preview.calculable || preview.payableAmount === null) return { status: "blocked" as const, reason: preview.blockedReason ?? "工资核算条件未满足", preview };
-  const [worker] = await db.select({ bankAccountEncrypted: laborWorkers.bankAccountEncrypted }).from(laborWorkers).where(eq(laborWorkers.id, profile.laborWorkerId!)).limit(1);
+  const [worker] = await tx.select({ bankAccountEncrypted: laborWorkers.bankAccountEncrypted }).from(laborWorkers).where(eq(laborWorkers.id, profile.laborWorkerId!)).limit(1);
   const bankAccountMasked = worker?.bankAccountEncrypted ? maskSecret(decryptSecret(worker.bankAccountEncrypted)) : null;
   try {
-    await db.insert(payrollStatements).values({
+    await tx.insert(payrollStatements).values({
       workerId: profile.laborWorkerId!,
       projectId: profile.projectId!,
       period: input.period,
@@ -248,7 +299,7 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
     if (/duplicate|unique/i.test(code)) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
     throw error;
   }
-  await db.insert(auditLogs).values({
+  await tx.insert(auditLogs).values({
     userId: input.actorUserId,
     module: "labor",
     action: input.source === "schedule" ? "auto_generate_payroll_draft" : "generate_payroll_draft",
@@ -257,13 +308,15 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
     summary: `${input.period} 根据已确认考勤生成工资草稿；需经会计审核和财务发放确认`,
   });
   return { status: "created" as const, preview };
+  });
 }
 
 /** 全项目批量生成仅创建草稿；已存在工资条、缺少考勤或计件数据均不会覆盖或写入零金额。 */
 export async function generatePayrollDraftsForProject(input: { projectId: number; period: string; actorUserId: number; source: "manual" | "schedule" }) {
   const db = await getDb();
   if (!db) throw new Error("database_unavailable");
-  const profiles = await db.select({ id: employeeProfiles.id }).from(employeeProfiles).where(and(eq(employeeProfiles.projectId, input.projectId), eq(employeeProfiles.employmentStatus, "active")));
+  // 今日离任/转项目不能排除旧项目往月资格，逐profile有效日期与salaryHistory由service判断。
+  const profiles = await db.select({ id: employeeProfiles.id }).from(employeeProfiles).where(eq(employeeProfiles.projectId, input.projectId));
   let createdCount = 0;
   let skippedCount = 0;
   let blockedCount = 0;

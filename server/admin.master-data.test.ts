@@ -39,13 +39,15 @@ function createSequentialLimitDb(...responses: unknown[][]) {
   const values = vi.fn(async () => undefined);
   const nextResponse = async () => responses[queryIndex++] ?? [];
   const writeWhere = vi.fn(async () => undefined);
-  return {
+  const db = {
+    transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(db)),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => {
           const result = {
-            limit: vi.fn(nextResponse),
-            orderBy: vi.fn(nextResponse),
+            limit: vi.fn(() => result),
+            orderBy: vi.fn(() => result),
+            for: vi.fn(() => result),
             then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => nextResponse().then(resolve, reject),
           };
           return result;
@@ -58,6 +60,7 @@ function createSequentialLimitDb(...responses: unknown[][]) {
     values,
     writeWhere,
   };
+  return db;
 }
 
 const organizationInput = {
@@ -368,7 +371,8 @@ describe("超级管理主数据约束", () => {
     const rebindDb = createSequentialLimitDb(
       [{ id: 31, projectId: 8, workerCategory: "labor_team" }],
       [{ id: 8, status: "active" }],
-      [{ id: 10 }],
+      [{ id: 10, userId: null, laborWorkerId: null, salaryBasis: "daily", baseSalary: "6000", createdAt: new Date("2026-08-01Z") }],
+      [], // 未采用的旧profile没有sourceLink，但真实原薪资不变。
       [{ id: 99 }],
     );
     vi.mocked(getDb).mockResolvedValue(rebindDb as never);
@@ -380,7 +384,9 @@ describe("超级管理主数据约束", () => {
     const input = { id: 11, userId: 2, laborWorkerId: null, employeeType: "management" as const, projectId: null, teamName: "项目管理组", employmentStatus: "active" as const, joinedAt: "2026-08-01", leftAt: null, salaryBasis: "monthly" as const, baseSalary: 6000, remarks: "维护规范档案" };
     const db = createSequentialLimitDb(
       [{ id: 2 }],
-      [{ id: 11, userId: 2, laborWorkerId: null }],
+      [{ id: 11, userId: 2, laborWorkerId: null, salaryBasis: "monthly", baseSalary: "6000", joinedAt: new Date("2026-08-01Z"), createdAt: new Date("2026-08-01Z") }],
+      [], // 无额外敏感user profile。
+      [], // 无统一主档sourceLink；这里只维护原薪资，不能假造history。
     );
     vi.mocked(getDb).mockResolvedValue(db as never);
 

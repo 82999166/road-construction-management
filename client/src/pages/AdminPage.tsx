@@ -1,3 +1,4 @@
+import { PersonnelResourceSelect } from "@/components/PersonnelResourceSelect";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, {
   type DashboardMenuItem,
@@ -200,8 +201,8 @@ const LaborWorkspaceShell = lazy(
 const LaborWorkspaceLoader = lazy(
   () => import("@/components/LaborWorkspaceLoader")
 );
-const CompanyPersonnelRoster = lazy(
-  () => import("@/components/CompanyPersonnelRoster")
+const UnifiedPersonnelDirectory = lazy(
+  () => import("@/components/UnifiedPersonnelDirectory")
 );
 const LaborCheckInLedger = lazy(
   () => import("@/components/LaborCheckInLedger")
@@ -430,6 +431,7 @@ type VehicleStatus = "active" | "suspended" | "disabled";
 type LeaseBillingType = "monthly" | "daily" | "hourly" | "shift";
 type VehicleForm = {
   id?: number;
+  driverPersonId: string;
   projectId: string;
   organizationId: string;
   plateNo: string;
@@ -461,6 +463,7 @@ type MachineCostType =
   | "other";
 type MachineForm = {
   id?: number;
+  operatorPersonId: string;
   projectId: string;
   operatorUserId: string;
   ownerUserId: string;
@@ -889,6 +892,7 @@ const EMPTY_POSITION_FORM: PositionForm = {
   status: "active",
 };
 const EMPTY_VEHICLE_FORM: VehicleForm = {
+  driverPersonId: "",
   projectId: "",
   organizationId: "",
   plateNo: "",
@@ -911,6 +915,7 @@ const EMPTY_VEHICLE_FORM: VehicleForm = {
   leaseEndDate: "",
 };
 const EMPTY_MACHINE_FORM: MachineForm = {
+  operatorPersonId: "",
   projectId: "",
   operatorUserId: "",
   ownerUserId: "",
@@ -3782,6 +3787,9 @@ export default function AdminPage({
     useState(false);
   const [employeeProfileForm, setEmployeeProfileForm] =
     useState<EmployeeProfileForm>(EMPTY_EMPLOYEE_PROFILE_FORM);
+  const [laborWorkspaceTab, setLaborWorkspaceTab] = useState(() => new URLSearchParams(window.location.search).get("tab") === "operations" ? "operations" : "personnel");
+  const [personnelCreateSignal, setPersonnelCreateSignal] = useState(0);
+  const [personnelOpenSource, setPersonnelOpenSource] = useState<{sourceType: "worker" | "profile" | "user"; sourceId: number; requestKey: number} | undefined>();
   const [employeeProfileDialogOpen, setEmployeeProfileDialogOpen] =
     useState(false);
   const [laborWorkerCreateForm, setLaborWorkerCreateForm] =
@@ -7486,6 +7494,7 @@ export default function AdminPage({
         vehicleType: vehicleForm.vehicleType,
         ownership: vehicleForm.ownership,
         ownerName: vehicleForm.ownerName.trim() || null,
+        driverPersonId: vehicleForm.driverPersonId ? Number(vehicleForm.driverPersonId) : null,
         driverUserId: vehicleForm.driverUserId
           ? Number(vehicleForm.driverUserId)
           : null,
@@ -7526,6 +7535,7 @@ export default function AdminPage({
         vehicleType: item.vehicleType,
         ownership: item.ownership,
         ownerName: item.ownerName ?? "",
+        driverPersonId: item.driverPersonId ? String(item.driverPersonId) : "",
         driverUserId: item.driverUserId ? String(item.driverUserId) : "",
         driverName: item.driverName ?? "",
         driverPhone: item.driverPhoneMasked ?? "",
@@ -8313,6 +8323,10 @@ export default function AdminPage({
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="rounded-xl border border-[#d8e3e0] bg-[#f7faf9] p-3">
+                  <Label>驾驶员人员档案</Label>
+                  <PersonnelResourceSelect projectId={Number(vehicleForm.projectId) || undefined} role="driver" value={vehicleForm.driverPersonId ? Number(vehicleForm.driverPersonId) : null} fallbackLabel={vehicleForm.driverName} onChange={person => setVehicleForm(current => ({ ...current, driverPersonId: person ? String(person.id) : "", driverUserId: person?.userId ? String(person.userId) : "", driverName: person?.name ?? "", driverPhone: "" }))} />
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <div>
                     <Label>资源性质</Label>
@@ -8365,6 +8379,7 @@ export default function AdminPage({
                   <div>
                     <Label>司机姓名</Label>
                     <Input
+                      readOnly={Boolean(vehicleForm.driverPersonId)}
                       value={vehicleForm.driverName}
                       placeholder="直接录入外部司机姓名"
                       onChange={event =>
@@ -8379,6 +8394,7 @@ export default function AdminPage({
                   <div>
                     <Label>司机手机号</Label>
                     <Input
+                      readOnly={Boolean(vehicleForm.driverPersonId)}
                       inputMode="tel"
                       maxLength={32}
                       value={vehicleForm.driverPhone}
@@ -9167,387 +9183,7 @@ export default function AdminPage({
         </TabsContent>
 
         <TabsContent value="accounts" className="mt-0 space-y-4">
-          <Card className="border-[#d8e3e0] shadow-sm">
-            <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="text-xs font-semibold tracking-wide text-[#467067]">
-                  人员主数据 · 第 1 步
-                </p>
-                <CardTitle className="mt-1 text-base">
-                  员工档案、薪资与保险
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  先建立或维护人员档案；实际工资仍由考勤和经审核工资条决定。相同账号或施工队实名档案的历史重复记录会折叠为一份规范档案，不参与日常编辑或导出。
-                </CardDescription>
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  className="bg-[#203c48] text-white hover:bg-[#17313b]"
-                  onClick={() => {
-                    setEmployeeProfileForm(EMPTY_EMPLOYEE_PROFILE_FORM);
-                    setEmployeeProfileDialogOpen(true);
-                  }}
-                >
-                  新建员工档案
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setEmployeeLedgerFilter(current => ({
-                      ...current,
-                      type: "management",
-                    }))
-                  }
-                >
-                  公司人员薪资
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!filteredEmployeeProfiles.length}
-                  onClick={() =>
-                    downloadCsvFile(
-                      `员工台账-${toLocalDateInput()}.csv`,
-                      [
-                        "姓名",
-                        "人员类型",
-                        "归属队伍",
-                        "历史重复档案数",
-                        "状态",
-                        "入职日期",
-                        "计薪口径",
-                        "基础工资",
-                        "保险状态",
-                        "最近到期日",
-                      ],
-                      filteredEmployeeProfiles.map(profile => [
-                        profile.displayName,
-                        profile.employeeType === "management"
-                          ? "公司管理人员"
-                          : profile.employeeType === "operator"
-                            ? "机械操作员"
-                            : "施工队工人",
-                        profile.teamName || profile.laborTeamName || "",
-                        profile.historicalDuplicateProfileCount || 0,
-                        profile.employmentStatus === "active"
-                          ? "在职"
-                          : profile.employmentStatus === "suspended"
-                            ? "停用"
-                            : "已离职",
-                        profile.joinedAt
-                          ? toLocalDateInput(new Date(profile.joinedAt))
-                          : "",
-                        profile.salaryBasis === "monthly"
-                          ? "月薪"
-                          : profile.salaryBasis === "daily"
-                            ? "日薪"
-                            : profile.salaryBasis === "hourly"
-                              ? "时薪"
-                              : "计件",
-                        profile.baseSalary,
-                        profile.insuranceStatus === "active"
-                          ? "有效"
-                          : profile.insuranceStatus === "expiring"
-                            ? "30天内到期"
-                            : profile.insuranceStatus === "expired"
-                              ? "已到期"
-                              : "未登记",
-                        profile.policies[0]?.expiresAt
-                          ? toLocalDateInput(
-                              new Date(profile.policies[0].expiresAt)
-                            )
-                          : "",
-                      ])
-                    )
-                  }
-                >
-                  导出 CSV
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                <Input
-                  className="h-9"
-                  value={employeeLedgerFilter.search}
-                  onChange={event =>
-                    setEmployeeLedgerFilter(current => ({
-                      ...current,
-                      search: event.target.value,
-                    }))
-                  }
-                  placeholder="姓名、队伍或账号"
-                />
-                <Select
-                  value={employeeLedgerFilter.type}
-                  onValueChange={value =>
-                    setEmployeeLedgerFilter(current => ({
-                      ...current,
-                      type: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部人员类型</SelectItem>
-                    <SelectItem value="management">公司管理人员</SelectItem>
-                    <SelectItem value="operator">机械操作员</SelectItem>
-                    <SelectItem value="construction_worker">
-                      施工队工人
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={employeeLedgerFilter.status}
-                  onValueChange={value =>
-                    setEmployeeLedgerFilter(current => ({
-                      ...current,
-                      status: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部在职状态</SelectItem>
-                    <SelectItem value="active">在职</SelectItem>
-                    <SelectItem value="suspended">停用</SelectItem>
-                    <SelectItem value="left">已离职</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={employeeLedgerFilter.insurance}
-                  onValueChange={value =>
-                    setEmployeeLedgerFilter(current => ({
-                      ...current,
-                      insurance: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部保险状态</SelectItem>
-                    <SelectItem value="active">保险有效</SelectItem>
-                    <SelectItem value="expiring">30 天内到期</SelectItem>
-                    <SelectItem value="expired">保险已到期</SelectItem>
-                    <SelectItem value="missing">未登记保险</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {employeeProfiles.isLoading ? (
-                <EmptyState text="正在读取员工、保险与薪资台账…" />
-              ) : (
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1080px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          姓名
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          人员类型
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          归属队伍
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          入职日期
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          计薪 / 基础工资
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          保险
-                        </TableHead>
-                        <TableHead className="h-10 px-3 font-semibold text-[#46615a]">
-                          状态
-                        </TableHead>
-                        <TableHead className="h-10 px-3 text-right font-semibold text-[#46615a]">
-                          操作
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredEmployeeProfiles.length ? (
-                        filteredEmployeeProfiles.map(profile => {
-                          const insuranceLabel =
-                            profile.insuranceStatus === "active"
-                              ? "保险有效"
-                              : profile.insuranceStatus === "expiring"
-                                ? "30天内到期"
-                                : profile.insuranceStatus === "expired"
-                                  ? "已到期"
-                                  : "未登记保险";
-                          return (
-                            <TableRow
-                              key={profile.id}
-                              className="border-[#edf0ee] hover:bg-[#fbfaf1]"
-                            >
-                              <TableCell className="px-3 py-2.5 font-semibold text-[#203c48]">
-                                <p>{profile.displayName}</p>
-                                {profile.historicalDuplicateProfileCount ? (
-                                  <p className="mt-0.5 text-[11px] font-normal text-amber-700">
-                                    已折叠 {profile.historicalDuplicateProfileCount} 份历史重复档案
-                                  </p>
-                                ) : null}
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5 text-slate-700">
-                                {profile.employeeType === "management"
-                                  ? "公司管理人员"
-                                  : profile.employeeType === "operator"
-                                    ? "机械操作员"
-                                    : "施工队工人"}
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5 text-slate-700">
-                                {profile.teamName ||
-                                  profile.laborTeamName ||
-                                  "未分配"}
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5 text-slate-700">
-                                {profile.joinedAt
-                                  ? toLocalDateInput(new Date(profile.joinedAt))
-                                  : "未登记"}
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5 text-slate-700">
-                                <p>
-                                  {profile.salaryBasis === "monthly"
-                                    ? "月薪"
-                                    : profile.salaryBasis === "daily"
-                                      ? "日薪"
-                                      : profile.salaryBasis === "hourly"
-                                        ? "时薪"
-                                        : "计件"}
-                                </p>
-                                <p className="mt-0.5 text-slate-500">
-                                  ¥{displayMoney(profile.baseSalary)}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5">
-                                <p className="text-slate-700">
-                                  {insuranceLabel}
-                                </p>
-                                <p className="mt-0.5 text-slate-500">
-                                  {profile.policies[0]?.expiresAt
-                                    ? `到期 ${toLocalDateInput(new Date(profile.policies[0].expiresAt))}`
-                                    : "—"}
-                                </p>
-                                {profile.policies[0]?.evidence?.url ? (
-                                  <a
-                                    href={profile.policies[0].evidence.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="mt-1 inline-block text-xs text-[#176b87] hover:underline"
-                                  >
-                                    查看保单附件
-                                  </a>
-                                ) : null}
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5">
-                                <BusinessStatusBadge
-                                  status={
-                                    profile.employmentStatus === "active"
-                                      ? "active"
-                                      : profile.employmentStatus === "suspended"
-                                        ? "suspended"
-                                        : "archived"
-                                  }
-                                />
-                              </TableCell>
-                              <TableCell className="px-3 py-2.5 text-right">
-                                <div className="flex justify-end gap-1.5">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => {
-                                      setEmployeeProfileForm({
-                                        id: profile.id,
-                                        userId: profile.userId
-                                          ? String(profile.userId)
-                                          : "",
-                                        laborWorkerId: profile.laborWorkerId
-                                          ? String(profile.laborWorkerId)
-                                          : "",
-                                        projectId: profile.projectId
-                                          ? String(profile.projectId)
-                                          : "",
-                                        employeeType: profile.employeeType,
-                                        teamName: profile.teamName ?? "",
-                                        employmentStatus:
-                                          profile.employmentStatus,
-                                        joinedAt: profile.joinedAt
-                                          ? toLocalDateInput(
-                                              new Date(profile.joinedAt)
-                                            )
-                                          : "",
-                                        leftAt: profile.leftAt
-                                          ? toLocalDateInput(
-                                              new Date(profile.leftAt)
-                                            )
-                                          : "",
-                                        salaryBasis: profile.salaryBasis,
-                                        baseSalary: profile.baseSalary
-                                          ? String(profile.baseSalary)
-                                          : "",
-                                        remarks: profile.remarks ?? "",
-                                      });
-                                      setEmployeeProfileDialogOpen(true);
-                                    }}
-                                  >
-                                    编辑
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => {
-                                      setEmployeeInsuranceForm({
-                                        ...EMPTY_EMPLOYEE_INSURANCE_FORM,
-                                        employeeProfileId: String(profile.id),
-                                      });
-                                      setEmployeeInsuranceDialogOpen(true);
-                                    }}
-                                  >
-                                    保险
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="border-rose-200 text-rose-700 hover:bg-rose-50"
-                                    onClick={() =>
-                                      batchSuspendEmployees([
-                                        { id: profile.id, cells: [] },
-                                      ])
-                                    }
-                                  >
-                                    停用
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={8}
-                            className="px-4 py-10 text-center text-slate-500"
-                          >
-                            暂无匹配员工档案。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <UnifiedPersonnelDirectory onSaved={async () => { await Promise.all([companyPersonnelRoster.refetch(), employeeProfiles.refetch(), audits.refetch()]); }} />
           <Card className="border-[#d8e3e0] shadow-sm">
             <CardHeader>
               <CardTitle className="text-base">普通管理人员账号</CardTitle>
@@ -16945,6 +16581,17 @@ export default function AdminPage({
         laborDailyWages.refetch(),
       ]);
     return (
+      <Tabs value={scopedSection ? "operations" : laborWorkspaceTab} onValueChange={setLaborWorkspaceTab} className="space-y-4">
+        {!scopedSection ? <>
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl bg-[#e9f0ed] p-1">
+            <TabsTrigger value="personnel" className="py-2">人员档案</TabsTrigger>
+            <TabsTrigger value="operations" className="py-2">考勤与工资结算</TabsTrigger>
+          </TabsList>
+          <TabsContent value="personnel" className="mt-0">
+            <UnifiedPersonnelDirectory openLegacySource={personnelOpenSource} openCreateSignal={personnelCreateSignal} initialProjectId={hasBusinessWorkspaceProject ? Number(businessWorkspaceProjectId) : undefined} onSaved={async () => { await Promise.all([companyPersonnelRoster.refetch(), employeeProfiles.refetch(), audits.refetch()]); }} />
+          </TabsContent>
+        </> : null}
+        <TabsContent value="operations" className="mt-0">
       <LaborWorkspaceShell
         projectFilter={renderWorkspaceProjectFilter(
           "劳务项目范围",
@@ -17019,18 +16666,6 @@ export default function AdminPage({
               rows={laborTeamAuditRows}
               formatMoney={displayMoney}
             />
-            {!scopedSection ? (
-              <CompanyPersonnelRoster
-                rows={companyPersonnelRoster.data ?? []}
-                loading={companyPersonnelRoster.isLoading}
-                hasError={companyPersonnelRoster.isError}
-                onRetry={() => void companyPersonnelRoster.refetch()}
-                onSaved={async () => {
-                  await companyPersonnelRoster.refetch();
-                }}
-                displayDate={displayDate}
-              />
-            ) : null}
             <DailyWageLedger
               summary={dailyWageSummary}
               rows={dailyWages}
@@ -17274,8 +16909,8 @@ export default function AdminPage({
             />
             <LaborEntryActionCard
               onAdd={() => {
-                setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM);
-                setLaborWorkerCreateDialogOpen(true);
+                setLaborWorkspaceTab("personnel");
+                setPersonnelCreateSignal(current => current + 1);
               }}
             />
             <div className="grid gap-6 xl:grid-cols-2">
@@ -17283,48 +16918,13 @@ export default function AdminPage({
                 workers={workers}
                 displayDate={displayDate}
                 onCreateWorker={() => {
-                  setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM);
-                  setLaborWorkerCreateDialogOpen(true);
+                  setLaborWorkspaceTab("personnel");
+                  setPersonnelCreateSignal(current => current + 1);
                 }}
-                onOpenProfile={worker =>
-                  setDesktopRecordDetail({
-                    title: `劳务人员档案 · ${worker.realName}`,
-                    description:
-                      "此为 PC 后台的受控脱敏档案视图。人员资料变更继续受岗位与项目范围校验。",
-                    fields: [
-                      { label: "班组", value: worker.teamName || "未设置" },
-                      {
-                        label: "实名状态",
-                        value:
-                          worker.identityVerificationStatus === "verified"
-                            ? "已核验"
-                            : worker.identityVerificationStatus === "rejected"
-                              ? "已驳回"
-                              : "待核验",
-                      },
-                      {
-                        label: "出勤状态",
-                        value: (
-                          <BusinessStatusBadge
-                            status={worker.attendanceStatus}
-                          />
-                        ),
-                      },
-                      {
-                        label: "入场日期",
-                        value: worker.entryDate
-                          ? displayDate(worker.entryDate)
-                          : "未登记",
-                      },
-                      {
-                        label: "退场日期",
-                        value: worker.exitDate
-                          ? displayDate(worker.exitDate)
-                          : "—",
-                      },
-                    ],
-                  })
-                }
+                onOpenProfile={worker => {
+                  setLaborWorkspaceTab("personnel");
+                  setPersonnelOpenSource(current => ({ sourceType: "worker", sourceId: worker.id, requestKey: (current?.requestKey ?? 0) + 1 }));
+                }}
               />
               <LaborAttendanceLedger
                 filter={laborAttendanceFilter}
@@ -17622,6 +17222,8 @@ export default function AdminPage({
           }}
         />
       </LaborWorkspaceShell>
+        </TabsContent>
+      </Tabs>
     );
   };
 
@@ -17685,7 +17287,8 @@ export default function AdminPage({
           ? {
               id: machine.id,
               projectId: String(machine.projectId),
-              operatorUserId: machine.operatorUserId
+              operatorPersonId: machine.operatorPersonId ? String(machine.operatorPersonId) : "",
+            operatorUserId: machine.operatorUserId
                 ? String(machine.operatorUserId)
                 : "",
               ownerUserId: machine.ownerUserId ? String(machine.ownerUserId) : "",
@@ -24597,6 +24200,7 @@ export default function AdminPage({
                 saveMachine.mutate({
                   id: machineForm.id,
                   projectId: Number(machineForm.projectId),
+                  operatorPersonId: machineForm.operatorPersonId ? Number(machineForm.operatorPersonId) : null,
                   operatorUserId: machineForm.operatorUserId
                     ? Number(machineForm.operatorUserId)
                     : null,
@@ -24778,28 +24382,8 @@ export default function AdminPage({
                     }
                   />
                 </Field>
-                <Field label="操作员">
-                  <Select
-                    value={machineForm.operatorUserId || "UNASSIGNED"}
-                    onValueChange={value =>
-                      setMachineForm(current => ({
-                        ...current,
-                        operatorUserId: value === "UNASSIGNED" ? "" : value,
-                      }))
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="UNASSIGNED">暂不分配</SelectItem>
-                      {users.data?.map(user => (
-                        <SelectItem key={user.id} value={String(user.id)}>
-                          {user.name || `用户 #${user.id}`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <Field label="操作员人员档案">
+                  <PersonnelResourceSelect projectId={Number(machineForm.projectId) || undefined} role="operator" value={machineForm.operatorPersonId ? Number(machineForm.operatorPersonId) : null} fallbackLabel={machineForm.driverName} onChange={person => setMachineForm(current => ({ ...current, operatorPersonId: person ? String(person.id) : "", operatorUserId: person?.userId ? String(person.userId) : "", driverName: person?.name ?? "", driverPhone: "" }))} />
                 </Field>
                 <Field label="机械老板（只读费用）">
                   <Select
@@ -24831,6 +24415,7 @@ export default function AdminPage({
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="驾驶员姓名">
                   <Input
+                    readOnly={Boolean(machineForm.operatorPersonId)}
                     value={machineForm.driverName}
                     maxLength={128}
                     placeholder="可选"
@@ -24844,6 +24429,7 @@ export default function AdminPage({
                 </Field>
                 <Field label="驾驶员手机">
                   <Input
+                    readOnly={Boolean(machineForm.operatorPersonId)}
                     value={machineForm.driverPhone}
                     inputMode="tel"
                     maxLength={32}

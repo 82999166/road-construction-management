@@ -6,6 +6,7 @@ const LARGE_TRPC_BODY_PROCEDURES = new Set([
   "labor.uploadWorkerCertificate",
   "admin.employee.uploadInsurancePolicy",
   "settlementPayment.uploadProof",
+  "personnel.uploadDocument",
 ]);
 
 export function isLargeTrpcBodyRequest(req: Request) {

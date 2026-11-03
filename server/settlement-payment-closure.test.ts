@@ -63,6 +63,8 @@ describe("车辆、机械与人员实际付款闭环", () => {
     expect(adminRoute).toContain("employee_insurance_policy");
     expect(adminRoute).toContain("保单附件不存在、已失效或不属于当前员工档案");
     expect(adminPage).toContain("保单附件（JPG / PNG / PDF，可选）");
-    expect(adminPage).toContain("查看保单附件");
+    const personnelPage = read("../client/src/components/UnifiedPersonnelDirectory.tsx");
+    expect(personnelPage).toContain("查看保单附件");
+    expect(personnelPage).toContain("trpc.personnel.previewInsuranceDocument.useQuery");
   });
 });

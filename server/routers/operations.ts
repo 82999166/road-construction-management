@@ -63,6 +63,8 @@ import { createRfidBridgeToken, hashRfidBridgeToken, RFID_BRIDGE_TOKEN_TTL_MS } 
 import { isRfidConfirmationRecoveryEligible, RFID_CONFIRMATION_RECEIPT_FAILURE } from "../services/rfidConfirmationRecovery";
 import { recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { storageGetSignedUrl } from "../storage";
+import { saveResourceBinding, resolveResourcePerson } from "../services/personnelLegacyBridge";
+import { chinaBusinessDate } from "../services/chinaBusinessTime";
 import {
   assertNoOpenTransportTrip,
   assertVehicleMinimumNfcInvoiceInterval,
@@ -137,6 +139,7 @@ const machineInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   operatorUserId: z.number().int().positive().nullable().optional(),
+  operatorPersonId: z.number().int().positive().nullable().optional(),
   ownerUserId: z.number().int().positive().nullable().optional(),
   driverName: z.string().trim().max(128).nullable().optional(),
   driverPhone: z.string().trim().regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效驾驶员联系电话").nullable().optional(),
@@ -235,6 +238,7 @@ const machineDailyOperationTransitionInput = z.object({
 const vehicleInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
+  driverPersonId: z.number().int().positive().nullable().optional(),
   plateNo: z.string().trim().min(4, "请填写车牌号").max(32).transform(value => value.toUpperCase()),
   ownership: z.enum(["owned", "leased", "trip_settlement"]).default("owned"),
   ownerName: z.string().trim().max(128).nullable().optional(),
@@ -1574,12 +1578,14 @@ export const machineryRouter = router({
   saveMachine: protectedProcedure.input(machineInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
     await assertMachineryAccess(ctx);
+    await assertDepartmentBusinessAccess(ctx, "MACHINERY", input.id ? "edit" : "create");
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    return db.transaction(async db => {
     let existing: typeof machines.$inferSelect | undefined;
     if (input.id) {
-      const [row] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1);
+      const [row] = await db.select().from(machines).where(eq(machines.id, input.id)).limit(1).for("update");
       if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "机械台账不存在" });
       if (row.projectId) await assertProjectInCurrentScope(ctx, row.projectId);
       existing = row;
@@ -1598,13 +1604,15 @@ export const machineryRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "司机手机号账号只能查看本人操作机械，不能绑定为机械老板" });
       }
     }
+    const targetPersonId = input.operatorPersonId === undefined ? existing?.operatorPersonId ?? null : input.operatorPersonId;
+    if (targetPersonId) await resolveResourcePerson(db, { personId: targetPersonId, assetType: "machine", projectId: input.projectId, previousUserId: existing?.operatorUserId ?? null, requestedUserId: input.operatorUserId });
     const values = {
       projectId: input.projectId,
-      operatorUserId: input.operatorUserId ?? null,
+      operatorUserId: targetPersonId !== null || existing?.operatorPersonId ? existing?.operatorUserId ?? null : input.operatorUserId === undefined ? existing?.operatorUserId ?? null : input.operatorUserId,
       ownerUserId,
-      driverName: input.driverName ?? null,
-      driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null,
-      driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null,
+      driverName: input.driverName === undefined || input.driverName === "" ? existing?.driverName ?? null : input.driverName,
+      driverPhoneEncrypted: input.driverPhone === undefined || input.driverPhone === "" ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null,
+      driverPhoneMasked: input.driverPhone === undefined || input.driverPhone === "" ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null,
       code: input.code,
       name: input.name,
       model: input.model ?? null,
@@ -1625,6 +1633,7 @@ export const machineryRouter = router({
     }
     if (!machineId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "机械台账标识无效" });
 
+    if (targetPersonId !== null || existing?.operatorPersonId) await saveResourceBinding(db, { personId: targetPersonId, assetType: "machine", assetId: machineId, projectId: input.projectId, actorUserId: user.id, effectiveFrom: chinaBusinessDate(new Date()), requestedUserId: input.operatorUserId });
     const existingRules = await db.select().from(machineLeaseRules).where(eq(machineLeaseRules.machineId, machineId)).orderBy(desc(machineLeaseRules.createdAt));
     const activeRule = existingRules.find(rule => rule.projectId === input.projectId && rule.status === "active");
     if (input.leaseTerms) {
@@ -1645,6 +1654,7 @@ export const machineryRouter = router({
     }
     await db.insert(auditLogs).values({ userId: user.id, module: "machinery", action: input.id ? "update_machine" : "create_machine", targetType: "machine", targetId: String(machineId), summary: `${input.id ? "维护" : "新建"}机械台账：${input.name}${input.leaseTerms ? `，已维护${input.ownership === "leased" ? "外租" : "会计产值"}计价规则` : ""}` });
     return { success: true };
+    });
   }),
 
   listLeaseRules: protectedProcedure.input(z.object({ machineId: z.number().int().positive(), projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
@@ -2409,8 +2419,12 @@ export const transportRouter = router({
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-    const existing = input.id ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1))[0] : null;
-    const values = { projectId: input.projectId, plateNo: input.plateNo, ownership: input.ownership, ownerName: input.ownerName ?? null, driverUserId: null, driverName: input.driverName?.trim() || null, driverPhoneEncrypted: input.driverPhone === undefined ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
+    await assertDepartmentBusinessAccess(ctx, "TRANSPORT", input.id ? "edit" : "create");
+    return db.transaction(async db => {
+    const existing = input.id ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.id)).limit(1).for("update"))[0] : null;
+    const targetPersonId = input.driverPersonId === undefined ? existing?.driverPersonId ?? null : input.driverPersonId;
+    if (targetPersonId) await resolveResourcePerson(db, { personId: targetPersonId, assetType: "vehicle", projectId: input.projectId, previousUserId: existing?.driverUserId ?? null });
+    const values = { projectId: input.projectId, plateNo: input.plateNo, ownership: input.ownership, ownerName: input.ownerName ?? null, driverUserId: existing?.driverUserId ?? null, driverName: input.driverName === undefined || input.driverName === "" ? existing?.driverName ?? null : input.driverName, driverPhoneEncrypted: input.driverPhone === undefined || input.driverPhone === "" ? existing?.driverPhoneEncrypted ?? null : input.driverPhone ? encryptSecret(input.driverPhone) : null, driverPhoneMasked: input.driverPhone === undefined || input.driverPhone === "" ? existing?.driverPhoneMasked ?? null : input.driverPhone ? maskSecret(input.driverPhone) : null, boxLengthMeters: String(input.boxLengthMeters), boxWidthMeters: String(input.boxWidthMeters), boxHeightMeters: String(input.boxHeightMeters), loadFactor: String(input.loadFactor), payloadTons: input.payloadTons === null || input.payloadTons === undefined ? null : String(input.payloadTons), status: input.status };
     if (input.id) {
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "运输车辆不存在" });
       await assertProjectInCurrentScope(ctx, existing.projectId);
@@ -2418,8 +2432,12 @@ export const transportRouter = router({
     } else {
       await db.insert(transportVehicles).values(values);
     }
+    const [saved] = await db.select({ id: transportVehicles.id }).from(transportVehicles).where(eq(transportVehicles.plateNo, input.plateNo)).limit(1);
+    if (!saved) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "车辆保存未返回记录" });
+    if (targetPersonId !== null || existing?.driverPersonId) await saveResourceBinding(db, { personId: targetPersonId, assetType: "vehicle", assetId: saved.id, projectId: input.projectId, actorUserId: user.id, effectiveFrom: chinaBusinessDate(new Date()) });
     await db.insert(auditLogs).values({ userId: user.id, module: "transport", action: input.id ? "update_vehicle" : "create_vehicle", targetType: "transport_vehicle", targetId: String(input.id ?? input.plateNo), summary: `${input.id ? "维护" : "新建"}运输车辆：${input.plateNo}` });
     return { success: true, theoreticalVolumeCubicMeters: calculateTheoreticalVolume(input.boxLengthMeters, input.boxWidthMeters, input.boxHeightMeters, input.loadFactor) };
+    });
   }),
 
   /** 写卡器台账仅为受控硬件适配预留；现场人员不可绕过后台直接登记或修改设备。 */

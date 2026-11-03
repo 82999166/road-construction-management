@@ -21,6 +21,7 @@ import { broadcastRouter } from "./routers/broadcast";
 import { projectRiskRouter } from "./routers/projectRisk";
 import { locationRouter } from "./routers/location";
 import { settlementPaymentRouter } from "./routers/settlementPayments";
+import { personnelRouter } from "./routers/personnel";
 import { z } from "zod";
 
 /**
@@ -99,6 +100,7 @@ export const appRouter = router({
   projectRisk: projectRiskRouter,
   location: locationRouter,
   settlementPayment: settlementPaymentRouter,
+  personnel: personnelRouter,
 });
 
 export type AppRouter = typeof appRouter;

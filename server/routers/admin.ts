@@ -1,3 +1,4 @@
+import { saveResourceBinding, resolveResourcePerson, assertLegacyCoreEditSafe, omitUnchangedLegacyFields, getLegacyCompensation } from "../services/personnelLegacyBridge";
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookie } from "cookie";
@@ -203,6 +204,7 @@ const vehicleManagementInput = z
     ownership: z.enum(["owned", "leased", "trip_settlement"]).default("owned"),
     ownerName: z.string().trim().max(128).nullable().optional(),
     driverUserId: z.number().int().positive().nullable().optional(),
+    driverPersonId: z.number().int().positive().nullable().optional(),
     driverName: z.string().trim().max(128).nullable().optional(),
     driverPhone: z
       .string()
@@ -2448,11 +2450,7 @@ export const adminRouter = router({
         }
         const [existing] = input.id
           ? await db
-              .select({
-                id: employeeProfiles.id,
-                userId: employeeProfiles.userId,
-                laborWorkerId: employeeProfiles.laborWorkerId,
-              })
+              .select()
               .from(employeeProfiles)
               .where(eq(employeeProfiles.id, input.id))
               .limit(1)
@@ -2462,6 +2460,13 @@ export const adminRouter = router({
             code: "NOT_FOUND",
             message: "员工档案不存在",
           });
+        if (existing) {
+          const [sensitiveWorker] = existing.laborWorkerId ? await db.select().from(laborWorkers).where(eq(laborWorkers.id, existing.laborWorkerId)).limit(1) : [];
+          const [sensitiveUser] = existing.userId ? await db.select().from(userProfiles).where(eq(userProfiles.userId, existing.userId)).limit(1) : [];
+          await assertLegacyCoreEditSafe(db, "profile", existing.id, input, { ...existing, ...(sensitiveWorker ?? sensitiveUser ?? {}), id: existing.id });
+          if (existing.salaryBasis !== input.salaryBasis || (input.baseSalary !== undefined && Number(existing.baseSalary) !== Number(input.baseSalary))) throw new TRPCError({ code: "BAD_REQUEST", message: "薪资变更必须通过统一人员档案设置生效日期，不能用今天薪资覆盖过去工资" });
+        }
+        if (input.projectId === undefined && existing && !input.laborWorkerId) resolvedProjectId = existing.projectId;
         const keepsExistingIdentity = Boolean(
           existing &&
             existing.userId === (input.userId ?? null) &&
@@ -2490,24 +2495,24 @@ export const adminRouter = router({
           laborWorkerId: input.laborWorkerId ?? null,
           projectId: resolvedProjectId,
           employeeType: input.employeeType,
-          tradeName: input.tradeName ?? null,
-          teamName: input.teamName ?? null,
+          tradeName: input.tradeName,
+          teamName: input.teamName,
           employmentStatus: input.employmentStatus,
-          joinedAt: input.joinedAt
+          joinedAt: input.joinedAt === undefined ? undefined : input.joinedAt
             ? new Date(`${input.joinedAt}T00:00:00Z`)
             : null,
-          leftAt: input.leftAt ? new Date(`${input.leftAt}T00:00:00Z`) : null,
+          leftAt: input.leftAt === undefined ? undefined : input.leftAt ? new Date(`${input.leftAt}T00:00:00Z`) : null,
           salaryBasis: input.salaryBasis,
           baseSalary:
-            input.baseSalary === null || input.baseSalary === undefined
+            input.baseSalary === undefined ? undefined : input.baseSalary === null
               ? null
               : String(input.baseSalary),
-          remarks: input.remarks ?? null,
+          remarks: input.remarks,
         };
         if (input.id) {
           await db
             .update(employeeProfiles)
-            .set(values)
+            .set(omitUnchangedLegacyFields(values))
             .where(eq(employeeProfiles.id, input.id));
         } else await db.insert(employeeProfiles).values(values);
         if (input.laborWorkerId) {
@@ -3787,6 +3792,7 @@ export const adminRouter = router({
             message: "数据库连接暂不可用",
           });
 
+        return db.transaction(async db => {
         const [project] = await db
           .select({ id: projects.id, status: projects.status })
           .from(projects)
@@ -3840,7 +3846,7 @@ export const adminRouter = router({
             .select()
             .from(transportVehicles)
             .where(eq(transportVehicles.id, input.id))
-            .limit(1);
+            .limit(1).for("update");
           if (!existing)
             throw new TRPCError({
               code: "NOT_FOUND",
@@ -3865,6 +3871,8 @@ export const adminRouter = router({
           }
         }
 
+        const targetPersonId = input.driverPersonId === undefined ? existing?.driverPersonId ?? null : input.driverPersonId;
+        if (targetPersonId) await resolveResourcePerson(db, { personId: targetPersonId, assetType: "vehicle", projectId: input.projectId, previousUserId: existing?.driverUserId ?? null, requestedUserId: input.driverUserId });
         const values = {
           projectId: input.projectId,
           organizationId: input.organizationId ?? null,
@@ -3872,16 +3880,16 @@ export const adminRouter = router({
           vehicleType: input.vehicleType,
           ownership: input.ownership,
           ownerName: input.ownerName ?? null,
-          driverUserId: input.driverUserId ?? null,
-          driverName: input.driverName ?? null,
+          driverUserId: targetPersonId !== null || existing?.driverPersonId ? existing?.driverUserId ?? null : input.driverUserId === undefined ? existing?.driverUserId ?? null : input.driverUserId,
+          driverName: input.driverName === undefined || input.driverName === "" ? existing?.driverName ?? null : input.driverName,
           driverPhoneEncrypted:
-            input.driverPhone === undefined
+            (input.driverPhone === undefined || input.driverPhone === "")
               ? (existing?.driverPhoneEncrypted ?? null)
               : input.driverPhone
                 ? encryptSecret(input.driverPhone)
                 : null,
           driverPhoneMasked:
-            input.driverPhone === undefined
+            (input.driverPhone === undefined || input.driverPhone === "")
               ? (existing?.driverPhoneMasked ?? null)
               : input.driverPhone
                 ? maskSecret(input.driverPhone)
@@ -3926,6 +3934,7 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "车辆台账标识无效",
           });
+        if (targetPersonId !== null || existing?.driverPersonId) await saveResourceBinding(db, { personId: targetPersonId, assetType: "vehicle", assetId: vehicleId, projectId: input.projectId, actorUserId: admin.id, effectiveFrom: chinaBusinessDate(new Date()), requestedUserId: input.driverUserId });
         const existingRules = await db
           .select()
           .from(transportVehicleLeaseRules)
@@ -3977,6 +3986,7 @@ export const adminRouter = router({
             input.loadFactor
           ),
         };
+        });
       }),
     revokeDriverWechatBinding: protectedProcedure
       .input(z.object({ vehicleId: z.number().int().positive() }))

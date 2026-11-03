@@ -7,13 +7,14 @@ import { assertAttendanceWorkHours, assertCertificateFileSignature, assertPayrol
 import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, maskSensitiveValue, requireAuthenticatedUser, type BusinessOperationAction } from "../access";
 import { getDb } from "../db";
 import { createInAppMessage } from "./messages";
-import { decryptSecret, encryptSecret } from "../services/secretVault";
+import { decryptSecret, encryptSecret, fingerprintSecret } from "../services/secretVault";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
 import { storageGet, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
 import { appendIntegrityProtectedAudit, recordSensitiveDataAccess } from "../services/auditIntegrity";
 import { getPublishedAttendanceDeviceLimit } from "../services/attendanceDevicePolicy";
+import { assertCompensationChannel, assertLegacyCoreEditSafe, omitUnchangedLegacyFields } from "../services/personnelLegacyBridge";
 
 /** 工资结算期间统一使用 YYYY-MM，避免将时区信息混入按月结算的业务口径。 */
 const payrollPeriodSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "工资期间格式应为 YYYY-MM");
@@ -33,7 +34,7 @@ const workerInput = z.object({
   id: z.number().int().positive().optional(),
   projectId: z.number().int().positive(),
   teamName: z.string().trim().max(128).nullable().optional(),
-  workerCategory: z.enum(["company_admin", "labor_team", "temporary_daily"]).default("labor_team"),
+  workerCategory: z.enum(["company_admin", "labor_team", "temporary_daily"]).optional(),
   remarks: z.string().trim().max(500).nullable().optional(),
   realName: z.string().trim().min(2, "请填写实名姓名").max(64),
   identityNo: z.string().trim().min(15, "请填写有效身份证号码").max(32).optional(),
@@ -42,7 +43,7 @@ const workerInput = z.object({
   bankName: z.string().trim().max(128).nullable().optional(),
   identityVerificationStatus: z.enum(["pending", "verified", "rejected"]).optional(),
   identityVerificationNote: z.string().trim().max(500, "实名审核备注不得超过 500 个字符").nullable().optional(),
-  attendanceStatus: z.enum(["pending", "active", "left"]).default("pending"),
+  attendanceStatus: z.enum(["pending", "active", "left"]).optional(),
   entryDate: z.string().date().nullable().optional(),
   exitDate: z.string().date().nullable().optional(),
 });
@@ -294,17 +295,17 @@ export const laborRouter = router({
 
     const baseValues: Partial<typeof laborWorkers.$inferInsert> = {
       projectId: input.projectId,
-      teamName: input.teamName ?? null,
+      teamName: input.teamName,
       workerCategory: input.workerCategory,
-      remarks: input.remarks ?? null,
+      remarks: input.remarks,
       realName: input.realName,
-      bankName: input.bankName ?? null,
+      bankName: input.bankName,
       attendanceStatus: input.attendanceStatus,
-      entryDate: input.entryDate ? toBusinessDate(input.entryDate) : null,
-      exitDate: input.exitDate ? toBusinessDate(input.exitDate) : null,
+      entryDate: input.entryDate === undefined ? undefined : input.entryDate ? toBusinessDate(input.entryDate) : null,
+      exitDate: input.exitDate === undefined ? undefined : input.exitDate ? toBusinessDate(input.exitDate) : null,
     };
     if (input.identityNo) baseValues.identityNoEncrypted = encryptSecret(input.identityNo);
-    if (input.phone !== undefined) baseValues.phoneEncrypted = input.phone ? encryptSecret(input.phone) : null;
+    if (input.phone !== undefined && input.phone !== "") { const phone = input.phone?.replace(/[\s\-()]/g, "") ?? null; baseValues.phoneEncrypted = phone ? encryptSecret(phone) : null; baseValues.phoneFingerprint = phone ? fingerprintSecret(phone) : null; }
     if (input.bankAccount !== undefined) baseValues.bankAccountEncrypted = input.bankAccount ? encryptSecret(input.bankAccount) : null;
 
     if (input.id) {
@@ -324,7 +325,8 @@ export const laborRouter = router({
       } else if (input.identityVerificationNote !== undefined) {
         baseValues.identityVerificationNote = input.identityVerificationNote;
       }
-      await db.update(laborWorkers).set(baseValues).where(eq(laborWorkers.id, input.id));
+      await assertLegacyCoreEditSafe(db, "worker", existing.id, input, existing as unknown as Record<string, unknown>);
+      await db.update(laborWorkers).set(omitUnchangedLegacyFields(baseValues)).where(eq(laborWorkers.id, input.id));
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: "update_worker", targetType: "labor_worker", targetId: String(input.id), summary: `更新劳务实名制档案：${input.realName}${input.identityVerificationStatus ? ` · 实名状态：${input.identityVerificationStatus}` : ""}` });
       if (input.identityVerificationStatus === "verified" && existing.identityVerificationStatus !== "verified") {
         try {
@@ -351,6 +353,8 @@ export const laborRouter = router({
     if (!input.identityNo) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "新建实名制人员必须录入身份证号码" });
     }
+    baseValues.workerCategory = input.workerCategory ?? "labor_team";
+    baseValues.attendanceStatus = input.attendanceStatus ?? "pending";
     const verificationStatus = input.identityVerificationStatus ?? "pending";
     if (verificationStatus === "verified" && !input.identityNo) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "完成实名核验前必须录入身份证号码" });
@@ -649,6 +653,8 @@ export const laborRouter = router({
       if (!roleCodes.includes("ALL") && !roleCodes.includes("LABOR_MANAGER") && !roleCodes.includes("PROJECT_MANAGER")) throw new TRPCError({ code: "FORBIDDEN", message: "临时日结录入仅限劳资负责人或项目经理" });
       const { db, worker } = await getScopedWorker(ctx, input.workerId, input.projectId);
       if (worker.workerCategory !== "temporary_daily") throw new TRPCError({ code: "BAD_REQUEST", message: "仅临时日结人员可创建日结记录" });
+      return db.transaction(async db => {
+      await assertCompensationChannel(db, { workerId: input.workerId, projectId: input.projectId, period: input.settlementDate.slice(0, 7), channel: "daily", settlementDate: input.settlementDate, lock: true });
       const money = calculatePayrollAmounts(input);
       const existing = (await db.select().from(temporaryDailyWageSettlements).where(and(eq(temporaryDailyWageSettlements.workerId, input.workerId), eq(temporaryDailyWageSettlements.settlementDate, toBusinessDate(input.settlementDate)))).limit(1))[0];
       if (existing && existing.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "已提交、已审核或已付款日结须按流程处理，不能直接修改" });
@@ -656,6 +662,7 @@ export const laborRouter = router({
       if (existing) await db.update(temporaryDailyWageSettlements).set(values).where(eq(temporaryDailyWageSettlements.id, existing.id)); else await db.insert(temporaryDailyWageSettlements).values(values);
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: existing ? "update_daily_wage" : "create_daily_wage", targetType: "temporary_daily_wage", targetId: String(existing?.id ?? `${input.workerId}-${input.settlementDate}`), summary: `${input.settlementDate} 临时日结${existing ? "更新" : "录入"}` });
       return { success: true, actualAmount: money.actualAmount };
+      });
     }),
     submit: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx); const roleCodes = await assertLaborBusinessAccess(ctx);
@@ -755,6 +762,8 @@ export const laborRouter = router({
       const user = requireAuthenticatedUser(ctx);
       await assertLaborBusinessAccess(ctx);
       const { db, worker } = await getScopedWorker(ctx, input.workerId, input.projectId);
+      return db.transaction(async db => {
+      await assertCompensationChannel(db, { workerId: input.workerId, projectId: input.projectId, period: input.period, channel: "monthly", lock: true });
       const money = calculatePayrollAmounts({ payableAmount: input.payableAmount, deductionAmount: input.deductionAmount });
       const bankAccountMasked = getMaskedEncryptedValue(worker.bankAccountEncrypted);
       const existingRows = await db
@@ -763,7 +772,7 @@ export const laborRouter = router({
         .where(and(eq(payrollStatements.workerId, input.workerId), eq(payrollStatements.projectId, input.projectId), eq(payrollStatements.period, input.period)))
         .limit(1);
       const existing = existingRows[0];
-      if (existing && ["approved", "paid", "void"].includes(existing.status)) {
+      if (existing && existing.status !== "draft") {
         throw new TRPCError({ code: "CONFLICT", message: "已审核、已支付或已作废的工资条不可直接修改" });
       }
       if (existing) await assertExistingBusinessRecordChangeAccess(ctx);
@@ -792,6 +801,7 @@ export const laborRouter = router({
       }
       await db.insert(auditLogs).values({ userId: user.id, module: "labor", action: existing ? "update_payroll" : "create_payroll", targetType: "payroll_statement", targetId: String(existing?.id ?? `${input.workerId}-${input.period}`), summary: `${input.period} 工资条${existing ? "更新" : "创建"}：应发 ${money.payableAmount} 元，实发 ${money.actualAmount} 元` });
       return { success: true, id: existing?.id ?? null, actualAmount: money.actualAmount };
+      });
     }),
 
     /** 将工资草稿提交至会计审核队列，提交后仍可被会计退回草稿修订。 */

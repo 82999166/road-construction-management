@@ -10,6 +10,7 @@ import { registerPayrollGenerationHeartbeatRoute } from "../payrollGenerationHea
 import { registerProjectRiskHeartbeatRoute } from "../projectRiskHeartbeat";
 import { registerLocalRfidBridgeRoutes } from "../localRfidBridge";
 import { registerFullDatabaseBackupDownloadRoute } from "../fullDatabaseBackupDownloadRoute";
+import { registerPersonnelDocumentPreview } from "../services/personnelDirectory";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -59,6 +60,8 @@ async function startServer() {
   // 完整数据库备份为高敏感大文件：独立限流、同源会话鉴权和超级管理员校验均在路由内再次执行。
   app.use("/api/admin/backups/full", createMemoryRateLimiter({ windowMs: 60 * 60 * 1000, max: 12, message: "完整备份下载请求过于频繁，请稍后再试" }));
   registerFullDatabaseBackupDownloadRoute(app);
+  app.use("/api/personnel-documents", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 30, message: "人员附件预览过于频繁，请稍后再试" }));
+  registerPersonnelDocumentPreview(app);
   /**
    * 供本机 systemd 与正式发布脚本使用的无鉴权存活探针。
    * 必须在 SPA 静态回退之前注册，避免任意路径返回 index.html 被误判为健康。

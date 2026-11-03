@@ -10,19 +10,25 @@ const readSource = (path: Parameters<typeof readFileSync>[0]) =>
 
 const source = readSource(new URL("./AdminPage.tsx", import.meta.url));
 
-describe("劳务工资新建实名制施工队工人入口", () => {
-  it("打开当前劳务页内的新建施工队工人窗口，不再错误跳转员工档案或权限页", () => {
+describe("劳务工资统一人员入口与历史实名制兼容", () => {
+  it("各新增入口切换到统一人员档案，不再固定只能录入施工队人员", () => {
     const entryAction =
-      source.match(/<LaborEntryActionCard onAdd=\{\(\) => \{[^}]+\}\} \/>/)?.[0] ??
-      "";
+      source.match(
+        /<LaborEntryActionCard onAdd=\{\(\) => \{[^}]+\}\} \/>/
+      )?.[0] ?? "";
 
-    expect(entryAction).toContain("setLaborWorkerCreateDialogOpen(true)");
-    expect(entryAction).toContain("setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM)");
+    expect(entryAction).toContain('setLaborWorkspaceTab("personnel")');
+    expect(entryAction).toContain(
+      "setPersonnelCreateSignal(current => current + 1)"
+    );
+    expect(entryAction).not.toContain("setLaborWorkerCreateDialogOpen(true)");
     expect(entryAction).not.toContain("setEmployeeProfileDialogOpen(true)");
     expect(entryAction).not.toContain('setLocation("/admin/permission")');
     expect(entryAction).not.toContain('setLocation("/admin/permissions")');
     expect(source).toContain("<LaborWorkerRoster");
     expect(source).toContain("onCreateWorker={() => {");
+    expect(source).toContain("<UnifiedPersonnelDirectory");
+    expect(source).toContain("openCreateSignal={personnelCreateSignal}");
   });
 
   it("调用 labor.saveWorker 建立真实施工队工人，固定分类和默认实名/在场状态", () => {
@@ -32,7 +38,9 @@ describe("劳务工资新建实名制施工队工人入口", () => {
     expect(source).toContain('attendanceStatus: "active"');
     expect(source).toContain("projectId: workspaceProjectId");
     expect(source).toContain("realName: laborWorkerCreateForm.realName.trim()");
-    expect(source).toContain("identityNo: laborWorkerCreateForm.identityNo.trim()");
+    expect(source).toContain(
+      "identityNo: laborWorkerCreateForm.identityNo.trim()"
+    );
     expect(source).toContain("不创建系统账号或员工档案");
   });
 
@@ -44,7 +52,9 @@ describe("劳务工资新建实名制施工队工人入口", () => {
 
     expect(mutation).toContain("closeLaborWorkerCreateDialog()");
     expect(source).toContain("const closeLaborWorkerCreateDialog = () => {");
-    expect(source).toContain("setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM)");
+    expect(source).toContain(
+      "setLaborWorkerCreateForm(EMPTY_LABOR_WORKER_CREATE_FORM)"
+    );
     expect(mutation).toContain("trpcUtils.labor.listWorkers.invalidate");
     expect(mutation).toContain("projectId: variables.projectId");
     expect(mutation).not.toContain("localStorage");
