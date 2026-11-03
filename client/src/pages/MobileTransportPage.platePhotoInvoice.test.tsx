@@ -14,10 +14,24 @@ describe("移动端拍照车牌发票", () => {
 
   it("拍照发票使用独立车牌选择状态，不会被台账车辆筛选状态覆盖", () => {
     expect(source).toContain("const [tripVehicleId, setTripVehicleId]");
-    expect(source).toContain("onClick={() => setTripVehicleId(vehicle.id)}");
+    expect(source).toContain("setTripVehicleId(vehicle.id); setPlateVehicleSearch(vehicle.plateNo)");
     expect(source).toContain("vehicleId: tripVehicleId");
     expect(source).toContain("!tripVehicleId");
     expect(source).not.toContain("onClick={() => setVehicleId(vehicle.id)}");
+  });
+
+  it("选择车牌后在搜索栏保留完整车牌并显示已选择状态", () => {
+    expect(source).toContain('aria-label="拍照发票车牌搜索"');
+    expect(source).toContain("maxLength={32}");
+    expect(source).toContain("已选择车牌：");
+  });
+
+  it("拍照发票成功和直拍卸土成功后使用中文语音播报", () => {
+    expect(source).toContain("function speakTransportReceipt");
+    expect(source).toContain('utterance.lang = "zh-CN"');
+    expect(source).toContain("拍照发票成功");
+    expect(source).toContain("卸土成功");
+    expect(source).toContain("speakTransportReceipt");
   });
 
   it("禁止相册选择并在直拍开票后显示成功反馈", () => {
