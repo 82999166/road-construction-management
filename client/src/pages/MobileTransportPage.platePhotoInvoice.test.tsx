@@ -23,6 +23,8 @@ describe("移动端拍照车牌发票", () => {
   it("选择车牌后在搜索栏保留完整车牌并显示已选择状态", () => {
     expect(source).toContain('aria-label="拍照发票车牌搜索"');
     expect(source).toContain("maxLength={32}");
+    expect(source).toContain("value={tripVehicleId ? (vehicles.data?.find(vehicle => vehicle.id === tripVehicleId)?.plateNo || plateVehicleSearch) : plateVehicleSearch}");
+    expect(source).toContain("if (tripVehicleId && value !==");
     expect(source).toContain("已选择车牌：");
   });
 
