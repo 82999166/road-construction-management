@@ -54,6 +54,7 @@ import {
   transportTrips,
   transportVehicleLeaseRules,
   transportVehicles,
+  vehicleFleetProfiles,
   userPermissions,
   userProfiles,
   userRoleAssignments,
@@ -78,6 +79,8 @@ import {
   listLoginUsers,
   requireAuthenticatedUser,
 } from "../access";
+import { assertFleetDayWritable, assertMaintenanceImmutable, vehicleDependencies } from "../services/vehicleManagementPolicy";
+import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { getDb } from "../db";
 import {
   createBusinessDataBackup,
@@ -197,6 +200,7 @@ const organizationInput = z.object({
 const vehicleManagementInput = z
   .object({
     id: z.number().int().positive().optional(),
+  fleetVersion:z.number().int().min(0).optional(),
     projectId: z.number().int().positive(),
     organizationId: z.number().int().positive().nullable().optional(),
     plateNo: z
@@ -225,9 +229,9 @@ const vehicleManagementInput = z
       .regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机手机号")
       .nullable()
       .optional(),
-    boxLengthMeters: z.number().gt(0).max(100),
-    boxWidthMeters: z.number().gt(0).max(20),
-    boxHeightMeters: z.number().gt(0).max(20),
+    boxLengthMeters: z.number().min(0).max(100),
+    boxWidthMeters: z.number().min(0).max(20),
+    boxHeightMeters: z.number().min(0).max(20),
     loadFactor: z.number().gt(0).max(1.5).default(1),
     payloadTons: z.number().gt(0).max(9999).nullable().optional(),
     fuelTankCapacityLiters: z.number().gt(0).max(99999).nullable().optional(),
@@ -251,6 +255,7 @@ const vehicleManagementInput = z
       .optional(),
   })
   .superRefine((value, ctx) => {
+    if (["dump_truck", "flatbed"].includes(value.vehicleType) && [value.boxLengthMeters,value.boxWidthMeters,value.boxHeightMeters].some(n=>n<=0)) ctx.addIssue({code:"custom",path:["boxLengthMeters"],message:"货运车辆须填写真实正数货厢尺寸"});
     if (value.ownership !== "leased") return;
     if (!value.ownerName?.trim())
       ctx.addIssue({
@@ -3229,6 +3234,12 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        return db.transaction(async db=>{
+        await assertFleetDayWritable(db,input.projectId,new Date(input.occurredAt));
+        const [existingRecord]=input.id ? await db.select().from(assetMaintenanceRecords).where(eq(assetMaintenanceRecords.id,input.id)).limit(1).for("update") : [];
+        if(input.id && !existingRecord) throw new TRPCError({code:"NOT_FOUND",message:"维修保养记录不存在"});
+        if(existingRecord) assertMaintenanceImmutable(existingRecord,input);
+        else if(input.status === "settled") throw new TRPCError({code:"CONFLICT",message:"新增维修不能直接标记已结算"});
         const [asset] =
           input.assetType === "vehicle"
             ? await db
@@ -3284,6 +3295,7 @@ export const adminRouter = router({
           summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.costCategory === "maintenance" ? "保养" : "维修"}费用：¥${input.amount}`,
         });
         return { success: true };
+        });
       }),
   }),
 
@@ -4202,6 +4214,8 @@ export const adminRouter = router({
             .from(officialAccountDriverBindings)
             .where(eq(officialAccountDriverBindings.status, "active"))
         : [];
+      const classifications = rows.length ? await db.select({ vehicleId: vehicleFleetProfiles.vehicleId, settlementMode: vehicleFleetProfiles.settlementMode, propertyType: vehicleFleetProfiles.propertyType, purpose: vehicleFleetProfiles.purpose }).from(vehicleFleetProfiles) : [];
+      const classificationsByVehicle = new Map(classifications.map(row => [row.vehicleId, row]));
       const driverBindingByVehicle = new Map(
         driverBindings.map(binding => [binding.vehicleId, binding])
       );
@@ -4221,6 +4235,7 @@ export const adminRouter = router({
           );
           return {
             ...vehicle,
+            profile: classificationsByVehicle.get(vehicle.id) ?? null,
             theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
               Number(vehicle.boxLengthMeters),
               Number(vehicle.boxWidthMeters),
@@ -4252,6 +4267,7 @@ export const adminRouter = router({
           });
 
         return db.transaction(async db => {
+          await assertFleetDayWritable(db,input.projectId,new Date());
           const [project] = await db
             .select({ id: projects.id, status: projects.status })
             .from(projects)
@@ -4312,6 +4328,11 @@ export const adminRouter = router({
                 code: "NOT_FOUND",
                 message: "运输车辆不存在",
               });
+            const [profile]=await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId,existing.id)).limit(1).for("update");
+            if(profile?.archived) throw new TRPCError({code:"CONFLICT",message:"车辆已归档，请保留原档案，不可重新覆盖"});
+            if(input.fleetVersion!==undefined&&input.fleetVersion!==(profile?.version??0)) throw new TRPCError({code:"CONFLICT",message:"车辆资料已被其他人员更新，请刷新后重新维护"});
+            if(profile) await db.update(vehicleFleetProfiles).set({version:profile.version+1,updatedBy:admin.id}).where(eq(vehicleFleetProfiles.vehicleId,existing.id));
+            if (input.projectId !== existing.projectId || input.ownership !== existing.ownership || (input.driverPersonId !== undefined && input.driverPersonId !== existing.driverPersonId) || (input.driverUserId !== undefined && input.driverUserId !== existing.driverUserId)) throw new TRPCError({code:"CONFLICT",message:"历史车辆项目、产权或司机责任不能覆盖；请在行业档案维护产权，在司机交接办理责任变更"});
             if (input.status === "disabled" && existing.status !== "disabled") {
               const openTrips = await db
                 .select({
@@ -4409,6 +4430,8 @@ export const adminRouter = router({
                 message: "车辆台账保存后未找到记录",
               });
             vehicleId = created.id;
+            const [newVehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id,vehicleId)).limit(1);
+            await db.insert(vehicleFleetProfiles).values({...initialFleetProfile(newVehicle,admin.id),projectStatus:"pending",dispatchStatus:"paused"});
           }
           if (!vehicleId)
             throw new TRPCError({
@@ -4434,6 +4457,9 @@ export const adminRouter = router({
             rule =>
               rule.projectId === input.projectId && rule.status === "active"
           );
+          if (existing) {
+            if (input.leaseTerms && (!activeRule || input.leaseTerms.billingType !== activeRule.billingType || Number(input.leaseTerms.rate) !== Number(activeRule.rate) || input.leaseTerms.effectiveFrom !== activeRule.effectiveFrom.toISOString().slice(0,10) || (input.leaseTerms.effectiveTo ?? null) !== (activeRule.effectiveTo?.toISOString().slice(0,10) ?? null))) throw new TRPCError({code:"CONFLICT",message:"历史租赁条款不能直接覆盖，请新增不重叠生效版本"});
+          } else {
           if (input.ownership === "leased" && input.leaseTerms) {
             const leaseValues = {
               vehicleId,
@@ -4461,6 +4487,7 @@ export const adminRouter = router({
               .set({ status: "disabled" })
               .where(eq(transportVehicleLeaseRules.id, activeRule.id));
           }
+          }
           await db.insert(auditLogs).values({
             userId: admin.id,
             module: "transport",
@@ -4471,6 +4498,7 @@ export const adminRouter = router({
           });
           return {
             success: true,
+            vehicleId,
             theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
               input.boxLengthMeters,
               input.boxWidthMeters,
@@ -4886,6 +4914,8 @@ export const adminRouter = router({
               code: "NOT_FOUND",
               message: "车辆不存在或已删除",
             });
+          const dependencies=await vehicleDependencies(db,input.id);
+          if(Object.values(dependencies).some(n=>n>0)) throw new TRPCError({code:"CONFLICT",message:"车辆存在业务、证照或责任历史，不能直接删除；请办理退场归档"});
           const trips = await db
             .select({ id: transportTrips.id })
             .from(transportTrips)

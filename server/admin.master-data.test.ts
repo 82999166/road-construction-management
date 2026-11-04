@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getTableName } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import type { TrpcContext } from "./_core/context";
 
@@ -60,6 +61,22 @@ function createSequentialLimitDb(...responses: unknown[][]) {
     values,
     writeWhere,
   };
+  return db;
+}
+
+// Vehicle writes now additionally lock project/day and initialize a versioned fleet profile.
+function createVehicleSaveDb(options:{duplicate?:unknown;existing?:Record<string,unknown>;savedId?:number;trips?:unknown[]}={}) {
+  const db=createSequentialLimitDb();let vehicleReads=0;
+  const base={...vehicleInput,id:options.savedId??88,driverPersonId:null,createdAt:new Date(),updatedAt:new Date(),driverPhoneEncrypted:null,driverPhoneMasked:null};
+  db.values.mockImplementation(async()=>[{insertId:base.id}] as never);
+  db.select.mockImplementation(()=>({from:vi.fn((table:Parameters<typeof getTableName>[0])=>{
+    const name=getTableName(table);let rows:unknown[]=[];
+    if(name==='projects') rows=[{id:20,status:'active'}];
+    if(name==='transport_vehicles') {vehicleReads++;rows=vehicleReads===1?(options.duplicate?[options.duplicate]:[]):options.existing&&vehicleReads===2?[{...base,...options.existing}]:[base];}
+    if(name==='transport_trips')rows=options.trips??[];
+    const q={where:vi.fn(()=>q),limit:vi.fn(()=>q),for:vi.fn(()=>q),orderBy:vi.fn(()=>q),then:(resolve:(rows:unknown[])=>unknown,reject:(e:unknown)=>unknown)=>Promise.resolve(rows).then(resolve,reject)};
+    return q;
+  })}) as never);
   return db;
 }
 
@@ -191,10 +208,7 @@ describe("超级管理主数据约束", () => {
   });
 
   it("拒绝与既有台账重复的车牌，防止同一车辆在运输结算中被重复引用", async () => {
-    const db = createSequentialLimitDb(
-      [{ id: 20, status: "active" }],
-      [{ id: 99 }],
-    );
+    const db = createVehicleSaveDb({duplicate:{id:99}});
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("车牌") });
@@ -450,24 +464,14 @@ describe("超级管理主数据约束", () => {
   });
 
   it("拒绝直接停用存在未结算趟次的车辆", async () => {
-    const db = createSequentialLimitDb(
-      [{ id: 20, status: "active" }],
-      [],
-      [{ id: 7, projectId: 20, status: "active" }],
-      [{ id: 300, status: "submitted" }],
-    );
+    const db=createVehicleSaveDb({existing:{id:7,projectId:20,status:"active"},trips:[{id:300,status:"submitted"}]});
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, id: 7, status: "disabled" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("未结算") });
   });
 
   it("保存有效车辆时写入唯一运输台账和最小化审计", async () => {
-    const db = createSequentialLimitDb(
-      [{ id: 20, status: "active" }],
-      [],
-      [{ id: 88 }],
-      [],
-    );
+    const db=createVehicleSaveDb({savedId:88});
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
@@ -477,12 +481,7 @@ describe("超级管理主数据约束", () => {
 
   it("允许皮卡车与越野车写入受控车辆台账", async () => {
     for (const vehicleType of ["pickup", "suv"] as const) {
-      const db = createSequentialLimitDb(
-        [{ id: 20, status: "active" }],
-        [],
-        [{ id: vehicleType === "pickup" ? 89 : 90 }],
-        [],
-      );
+      const db=createVehicleSaveDb({savedId:vehicleType==="pickup"?89:90});
       vi.mocked(getDb).mockResolvedValue(db as never);
 
       await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, plateNo: vehicleType === "pickup" ? "粤A皮卡01" : "粤A越野01", vehicleType })).resolves.toMatchObject({ success: true });
@@ -510,7 +509,7 @@ describe("超级管理主数据约束", () => {
     );
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "vehicle", id: 9 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("运输趟次") });
+    await expect(adminRouter.createCaller(createAdminContext()).masterData.remove({ resource: "vehicle", id: 9 })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("业务") });
     expect(db.delete).not.toHaveBeenCalled();
   });
 

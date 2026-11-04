@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
 import { getBusinessWorkspaceProjectState } from "@/lib/adminWorkspaceState";
+import {
+  VEHICLE_TYPE_LABELS,
+  vehicleLabel,
+} from "@/lib/vehicleManagementWorkspace";
 
 const normalizeSource = (source: string) =>
   source
@@ -33,10 +37,27 @@ const PURCHASING_SOURCE = readSource(
 const PURCHASING_OUTPUT_SOURCE = readSource(
   new URL("../lib/purchasingWorkspace.ts", import.meta.url)
 );
+const VEHICLE_WORKSPACE_SOURCE = readSource(
+  new URL("../components/VehicleManagementWorkspace.tsx", import.meta.url)
+);
+const VEHICLE_DETAIL_SOURCE = readSource(
+  new URL("../components/VehicleManagementDetail.tsx", import.meta.url)
+);
+const VEHICLE_FORMS_SOURCE = readSource(
+  new URL("../components/VehicleManagementForms.tsx", import.meta.url)
+);
+const VEHICLE_LIFECYCLE_SOURCE = readSource(
+  new URL("../components/VehicleManagementFormsLifecycle.tsx", import.meta.url)
+);
+const VEHICLE_REPORT_SOURCE = readSource(
+  new URL("../components/VehicleManagementReport.tsx", import.meta.url)
+);
+const normalizeLayout = (value: string) =>
+  value.replace(/\s+/g, "").replace(/,([})\]])/g, "$1");
 const expectSourceToContain = (source: string, expected: string) =>
-  expect(source).toContain(normalizeSource(expected));
+  expect(normalizeLayout(source)).toContain(normalizeLayout(expected));
 const expectSourceNotToContain = (source: string, expected: string) =>
-  expect(source).not.toContain(normalizeSource(expected));
+  expect(normalizeLayout(source)).not.toContain(normalizeLayout(expected));
 
 describe("统一后台业务工作区范围保护", () => {
   it("仅接受正整数项目号作为真实业务台账查询范围", () => {
@@ -133,13 +154,21 @@ describe("统一后台业务工作区范围保护", () => {
   it("在 PC 超级管理后台承载员工、车辆与机械的关键维护闭环", () => {
     expectSourceToContain(ADMIN_PAGE_SOURCE, "普通管理人员账号");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "为人员分配岗位与数据范围");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆统一台账");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "RFID 写卡");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<VehicleManagementWorkspace");
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, 'title:"车辆档案台账"');
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, "<VehicleRegistryForm");
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, "<VehicleManagementDetail");
+    expectSourceToContain(
+      VEHICLE_FORMS_SOURCE,
+      "trpc.admin.vehicle.save.useMutation()"
+    );
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "PC 写入车辆卡");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "renderRfidManagement()");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "新建机械档案");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "会计产值计价规则");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "外租车辆");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "起租日期");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "截止日期");
+    expectSourceToContain(VEHICLE_FORMS_SOURCE, '["leased", "租入"]');
+    expectSourceToContain(VEHICLE_FORMS_SOURCE, 'label="合同起租日期"');
+    expectSourceToContain(VEHICLE_FORMS_SOURCE, 'label="合同截止日期"');
     expectSourceToContain(ADMIN_PAGE_SOURCE, 'Field label="驾驶员姓名"');
     expectSourceToContain(ADMIN_PAGE_SOURCE, 'Field label="驾驶员手机"');
     expectSourceToContain(
@@ -204,17 +233,22 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(source, "shiftRate: 0");
   });
 
-  it("单车收益支出分析使用宽屏分区弹窗，完整承载统计卡和月度、按日明细", () => {
-    const source = ADMIN_PAGE_SOURCE;
+  it("单车费用分析使用可滚动宽屏分区详情，完整承载统计卡和月度、按日明细", () => {
+    const source = VEHICLE_DETAIL_SOURCE;
 
-    expectSourceToContain(source, "w-[calc(100vw-2rem)] max-w-[1320px]");
-    expectSourceToContain(source, "md:col-span-3 xl:col-span-4");
     expectSourceToContain(
       source,
-      'field.label === "按月汇总" || field.label === "按日明细"'
+      "w-[calc(100vw-1rem)] max-w-[min(96vw,1480px)]"
     );
-    expectSourceToContain(source, "min-h-0 flex-1 overflow-y-auto px-6 py-5");
-    expectSourceNotToContain(source, "max-w-[min(96vw,1320px)]");
+    expectSourceToContain(source, "grid grid-cols-2 gap-2 lg:grid-cols-4");
+    expectSourceToContain(source, 'active={tab==="costs"}');
+    expectSourceToContain(source, 'view==="daily"?a.daily:a.monthly');
+    expectSourceToContain(source, "min-h-0 flex-1 space-y-4 overflow-y-auto");
+    expectSourceToContain(source, "<VehicleManagementReport");
+    expectSourceToContain(
+      VEHICLE_REPORT_SOURCE,
+      "min-h-0 flex-1 overflow-auto"
+    );
   });
 
   it("其他后台业务详情也使用宽屏且可滚动的 PC 工作区", () => {
@@ -421,7 +455,19 @@ describe("统一后台业务工作区范围保护", () => {
       new URL("../components/UnifiedPersonnelDirectory.tsx", import.meta.url)
     );
     expectSourceToContain(ADMIN_PAGE_SOURCE, "<UnifiedPersonnelDirectory");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆维修保养费");
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      'title:"车辆故障与维修工单"'
+    );
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, 'label="车辆维修与保养"');
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      'field("maintenanceRecordId", "关联原维修费用记录ID", "number")'
+    );
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      "仅关联真实凭证，不在此新增费用或付款"
+    );
     expectSourceToContain(ADMIN_PAGE_SOURCE, "saveAssetMaintenance.mutate");
     expectSourceToContain(personnelSource, "historicalDuplicateProfileCount");
     expectSourceToContain(personnelSource, "insuranceStatus");
@@ -483,7 +529,20 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(source, "劳务考勤与工资台账");
     expectSourceToContain(source, "柴油管理台账");
     expectSourceToContain(source, "员工档案台账");
-    expectSourceToContain(source, "filteredRows.map");
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "filterVehicleRows(list.data?.items??[],filters)"
+    );
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, "rows:filtered.map(v=>");
+    expectSourceToContain(VEHICLE_REPORT_SOURCE, "downloadCurrentFilteredCsv");
+    expectSourceToContain(
+      VEHICLE_REPORT_SOURCE,
+      'report.rows.map(row=>row.map(cell=>cell??""))'
+    );
+    expectSourceToContain(
+      VEHICLE_REPORT_SOURCE,
+      "全部筛选 {report.rows.length} 条"
+    );
     expectSourceToContain(source, "const machines = allMachines.filter");
     expectSourceToContain(source, "visiblePayrolls.map");
   });
@@ -567,7 +626,10 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(ADMIN_PAGE_SOURCE, "台账列表 · 可筛选 / 可导出");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "手机端可左右滑动查看完整字段");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "<UnifiedPersonnelDirectory");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆统一台账");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<VehicleManagementWorkspace");
+    expectSourceToContain(VEHICLE_REPORT_SOURCE, "max-w-full overflow-x-auto");
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, "统一车辆详情");
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, "关联检查与删除保护");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "<ConstructionWorkspace");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "<MachineryWorkspace");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "<TransportTripLedger");
@@ -580,22 +642,46 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(MACHINERY_SOURCE, "机械详情分区");
   });
 
-  it("将车辆资源改为全宽表格台账，并把新增车辆档案放在台账上方的受控档案区", () => {
+  it("将车辆资源交给唯一全宽工作区，以独立受控表单新增、编辑和关联检查归档", () => {
     const source = ADMIN_PAGE_SOURCE;
 
-    expectSourceToContain(source, "车辆资源 · 全宽台账");
-    expectSourceToContain(source, "新增车辆档案");
-    expectSourceToContain(source, "vehicleEditorOpen ? (");
-    expectSourceToContain(source, "车牌 / 类型");
+    expect((source.match(/<VehicleManagementWorkspace /g) ?? []).length).toBe(
+      1
+    );
+    expectSourceToContain(source, "projects={projects.data ?? []}");
+    expectSourceToContain(source, "createRequest={vehicleCreateRequest}");
     expectSourceToContain(
-      source,
-      "批量受控删除（{selectedVehicleRows.length}）"
+      VEHICLE_WORKSPACE_SOURCE,
+      'data-vehicle-management-workspace="six-columns"'
+    );
+    expectSourceToContain(VEHICLE_WORKSPACE_SOURCE, "新建车辆");
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "create&&(<VehicleRegistryForm"
     );
     expectSourceToContain(
-      source,
-      "详情、编辑、删除和状态变更仍由服务端逐条校验项目范围"
+      VEHICLE_FORMS_SOURCE,
+      'title={vehicle ? `编辑车辆 · ${vehicle.plateNo}` : "新建车辆档案"}'
     );
-    expectSourceToContain(source, 'className="flex flex-col gap-6"');
+    expectSourceToContain(
+      VEHICLE_REPORT_SOURCE,
+      'table className="w-full text-left text-xs"'
+    );
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, 'setTarget({kind:"remove"})');
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      "有运单、维修、采购、卡片、合同、使用依据、授权或结算关联的车辆不能直接删除"
+    );
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      "projectId: detail.vehicle.projectId, version: detail.version"
+    );
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      "remove.mutateAsync({ ...base, reason: form.reason })"
+    );
+    expectSourceToContain(source, "batchRemoveVehicles");
+    expectSourceToContain(source, "车辆批量受控删除结果");
     expectSourceNotToContain(
       source,
       'activeSection === "vehicles" ? <LedgerTable'
@@ -607,13 +693,35 @@ describe("统一后台业务工作区范围保护", () => {
     );
   });
 
-  it("在车辆档案中提供皮卡车和越野车类型，并在统一台账中保留中文标签", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, 'value="pickup">皮卡车');
-    expectSourceToContain(source, 'value="suv">越野车');
-    expectSourceToContain(source, 'pickup: "皮卡车"');
-    expectSourceToContain(source, 'suv: "越野车"');
+  it("在车辆档案中提供皮卡和越野车，并按独立用途保留挂车中文标签", () => {
+    expect(VEHICLE_TYPE_LABELS.pickup).toBe("皮卡");
+    expect(vehicleLabel("pickup")).toBe("皮卡");
+    expect(vehicleLabel("suv")).toBe("越野车");
+    expect(vehicleLabel("trailer")).toBe("挂车");
+    expectSourceToContain(
+      VEHICLE_FORMS_SOURCE,
+      'options={Object.entries(VEHICLE_TYPE_LABELS).filter(([key])=>key!=="trailer")}'
+    );
+    expectSourceToContain(
+      VEHICLE_FORMS_SOURCE,
+      '["dump_truck","tractor","mixer","flatbed","pickup","suv","other"] as const'
+    );
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      '["trailer","挂车（独立建档）"]'
+    );
+    expectSourceToContain(
+      VEHICLE_LIFECYCLE_SOURCE,
+      'purpose:requireVehicleChoice(form.purpose,["general","trailer"] as const'
+    );
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      'v.profile?.purpose==="trailer"?"挂车":vehicleLabel(v.vehicleType)'
+    );
+    expectSourceToContain(
+      VEHICLE_DETAIL_SOURCE,
+      'd.profile?.purpose==="trailer"?"挂车":vehicleLabel(d.vehicle.vehicleType)'
+    );
   });
 
   it("柴油登记默认当前时间、提供防重复录入提醒，并在权限管理中拆出柴油细分权限", () => {
@@ -649,21 +757,53 @@ describe("统一后台业务工作区范围保护", () => {
     );
   });
 
-  it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "加油升数 / 金额");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "本月收益 / 净收益");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "导出详细 CSV");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "单车收益支出分析");
+  it("在真实车辆费用栏目汇总油料与收支，单车日月分析和运输录入共用档案入口", () => {
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "trpc.transport.listVehicleSummaries.useQuery({projectId,period}"
+    );
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      '"油料","维修保养","配件","已核定租赁","未核定租赁估算","本期实付"'
+    );
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "r.confirmedTransportAmount,r.pendingTransportAmount,r.fuelAmount"
+    );
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "r.cumulative.remainingPayableAmount,r.cumulative.remainingReceivableAmount"
+    );
+    expectSourceToContain(
+      VEHICLE_WORKSPACE_SOURCE,
+      "自有经营、租入成本和外协车主应付不混称公司净利润"
+    );
+    expectSourceToContain(
+      VEHICLE_DETAIL_SOURCE,
+      "trpc.transport.getVehicleAnalysis.useQuery({vehicleId:d.vehicle.id,projectId,period}"
+    );
+    expectSourceToContain(
+      VEHICLE_DETAIL_SOURCE,
+      'view==="daily"?a.daily:a.monthly'
+    );
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, "a.summary.costCoverageNote");
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, "a.summary.fuelMetricNote");
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, "a.partsPurchases.map");
+    expectSourceToContain(VEHICLE_REPORT_SOURCE, "导出全部筛选");
+    expectSourceToContain(VEHICLE_REPORT_SOURCE, "打印全部筛选");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "录入车辆档案");
     expectSourceToContain(ADMIN_PAGE_SOURCE, "共用车辆档案 / 柴油分析");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆分析期间");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "本期 / 累计总趟数");
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "柴油占比 / 每趟油费");
     expectSourceToContain(
       ADMIN_PAGE_SOURCE,
-      "w-[calc(100vw-2rem)] max-w-[1320px]"
+      "setVehicleCreateRequest({ projectId: workspaceProjectId, requestId: Date.now()"
     );
-    expectSourceToContain(ADMIN_PAGE_SOURCE, "md:col-span-3 xl:col-span-4");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, 'setLocation("/admin/vehicles")');
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, 'aria-label="单车费用月份"');
+    expectSourceToContain(VEHICLE_DETAIL_SOURCE, "d.historyProjectIds.map");
+    expectSourceToContain(
+      VEHICLE_DETAIL_SOURCE,
+      "min-h-0 flex-1 space-y-4 overflow-y-auto"
+    );
   });
 
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {

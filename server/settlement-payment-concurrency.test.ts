@@ -914,7 +914,7 @@ describe("负净应付补款、有效前期抵扣与跨路由互斥", () => {
       },
     ]);
   }
-  it("详情与看板扣全部active有效抵扣，不扣作废/逆转/错车/跨项目/缺失目标且不猜历史", async () => {
+  it("付款余额保留全部有效占用，看板只扣已确认回收，并排除作废/逆转/错车/跨项目/缺失目标", async () => {
     offsets();
     const list = await caller().settlementPayment.list({
       projectId: 1,
@@ -934,9 +934,9 @@ describe("负净应付补款、有效前期抵扣与跨路由互斥", () => {
       asOfDate: "2026-11-04",
     });
     expect(board.rows.find(row => row.settlementId === 1)).toMatchObject({
-      offsetAmount: 30,
+      offsetAmount: 10,
       paidOrRecoveredAmount: 10,
-      remainingAmount: 60,
+      remainingAmount: 80,
     });
     await expect(
       caller().settlementPayment.record(input("transport_vehicle", 60.01))

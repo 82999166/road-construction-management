@@ -34,6 +34,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import {
   assertSettlementPaymentStatusWrite,
   buildValidVehicleCarryForwardTotals,
+  sumConfirmedCarryForwardOffsets,
   getActiveVehicleCarryForwardAmount,
   lockSettlementPaymentResource,
   lockSettlementPaymentScope,
@@ -1122,7 +1123,7 @@ export const settlementPaymentRouter = router({
         status: string;
       }>
     );
-    const offsetBySettlement = buildValidVehicleCarryForwardTotals(
+    const offsetBySettlement = sumConfirmedCarryForwardOffsets(
       offsets,
       vehicles
     );

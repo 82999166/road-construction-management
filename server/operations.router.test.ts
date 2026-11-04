@@ -1113,7 +1113,8 @@ describe("机械与运输 tRPC 路由", () => {
             stepIncreasePerUnit: "0",
           },
         ],
-        [],
+        [], // 新车队档案读取；无旧档案时保持既有现场发车行为
+        [], // 无在途票据
         [{ id: 82, projectId: 10, vehicleId: 11, tripNo: "TR-PLATE-001" }],
         [
           {

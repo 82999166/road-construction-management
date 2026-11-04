@@ -158,6 +158,21 @@ export function buildValidVehicleCarryForwardTotals(
   return totals;
 }
 
+/** Only approved/partially paid/paid/offset settlement targets represent actual recovery. */
+export function sumConfirmedCarryForwardOffsets(
+  offsets: readonly CarryForwardUsage[],
+  targets: readonly VehicleSettlementIdentity[]
+) {
+  const confirmedStatuses = new Set(["approved", "partial", "paid", "offset"]);
+  const confirmedTargetIds = new Set(
+    targets.filter(row => confirmedStatuses.has(row.status)).map(row => row.id)
+  );
+  return buildValidVehicleCarryForwardTotals(
+    offsets.filter(offset => confirmedTargetIds.has(offset.targetSettlementId)),
+    targets
+  );
+}
+
 export async function getActiveVehicleCarryForwardAmount(
   db: SettlementPaymentQueryClient,
   source: VehicleSettlementIdentity,

@@ -1,11 +1,14 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { and, desc, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
-import { auditLogs, dieselRefuelRecords, officialAccountBindings, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, systemRoles, transportSites, transportTrips, transportVehicleSettlements, transportVehicles, userRoleAssignments, users } from "../../drizzle/schema";
+import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { auditLogs, personnelPeople, personnelChanges, personnelResourceBindings, vehicleAssignments, vehicleAccessGrants, vehicleFleetProfiles, settlementPaymentRecords, transportVehicleCarryForwardOffsets, dieselRefuelRecords, officialAccountBindings, officialAccountDriverBindingRequests, officialAccountDriverBindings, officialAccountDriverNotificationRecords, projects, systemRoles, transportSites, transportTrips, transportVehicleSettlements, transportVehicles, userRoleAssignments, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createLocalDriverOpenId, createLocalManagerPasswordHash } from "../localAuth";
 import { ensureFoundationData } from "./foundationData";
 import { decryptSecret, encryptSecret } from "./secretVault";
 import { buildSingleFieldSummary, fingerprintOfficialAccountOpenId, getOfficialAccountAccessToken, getOfficialAccountTemplateSemanticMismatch, loadPublishedOfficialAccountConfig, loadPublishedOfficialAccountCredentials, normalizeTemplateFieldValue, requestOfficialAccountApi, usesSingleFieldSummaryCompatibility } from "./officialAccountNotifier";
+
+import { buildDriverReadRanges, driverBusinessDayStart, driverRangeCovers, driverSettlementPaymentFacts, type DriverReadRange, type DriverReadSubject } from "./driverPortalAccess";
+import { sumConfirmedCarryForwardOffsets } from "./settlementPayments";
 
 const DRIVER_BINDING_REQUEST_TTL_MS = 30 * 60 * 1_000;
 const DRIVER_PORTAL_SESSION_TTL_MS = 8 * 60 * 60 * 1_000;
@@ -18,7 +21,9 @@ export type DriverPortalSummaryStatus =
   | { status: "ready"; summary: DriverPortalSummary }
   | { status: "invalid" | "expired" | "unbound" | "unavailable" };
 
-export type DriverPortalSummary = {
+export type DriverPortalSummary = DriverPortalAccountSummary & { accounts?: DriverPortalAccountSummary[] };
+export type DriverPortalAccountSummary = {
+  access: { scopeLabel: string; legacyPolicy: string; historyPendingAuthorization: boolean; vehicleStatus: string; projectStatus: string | null; archived: boolean; periods: Array<{ source: string; effectiveFrom: Date | null; effectiveTo: Date | null; allHistory: boolean }> };
   vehicle: { id: number; plateNo: string; driverName: string | null; driverPhoneMasked: string | null; projectName: string | null };
   today: { businessDate: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number };
   totals: {
@@ -30,8 +35,15 @@ export type DriverPortalSummary = {
     paidAmount: number;
     unpaidAmount: number;
     pendingTripAmount: number;
+    assetDeductionAmount: number;
+    carryForwardDeductionAmount: number;
+    receivedAmount: number;
+    recoveredOffsetAmount: number;
+    receivableAmount: number;
+    remainingReceivableAmount: number;
+    legacyPaymentUnconfirmedCount: number;
   };
-  settlements: Array<{ settlementNo: string; status: string; periodStart: string; periodEnd: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; paidAt: Date | null; paymentDate: string | null }>;
+  settlements: Array<{ settlementNo: string; status: string; periodStart: string; periodEnd: string; tripCount: number; grossFreightAmount: number; fuelDeductionAmount: number; netPayableAmount: number; assetDeductionAmount: number; carryForwardDeductionAmount: number; actualPaidAmount: number; actualReceivedAmount: number; recoveredOffsetAmount: number; remainingPayableAmount: number; remainingReceivableAmount: number; remainingAmount: number; paymentStatus: string; legacyPaymentUnconfirmed: boolean; paymentFacts: Array<{ direction: "expense" | "income"; amount: number; paymentDate: string }>; paidAt: Date | null; paymentDate: string | null }>;
   dieselRecords: Array<{ recordNo: string; refueledAt: Date; liters: number; amount: number; status: string; supplyMethod: string; deductFromFreight: boolean; meterReading: number | null; receiptNo: string | null; stationOrSupplierName: string | null; remarks: string | null }>;
   recentTrips: Array<{ tripNo: string; startAt: Date; endAt: Date | null; status: string; invoiceMode: string; routeLabel: string; actualDistanceKm: number | null; volumeCubicMeters: number | null; grossFreightAmount: number; fuelDeductionAmount: number; netSettlementAmount: number | null }>;
 };
@@ -318,99 +330,110 @@ export async function getOfficialAccountDriverPortalSummary(token: string): Prom
   if (!db) return { status: "unavailable" };
   const [binding] = await db.select().from(officialAccountDriverBindings).where(and(eq(officialAccountDriverBindings.id, session.bindingId), eq(officialAccountDriverBindings.vehicleId, session.vehicleId), eq(officialAccountDriverBindings.status, "active"))).limit(1);
   if (!binding) return { status: "unbound" };
-  const [vehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId, plateNo: transportVehicles.plateNo, driverName: transportVehicles.driverName, driverPhoneMasked: transportVehicles.driverPhoneMasked, status: transportVehicles.status }).from(transportVehicles).where(eq(transportVehicles.id, binding.vehicleId)).limit(1);
-  if (!vehicle || vehicle.status !== "active") return { status: "unbound" };
-  const [project] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, vehicle.projectId)).limit(1);
-  const [trips, settlements, dieselRows, sites] = await Promise.all([
-    db.select().from(transportTrips).where(and(eq(transportTrips.projectId, vehicle.projectId), eq(transportTrips.vehicleId, vehicle.id))).orderBy(desc(transportTrips.startAt)),
-    db.select().from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, vehicle.projectId), eq(transportVehicleSettlements.vehicleId, vehicle.id))).orderBy(desc(transportVehicleSettlements.createdAt)),
-    db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, vehicle.projectId), eq(dieselRefuelRecords.vehicleId, vehicle.id), eq(dieselRefuelRecords.assetType, "vehicle"))).orderBy(desc(dieselRefuelRecords.refueledAt)),
-    db.select({ id: transportSites.id, name: transportSites.name }).from(transportSites).where(eq(transportSites.projectId, vehicle.projectId)),
-  ]);
-  const validTrips = trips.filter(item => item.status !== "void");
-  const validSettlements = settlements.filter(item => item.status !== "void");
-  const deductibleDiesel = dieselRows.filter(item => item.status !== "void" && item.deductFromFreight);
-  const today = chinaBusinessDate(new Date());
-  const todayTrips = validTrips.filter(item => chinaBusinessDate(item.startAt) === today);
-  const todayDiesel = deductibleDiesel.filter(item => chinaBusinessDate(item.refueledAt) === today);
-  const siteNameById = new Map(sites.map(item => [item.id, item.name]));
-  const paidAmount = roundMoney(validSettlements.filter(item => item.status === "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
-  const unpaidAmount = roundMoney(validSettlements.filter(item => item.status !== "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
-  const settledFuelDeductionAmount = roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.fuelDeductionAmount), 0));
-  const pendingFuelDeductionAmount = roundMoney(deductibleDiesel.filter(item => item.status === "approved").reduce((sum, item) => sum + toNumber(item.amount), 0));
-  const pendingTripAmount = roundMoney(validTrips.filter(item => ["verified"].includes(item.status)).reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0));
-  const summary: DriverPortalSummary = {
-    vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? binding.driverNameSnapshot ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? binding.driverPhoneMaskedSnapshot ?? null, projectName: project?.name ?? null },
-    today: {
-      businessDate: today,
-      tripCount: todayTrips.length,
-      grossFreightAmount: roundMoney(todayTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
-      fuelDeductionAmount: roundMoney(todayDiesel.reduce((sum, item) => sum + toNumber(item.amount), 0)),
-    },
-    totals: {
-      tripCount: validTrips.length,
-      grossFreightAmount: roundMoney(validTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
-      settledFuelDeductionAmount,
-      pendingFuelDeductionAmount,
-      netPayableAmount: roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0)),
-      paidAmount,
-      unpaidAmount,
-      pendingTripAmount,
-    },
-    settlements: validSettlements.slice(0, 20).map(item => ({ settlementNo: item.settlementNo, status: item.status, periodStart: String(item.periodStart), periodEnd: String(item.periodEnd), tripCount: item.tripCount, grossFreightAmount: toNumber(item.grossFreightAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netPayableAmount: toNumber(item.netPayableAmount), paidAt: item.paidAt ?? null, paymentDate: item.paymentDate ? String(item.paymentDate) : null })),
-    dieselRecords: dieselRows.filter(item => item.status !== "void").slice(0, 20).map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight, meterReading: item.meterReading === null ? null : toNumber(item.meterReading), receiptNo: item.receiptNo ?? null, stationOrSupplierName: item.stationOrSupplierName ?? null, remarks: item.remarks ?? null })),
-    recentTrips: validTrips.slice(0, 20).map(item => ({ tripNo: item.tripNo, startAt: item.startAt, endAt: item.endAt ?? null, status: item.status, invoiceMode: item.invoiceMode, routeLabel: `${item.loadSiteId ? siteNameById.get(item.loadSiteId) ?? "装土点未记录" : "装土点未记录"} → ${item.unloadSiteId ? siteNameById.get(item.unloadSiteId) ?? "卸土点未记录" : "卸土点未记录"}`, actualDistanceKm: item.actualDistanceKm === null ? null : toNumber(item.actualDistanceKm), volumeCubicMeters: item.volumeCubicMeters === null ? null : toNumber(item.volumeCubicMeters), grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
-  };
-  return { status: "ready", summary };
+  const [identity] = await db.select({ userId: officialAccountBindings.userId }).from(officialAccountBindings).where(and(eq(officialAccountBindings.openIdFingerprint, binding.openIdFingerprint), eq(officialAccountBindings.status, "active"))).limit(1);
+  let name = binding.driverNameSnapshot;
+  if (identity) {
+    const [account] = await db.select({ id: users.id, name: users.name, localAccountStatus: users.localAccountStatus }).from(users).where(eq(users.id, identity.userId)).limit(1);
+    if (!account || account.localAccountStatus !== "active") return { status: "unbound" };
+    name = account.name;
+  }
+  return getDriverTransportPortal(db, { bindingId: binding.id, userId: identity?.userId }, { vehicleId: binding.vehicleId, projectId: binding.projectId, name });
 }
 
-/**
- * 手机号司机账号的站内账单入口。车辆必须仍明确绑定给当前用户；该方法不接受车辆ID，
- * 从而避免司机通过客户端参数探测或查看其他车辆。
- */
+/** 手机号入口不接受客户端车辆ID；历史明确授权可查，不复活停用/注销账号。 */
 export async function getLocalDriverPortalSummary(userId: number): Promise<DriverPortalSummaryStatus> {
   const db = await getDb();
   if (!db) return { status: "unavailable" };
-  const [vehicle] = await db
-    .select({ id: transportVehicles.id, projectId: transportVehicles.projectId, plateNo: transportVehicles.plateNo, driverName: transportVehicles.driverName, driverPhoneMasked: transportVehicles.driverPhoneMasked, status: transportVehicles.status })
-    .from(transportVehicles)
-    .where(and(eq(transportVehicles.driverUserId, userId), eq(transportVehicles.status, "active")))
-    .orderBy(desc(transportVehicles.updatedAt))
-    .limit(1);
-  if (!vehicle) return { status: "unbound" };
-  const [project] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, vehicle.projectId)).limit(1);
-  const [trips, settlements, dieselRows, sites] = await Promise.all([
-    db.select().from(transportTrips).where(and(eq(transportTrips.projectId, vehicle.projectId), eq(transportTrips.vehicleId, vehicle.id))).orderBy(desc(transportTrips.startAt)),
-    db.select().from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, vehicle.projectId), eq(transportVehicleSettlements.vehicleId, vehicle.id))).orderBy(desc(transportVehicleSettlements.createdAt)),
-    db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, vehicle.projectId), eq(dieselRefuelRecords.vehicleId, vehicle.id), eq(dieselRefuelRecords.assetType, "vehicle"))).orderBy(desc(dieselRefuelRecords.refueledAt)),
-    db.select({ id: transportSites.id, name: transportSites.name }).from(transportSites).where(eq(transportSites.projectId, vehicle.projectId)),
+  const [account] = await db.select({ id: users.id, name: users.name, loginMethod: users.loginMethod, localAccountStatus: users.localAccountStatus }).from(users).where(eq(users.id, userId)).limit(1);
+  if (!account || account.loginMethod !== "local_driver" || account.localAccountStatus !== "active") return { status: "unbound" };
+  const [currentVehicle] = await db.select({ id: transportVehicles.id, projectId: transportVehicles.projectId }).from(transportVehicles).where(eq(transportVehicles.driverUserId, userId)).orderBy(desc(transportVehicles.updatedAt)).limit(1);
+  return getDriverTransportPortal(db, { userId }, currentVehicle ? { vehicleId: currentVehicle.id, projectId: currentVehicle.projectId, name: account.name } : { name: account.name });
+}
+
+type DriverPortalDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+async function getDriverTransportPortal(db: DriverPortalDb, subject: DriverReadSubject, fallback: { vehicleId?: number; projectId?: number; name: string | null }): Promise<DriverPortalSummaryStatus> {
+  const subjectCondition = (userColumn: typeof vehicleAssignments.driverUserId | typeof vehicleAccessGrants.userId, bindingColumn: typeof vehicleAssignments.driverBindingId | typeof vehicleAccessGrants.driverBindingId) => or(subject.userId !== undefined ? eq(userColumn, subject.userId) : undefined, subject.bindingId !== undefined ? eq(bindingColumn, subject.bindingId) : undefined);
+  const [ownAssignments, grants, people] = await Promise.all([
+    db.select().from(vehicleAssignments).where(subjectCondition(vehicleAssignments.driverUserId, vehicleAssignments.driverBindingId)),
+    db.select().from(vehicleAccessGrants).where(and(subjectCondition(vehicleAccessGrants.userId, vehicleAccessGrants.driverBindingId), isNull(vehicleAccessGrants.revokedAt))),
+    subject.userId !== undefined ? db.select({ id: personnelPeople.id }).from(personnelPeople).where(eq(personnelPeople.userId, subject.userId)) : Promise.resolve([]),
   ]);
-  const validTrips = trips.filter(item => item.status !== "void");
-  const validSettlements = settlements.filter(item => item.status !== "void");
-  const deductibleDiesel = dieselRows.filter(item => item.status !== "void" && item.deductFromFreight);
+  const personIds = people.map(person => person.id);
+  const [personnelBindings, personnelEvents] = personIds.length ? await Promise.all([
+    db.select().from(personnelResourceBindings).where(and(inArray(personnelResourceBindings.personId, personIds), eq(personnelResourceBindings.assetType, "vehicle"))),
+    db.select().from(personnelChanges).where(and(inArray(personnelChanges.personId, personIds), eq(personnelChanges.action, "resource_binding"))),
+  ]) : [[], []];
+  const vehicleIds = Array.from(new Set([...ownAssignments.map(row => row.vehicleId), ...grants.map(row => row.vehicleId), ...personnelBindings.map(row => row.assetId), ...(fallback.vehicleId ? [fallback.vehicleId] : [])]));
+  if (!vehicleIds.length) return { status: "unbound" };
+  // Read all intervals on candidate vehicles so a new precise handover closes legacy day-only access.
+  const assignments = await db.select().from(vehicleAssignments).where(inArray(vehicleAssignments.vehicleId, vehicleIds));
+  const ranges = buildDriverReadRanges({ subject, assignments, grants, personnelBindings, personnelEvents });
+  const keys = Array.from(new Set(ranges.map(range => `${range.vehicleId}:${range.projectId}`)));
+  if (fallback.vehicleId && fallback.projectId && !keys.some(key => key.startsWith(`${fallback.vehicleId}:`))) keys.unshift(`${fallback.vehicleId}:${fallback.projectId}`);
+  if (!keys.length) return { status: "unbound" };
+  const accounts: DriverPortalAccountSummary[] = [];
+  for (const key of keys) {
+    const [vehicleId, projectId] = key.split(":").map(Number);
+    const [vehicle] = await db.select({ id: transportVehicles.id, plateNo: transportVehicles.plateNo, status: transportVehicles.status }).from(transportVehicles).where(eq(transportVehicles.id, vehicleId)).limit(1);
+    if (!vehicle) continue;
+    const accountRanges = ranges.filter(range => range.vehicleId === vehicleId && range.projectId === projectId);
+    accounts.push(await buildDriverAccountSummary(db, vehicle, projectId, accountRanges, fallback.name));
+  }
+  if (!accounts.length) return { status: "unbound" };
+  accounts.sort((a, b) => Number(b.vehicle.id === fallback.vehicleId) - Number(a.vehicle.id === fallback.vehicleId));
+  return { status: "ready", summary: { ...accounts[0], accounts } };
+}
+
+async function buildDriverAccountSummary(db: DriverPortalDb, vehicle: { id: number; plateNo: string; status: string }, projectId: number, ranges: DriverReadRange[], name: string | null): Promise<DriverPortalAccountSummary> {
+  const [project] = await db.select({ name: projects.name }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [profile] = await db.select({ projectStatus: vehicleFleetProfiles.projectStatus, archived: vehicleFleetProfiles.archived }).from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId, vehicle.id)).limit(1);
+  const [trips, settlements, dieselRows, sites] = ranges.length ? await Promise.all([
+    db.select().from(transportTrips).where(and(eq(transportTrips.projectId, projectId), eq(transportTrips.vehicleId, vehicle.id))).orderBy(desc(transportTrips.startAt)),
+    db.select().from(transportVehicleSettlements).where(and(eq(transportVehicleSettlements.projectId, projectId), eq(transportVehicleSettlements.vehicleId, vehicle.id))).orderBy(desc(transportVehicleSettlements.createdAt)),
+    db.select().from(dieselRefuelRecords).where(and(eq(dieselRefuelRecords.projectId, projectId), eq(dieselRefuelRecords.vehicleId, vehicle.id), eq(dieselRefuelRecords.assetType, "vehicle"))).orderBy(desc(dieselRefuelRecords.refueledAt)),
+    db.select({ id: transportSites.id, name: transportSites.name }).from(transportSites).where(eq(transportSites.projectId, projectId)),
+  ]) : [[], [], [], []];
+  const allowedAt = (at: Date) => driverRangeCovers(ranges, vehicle.id, projectId, at.getTime());
+  const validTrips = trips.filter(item => item.status !== "void" && allowedAt(item.startAt));
+  const validSettlements = settlements.filter(item => item.status !== "void" && driverRangeCovers(ranges, vehicle.id, projectId, driverBusinessDayStart(item.periodStart), driverBusinessDayStart(item.periodEnd) + 86400000));
+  const validDiesel = dieselRows.filter(item => item.status !== "void" && allowedAt(item.refueledAt));
+  const settlementIds = validSettlements.map(row => row.id);
+  const [payments, offsets] = settlementIds.length ? await Promise.all([
+    db.select({ projectId: settlementPaymentRecords.projectId, settlementType: settlementPaymentRecords.settlementType, settlementId: settlementPaymentRecords.settlementId, direction: settlementPaymentRecords.direction, amount: settlementPaymentRecords.amount, paymentDate: settlementPaymentRecords.paymentDate, paidAt: settlementPaymentRecords.paidAt, status: settlementPaymentRecords.status }).from(settlementPaymentRecords).where(and(eq(settlementPaymentRecords.projectId, projectId), eq(settlementPaymentRecords.settlementType, "transport_vehicle"), eq(settlementPaymentRecords.status, "active"), inArray(settlementPaymentRecords.settlementId, settlementIds))),
+    db.select().from(transportVehicleCarryForwardOffsets).where(and(eq(transportVehicleCarryForwardOffsets.projectId, projectId), eq(transportVehicleCarryForwardOffsets.vehicleId, vehicle.id), eq(transportVehicleCarryForwardOffsets.status, "active"), inArray(transportVehicleCarryForwardOffsets.sourceSettlementId, settlementIds))),
+  ]) : [[], []];
+  // Target identity only validates genuine offsets; never return another driver's target statement.
+  const recoveredById = sumConfirmedCarryForwardOffsets(offsets, settlements);
+  const paymentById = new Map(validSettlements.map(item => [item.id, driverSettlementPaymentFacts(item, payments, recoveredById.get(item.id) ?? 0)]));
+  const confirmedSettlements = validSettlements.filter(item => paymentById.get(item.id)!.confirmed);
+  const deductibleDiesel = validDiesel.filter(item => item.deductFromFreight);
   const today = chinaBusinessDate(new Date());
   const todayTrips = validTrips.filter(item => chinaBusinessDate(item.startAt) === today);
   const todayDiesel = deductibleDiesel.filter(item => chinaBusinessDate(item.refueledAt) === today);
   const siteNameById = new Map(sites.map(item => [item.id, item.name]));
-  const paidAmount = roundMoney(validSettlements.filter(item => item.status === "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0));
-  const summary: DriverPortalSummary = {
-    vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: vehicle.driverName ?? null, driverPhoneMasked: vehicle.driverPhoneMasked ?? null, projectName: project?.name ?? null },
-    today: { businessDate: today, tripCount: todayTrips.length, grossFreightAmount: roundMoney(todayTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)), fuelDeductionAmount: roundMoney(todayDiesel.reduce((sum, item) => sum + toNumber(item.amount), 0)) },
+  const sum = (values: number[]) => roundMoney(values.reduce((total, value) => total + value, 0));
+  const facts = Array.from(paymentById.values());
+  return {
+    access: { scopeLabel: ranges.some(range => range.allHistory) ? "显式授权车辆历史（只读）" : ranges.length ? "本人明确服务期间（只读）" : "历史待授权", legacyPolicy: "无真实交接起点、跨司机整日结算或未授权历史不展示；不按现任司机或车辆创建日推定归属。", historyPendingAuthorization: !ranges.some(range => range.allHistory), vehicleStatus: vehicle.status, projectStatus: profile?.projectStatus ?? null, archived: profile?.archived ?? false, periods: ranges.map(range => ({ source: range.source, effectiveFrom: Number.isFinite(range.from) ? new Date(range.from) : null, effectiveTo: Number.isFinite(range.to) ? new Date(range.to) : null, allHistory: range.allHistory })) },
+    vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, driverName: name, driverPhoneMasked: null, projectName: project?.name ?? null },
+    today: { businessDate: today, tripCount: todayTrips.length, grossFreightAmount: sum(todayTrips.map(item => toNumber(item.calculatedAmount))), fuelDeductionAmount: sum(todayDiesel.map(item => toNumber(item.amount))) },
     totals: {
-      tripCount: validTrips.length,
-      grossFreightAmount: roundMoney(validTrips.reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
-      settledFuelDeductionAmount: roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.fuelDeductionAmount), 0)),
-      pendingFuelDeductionAmount: roundMoney(deductibleDiesel.filter(item => item.status === "approved").reduce((sum, item) => sum + toNumber(item.amount), 0)),
-      netPayableAmount: roundMoney(validSettlements.reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0)),
-      paidAmount,
-      unpaidAmount: roundMoney(validSettlements.filter(item => item.status !== "paid").reduce((sum, item) => sum + toNumber(item.netPayableAmount), 0)),
-      pendingTripAmount: roundMoney(validTrips.filter(item => item.status === "verified").reduce((sum, item) => sum + toNumber(item.calculatedAmount), 0)),
+      tripCount: validTrips.length, grossFreightAmount: sum(validTrips.map(item => toNumber(item.calculatedAmount))),
+      settledFuelDeductionAmount: sum(confirmedSettlements.map(item => toNumber(item.fuelDeductionAmount))),
+      pendingFuelDeductionAmount: sum(deductibleDiesel.filter(item => item.status === "approved").map(item => toNumber(item.amount))),
+      netPayableAmount: sum(confirmedSettlements.map(item => Math.max(0, toNumber(item.netPayableAmount)))),
+      paidAmount: sum(facts.map(item => item.actualPaidAmount)), unpaidAmount: sum(facts.map(item => item.remainingPayableAmount)),
+      pendingTripAmount: sum(validTrips.filter(item => item.status === "verified").map(item => toNumber(item.calculatedAmount))),
+      assetDeductionAmount: sum(confirmedSettlements.map(item => toNumber(item.assetDeductionAmount))),
+      carryForwardDeductionAmount: sum(confirmedSettlements.map(item => toNumber(item.carryForwardDeductionAmount))),
+      receivedAmount: sum(facts.map(item => item.actualReceivedAmount)), recoveredOffsetAmount: sum(facts.map(item => item.recoveredOffsetAmount)),
+      receivableAmount: sum(confirmedSettlements.map(item => Math.max(0, -toNumber(item.netPayableAmount)))),
+      remainingReceivableAmount: sum(facts.map(item => item.remainingReceivableAmount)), legacyPaymentUnconfirmedCount: facts.filter(item => item.legacyPaymentUnconfirmed).length,
     },
-    settlements: validSettlements.slice(0, 20).map(item => ({ settlementNo: item.settlementNo, status: item.status, periodStart: String(item.periodStart), periodEnd: String(item.periodEnd), tripCount: item.tripCount, grossFreightAmount: toNumber(item.grossFreightAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netPayableAmount: toNumber(item.netPayableAmount), paidAt: item.paidAt ?? null, paymentDate: item.paymentDate ? String(item.paymentDate) : null })),
-    dieselRecords: dieselRows.filter(item => item.status !== "void").slice(0, 20).map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight, meterReading: item.meterReading === null ? null : toNumber(item.meterReading), receiptNo: item.receiptNo ?? null, stationOrSupplierName: item.stationOrSupplierName ?? null, remarks: item.remarks ?? null })),
-    recentTrips: validTrips.slice(0, 20).map(item => ({ tripNo: item.tripNo, startAt: item.startAt, endAt: item.endAt ?? null, status: item.status, invoiceMode: item.invoiceMode, routeLabel: `${item.loadSiteId ? siteNameById.get(item.loadSiteId) ?? "装土点未记录" : "装土点未记录"} → ${item.unloadSiteId ? siteNameById.get(item.unloadSiteId) ?? "卸土点未记录" : "卸土点未记录"}`, actualDistanceKm: item.actualDistanceKm === null ? null : toNumber(item.actualDistanceKm), volumeCubicMeters: item.volumeCubicMeters === null ? null : toNumber(item.volumeCubicMeters), grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
+    settlements: validSettlements.map(item => { const payment = paymentById.get(item.id)!; return { settlementNo: item.settlementNo, status: item.status, periodStart: item.periodStart instanceof Date ? item.periodStart.toISOString().slice(0, 10) : String(item.periodStart), periodEnd: item.periodEnd instanceof Date ? item.periodEnd.toISOString().slice(0, 10) : String(item.periodEnd), tripCount: item.tripCount, grossFreightAmount: toNumber(item.grossFreightAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netPayableAmount: toNumber(item.netPayableAmount), assetDeductionAmount: toNumber(item.assetDeductionAmount), carryForwardDeductionAmount: toNumber(item.carryForwardDeductionAmount), ...payment }; }),
+    dieselRecords: validDiesel.map(item => ({ recordNo: item.recordNo, refueledAt: item.refueledAt, liters: toNumber(item.liters), amount: toNumber(item.amount), status: item.status, supplyMethod: item.supplyMethod, deductFromFreight: item.deductFromFreight, meterReading: item.meterReading === null ? null : toNumber(item.meterReading), receiptNo: item.receiptNo ?? null, stationOrSupplierName: item.stationOrSupplierName ?? null, remarks: null })),
+    recentTrips: validTrips.map(item => ({ tripNo: item.tripNo, startAt: item.startAt, endAt: item.endAt ?? null, status: item.status, invoiceMode: item.invoiceMode, routeLabel: `${item.loadSiteId ? siteNameById.get(item.loadSiteId) ?? "装土点未记录" : "装土点未记录"} → ${item.unloadSiteId ? siteNameById.get(item.unloadSiteId) ?? "卸土点未记录" : "卸土点未记录"}`, actualDistanceKm: item.actualDistanceKm === null ? null : toNumber(item.actualDistanceKm), volumeCubicMeters: item.volumeCubicMeters === null ? null : toNumber(item.volumeCubicMeters), grossFreightAmount: toNumber(item.calculatedAmount), fuelDeductionAmount: toNumber(item.fuelDeductionAmount), netSettlementAmount: item.netSettlementAmount === null ? null : toNumber(item.netSettlementAmount) })),
   };
-  return { status: "ready", summary };
 }
 
 export async function revokeOfficialAccountDriverVehicleBinding(input: { vehicleId: number; operatorUserId: number }) {

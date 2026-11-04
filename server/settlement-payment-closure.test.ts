@@ -103,13 +103,53 @@ describe("车辆、机械与人员实际付款闭环", () => {
 
   it("单车详情提供结算和收款资料直达入口，工资台账和手机端不绕过PC凭证流程", () => {
     const admin = read("../client/src/pages/AdminPage.tsx");
+    const vehicleDetail = read(
+      "../client/src/components/VehicleManagementDetail.tsx"
+    ).replace(/\s+/g, "");
     const vehicleDialog = read(
       "../client/src/components/VehicleSettlementProfileDialog.tsx"
     );
     const payroll = read("../client/src/components/PayrollStatementLedger.tsx");
     const mobileLabor = read("../client/src/pages/MobileLaborPage.tsx");
     expect(admin.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
-      "结算 / 收款资料".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+      "<VehicleManagementWorkspace"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      vehicleDetail.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      'onClick={()=>setTab("settlements")}>费用结算/付款凭证'
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      vehicleDetail.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "onClick={()=>setPayeeOpen(true)}>收款资料/使用依据"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      vehicleDetail.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      '<TransportVehicleSettlementManagerprojectId={d.vehicle.projectId}vehicles={[d.vehicle]}scopeVehicleId={vehicleId}active={tab==="settlements"}onDirtyChange={setPaymentDirty}'
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      vehicleDetail.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "<VehicleSettlementProfileDialogopen={payeeOpen}"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      vehicleDetail.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "projectId={d.vehicle.projectId}vehicles={[d.vehicle]}initialVehicleId={vehicleId}onRefresh={refresh}"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
     );
     expect(
       vehicleDialog.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")

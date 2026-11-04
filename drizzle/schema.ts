@@ -4904,3 +4904,76 @@ export const personnelChanges = mysqlTable(
     ),
   })
 );
+
+/** 车辆全周期兼容扩展：旧产权、结算快照和七种 vehicleType 保持原样。 */
+export const vehicleFleetProfiles = mysqlTable("vehicle_fleet_profiles", {
+  vehicleId: int("vehicleId").primaryKey(),
+  projectId: int("projectId").notNull(),
+  version: int("version").default(1).notNull(),
+  propertyType: mysqlEnum("propertyType", ["company_owned", "rented", "partner"]).notNull(),
+  settlementMode: mysqlEnum("settlementMode", ["monthly", "daily", "hourly", "shift", "trip", "ton", "volume", "none"]).notNull(),
+  purpose: mysqlEnum("purpose", ["general", "trailer"]).default("general").notNull(),
+  vin: varchar("vin", { length: 32 }), brandModel: varchar("brandModel", { length: 160 }),
+  registeredOn: date("registeredOn", { mode: "string" }), energyType: varchar("energyType", { length: 64 }),
+  emissionStandard: varchar("emissionStandard", { length: 64 }),
+  effectiveCapacityM3: decimal("effectiveCapacityM3", { precision: 10, scale: 3 }), trailerVehicleId: int("trailerVehicleId"),
+  technicalStatus: mysqlEnum("technicalStatus", ["normal", "repair", "safety_hold"]).default("normal").notNull(),
+  dispatchStatus: mysqlEnum("dispatchStatus", ["standby", "working", "paused"]).default("standby").notNull(),
+  projectStatus: mysqlEnum("projectStatus", ["pending", "on_site", "exited"]).default("on_site").notNull(),
+  archived: boolean("archived").default(false).notNull(), remarks: varchar("remarks", { length: 1000 }),
+  createdBy: int("createdBy").notNull(), updatedBy: int("updatedBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, t => ({ projectIndex: index("vehicle_fleet_project_index").on(t.projectId, t.archived), trailerIndex: index("vehicle_fleet_trailer_index").on(t.trailerVehicleId) }));
+/** 车辆项目/实际驾驶责任 UTC 精确区间；人员身份历史仍复用 personnel_resource_bindings。 */
+export const vehicleAssignments = mysqlTable("vehicle_assignments", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), fromProjectId: int("fromProjectId"),
+  action: mysqlEnum("action", ["enter", "transfer", "exit", "handover", "baseline"]).notNull(),
+  driverPersonId: int("driverPersonId"), driverUserId: int("driverUserId"), driverBindingId: bigint("driverBindingId", { mode: "number" }),
+  effectiveFrom: datetime("effectiveFrom").notNull(), effectiveTo: datetime("effectiveTo"),
+  meterReading: decimal("meterReading", { precision: 14, scale: 2 }), condition: varchar("condition", { length: 1000 }).notNull(), reason: varchar("reason", { length: 1000 }).notNull(),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleRange: index("vehicle_assignment_range").on(t.vehicleId, t.effectiveFrom), driverRange: index("vehicle_assignment_driver_range").on(t.driverBindingId, t.effectiveFrom), projectIndex: index("vehicle_assignment_project").on(t.projectId) }));
+/** 车主/司机只读账务显式授权；不会写用户角色、岗位或运输管理权限。 */
+export const vehicleAccessGrants = mysqlTable("vehicle_access_grants", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), userId: int("userId"), driverBindingId: bigint("driverBindingId", { mode: "number" }),
+  role: mysqlEnum("role", ["owner", "driver"]).notNull(), scope: mysqlEnum("scope", ["service_period", "all_history"]).notNull(),
+  effectiveFrom: datetime("effectiveFrom").notNull(), effectiveTo: datetime("effectiveTo"), revokedAt: datetime("revokedAt"), revokedBy: int("revokedBy"),
+  validFrom: datetime("validFrom").notNull(), validTo: datetime("validTo"),
+  reason: varchar("reason", { length: 1000 }).notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ subjectIndex: index("vehicle_grant_subject").on(t.userId, t.driverBindingId), vehicleIndex: index("vehicle_grant_vehicle").on(t.vehicleId, t.projectId) }));
+/** 证照续办只新增；附件存受控key，不存可公开访问链接。 */
+export const vehicleDocuments = mysqlTable("vehicle_documents", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(),
+  kind: mysqlEnum("kind", ["vehicle_registration", "transport_permit", "insurance", "inspection", "annual_review", "other"]).notNull(), title: varchar("title", { length: 160 }).notNull(),
+  applicable: boolean("applicable").notNull(), validFrom: date("validFrom", { mode: "string" }), validTo: date("validTo", { mode: "string" }),
+  verificationStatus: mysqlEnum("verificationStatus", ["pending", "verified", "rejected", "not_applicable"]).default("pending").notNull(), verifiedBy: int("verifiedBy"), verifiedAt: datetime("verifiedAt"), verificationNote: varchar("verificationNote", { length: 1000 }),
+  fileKey: varchar("fileKey", { length: 512 }).notNull(), originalName: varchar("originalName", { length: 200 }).notNull(), mimeType: varchar("mimeType", { length: 64 }).notNull(), contentBytes: int("contentBytes").notNull(), contentSha256: varchar("contentSha256", { length: 64 }).notNull(),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleIndex: index("vehicle_document_vehicle").on(t.vehicleId, t.projectId, t.kind) }));
+export const vehicleInspections = mysqlTable("vehicle_inspections", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), occurredAt: datetime("occurredAt").notNull(), driverPersonId: int("driverPersonId"),
+  meterReading: decimal("meterReading", { precision: 14, scale: 2 }), items: json("items").$type<{ key: string; result: "pass" | "fail" | "unknown"; note?: string }[]>().notNull(), safetyFault: boolean("safetyFault").notNull(), notes: varchar("notes", { length: 1000 }).notNull(),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleIndex: index("vehicle_inspection_vehicle").on(t.vehicleId, t.projectId, t.occurredAt) }));
+/** 工单只关联原费用，不再记账；修复、验收、放行严格分离。 */
+export const vehicleWorkOrders = mysqlTable("vehicle_work_orders", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), inspectionId: int("inspectionId").notNull(),
+  status: mysqlEnum("status", ["reported", "repairing", "awaiting_acceptance", "accepted", "released"]).default("reported").notNull(),
+  safetyFault: boolean("safetyFault").notNull(), fault: varchar("fault", { length: 1000 }).notNull(), serviceProvider: varchar("serviceProvider", { length: 160 }), laborHours: decimal("laborHours", { precision: 10, scale: 2 }), partsDescription: varchar("partsDescription", { length: 1000 }),
+  costBearer: mysqlEnum("costBearer", ["company", "owner", "shared"]), maintenanceRecordId: bigint("maintenanceRecordId", { mode: "number" }), purchaseOrderIds: json("purchaseOrderIds").$type<number[]>().notNull(),
+  stoppedAt: datetime("stoppedAt").notNull(), repairedAt: datetime("repairedAt"), acceptedAt: datetime("acceptedAt"), acceptedBy: int("acceptedBy"), releasedAt: datetime("releasedAt"), releasedBy: int("releasedBy"),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleIndex: index("vehicle_work_order_vehicle").on(t.vehicleId, t.projectId, t.status), maintenanceUnique: uniqueIndex("vehicle_work_order_maintenance_unique").on(t.maintenanceRecordId) }));
+export const vehicleMaintenancePlans = mysqlTable("vehicle_maintenance_plans", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), title: varchar("title", { length: 160 }).notNull(), dueOn: date("dueOn", { mode: "string" }), dueMileage: decimal("dueMileage", { precision: 14, scale: 2 }), lastMileage: decimal("lastMileage", { precision: 14, scale: 2 }), source: varchar("source", { length: 1000 }).notNull(), completedAt: datetime("completedAt"),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleIndex: index("vehicle_maintenance_plan_vehicle").on(t.vehicleId, t.projectId) }));
+export const vehicleSpecialRecords = mysqlTable("vehicle_special_records", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), kind: mysqlEnum("kind", ["earthwork", "monitoring"]).notNull(), recordedAt: datetime("recordedAt").notNull(),
+  data: json("data").$type<Record<string, string | boolean | null>>().notNull(), reason: varchar("reason", { length: 1000 }).notNull(), source: varchar("source", { length: 32 }).default("manual").notNull(),
+  createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ vehicleIndex: index("vehicle_special_vehicle").on(t.vehicleId, t.projectId, t.kind) }));
+export const vehicleChanges = mysqlTable("vehicle_changes", {
+  id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), version: int("version").notNull(), action: varchar("action", { length: 64 }).notNull(),
+  changes: json("changes").$type<Record<string, unknown>>().notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, t => ({ versionUnique: uniqueIndex("vehicle_change_version_unique").on(t.vehicleId, t.version) }));

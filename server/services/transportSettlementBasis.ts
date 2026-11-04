@@ -30,6 +30,9 @@ export function buildTransportSettlementBasis<T extends Trip>(
   fuel: readonly Fuel[]
 ) {
   const verified = trips.filter(trip => trip.status === "verified");
+  if (trips.some(trip => !["verified", "settled"].includes(trip.status))) {
+    throw new Error("运输结算仅允许 verified/settled 运输单");
+  }
   const consumedFuel = fuel.filter(
     record =>
       verified.length > 0 &&
@@ -39,7 +42,7 @@ export function buildTransportSettlementBasis<T extends Trip>(
   let pooled = round(
     consumedFuel
       .filter(record => record.transportTripId === null)
-      .reduce((sum, record) => sum + Number(record.amount), 0)
+      .reduce((sum, record) => { const value = Number(record.amount); return Number.isFinite(value) && value > 0 ? sum + value : sum; }, 0)
   );
   const details = trips.map(trip => {
     const grossFreightAmount = Number(trip.calculatedAmount ?? 0);
@@ -59,7 +62,7 @@ export function buildTransportSettlementBasis<T extends Trip>(
     const linked = round(
       consumedFuel
         .filter(record => record.transportTripId === trip.id)
-        .reduce((sum, record) => sum + Number(record.amount), 0)
+        .reduce((sum, record) => { const value = Number(record.amount); return Number.isFinite(value) && value > 0 ? sum + value : sum; }, 0)
     );
     const poolForTrip =
       trip.id === verified[verified.length - 1]?.id

@@ -13,14 +13,17 @@ const tree = ts.createSourceFile(
   true,
   ts.ScriptKind.TSX
 );
-function mounted(name: string) {
+function mounted(name: string, sourceTree = tree) {
   const elements: ts.JsxSelfClosingElement[] = [];
   const walk = (node: ts.Node) => {
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(tree) === name)
+    if (
+      ts.isJsxSelfClosingElement(node) &&
+      node.tagName.getText(sourceTree) === name
+    )
       elements.push(node);
     ts.forEachChild(node, walk);
   };
-  walk(tree);
+  walk(sourceTree);
   return elements;
 }
 describe("施工新版后台实际集成契约", () => {
@@ -36,8 +39,44 @@ describe("施工新版后台实际集成契约", () => {
       "transitionConstructionReport.mutate({",
     ])
       expect(node).toContain(property);
-    for (const name of ["PurchasingWorkspace", "MachineryWorkspace"])
+    for (const name of [
+      "PurchasingWorkspace",
+      "MachineryWorkspace",
+      "VehicleManagementWorkspace",
+    ])
       expect(mounted(name)).toHaveLength(1);
+    const vehicleNode = mounted("VehicleManagementWorkspace")[0]
+      .getText(tree)
+      .replace(/\s+/g, "");
+    expect(vehicleNode).toContain("projects={projects.data??[]}");
+    expect(vehicleNode).toContain(
+      "onDirtyChange={onVehicleManagementDirtyChange}"
+    );
+    const detailTree = ts.createSourceFile(
+      "VehicleManagementDetail.tsx",
+      readFileSync(
+        new URL(
+          "../client/src/components/VehicleManagementDetail.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX
+    );
+    const detailSettlements = mounted(
+      "TransportVehicleSettlementManager",
+      detailTree
+    );
+    expect(detailSettlements).toHaveLength(1);
+    const detailSettlement = detailSettlements[0]
+      .getText(detailTree)
+      .replace(/\s+/g, "");
+    expect(detailSettlement).toContain("projectId={d.vehicle.projectId}");
+    expect(detailSettlement).toContain("vehicles={[d.vehicle]}");
+    expect(detailSettlement).toContain("onDirtyChange={setPaymentDirty}");
+    // 运输页仍有独立录入，必须保留父级项目/离开保护；不能以车辆页回调替代。
     expect(
       mounted("TransportVehicleSettlementManager").filter(element =>
         element

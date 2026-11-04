@@ -10,6 +10,7 @@ import { registerPayrollGenerationHeartbeatRoute } from "../payrollGenerationHea
 import { registerProjectRiskHeartbeatRoute } from "../projectRiskHeartbeat";
 import { registerLocalRfidBridgeRoutes } from "../localRfidBridge";
 import { registerFullDatabaseBackupDownloadRoute } from "../fullDatabaseBackupDownloadRoute";
+import { registerVehicleDocumentPreview } from "../services/vehicleManagementLifecycle";
 import { registerPersonnelDocumentPreview } from "../services/personnelDirectory";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
@@ -62,6 +63,7 @@ async function startServer() {
   registerFullDatabaseBackupDownloadRoute(app);
   app.use("/api/personnel-documents", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 30, message: "人员附件预览过于频繁，请稍后再试" }));
   registerPersonnelDocumentPreview(app);
+  registerVehicleDocumentPreview(app);
   /**
    * 供本机 systemd 与正式发布脚本使用的无鉴权存活探针。
    * 必须在 SPA 静态回退之前注册，避免任意路径返回 index.html 被误判为健康。

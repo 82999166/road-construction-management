@@ -69,6 +69,7 @@ type Vehicle = {
   id: number;
   plateNo: string;
   ownership?: string | null;
+  profile?: { settlementMode?: string } | null;
   ownerName?: string | null;
   driverName?: string | null;
 };
@@ -120,6 +121,7 @@ export default function TransportVehicleSettlementManager({
   projectId,
   vehicles,
   focusVehicle,
+  scopeVehicleId,
   active = true,
   canCreate = true,
   canApprove = true,
@@ -128,6 +130,7 @@ export default function TransportVehicleSettlementManager({
 }: {
   projectId: number;
   vehicles: Vehicle[];
+  scopeVehicleId?: number;
   focusVehicle?: { id: number; requestId: number } | null;
   active?: boolean;
   canCreate?: boolean;
@@ -138,7 +141,9 @@ export default function TransportVehicleSettlementManager({
   const consumedFocusRequest = useRef<number | null>(null);
   const [date, setDate] = useState(today);
   const [month, setMonth] = useState(() => today().slice(0, 7));
-  const [vehicleFilter, setVehicleFilter] = useState("all");
+  const [vehicleFilter, setVehicleFilter] = useState(
+    scopeVehicleId ? String(scopeVehicleId) : "all"
+  );
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedTripIds, setSelectedTripIds] = useState<
     number[] | undefined
@@ -202,18 +207,27 @@ export default function TransportVehicleSettlementManager({
     () =>
       filterTransportSettlements(settlements.data ?? [], {
         month,
-        vehicleId: vehicleFilter,
+        vehicleId: scopeVehicleId ? String(scopeVehicleId) : vehicleFilter,
         status: statusFilter,
       }),
-    [settlements.data, month, vehicleFilter, statusFilter]
+    [settlements.data, month, vehicleFilter, statusFilter, scopeVehicleId]
   );
   const pagination = useFinancePagination(
     settlementRows,
-    JSON.stringify([projectId, month, vehicleFilter, statusFilter])
+    JSON.stringify([
+      projectId,
+      month,
+      vehicleFilter,
+      statusFilter,
+      scopeVehicleId,
+    ])
+  );
+  const scopedDailyRows = (daily.data?.vehicleSummaries ?? []).filter(
+    row => !scopeVehicleId || row.vehicleId === scopeVehicleId
   );
   const dailyPagination = useFinancePagination(
-    daily.data?.vehicleSummaries ?? [],
-    JSON.stringify([projectId, date])
+    scopedDailyRows,
+    JSON.stringify([projectId, date, scopeVehicleId])
   );
   const settlementTotals = settlementRows.reduce(
     (total, row) => ({
@@ -306,7 +320,14 @@ export default function TransportVehicleSettlementManager({
       ),
   });
   const eligibleVehicles = useMemo(
-    () => vehicles.filter(item => item.ownership === "trip_settlement"),
+    () =>
+      vehicles.filter(item =>
+        item.profile
+          ? ["trip", "ton", "volume"].includes(
+              item.profile.settlementMode ?? ""
+            )
+          : item.ownership === "trip_settlement"
+      ),
     [vehicles]
   );
   useEffect(() => {
@@ -315,7 +336,7 @@ export default function TransportVehicleSettlementManager({
     setVehicleProfileId(focusVehicle.id);
     setVehicleProfileOpen(true);
   }, [focusVehicle, vehicles]);
-  const dailyRows = daily.data?.vehicleSummaries ?? [];
+  const dailyRows = scopedDailyRows;
   const openCreate = (vehicleId?: number) => {
     if (createOpen && !discardTransportDraft(true, () => {})) return;
     const vehicle =
@@ -395,7 +416,12 @@ export default function TransportVehicleSettlementManager({
                 size="sm"
                 variant="outline"
                 onClick={() => notify.mutate({ projectId, date })}
-                disabled={notify.isPending}
+                disabled={notify.isPending || Boolean(scopeVehicleId)}
+                title={
+                  scopeVehicleId
+                    ? "项目日结通知请返回运输管理发送；当前详情只显示本车"
+                    : undefined
+                }
               >
                 <Send className="mr-1.5 h-4 w-4" />
                 {notify.isPending ? "发送中…" : "发送微信日结"}
@@ -549,6 +575,7 @@ export default function TransportVehicleSettlementManager({
               <select
                 className="min-h-10 w-full rounded border bg-background px-2"
                 aria-label="结算车辆筛选"
+                disabled={Boolean(scopeVehicleId)}
                 value={vehicleFilter}
                 onChange={event => setVehicleFilter(event.target.value)}
               >

@@ -659,6 +659,13 @@
       "when": 1793754342836,
       "tag": "0093_modern_thunderbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "5",
+      "when": 1793762633837,
+      "tag": "0094_majestic_mastermind",
+      "breakpoints": true
     }
   ]
 }

@@ -14,6 +14,9 @@ describe("HTTP 安全边界", () => {
     expect(isLargeTrpcBodyRequest(request("/personnel.uploadDocument"))).toBe(true);
     expect(isLargeTrpcBodyRequest(request("/personnel.uploadDocument.other"))).toBe(false);
     expect(isLargeTrpcBodyRequest(request("/personnel.save"))).toBe(false);
+    expect(isLargeTrpcBodyRequest(request("/vehicleManagement.uploadDocument"))).toBe(true);
+    expect(isLargeTrpcBodyRequest(request("/vehicleManagement.uploadDocument.other"))).toBe(false);
+    expect(isLargeTrpcBodyRequest(request("/vehicleManagement.saveProfile"))).toBe(false);
     expect(isLargeTrpcBodyRequest(request("/operations.recordTransportCardEvent"))).toBe(false);
   });
 
