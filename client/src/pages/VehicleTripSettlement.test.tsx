@@ -134,10 +134,10 @@ describe("渣土车按趟结算车辆档案", () => {
       "按趟结算渣土车不建立租赁日期、租金或租赁成本".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
     );
     expect(settlementManager.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
-      'import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime"'.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+      'import { formatChinaDate, toChinaDateInput } from "@/lib/businessTime"'.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
     );
     expect(settlementManager.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
-      "const today = () => toDeviceDateInput()".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+      "const today = () => toChinaDateInput()".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
     );
     expect(settlementManager.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).not.toContain(
       "new Date().toISOString().slice(0, 10)".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")

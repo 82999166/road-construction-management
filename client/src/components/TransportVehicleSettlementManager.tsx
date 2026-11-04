@@ -40,7 +40,8 @@ import {
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
-import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime";
+import { formatChinaDate, toChinaDateInput } from "@/lib/businessTime";
+import VehicleSettlementSelection from "@/components/VehicleSettlementSelection";
 import { SettlementPaymentDialog } from "@/components/SettlementPaymentDialog";
 import { VehicleSettlementProfileDialog } from "@/components/VehicleSettlementProfileDialog";
 import { Bell, ReceiptText, Send, WalletCards } from "lucide-react";
@@ -110,8 +111,8 @@ const settlementStatusDisplay = (status: string | null | undefined) =>
   status
     ? (settlementStatusLabel[status] ?? getBusinessStatusLabel(status))
     : "待处理";
-/** 结算业务日期以操作设备系统日期为默认值，避免 UTC 零点附近误带出前一天。 */
-const today = () => toDeviceDateInput();
+/** 结算按北京时间业务日期归集，每趟计价不等于每趟单独结算付款。 */
+const today = () => toChinaDateInput();
 
 /**
  * 渣土车按趟费用结算。只生成真实已核验运单的结算草稿，付款完成后由服务端锁定为不可作废。
@@ -148,6 +149,10 @@ export default function TransportVehicleSettlementManager({
   const [selectedTripIds, setSelectedTripIds] = useState<
     number[] | undefined
   >();
+  const [selectionMode, setSelectionMode] = useState<
+    "day" | "period" | "trip_count"
+  >("day");
+  const [tripCount, setTripCount] = useState("10");
   const [legacyTripIds, setLegacyTripIds] = useState<number[]>([]);
   const [legacyConfirmation, setLegacyConfirmation] = useState("");
   const [legacyAcknowledged, setLegacyAcknowledged] = useState(false);
@@ -156,14 +161,16 @@ export default function TransportVehicleSettlementManager({
   const [payOpen, setPayOpen] = useState(false);
   const [vehicleProfileOpen, setVehicleProfileOpen] = useState(false);
   useTransportDirty(createOpen || payOpen || vehicleProfileOpen, onDirtyChange);
-  const closeCreate = () =>
-    discardTransportDraft(createOpen, () => {
+  const closeCreate = () => {
+    if (create.isPending) return;
+    return discardTransportDraft(createOpen, () => {
       setCreateOpen(false);
       setSelectedTripIds(undefined);
       setLegacyTripIds([]);
       setLegacyConfirmation("");
       setLegacyAcknowledged(false);
     });
+  };
   const closePay = (open: boolean) => {
     if (open) setPayOpen(true);
     else discardTransportDraft(payOpen, () => setPayOpen(false));
@@ -202,6 +209,40 @@ export default function TransportVehicleSettlementManager({
     { projectId },
     { enabled: Boolean(projectId) && active }
   );
+  const selectionDatesValid =
+    /^\d{4}-\d{2}-\d{2}$/.test(form.periodStart) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(form.periodEnd) &&
+    form.periodStart <= form.periodEnd;
+  const selectionCountValid =
+    selectionMode !== "trip_count" ||
+    (/^\d+$/.test(tripCount) &&
+      Number(tripCount) >= 1 &&
+      Number(tripCount) <= 1000);
+  const selectionPreview =
+    trpc.transport.previewVehicleSettlementSelection.useQuery(
+      {
+        projectId,
+        vehicleId: Number(settlementVehicleId) || 1,
+        periodStart: form.periodStart,
+        periodEnd: form.periodEnd,
+        selectionMode,
+        tripCount:
+          selectionMode === "trip_count" && selectionCountValid
+            ? Number(tripCount)
+            : undefined,
+      },
+      {
+        enabled:
+          active &&
+          canCreate &&
+          createOpen &&
+          !legacyTripIds.length &&
+          Boolean(settlementVehicleId) &&
+          selectionDatesValid &&
+          selectionCountValid,
+        retry: false,
+      }
+    );
   const utils = trpc.useUtils();
   const settlementRows = useMemo(
     () =>
@@ -286,6 +327,7 @@ export default function TransportVehicleSettlementManager({
       utils.transport.dailyVehicleSettlementSummary.invalidate(),
       utils.transport.listVehicleSettlements.invalidate(),
       utils.transport.listTrips.invalidate(),
+      utils.transport.previewVehicleSettlementSelection.invalidate(),
     ]);
   const create = trpc.transport.createVehicleSettlement.useMutation({
     onSuccess: async data => {
@@ -340,15 +382,16 @@ export default function TransportVehicleSettlementManager({
   const openCreate = (vehicleId?: number) => {
     if (createOpen && !discardTransportDraft(true, () => {})) return;
     const vehicle =
-      eligibleVehicles.find(item => item.id === vehicleId) ??
-      eligibleVehicles[0];
+      eligibleVehicles.find(
+        item => item.id === (scopeVehicleId ?? vehicleId)
+      ) ?? (!scopeVehicleId ? eligibleVehicles[0] : undefined);
     if (!vehicle) {
-      toast.error(
-        "当前项目还没有“渣土车（按趟结算）”，请先在车辆管理中录入车辆"
-      );
+      toast.error("当前项目还没有可按运单计费的车辆，请先在车辆管理中录入车辆");
       return;
     }
     setSelectedTripIds(undefined);
+    setSelectionMode("day");
+    setTripCount("10");
     setLegacyTripIds([]);
     setLegacyConfirmation("");
     setLegacyAcknowledged(false);
@@ -380,7 +423,12 @@ export default function TransportVehicleSettlementManager({
     setDate(focusTrip.date);
     setMonth(focusTrip.date.slice(0, 7));
     setSettlementVehicleId(String(vehicle.id));
-    setSelectedTripIds([focusTrip.id]);
+    // 普通运单入口只是预填同车当天，默认合并当天全部可结算运单；历史补单仍逐单核对。
+    setSelectedTripIds(
+      focusTrip.legacyUnlinkedSettled ? [focusTrip.id] : undefined
+    );
+    setSelectionMode("day");
+    setTripCount("10");
     setLegacyTripIds(focusTrip.legacyUnlinkedSettled ? [focusTrip.id] : []);
     setLegacyConfirmation("");
     setLegacyAcknowledged(false);
@@ -405,10 +453,10 @@ export default function TransportVehicleSettlementManager({
                 车辆管理 · 费用结算
               </p>
               <CardTitle className="mt-1 text-base">
-                渣土车日运单汇总与按趟付款
+                渣土车运费汇总与合并结算
               </CardTitle>
               <CardDescription className="mt-1">
-                按车牌和业务日统计真实趟次、应付运费、柴油扣款和净应付。收款方式属于本次结算付款，不固定绑定在车辆档案；付款完成后不能作废。
+                每趟记录运费，按一天、日期范围或指定趟数合并生成一张结算单；按北京时间业务日归集。收款方式属于本次结算付款，不固定绑定在车辆档案；付款完成后不能作废。
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -443,7 +491,7 @@ export default function TransportVehicleSettlementManager({
                 onClick={() => openCreate()}
               >
                 <WalletCards className="mr-1.5 h-4 w-4" />
-                生成按趟结算
+                生成合并结算
               </Button>
             </div>
           </div>
@@ -492,7 +540,7 @@ export default function TransportVehicleSettlementManager({
                         </p>
                         <p className="mt-1 text-slate-500">
                           {row.ownership === "trip_settlement"
-                            ? "渣土车 · 按趟结算"
+                            ? "渣土车 · 运单计费"
                             : row.ownership === "leased"
                               ? "外租车辆"
                               : "公司自有"}
@@ -532,7 +580,7 @@ export default function TransportVehicleSettlementManager({
                             结算
                           </Button>
                         ) : (
-                          <span className="text-slate-400">非按趟结算</span>
+                          <span className="text-slate-400">非运单计费</span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -634,7 +682,8 @@ export default function TransportVehicleSettlementManager({
                   渣土车费用结算与付款台账
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  流程：按趟、外租合同或有依据调整结算 → 提交会计审核 →
+                  流程：按天 / 日期范围 / 指定趟数合并、外租合同或有依据调整结算
+                  → 提交会计审核 →
                   上传凭证并分笔登记实际收付。柴油倒挂自动进入待收补款，后期可受控抵扣；已产生实际收付的结算单不可作废。
                 </p>
               </div>
@@ -832,17 +881,17 @@ export default function TransportVehicleSettlementManager({
           else closeCreate();
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl xl:max-w-4xl">
+        <DialogContent className="max-h-[90dvh] max-w-[calc(100vw-1rem)] overflow-y-auto sm:max-w-5xl xl:max-w-6xl">
           <DialogHeader>
-            <DialogTitle>生成渣土车按趟费用结算</DialogTitle>
+            <DialogTitle>生成渣土车运费合并结算</DialogTitle>
             <DialogDescription>
               只汇总结算期间内已核验且尚未进入其他结算单的真实运单；金额由服务端重新计算。
             </DialogDescription>
           </DialogHeader>
           {selectedTripIds ? (
             <p className="rounded border bg-sky-50 p-3 text-sm">
-              本次仅生成运单 #{selectedTripIds.join("、")}{" "}
-              的真实结算草稿，日期与车辆不可变更；金额由服务端快照计算。
+              本次仅补录历史运单 #{selectedTripIds.join("、")}{" "}
+              的真实结算草稿，日期与车辆不可变更；普通运单支持按天、日期范围或指定趟数合并。
             </p>
           ) : null}
           {legacyTripIds.length ? (
@@ -851,7 +900,7 @@ export default function TransportVehicleSettlementManager({
                 历史未关联结算单：不得推定已付款
               </p>
               <p className="mt-1 text-xs">
-                保持原 settled
+                保持原历史结算
                 状态与原金额快照，只由财务逐单核对后建立真实结算，不批量修改历史状态。
               </p>
               <label className="mt-2 flex items-start gap-2 text-sm">
@@ -876,7 +925,11 @@ export default function TransportVehicleSettlementManager({
             <div>
               <Label>渣土车</Label>
               <Select
-                disabled={Boolean(selectedTripIds)}
+                disabled={
+                  Boolean(legacyTripIds.length) ||
+                  Boolean(scopeVehicleId) ||
+                  create.isPending
+                }
                 value={settlementVehicleId}
                 onValueChange={value => {
                   setSettlementVehicleId(value);
@@ -886,24 +939,25 @@ export default function TransportVehicleSettlementManager({
                   if (vehicle)
                     setForm(current => ({
                       ...current,
-                      payeeName:
-                        current.payeeName ||
-                        vehicle.ownerName ||
-                        vehicle.driverName ||
-                        "",
+                      payeeName: vehicle.ownerName || vehicle.driverName || "",
+                      payeeAccount: "",
                     }));
                 }}
               >
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="选择按趟结算车辆" />
+                  <SelectValue placeholder="选择运单计费车辆" />
                 </SelectTrigger>
                 <SelectContent>
-                  {eligibleVehicles.map(item => (
-                    <SelectItem key={item.id} value={String(item.id)}>
-                      {item.plateNo} ·{" "}
-                      {item.ownerName || item.driverName || "收款人待填"}
-                    </SelectItem>
-                  ))}
+                  {eligibleVehicles
+                    .filter(
+                      item => !scopeVehicleId || item.id === scopeVehicleId
+                    )
+                    .map(item => (
+                      <SelectItem key={item.id} value={String(item.id)}>
+                        {item.plateNo} ·{" "}
+                        {item.ownerName || item.driverName || "收款人待填"}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -930,36 +984,40 @@ export default function TransportVehicleSettlementManager({
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label>结算开始日期</Label>
-              <Input
-                className="mt-1"
-                disabled={Boolean(selectedTripIds)}
-                type="date"
-                value={form.periodStart}
-                onChange={event =>
-                  setForm(current => ({
-                    ...current,
-                    periodStart: event.target.value,
-                  }))
-                }
-              />
-            </div>
-            <div>
-              <Label>结算结束日期</Label>
-              <Input
-                className="mt-1"
-                disabled={Boolean(selectedTripIds)}
-                type="date"
-                value={form.periodEnd}
-                onChange={event =>
-                  setForm(current => ({
-                    ...current,
-                    periodEnd: event.target.value,
-                  }))
-                }
-              />
-            </div>
+            {legacyTripIds.length ? (
+              <>
+                <div>
+                  <Label>结算开始日期</Label>
+                  <Input
+                    className="mt-1"
+                    disabled={Boolean(selectedTripIds)}
+                    type="date"
+                    value={form.periodStart}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        periodStart: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>结算结束日期</Label>
+                  <Input
+                    className="mt-1"
+                    disabled={Boolean(selectedTripIds)}
+                    type="date"
+                    value={form.periodEnd}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        periodEnd: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </>
+            ) : null}
             <div>
               <Label>收款人</Label>
               <Input
@@ -1003,8 +1061,51 @@ export default function TransportVehicleSettlementManager({
               />
             </div>
           </div>
+          {!legacyTripIds.length ? (
+            <VehicleSettlementSelection
+              mode={selectionMode}
+              tripCount={tripCount}
+              periodStart={form.periodStart}
+              periodEnd={form.periodEnd}
+              onModeChange={mode => {
+                setSelectionMode(mode);
+                if (mode === "day")
+                  setForm(current => ({
+                    ...current,
+                    periodEnd: current.periodStart,
+                  }));
+              }}
+              onTripCountChange={setTripCount}
+              onPeriodChange={(periodStart, periodEnd) =>
+                setForm(current => ({ ...current, periodStart, periodEnd }))
+              }
+              preview={selectionPreview.data}
+              loading={selectionPreview.isFetching}
+              error={
+                selectionPreview.error
+                  ? getUserFacingErrorMessage(
+                      selectionPreview.error,
+                      "结算范围预览失败，请重试"
+                    )
+                  : undefined
+              }
+              onRefresh={() => {
+                void selectionPreview.refetch();
+              }}
+              disabled={create.isPending}
+              plateNo={
+                eligibleVehicles.find(
+                  item => String(item.id) === settlementVehicleId
+                )?.plateNo ?? "未选车辆"
+              }
+            />
+          ) : null}
           <DialogFooter>
-            <Button variant="outline" onClick={closeCreate}>
+            <Button
+              variant="outline"
+              disabled={create.isPending}
+              onClick={closeCreate}
+            >
               取消
             </Button>
             <Button
@@ -1012,6 +1113,12 @@ export default function TransportVehicleSettlementManager({
                 !active ||
                 !canCreate ||
                 !settlementVehicleId ||
+                (!legacyTripIds.length &&
+                  (!selectionDatesValid ||
+                    !selectionCountValid ||
+                    !selectionPreview.data?.eligible ||
+                    selectionPreview.isFetching ||
+                    selectionPreview.isError)) ||
                 form.payeeName.trim().length < 2 ||
                 form.periodEnd < form.periodStart ||
                 ([
@@ -1032,7 +1139,16 @@ export default function TransportVehicleSettlementManager({
                   projectId,
                   vehicleId: Number(settlementVehicleId),
                   ...form,
-                  tripIds: selectedTripIds,
+                  tripIds: legacyTripIds.length
+                    ? selectedTripIds
+                    : selectionPreview.data?.tripIds,
+                  selectionMode: legacyTripIds.length
+                    ? undefined
+                    : selectionMode,
+                  tripCount:
+                    !legacyTripIds.length && selectionMode === "trip_count"
+                      ? Number(tripCount)
+                      : undefined,
                   legacyTripIds,
                   legacyConfirmation: legacyTripIds.length
                     ? legacyConfirmation

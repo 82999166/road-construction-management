@@ -117,6 +117,13 @@ import {
 import { buildTransportSettlementBasis } from "../services/transportSettlementBasis";
 import { getEligibleAssetPurchaseDeductions } from "../services/transportPurchaseDeduction";
 import {
+  selectVehicleSettlementTrips,
+  vehicleSettlementEvidenceIds,
+  vehicleSettlementSelectionValidationReason,
+  vehicleSettlementTripIdsMatch,
+  type VehicleSettlementSelectionInput,
+} from "../services/vehicleSettlementSelection";
+import {
   saveResourceBinding,
   resolveResourcePerson,
 } from "../services/personnelLegacyBridge";
@@ -639,13 +646,62 @@ const transportRoutePresetInput = z
     path: ["unloadSiteId"],
   });
 
-/** 渣土车按趟结算从已核验运单生成，金额只能由服务端快照汇总，浏览器不能传入金额。 */
+const vehicleSettlementSelectionFields = {
+  projectId: z.number().int().positive(),
+  vehicleId: z.number().int().positive(),
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  selectionMode: z.enum(["day", "period", "trip_count"]).optional(),
+  tripCount: z.number().int().min(1).max(1000).optional(),
+};
+const transportVehicleSettlementSelectionInput = z.object({
+  ...vehicleSettlementSelectionFields,
+  selectionMode: z.enum(["day", "period", "trip_count"]),
+}).superRefine((value, issue) => {
+  const reason = vehicleSettlementSelectionValidationReason(value);
+  if (reason) issue.addIssue({ code: "custom", message: reason });
+});
+
+/** Read persisted eligibility facts in batches; locking reads are only used by creation inside its original scope lock. */
+async function readVehicleSettlementSelection(
+  db: SettlementQueryClient,
+  input: VehicleSettlementSelectionInput,
+  locking = false,
+) {
+  const { start } = getChinaBusinessDateRange(input.periodStart);
+  const { end } = getChinaBusinessDateRange(input.periodEnd);
+  const tripQuery = db.select().from(transportTrips).where(and(
+    eq(transportTrips.projectId, input.projectId),
+    eq(transportTrips.vehicleId, input.vehicleId),
+    eq(transportTrips.status, "verified"),
+    gte(transportTrips.startAt, start),
+    lt(transportTrips.startAt, end),
+  ));
+  const trips = await (locking ? tripQuery.for("update") : tripQuery);
+  if (!trips.length) return selectVehicleSettlementTrips(input, trips, { occupiedTripIds: [], events: [], evidence: [] });
+  const tripIds = trips.map(trip => trip.id);
+  const evidenceIds = vehicleSettlementEvidenceIds(trips);
+  const occupiedQuery = db.select({ tripId: transportVehicleSettlementItems.tripId }).from(transportVehicleSettlementItems)
+    .where(inArray(transportVehicleSettlementItems.tripId, tripIds));
+  const eventQuery = db.select().from(transportCardEvents).where(and(
+    eq(transportCardEvents.projectId, input.projectId), inArray(transportCardEvents.tripId, tripIds),
+  ));
+  const evidenceQuery = evidenceIds.length ? db.select().from(evidenceRecords).where(and(
+    eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.sourceType, "transport"),
+    eq(evidenceRecords.status, "active"), inArray(evidenceRecords.id, evidenceIds),
+  )) : null;
+  const [occupied, events, evidence] = await Promise.all([
+    locking ? occupiedQuery.for("update") : occupiedQuery,
+    locking ? eventQuery.for("update") : eventQuery,
+    evidenceQuery ? (locking ? evidenceQuery.for("update") : evidenceQuery) : [],
+  ]);
+  return selectVehicleSettlementTrips(input, trips, { occupiedTripIds: occupied.map(item => item.tripId), events, evidence });
+}
+
+/** 合并已核验渣土车运单，金额只能由服务端快照汇总，浏览器不能传入金额。 */
 const transportVehicleSettlementDraftInput = z
   .object({
-    projectId: z.number().int().positive(),
-    vehicleId: z.number().int().positive(),
-    periodStart: businessDateSchema,
-    periodEnd: businessDateSchema,
+    ...vehicleSettlementSelectionFields,
     payeeName: z.string().trim().min(2, "请填写收款人姓名或单位名称").max(128),
     payeeAccount: z.string().trim().max(160).nullable().optional(),
     paymentMethod:
@@ -656,6 +712,14 @@ const transportVehicleSettlementDraftInput = z
     legacyConfirmation: z.string().trim().min(4).max(500).optional(),
   })
   .superRefine((value, issue) => {
+    const selectionReason = vehicleSettlementSelectionValidationReason(value);
+    if (selectionReason) issue.addIssue({ code: "custom", message: selectionReason });
+    if (value.tripIds && new Set(value.tripIds).size !== value.tripIds.length)
+      issue.addIssue({ code: "custom", path: ["tripIds"], message: "运单 ID 不得重复" });
+    if (new Set(value.legacyTripIds).size !== value.legacyTripIds.length)
+      issue.addIssue({ code: "custom", path: ["legacyTripIds"], message: "历史运单 ID 不得重复" });
+    if (value.selectionMode && value.legacyTripIds.length)
+      issue.addIssue({ code: "custom", path: ["legacyTripIds"], message: "合并选择模式不纳入历史已结算运单，请使用财务逐单历史核对流程" });
     if (value.legacyTripIds.length && !value.legacyConfirmation)
       issue.addIssue({
         code: "custom",
@@ -11105,6 +11169,26 @@ export const transportRouter = router({
       }));
     }),
 
+  /** 只预览真实运费候选，不估算柴油/资产扣款、抵扣余额或最终付款。 */
+  previewVehicleSettlementSelection: protectedProcedure
+    .input(transportVehicleSettlementSelectionInput)
+    .query(async ({ ctx, input }) => {
+      requireAuthenticatedUser(ctx);
+      const roleCodes = await assertTransportAccess(ctx);
+      if (!canManageSettlement(roleCodes))
+        throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权预览渣土车费用结算候选" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+      if (!vehicle || vehicle.projectId !== input.projectId)
+        throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或不属于当前项目" });
+      const [classification] = await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId, vehicle.id)).limit(1);
+      if (!canUseVehicleTripSettlement(vehicle, classification))
+        throw new TRPCError({ code: "BAD_REQUEST", message: "仅渣土车按趟/吨/方结算分类可使用运单合并结算" });
+      return (await readVehicleSettlementSelection(db, input)).preview;
+    }),
+
   /** 由已核验的渣土车真实趟次生成付款前结算草稿；每趟只能进入一张结算单。 */
   createVehicleSettlement: protectedProcedure
     .input(transportVehicleSettlementDraftInput)
@@ -11147,7 +11231,14 @@ export const transportRouter = router({
       );
       const { start } = getChinaBusinessDateRange(input.periodStart);
       const { end: endExclusive } = getChinaBusinessDateRange(input.periodEnd);
-      const verifiedTrips = await db
+      const modeSelection = input.selectionMode
+        ? await readVehicleSettlementSelection(db, input)
+        : null;
+      if (modeSelection && input.tripIds && !vehicleSettlementTripIdsMatch(modeSelection.preview.tripIds, input.tripIds))
+        throw new TRPCError({ code: "CONFLICT", message: "所选运单与当前结算模式候选不一致，候选可能已新增、占用或变更，请刷新预览；不能静默忽略" });
+      if (modeSelection && !modeSelection.preview.eligible)
+        throw new TRPCError({ code: "BAD_REQUEST", message: modeSelection.preview.reason! });
+      const verifiedTrips = modeSelection ? modeSelection.selectedTrips : await db
         .select()
         .from(transportTrips)
         .where(
@@ -11345,6 +11436,13 @@ export const transportRouter = router({
             input.projectId,
             input.vehicleId
           );
+          if (input.selectionMode) {
+            const currentSelection = await readVehicleSettlementSelection(tx, input, true);
+            if (!currentSelection.preview.eligible || !vehicleSettlementTripIdsMatch(
+              currentSelection.preview.tripIds, candidates.map(trip => trip.id),
+            ))
+              throw new TRPCError({ code: "CONFLICT", message: "结算候选已新增、占用或变更，请刷新预览后重新生成" });
+          }
           const locked = await tx
             .select()
             .from(transportTrips)
@@ -11364,6 +11462,13 @@ export const transportRouter = router({
               const candidate = candidates.find(trip => trip.id === row.id);
               return (
                 row.status !== candidate?.status ||
+                row.vehicleId !== candidate?.vehicleId ||
+                row.projectId !== candidate?.projectId ||
+                row.startAt.getTime() !== candidate?.startAt.getTime() ||
+                row.calculatedUnitPrice !== candidate?.calculatedUnitPrice ||
+                row.volumeCubicMeters !== candidate?.volumeCubicMeters ||
+                row.weightTons !== candidate?.weightTons ||
+                JSON.stringify(row.routeSnapshot) !== JSON.stringify(candidate?.routeSnapshot) ||
                 row.calculatedAmount !== candidate?.calculatedAmount ||
                 row.fuelDeductionAmount !== candidate?.fuelDeductionAmount ||
                 row.netSettlementAmount !== candidate?.netSettlementAmount

@@ -117,7 +117,7 @@ const statusLabel = new Proxy<Record<string, string>>(
 const ownershipLabel: Record<string, string> = {
   owned: "公司自有",
   leased: "外租车辆",
-  trip_settlement: "渣土车按趟结算",
+  trip_settlement: "渣土车运单计费",
 };
 const dateTime = (value: Date | string | number | null | undefined) =>
   formatChinaDateTime(value, "未记录");
