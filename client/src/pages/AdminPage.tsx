@@ -3,6 +3,12 @@ import {
   DieselSupplierReport,
 } from "@/components/DieselSupportingReports";
 import { DieselReceiptLedger } from "@/components/DieselReceiptLedger";
+import RfidBridgeReadinessPanel from "@/components/RfidBridgeReadinessPanel";
+import {
+  readRfidBridgeReadiness,
+  RFID_FIRST_INSTALL_PACKAGE_URL,
+  type RfidBridgeReadiness,
+} from "@/lib/rfidBridgeReadiness";
 import {
   FinanceWorkspaceNavigation,
   FinanceRetainedPanel,
@@ -264,8 +270,6 @@ const LaborPayrollHeadline = lazy(() =>
     default: module.LaborPayrollHeadline,
   }))
 );
-const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip";
 const SettlementPaymentDialog = lazy(() =>
   import("@/components/SettlementPaymentDialog").then(module => ({
     default: module.SettlementPaymentDialog,
@@ -1201,9 +1205,6 @@ const EMPTY_RFID_CARD_FORM: RfidCardForm = {
   status: "suspended",
   reuseRevokedUnboundCard: false,
 };
-const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13";
-const REQUIRED_RFID_BRIDGE_BUILD_ID =
-  "utrust-rfid-installer-20261101-progress-v13";
 const EMPTY_ROLE_FORM: RoleForm = {
   code: "",
   name: "",
@@ -5042,6 +5043,22 @@ export default function AdminPage({
     },
   });
   const [writingRfidCard, setWritingRfidCard] = useState(false);
+  const [rfidBridgeReadiness, setRfidBridgeReadiness] =
+    useState<RfidBridgeReadiness | null>(null);
+  const [checkingRfidBridgeReadiness, setCheckingRfidBridgeReadiness] =
+    useState(false);
+  const checkRfidBridgeReadiness = async () => {
+    setCheckingRfidBridgeReadiness(true);
+    try {
+      const result = await readRfidBridgeReadiness();
+      setRfidBridgeReadiness(result);
+      result.status === "ready"
+        ? toast.success("本机桥接版本已匹配；未执行写卡。")
+        : toast.error(result.reason);
+    } finally {
+      setCheckingRfidBridgeReadiness(false);
+    }
+  };
   const [readingVehicleCardEntry, setReadingVehicleCardEntry] = useState(false);
   const [retryingRfidCardConfirmation, setRetryingRfidCardConfirmation] =
     useState(false);
@@ -5058,27 +5075,14 @@ export default function AdminPage({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
     try {
+      const readiness = await readRfidBridgeReadiness(controller.signal);
+      setRfidBridgeReadiness(readiness);
+      if (readiness.status !== "ready")
+        throw new Error("bridge_recovery_version_mismatch");
       const recovery = await recoverRfidCardConfirmation.mutateAsync({
         id: jobId,
         projectId: workspaceProjectId,
       });
-      const healthResponse = await fetch("http://127.0.0.1:47601/health", {
-        method: "GET",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const health = (await healthResponse.json().catch(() => ({}))) as {
-        success?: boolean;
-        bridgeVersion?: string;
-        bridgeBuildId?: string;
-      };
-      if (
-        !healthResponse.ok ||
-        !health.success ||
-        health.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION ||
-        health.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID
-      )
-        throw new Error("bridge_recovery_version_mismatch");
       const response = await fetch(
         "http://127.0.0.1:47601/api/verify-and-confirm-vehicle-card",
         {
@@ -5135,22 +5139,13 @@ export default function AdminPage({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 45_000);
     try {
-      const healthResponse = await fetch("http://127.0.0.1:47601/health", {
-        method: "GET",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const healthResult = (await healthResponse.json().catch(() => ({}))) as {
-        success?: boolean;
-        bridgeVersion?: string;
-        bridgeBuildId?: string;
-      };
-      if (
-        !healthResponse.ok ||
-        !healthResult.success ||
-        healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION ||
-        healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID
-      )
+      const readiness = await readRfidBridgeReadiness(controller.signal);
+      setRfidBridgeReadiness(readiness);
+      if (readiness.status === "unavailable")
+        throw new Error("bridge_write_unavailable");
+      if (readiness.status === "writer_mismatch")
+        throw new Error("bridge_write_interface_version_mismatch");
+      if (readiness.status !== "ready")
         throw new Error("bridge_write_version_mismatch");
       const response = await fetch(
         "http://127.0.0.1:47601/api/write-vehicle-card",
@@ -5233,8 +5228,17 @@ export default function AdminPage({
           throw new Error("bridge_write_writer_result_invalid");
         if (bridgeFailure.includes("local_confirmation_receipt_failed"))
           throw new Error("bridge_write_confirmation_receipt_failed");
-        if (bridgeFailure.includes("card_writer_version_mismatch"))
-          throw new Error("bridge_write_version_mismatch");
+        if (bridgeFailure.includes("card_writer_version_mismatch")) {
+          setRfidBridgeReadiness(current => ({
+            status: "writer_mismatch",
+            bridgeVersion: current?.bridgeVersion ?? null,
+            bridgeBuildId: current?.bridgeBuildId ?? null,
+            writerVersion: current?.writerVersion ?? null,
+            reason:
+              "本机底层写卡程序的版本或加载结果未通过校验。不能确定卡片是否已写入，请保持卡片不动，完整更新安装包后先进行只读复核，不要反复写卡。",
+          }));
+          throw new Error("bridge_write_writer_version_mismatch");
+        }
         throw new Error("bridge_write_or_readback_failed");
       }
       await Promise.all([
@@ -5254,109 +5258,124 @@ export default function AdminPage({
             ? "浏览器无法访问正式写卡接口：请保持 Windows 桥接程序运行，并允许当前网站访问本机 127.0.0.1 设备后重试。"
             : error instanceof Error &&
                 error.message === "bridge_write_version_mismatch"
-              ? "当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作；请安装唯一编号的最新版桥接包并重启后再生成任务。"
+              ? "当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作；请在窗口中查看本机版本并下载最新版安装包，安装完成后重新检测。"
               : error instanceof Error &&
-                  error.message === "bridge_write_endpoint_missing"
-                ? "当前 Windows 桥接程序未安装正式车辆卡写入接口：测试写卡可用，但请更新桥接程序后再办理正式车辆卡。"
+                  error.message === "bridge_write_unavailable"
+                ? "本机桥接未就绪或连接检测失败，并非已确认的版本不符。请查看窗口内诊断并重新检测。"
                 : error instanceof Error &&
-                    error.message === "bridge_write_authorization_rejected"
-                  ? "本次写卡任务授权已失效或被拒绝：请关闭窗口后重新生成 PC 写卡任务，再立即写入。"
+                    error.message === "bridge_write_interface_version_mismatch"
+                  ? "桥接的写卡接口声明与正式要求不符，尚未开始写卡；请完整安装最新版后重新检测。"
                   : error instanceof Error &&
-                      error.message === "bridge_write_card_or_payload_mismatch"
-                    ? "当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。"
+                      error.message === "bridge_write_writer_version_mismatch"
+                    ? "本机底层写卡程序版本或加载结果未通过校验；这不是前置桥接版本错误。请保持卡片不动，先只读复核，不要重复写入。"
                     : error instanceof Error &&
-                        error.message ===
-                          "bridge_write_readback_fingerprint_mismatch"
-                      ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动并停止操作，不要重新写卡。"
+                        error.message === "bridge_write_endpoint_missing"
+                      ? "当前 Windows 桥接程序未安装正式车辆卡写入接口：测试写卡可用，但请更新桥接程序后再办理正式车辆卡。"
                       : error instanceof Error &&
-                          error.message === "bridge_write_payload_shape_invalid"
-                        ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
+                          error.message ===
+                            "bridge_write_authorization_rejected"
+                        ? "本次写卡任务授权已失效或被拒绝：请关闭窗口后重新生成 PC 写卡任务，再立即写入。"
                         : error instanceof Error &&
                             error.message ===
-                              "bridge_write_server_claim_token_invalid"
-                          ? "本次 PC 写卡授权未被桥接正确提交：当前卡没有开始写入。请关闭窗口并重新生成任务后立即写入。"
+                              "bridge_write_card_or_payload_mismatch"
+                          ? "当前卡片 UID 或回读载荷与写卡任务不一致：请确认仍为刚绑定的车辆卡，不要更换卡片后重试。"
                           : error instanceof Error &&
                               error.message ===
-                                "bridge_write_server_claim_uid_invalid"
-                            ? "本机读取的卡 UID 未能生成有效指纹：当前卡没有开始写入。请保持卡片不动，重新读取 UID 并核对绑定后再生成任务。"
+                                "bridge_write_readback_fingerprint_mismatch"
+                            ? "卡片已完成写入回读，但回读摘要与本次受控任务不一致：请保持卡片不动并停止操作，不要重新写卡。"
                             : error instanceof Error &&
                                 error.message ===
-                                  "bridge_write_server_claim_request_invalid"
-                              ? "本次写卡请求格式无效：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
+                                  "bridge_write_payload_shape_invalid"
+                              ? "本次正式车辆卡载荷格式校验未通过：请刷新后台后重新生成 PC 写卡任务。"
                               : error instanceof Error &&
                                   error.message ===
-                                    "bridge_write_server_claim_card_or_payload_conflict"
-                                ? "当前感应卡与所选车辆卡不匹配，或该任务载荷不可用：当前卡没有开始写入。请先核对卡片绑定后重新生成任务。"
+                                    "bridge_write_server_claim_token_invalid"
+                                ? "本次 PC 写卡授权未被桥接正确提交：当前卡没有开始写入。请关闭窗口并重新生成任务后立即写入。"
                                 : error instanceof Error &&
                                     error.message ===
-                                      "bridge_write_server_claim_authorization_or_server_unavailable"
-                                  ? "本次写卡授权已过期、已处理，或服务器暂时无法读取任务：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
+                                      "bridge_write_server_claim_uid_invalid"
+                                  ? "本机读取的卡 UID 未能生成有效指纹：当前卡没有开始写入。请保持卡片不动，重新读取 UID 并核对绑定后再生成任务。"
                                   : error instanceof Error &&
                                       error.message ===
-                                        "bridge_write_server_claim_failed"
-                                    ? "服务器未返回本次正式写卡载荷：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务；不要点击“仅回传确认”。"
+                                        "bridge_write_server_claim_request_invalid"
+                                    ? "本次写卡请求格式无效：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
                                     : error instanceof Error &&
                                         error.message ===
-                                          "bridge_write_server_confirm_retryable"
-                                      ? "本机写入回读已完成，但服务端确认暂未返回：请保持卡片和桥接程序不变，只点击“仅回传确认（不写卡）”，不得再次写入。"
+                                          "bridge_write_server_claim_card_or_payload_conflict"
+                                      ? "当前感应卡与所选车辆卡不匹配，或该任务载荷不可用：当前卡没有开始写入。请先核对卡片绑定后重新生成任务。"
                                       : error instanceof Error &&
                                           error.message ===
-                                            "bridge_write_reader_connection_failed"
-                                        ? "正式写卡时读卡器连接中断：请保持卡片在 uTrust 感应区，关闭其他读卡程序后重新生成任务。"
+                                            "bridge_write_server_claim_authorization_or_server_unavailable"
+                                        ? "本次写卡授权已过期、已处理，或服务器暂时无法读取任务：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务。"
                                         : error instanceof Error &&
                                             error.message ===
-                                              "bridge_write_card_capacity_insufficient"
-                                          ? "当前卡片可用 NDEF 容量不足以写入正式车辆卡：请使用符合 NTAG216 容量要求的空白卡，勿用测试卡替代。"
+                                              "bridge_write_server_claim_failed"
+                                          ? "服务器未返回本次正式写卡载荷：当前卡没有开始写入。请关闭窗口后重新生成 PC 写卡任务；不要点击“仅回传确认”。"
                                           : error instanceof Error &&
                                               error.message ===
-                                                "bridge_write_user_area_read_failed"
-                                            ? "读取卡片 NDEF 用户区失败：请保持卡片稳定停留在感应区，并确认不是低容量或受保护卡。"
+                                                "bridge_write_server_confirm_retryable"
+                                            ? "本机写入回读已完成，但服务端确认暂未返回：请保持卡片和桥接程序不变，只点击“仅回传确认（不写卡）”，不得再次写入。"
                                             : error instanceof Error &&
                                                 error.message ===
-                                                  "bridge_write_user_area_write_failed"
-                                              ? "写入卡片 NDEF 用户区失败：请确认卡片未被写保护，并保持卡片稳定停留在感应区后重新生成任务。"
+                                                  "bridge_write_reader_connection_failed"
+                                              ? "正式写卡时读卡器连接中断：请保持卡片在 uTrust 感应区，关闭其他读卡程序后重新生成任务。"
                                               : error instanceof Error &&
                                                   error.message ===
-                                                    "bridge_write_post_write_mismatch"
-                                                ? "卡片写入后逐字节回读不一致：请保持卡片不动并停止操作，不要再次写入。"
+                                                    "bridge_write_card_capacity_insufficient"
+                                                ? "当前卡片可用 NDEF 容量不足以写入正式车辆卡：请使用符合 NTAG216 容量要求的空白卡，勿用测试卡替代。"
                                                 : error instanceof Error &&
                                                     error.message ===
-                                                      "bridge_write_ndef_cc_invalid"
-                                                  ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
+                                                      "bridge_write_user_area_read_failed"
+                                                  ? "读取卡片 NDEF 用户区失败：请保持卡片稳定停留在感应区，并确认不是低容量或受保护卡。"
                                                   : error instanceof Error &&
                                                       error.message ===
-                                                        "bridge_write_no_diagnostic_result"
-                                                    ? "本机写卡器未返回可诊断结果：请保持卡片在感应区，关闭后重新启动 Windows 桥接程序后再生成新任务。"
+                                                        "bridge_write_user_area_write_failed"
+                                                    ? "写入卡片 NDEF 用户区失败：请确认卡片未被写保护，并保持卡片稳定停留在感应区后重新生成任务。"
                                                     : error instanceof Error &&
                                                         error.message ===
-                                                          "bridge_write_writer_load_failed"
-                                                      ? "本机正式写卡器源码未能加载或编译：当前卡没有开始写入。请更新写卡器文件并重启桥接后再生成任务。"
+                                                          "bridge_write_post_write_mismatch"
+                                                      ? "卡片写入后逐字节回读不一致：请保持卡片不动并停止操作，不要再次写入。"
                                                       : error instanceof
                                                             Error &&
                                                           error.message ===
-                                                            "bridge_write_prepare_failed"
-                                                        ? "正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入。请保留任务号并停止重试。"
+                                                            "bridge_write_ndef_cc_invalid"
+                                                        ? "当前卡片未识别到有效 NDEF 能力容器：请使用符合 NTAG216 要求的空白 NFC 卡。"
                                                         : error instanceof
                                                               Error &&
                                                             error.message ===
-                                                              "bridge_write_uid_read_failed"
-                                                          ? "本机未能稳定读取当前车辆卡 UID：当前卡没有开始写入。请保持卡片在感应区并关闭其他读卡程序。"
+                                                              "bridge_write_no_diagnostic_result"
+                                                          ? "本机写卡器未返回可诊断结果：请保持卡片在感应区，关闭后重新启动 Windows 桥接程序后再生成新任务。"
                                                           : error instanceof
                                                                 Error &&
                                                               error.message ===
-                                                                "bridge_write_writer_execution_failed"
-                                                            ? "本机调用正式写卡器失败：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                                                                "bridge_write_writer_load_failed"
+                                                            ? "本机正式写卡器源码未能加载或编译：当前卡没有开始写入。请更新写卡器文件并重启桥接后再生成任务。"
                                                             : error instanceof
                                                                   Error &&
                                                                 error.message ===
-                                                                  "bridge_write_writer_result_invalid"
-                                                              ? "本机写卡器返回结果不完整：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                                                                  "bridge_write_prepare_failed"
+                                                              ? "正式车辆卡载荷在本机写入前准备校验失败：当前卡没有开始写入。请保留任务号并停止重试。"
                                                               : error instanceof
                                                                     Error &&
                                                                   error.message ===
-                                                                    "bridge_write_confirmation_receipt_failed"
-                                                                ? "卡片写入回读后，本机短时确认收据保存失败：请保持卡片和桥接不变，停止再次写入。"
-                                                                : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
+                                                                    "bridge_write_uid_read_failed"
+                                                                ? "本机未能稳定读取当前车辆卡 UID：当前卡没有开始写入。请保持卡片在感应区并关闭其他读卡程序。"
+                                                                : error instanceof
+                                                                      Error &&
+                                                                    error.message ===
+                                                                      "bridge_write_writer_execution_failed"
+                                                                  ? "本机调用正式写卡器失败：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                                                                  : error instanceof
+                                                                        Error &&
+                                                                      error.message ===
+                                                                        "bridge_write_writer_result_invalid"
+                                                                    ? "本机写卡器返回结果不完整：当前卡未通过写入确认。请停止重试并读取最近一次受控失败阶段。"
+                                                                    : error instanceof
+                                                                          Error &&
+                                                                        error.message ===
+                                                                          "bridge_write_confirmation_receipt_failed"
+                                                                      ? "卡片写入回读后，本机短时确认收据保存失败：请保持卡片和桥接不变，停止再次写入。"
+                                                                      : "本机写卡未通过写入或回读校验：请保持车辆卡在感应区，确认后重新生成任务再重试。";
       toast.error(message);
     } finally {
       window.clearTimeout(timeoutId);
@@ -7503,7 +7522,11 @@ export default function AdminPage({
   };
 
   const renderVehicles = () => (
-    <Suspense fallback={<p className="rounded-xl bg-muted p-4 text-sm">正在加载车辆管理…</p>}>
+    <Suspense
+      fallback={
+        <p className="rounded-xl bg-muted p-4 text-sm">正在加载车辆管理…</p>
+      }
+    >
       <VehicleManagementWorkspace
         projects={projects.data ?? []}
         organizations={organizations.data ?? []}
@@ -15149,8 +15172,8 @@ export default function AdminPage({
                   canCreate={rights?.canCreateSettlement ?? false}
                   canApprove={rights?.canSettle ?? false}
                   focusTrip={transportSettlementFocusTrip}
-                 onDirtyChange={onTransportSettlementDirtyChange}
-/>
+                  onDirtyChange={onTransportSettlementDirtyChange}
+                />
               </Suspense>
             </TransportRetainedPanel>
             <TransportRetainedPanel
@@ -15424,7 +15447,7 @@ export default function AdminPage({
                     换电脑首次使用写卡器
                   </p>
                   <p className="mt-0.5 text-xs text-slate-600">
-                    下载并解压后，双击“安装写卡桥接.cmd”，在系统权限窗口选择“是”。无需手动输入
+                    下载并解压后，双击“Install-Yuexin-RFID-Bridge.cmd”（旧包可能显示“安装写卡桥接.cmd”），在系统权限窗口选择“是”。无需手动输入
                     PowerShell 命令；脚本会检查
                     Windows、读卡器组件和桥接版本，完成后登录 Windows
                     自动启动本机桥接。
@@ -15799,7 +15822,13 @@ export default function AdminPage({
         <Dialog
           open={Boolean(rfidWritePreview)}
           onOpenChange={open => {
-            if (!open) setRfidWritePreview(null);
+            if (
+              !open &&
+              !writingRfidCard &&
+              !retryingRfidCardConfirmation &&
+              !checkingRfidBridgeReadiness
+            )
+              setRfidWritePreview(null);
           }}
         >
           <DialogContent className="w-[calc(100vw-3rem)] max-w-4xl xl:max-w-5xl">
@@ -15817,22 +15846,32 @@ export default function AdminPage({
               </DialogDescription>
             </DialogHeader>
             {rfidWritePreview?.hardwareMode === "pc_bridge" ? (
-              <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950">
-                <p className="font-semibold">将卡片放在读卡器感应区后开始。</p>
-                <p className="mt-1 text-xs">
-                  不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。
-                </p>
-                <p className="mt-2 text-xs">
-                  若已完成写入和回读但确认暂未返回，可在当前任务有效期内使用“仅回传确认”；该操作不再次写入
-                  NDEF，只会提交本机 DPAPI 加密短时收据。
-                </p>
-                <p className="mt-2 text-xs">
-                  更换电脑后必须在新电脑启动 Windows
-                  桥接程序并允许本站访问本机设备。手机不能连接此 Windows
-                  本机桥接；手机端请使用 Android Chrome 的 Web NFC 入口，或使用
-                  OTG 键盘式读卡器输出 UID。
-                </p>
-              </div>
+              <>
+                <RfidBridgeReadinessPanel
+                  result={rfidBridgeReadiness}
+                  checking={checkingRfidBridgeReadiness}
+                  disabled={writingRfidCard || retryingRfidCardConfirmation}
+                  onCheck={() => void checkRfidBridgeReadiness()}
+                />
+                <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm leading-6 text-cyan-950">
+                  <p className="font-semibold">
+                    将卡片放在读卡器感应区后开始。
+                  </p>
+                  <p className="mt-1 text-xs">
+                    不会向浏览器或桥接暴露签名密钥、可编辑载荷或写保护口令；写入失败会记录原因，不能被手工标记成功。
+                  </p>
+                  <p className="mt-2 text-xs">
+                    若已完成写入和回读但确认暂未返回，可在当前任务有效期内使用“仅回传确认”；该操作不再次写入
+                    NDEF，只会提交本机 DPAPI 加密短时收据。
+                  </p>
+                  <p className="mt-2 text-xs">
+                    更换电脑后必须在新电脑启动 Windows
+                    桥接程序并允许本站访问本机设备。手机不能连接此 Windows
+                    本机桥接；手机端请使用 Android Chrome 的 Web NFC
+                    入口，或使用 OTG 键盘式读卡器输出 UID。
+                  </p>
+                </div>
+              </>
             ) : (
               <pre className="max-h-[45vh] overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-100">
                 {rfidWritePreview
@@ -15875,7 +15914,11 @@ export default function AdminPage({
                   </Button>
                   <Button
                     onClick={() => void writeRfidCardWithBridge()}
-                    disabled={writingRfidCard || retryingRfidCardConfirmation}
+                    disabled={
+                      writingRfidCard ||
+                      retryingRfidCardConfirmation ||
+                      checkingRfidBridgeReadiness
+                    }
                   >
                     {writingRfidCard ? "正在写入并回读…" : "写入并回读确认"}
                   </Button>

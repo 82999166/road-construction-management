@@ -7,6 +7,9 @@ const readSource = (path: Parameters<typeof readFileSync>[0]) =>
     .replace(/\s+\)/g, ")")
     .replace(/,\s*}/g, " }");
 
+const readinessSource = readSource(
+  new URL("../lib/rfidBridgeReadiness.ts", import.meta.url)
+);
 describe("管理端 PC uTrust 正式写卡", () => {
   it("生成桥接任务后不展示可编辑正式载荷，只允许本机完成写入回读确认", () => {
     const source = readSource(
@@ -20,19 +23,34 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("当前 Windows 桥接程序未安装正式车辆卡写入接口");
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
-    expect(source).toContain(
-      'const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13"'
+    expect(readinessSource).toContain(
+      'export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13"'
     );
-    expect(source).toContain(
-      'const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20261101-progress-v13"'
+    expect(readinessSource).toContain(
+      'export const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20261101-progress-v13"'
     );
-    expect(source).toContain('fetch("http://127.0.0.1:47601/health"');
-    expect(source).toContain(
-      "healthResult.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION"
+    expect(readinessSource).toContain('fetch("http://127.0.0.1:47601/ready"');
+    expect(readinessSource).toContain('fetch("http://127.0.0.1:47601/health"');
+    expect(readinessSource).toContain(
+      "metadata.bridgeVersion !== REQUIRED_RFID_BRIDGE_VERSION"
     );
-    expect(source).toContain(
-      "healthResult.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID"
+    expect(readinessSource).toContain(
+      "metadata.bridgeBuildId !== REQUIRED_RFID_BRIDGE_BUILD_ID"
     );
+    const writeFlow = source.slice(
+      source.indexOf("const writeRfidCardWithBridge"),
+      source.indexOf("const confirmRfidCardWithBridgeReceipt")
+    );
+    expect(
+      writeFlow.indexOf("await readRfidBridgeReadiness(controller.signal)")
+    ).toBeLessThan(
+      writeFlow.indexOf("http://127.0.0.1:47601/api/write-vehicle-card")
+    );
+    expect(writeFlow).toContain(
+      'if (readiness.status !== "ready") throw new Error("bridge_write_version_mismatch")'
+    );
+    expect(source).toContain("bridge_write_writer_version_mismatch");
+    expect(source).toContain("RfidBridgeReadinessPanel");
     expect(source).toContain("bridge_write_version_mismatch");
     expect(source).toContain(
       "当前 Windows 桥接程序的版本或构建标识不符合正式写卡要求，已在写卡前停止操作"
@@ -59,8 +77,8 @@ describe("管理端 PC uTrust 正式写卡", () => {
     );
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
-    expect(source).toContain(
-      'const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip"'
+    expect(readinessSource).toContain(
+      'export const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip"'
     );
     expect(source).toContain("安装写卡桥接.cmd");
     expect(source).toContain("下载一键安装包");
