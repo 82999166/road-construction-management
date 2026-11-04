@@ -20,29 +20,41 @@ import {
  * 基础用户表由 Manus OAuth 登录流程维护。
  * `role` 仅保存模板级管理员标记；实际业务权限由角色分配表管理。
  */
-export const users = mysqlTable("users", {
-  id: int("id").autoincrement().primaryKey(),
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  /** 仅后台创建的普通本地账号使用；OAuth 用户保持为 null。 */
-  localUsername: varchar("localUsername", { length: 64 }),
-  /** 使用 scrypt 生成的不可逆口令摘要，绝不向客户端或审计日志返回。 */
-  localPasswordHash: varchar("localPasswordHash", { length: 256 }),
-  /** 停用后服务端会拒绝该本地账号的所有后续会话请求。 */
-  localAccountStatus: mysqlEnum("localAccountStatus", ["active", "disabled"]).default("active").notNull(),
-  /** 后台创建的本地管理人员可被限制为仅 PC、仅手机或双端登录；OAuth 身份保持双端兼容。 */
-  localLoginMode: mysqlEnum("localLoginMode", ["pc", "mobile", "both"]).default("both").notNull(),
-  /** 兼容旧账号资料的历史字段；当前本地账号不再强制首次登录改密。 */
-  localPasswordChangeRequired: boolean("localPasswordChangeRequired").default(false).notNull(),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-}, table => ({
-  localUsernameUnique: uniqueIndex("users_local_username_unique").on(table.localUsername),
-}));
+export const users = mysqlTable(
+  "users",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    openId: varchar("openId", { length: 64 }).notNull().unique(),
+    name: text("name"),
+    email: varchar("email", { length: 320 }),
+    loginMethod: varchar("loginMethod", { length: 64 }),
+    /** 仅后台创建的普通本地账号使用；OAuth 用户保持为 null。 */
+    localUsername: varchar("localUsername", { length: 64 }),
+    /** 使用 scrypt 生成的不可逆口令摘要，绝不向客户端或审计日志返回。 */
+    localPasswordHash: varchar("localPasswordHash", { length: 256 }),
+    /** 停用后服务端会拒绝该本地账号的所有后续会话请求。 */
+    localAccountStatus: mysqlEnum("localAccountStatus", ["active", "disabled"])
+      .default("active")
+      .notNull(),
+    /** 后台创建的本地管理人员可被限制为仅 PC、仅手机或双端登录；OAuth 身份保持双端兼容。 */
+    localLoginMode: mysqlEnum("localLoginMode", ["pc", "mobile", "both"])
+      .default("both")
+      .notNull(),
+    /** 兼容旧账号资料的历史字段；当前本地账号不再强制首次登录改密。 */
+    localPasswordChangeRequired: boolean("localPasswordChangeRequired")
+      .default(false)
+      .notNull(),
+    role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  },
+  table => ({
+    localUsernameUnique: uniqueIndex("users_local_username_unique").on(
+      table.localUsername
+    ),
+  })
+);
 
 /** 可维护的组织树，支持集团、公司、项目部、部门和班组等节点。 */
 export const organizations = mysqlTable(
@@ -52,18 +64,26 @@ export const organizations = mysqlTable(
     parentId: int("parentId"),
     code: varchar("code", { length: 64 }).notNull(),
     name: varchar("name", { length: 128 }).notNull(),
-    type: mysqlEnum("type", ["group", "company", "project_department", "department", "team"]).notNull(),
+    type: mysqlEnum("type", [
+      "group",
+      "company",
+      "project_department",
+      "department",
+      "team",
+    ]).notNull(),
     managerUserId: int("managerUserId"),
     costCenterCode: varchar("costCenterCode", { length: 64 }),
     sortOrder: int("sortOrder").default(0).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
     codeUnique: uniqueIndex("organizations_code_unique").on(table.code),
     parentIndex: index("organizations_parent_index").on(table.parentId),
-  }),
+  })
 );
 
 /** 岗位字典决定可被授予的业务职责，不直接等同于系统权限。 */
@@ -75,11 +95,13 @@ export const positions = mysqlTable(
     name: varchar("name", { length: 128 }).notNull(),
     category: varchar("category", { length: 64 }).notNull(),
     description: text("description"),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ codeUnique: uniqueIndex("positions_code_unique").on(table.code) }),
+  table => ({ codeUnique: uniqueIndex("positions_code_unique").on(table.code) })
 );
 
 /** 项目及其可配置的层级树，例如项目、标段、工区、单位工程与作业面。 */
@@ -92,8 +114,21 @@ export const projects = mysqlTable(
     code: varchar("code", { length: 64 }).notNull(),
     name: varchar("name", { length: 200 }).notNull(),
     nodeType: varchar("nodeType", { length: 64 }).notNull(),
-    projectType: mysqlEnum("projectType", ["highway", "railway", "municipal", "other"]),
-    status: mysqlEnum("status", ["planning", "active", "suspended", "completed", "archived"]).default("planning").notNull(),
+    projectType: mysqlEnum("projectType", [
+      "highway",
+      "railway",
+      "municipal",
+      "other",
+    ]),
+    status: mysqlEnum("status", [
+      "planning",
+      "active",
+      "suspended",
+      "completed",
+      "archived",
+    ])
+      .default("planning")
+      .notNull(),
     startDate: date("startDate"),
     endDate: date("endDate"),
     costCenterCode: varchar("costCenterCode", { length: 64 }),
@@ -104,7 +139,7 @@ export const projects = mysqlTable(
   table => ({
     codeUnique: uniqueIndex("projects_code_unique").on(table.code),
     parentIndex: index("projects_parent_index").on(table.parentId),
-  }),
+  })
 );
 
 /** 登录用户与企业员工档案的映射。 */
@@ -121,14 +156,18 @@ export const userProfiles = mysqlTable(
     bankName: varchar("bankName", { length: 128 }),
     organizationId: int("organizationId"),
     positionId: int("positionId"),
-    status: mysqlEnum("status", ["pending", "active", "disabled"]).default("pending").notNull(),
+    status: mysqlEnum("status", ["pending", "active", "disabled"])
+      .default("pending")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
     userUnique: uniqueIndex("user_profiles_user_unique").on(table.userId),
-    phoneFingerprintUnique: uniqueIndex("user_profiles_phone_fingerprint_unique").on(table.phoneFingerprint),
-  }),
+    phoneFingerprintUnique: uniqueIndex(
+      "user_profiles_phone_fingerprint_unique"
+    ).on(table.phoneFingerprint),
+  })
 );
 
 /** 系统角色，可由 PC 超级管理后台维护。 */
@@ -138,14 +177,20 @@ export const systemRoles = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     code: varchar("code", { length: 64 }).notNull(),
     name: varchar("name", { length: 128 }).notNull(),
-    category: mysqlEnum("category", ["system", "business"]).default("business").notNull(),
+    category: mysqlEnum("category", ["system", "business"])
+      .default("business")
+      .notNull(),
     description: text("description"),
     isSystem: boolean("isSystem").default(false).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ codeUnique: uniqueIndex("system_roles_code_unique").on(table.code) }),
+  table => ({
+    codeUnique: uniqueIndex("system_roles_code_unique").on(table.code),
+  })
 );
 
 /** 权限点拆分至菜单、按钮和数据维度，以支持最小授权。 */
@@ -160,7 +205,9 @@ export const systemPermissions = mysqlTable(
     description: text("description"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ codeUnique: uniqueIndex("system_permissions_code_unique").on(table.code) }),
+  table => ({
+    codeUnique: uniqueIndex("system_permissions_code_unique").on(table.code),
+  })
 );
 
 /** 角色与权限的多对多授权关系。 */
@@ -172,7 +219,12 @@ export const rolePermissions = mysqlTable(
     permissionId: int("permissionId").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ rolePermissionUnique: uniqueIndex("role_permissions_unique").on(table.roleId, table.permissionId) }),
+  table => ({
+    rolePermissionUnique: uniqueIndex("role_permissions_unique").on(
+      table.roleId,
+      table.permissionId
+    ),
+  })
 );
 
 /** 用户专属操作权限；某业务模块存在专属权限时，该模块以用户授权覆盖角色权限，仍受部门与项目范围约束。 */
@@ -187,9 +239,12 @@ export const userPermissions = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    userPermissionUnique: uniqueIndex("user_permissions_unique").on(table.userId, table.permissionId),
+    userPermissionUnique: uniqueIndex("user_permissions_unique").on(
+      table.userId,
+      table.permissionId
+    ),
     userIndex: index("user_permissions_user_index").on(table.userId),
-  }),
+  })
 );
 
 /** 用户的角色授权，同时约束项目/组织数据范围及有效期。 */
@@ -203,7 +258,9 @@ export const userRoleAssignments = mysqlTable(
     projectId: int("projectId"),
     validFrom: datetime("validFrom"),
     validTo: datetime("validTo"),
-    status: mysqlEnum("status", ["active", "revoked", "expired"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "revoked", "expired"])
+      .default("active")
+      .notNull(),
     grantedBy: int("grantedBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -211,7 +268,7 @@ export const userRoleAssignments = mysqlTable(
   table => ({
     userIndex: index("user_role_assignments_user_index").on(table.userId),
     roleIndex: index("user_role_assignments_role_index").on(table.roleId),
-  }),
+  })
 );
 
 /**
@@ -225,18 +282,40 @@ export const departmentBusinessScopes = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     organizationId: int("organizationId"),
     projectId: int("projectId"),
-    module: mysqlEnum("module", ["CONSTRUCTION", "LABOR", "MACHINERY", "TRANSPORT", "PURCHASING", "MEASUREMENT", "CONTRACT", "FINANCE", "DIESEL", "EVIDENCE"]).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    module: mysqlEnum("module", [
+      "CONSTRUCTION",
+      "LABOR",
+      "MACHINERY",
+      "TRANSPORT",
+      "PURCHASING",
+      "MEASUREMENT",
+      "CONTRACT",
+      "FINANCE",
+      "DIESEL",
+      "EVIDENCE",
+    ]).notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     configuredBy: int("configuredBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    departmentModuleUnique: uniqueIndex("department_business_scopes_unique").on(table.organizationId, table.module),
-    organizationIndex: index("department_business_scopes_organization_index").on(table.organizationId),
-    projectModuleUnique: uniqueIndex("department_business_scopes_project_module_unique").on(table.projectId, table.module),
-    projectIndex: index("department_business_scopes_project_index").on(table.projectId),
-  }),
+    departmentModuleUnique: uniqueIndex("department_business_scopes_unique").on(
+      table.organizationId,
+      table.module
+    ),
+    organizationIndex: index(
+      "department_business_scopes_organization_index"
+    ).on(table.organizationId),
+    projectModuleUnique: uniqueIndex(
+      "department_business_scopes_project_module_unique"
+    ).on(table.projectId, table.module),
+    projectIndex: index("department_business_scopes_project_index").on(
+      table.projectId
+    ),
+  })
 );
 
 /** 所有外部接口、业务参数和消息模板的统一配置表。敏感值只保存密文。 */
@@ -251,7 +330,9 @@ export const systemSettings = mysqlTable(
     secretEncrypted: text("secretEncrypted"),
     valuePreview: varchar("valuePreview", { length: 256 }),
     isSensitive: boolean("isSensitive").default(false).notNull(),
-    status: mysqlEnum("status", ["draft", "published", "disabled"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "published", "disabled"])
+      .default("draft")
+      .notNull(),
     version: int("version").default(1).notNull(),
     updatedBy: int("updatedBy"),
     publishedAt: datetime("publishedAt"),
@@ -259,14 +340,24 @@ export const systemSettings = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ settingKeyUnique: uniqueIndex("system_settings_key_unique").on(table.settingKey) }),
+  table => ({
+    settingKeyUnique: uniqueIndex("system_settings_key_unique").on(
+      table.settingKey
+    ),
+  })
 );
 
 /** 配置发布记录用于回滚、双人复核和审计追溯。 */
 export const configPublishLogs = mysqlTable("config_publish_logs", {
   id: int("id").autoincrement().primaryKey(),
   settingId: int("settingId").notNull(),
-  operation: mysqlEnum("operation", ["create", "update", "publish", "disable", "rollback"]).notNull(),
+  operation: mysqlEnum("operation", [
+    "create",
+    "update",
+    "publish",
+    "disable",
+    "rollback",
+  ]).notNull(),
   version: int("version").notNull(),
   operatorId: int("operatorId").notNull(),
   reviewerId: int("reviewerId"),
@@ -290,7 +381,12 @@ export const auditLogs = mysqlTable(
     ipAddress: varchar("ipAddress", { length: 64 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ moduleIndex: index("audit_logs_module_index").on(table.module, table.createdAt) }),
+  table => ({
+    moduleIndex: index("audit_logs_module_index").on(
+      table.module,
+      table.createdAt
+    ),
+  })
 );
 
 /**
@@ -311,9 +407,14 @@ export const loginRateLimitStates = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    scopeSubjectUnique: uniqueIndex("login_rate_limit_scope_subject_unique").on(table.scope, table.subjectHash),
-    lockedUntilIndex: index("login_rate_limit_locked_until_index").on(table.lockedUntil),
-  }),
+    scopeSubjectUnique: uniqueIndex("login_rate_limit_scope_subject_unique").on(
+      table.scope,
+      table.subjectHash
+    ),
+    lockedUntilIndex: index("login_rate_limit_locked_until_index").on(
+      table.lockedUntil
+    ),
+  })
 );
 
 /**
@@ -327,31 +428,44 @@ export const sensitiveDataAccessLogs = mysqlTable(
     userId: int("userId").notNull(),
     projectId: int("projectId"),
     module: varchar("module", { length: 64 }).notNull(),
-    dataCategory: mysqlEnum("dataCategory", ["full_payment_account", "raw_location_coordinate", "identity_document", "other"]).notNull(),
+    dataCategory: mysqlEnum("dataCategory", [
+      "full_payment_account",
+      "raw_location_coordinate",
+      "identity_document",
+      "other",
+    ]).notNull(),
     accessPurpose: varchar("accessPurpose", { length: 300 }).notNull(),
     targetType: varchar("targetType", { length: 64 }),
     targetId: varchar("targetId", { length: 128 }),
     recordCount: int("recordCount").default(0).notNull(),
-    result: mysqlEnum("result", ["granted", "denied", "exported", "reviewed"]).default("granted").notNull(),
+    result: mysqlEnum("result", ["granted", "denied", "exported", "reviewed"])
+      .default("granted")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    userTimeIndex: index("sensitive_data_access_logs_user_time_index").on(table.userId, table.createdAt),
-    projectCategoryTimeIndex: index("sensitive_data_access_logs_project_category_time_index").on(table.projectId, table.dataCategory, table.createdAt),
-    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "sensitive_data_access_logs_user_fk" }).onDelete("restrict"),
-  }),
+    userTimeIndex: index("sensitive_data_access_logs_user_time_index").on(
+      table.userId,
+      table.createdAt
+    ),
+    projectCategoryTimeIndex: index(
+      "sensitive_data_access_logs_project_category_time_index"
+    ).on(table.projectId, table.dataCategory, table.createdAt),
+    userFk: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "sensitive_data_access_logs_user_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /** 追加式审计链的单行状态；数据库触发器在每条审计日志写入时原子推进，不允许业务端更新。 */
-export const auditLogChainState = mysqlTable(
-  "audit_log_chain_state",
-  {
-    id: int("id").primaryKey(),
-    lastSequence: bigint("lastSequence", { mode: "number" }).default(0).notNull(),
-    lastHash: varchar("lastHash", { length: 64 }).notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  },
-);
+export const auditLogChainState = mysqlTable("audit_log_chain_state", {
+  id: int("id").primaryKey(),
+  lastSequence: bigint("lastSequence", { mode: "number" }).default(0).notNull(),
+  lastHash: varchar("lastHash", { length: 64 }).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
 
 /** 每条业务审计日志的前序哈希和当前哈希；与日志主表保持一对一，支持后续校验与异常告警。 */
 export const auditLogIntegrityEvents = mysqlTable(
@@ -362,15 +476,27 @@ export const auditLogIntegrityEvents = mysqlTable(
     sequenceNo: bigint("sequenceNo", { mode: "number" }).notNull(),
     previousHash: varchar("previousHash", { length: 64 }).notNull(),
     entryHash: varchar("entryHash", { length: 64 }).notNull(),
-    integrityVersion: varchar("integrityVersion", { length: 32 }).default("audit-chain-v1").notNull(),
+    integrityVersion: varchar("integrityVersion", { length: 32 })
+      .default("audit-chain-v1")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    auditLogUnique: uniqueIndex("audit_log_integrity_events_log_unique").on(table.auditLogId),
-    sequenceUnique: uniqueIndex("audit_log_integrity_events_sequence_unique").on(table.sequenceNo),
-    entryHashUnique: uniqueIndex("audit_log_integrity_events_hash_unique").on(table.entryHash),
-    auditLogFk: foreignKey({ columns: [table.auditLogId], foreignColumns: [auditLogs.id], name: "audit_log_integrity_events_log_fk" }).onDelete("restrict"),
-  }),
+    auditLogUnique: uniqueIndex("audit_log_integrity_events_log_unique").on(
+      table.auditLogId
+    ),
+    sequenceUnique: uniqueIndex(
+      "audit_log_integrity_events_sequence_unique"
+    ).on(table.sequenceNo),
+    entryHashUnique: uniqueIndex("audit_log_integrity_events_hash_unique").on(
+      table.entryHash
+    ),
+    auditLogFk: foreignKey({
+      columns: [table.auditLogId],
+      foreignColumns: [auditLogs.id],
+      name: "audit_log_integrity_events_log_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -391,8 +517,10 @@ export const dataBackups = mysqlTable(
   },
   table => ({
     createdAtIndex: index("data_backups_created_at_index").on(table.createdAt),
-    fileKeyUnique: uniqueIndex("data_backups_file_key_unique").on(table.fileKey),
-  }),
+    fileKeyUnique: uniqueIndex("data_backups_file_key_unique").on(
+      table.fileKey
+    ),
+  })
 );
 
 /**
@@ -406,13 +534,32 @@ export const constructionDailyReports = mysqlTable(
     projectId: int("projectId").notNull(),
     reportDate: date("reportDate").notNull(),
     workArea: varchar("workArea", { length: 200 }).notNull(),
-    weather: mysqlEnum("weather", ["sunny", "cloudy", "rainy", "snowy", "windy", "other"]).default("other").notNull(),
+    weather: mysqlEnum("weather", [
+      "sunny",
+      "cloudy",
+      "rainy",
+      "snowy",
+      "windy",
+      "other",
+    ])
+      .default("other")
+      .notNull(),
     workContent: text("workContent").notNull(),
     safetyNotes: varchar("safetyNotes", { length: 1000 }),
     issueNotes: varchar("issueNotes", { length: 1000 }),
     /** 由现场管理人员申报的累计完成比例，范围由服务端校验为 0 至 100。 */
-    progressPercent: decimal("progressPercent", { precision: 5, scale: 2 }).default("0").notNull(),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "rejected", "locked"]).default("draft").notNull(),
+    progressPercent: decimal("progressPercent", { precision: 5, scale: 2 })
+      .default("0")
+      .notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "rejected",
+      "locked",
+    ])
+      .default("draft")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     /** 主管审核时填写的回复，确认通过或退回后与审核人、审核时间共同固化。 */
     reviewReply: varchar("reviewReply", { length: 1000 }),
@@ -422,10 +569,17 @@ export const constructionDailyReports = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectDateIndex: index("construction_daily_reports_project_date_index").on(table.projectId, table.reportDate),
-    projectSubmitterDateIndex: index("construction_daily_reports_project_submitter_date_index").on(table.projectId, table.createdBy, table.reportDate),
-    projectStatusIndex: index("construction_daily_reports_project_status_index").on(table.projectId, table.status),
-  }),
+    projectDateIndex: index("construction_daily_reports_project_date_index").on(
+      table.projectId,
+      table.reportDate
+    ),
+    projectSubmitterDateIndex: index(
+      "construction_daily_reports_project_submitter_date_index"
+    ).on(table.projectId, table.createdBy, table.reportDate),
+    projectStatusIndex: index(
+      "construction_daily_reports_project_status_index"
+    ).on(table.projectId, table.status),
+  })
 );
 
 /** 统一消息投递记录；历史企业微信记录仅保留审计，新业务只写入公众号或站内通道。 */
@@ -439,17 +593,35 @@ export const notificationRecords = mysqlTable(
     title: varchar("title", { length: 200 }).notNull(),
     content: text("content").notNull(),
     deepLink: varchar("deepLink", { length: 512 }),
-    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped", "read"]).default("pending").notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "sent",
+      "failed",
+      "skipped",
+      "read",
+    ])
+      .default("pending")
+      .notNull(),
     retryCount: int("retryCount").default(0).notNull(),
     sentAt: datetime("sentAt"),
     readAt: datetime("readAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
-    channel: mysqlEnum("channel", ["legacy_wecom", "official_account", "in_app"]).default("legacy_wecom").notNull(),
+    channel: mysqlEnum("channel", [
+      "legacy_wecom",
+      "official_account",
+      "in_app",
+    ])
+      .default("legacy_wecom")
+      .notNull(),
     providerMessageId: varchar("providerMessageId", { length: 128 }),
     failureCode: varchar("failureCode", { length: 64 }),
     lastAttemptedAt: datetime("lastAttemptedAt"),
   },
-  table => ({ idempotencyUnique: uniqueIndex("notification_idempotency_unique").on(table.idempotencyKey) }),
+  table => ({
+    idempotencyUnique: uniqueIndex("notification_idempotency_unique").on(
+      table.idempotencyKey
+    ),
+  })
 );
 
 /** 项目级风险规则；阈值由超级管理员维护，扫描结果始终保存实际计算口径。 */
@@ -460,27 +632,49 @@ export const projectRiskRules = mysqlTable(
     projectId: int("projectId").notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     /** 单次加油量超过核定油箱容量的比例即预警，例如 1.10 表示超过 110%。 */
-    maxFuelFillRatio: decimal("maxFuelFillRatio", { precision: 6, scale: 3 }).default("1.100").notNull(),
+    maxFuelFillRatio: decimal("maxFuelFillRatio", { precision: 6, scale: 3 })
+      .default("1.100")
+      .notNull(),
     /** 运输完成的平均速度超过该阈值即提示核验，避免只根据主观时长判断。 */
-    maxTransportSpeedKmh: decimal("maxTransportSpeedKmh", { precision: 8, scale: 2 }).default("80.00").notNull(),
+    maxTransportSpeedKmh: decimal("maxTransportSpeedKmh", {
+      precision: 8,
+      scale: 2,
+    })
+      .default("80.00")
+      .notNull(),
     /** 实际距离不小于 2 km 且运输耗时高于该值，标记为异常滞留待核验。 */
-    maxTransportDurationMinutes: int("maxTransportDurationMinutes").default(360).notNull(),
+    maxTransportDurationMinutes: int("maxTransportDurationMinutes")
+      .default(360)
+      .notNull(),
     /** 已上班但超过该小时数未下班打卡，标记为考勤闭环异常。 */
     maxOpenCheckInHours: int("maxOpenCheckInHours").default(14).notNull(),
     /** 施工日报草稿、退回或逾期未审核超过该小时数，标记为施工管理待办。 */
     maxPendingReportHours: int("maxPendingReportHours").default(24).notNull(),
     /** 是否启用每日整改逾期升级；由平台 Heartbeat 调用，禁止以进程内定时器实现。 */
-    overdueEscalationEnabled: boolean("overdueEscalationEnabled").default(false).notNull(),
+    overdueEscalationEnabled: boolean("overdueEscalationEnabled")
+      .default(false)
+      .notNull(),
     /** 中国标准时间的每日升级检查小时（0-23），转换为 Heartbeat UTC cron 后持久化运行。 */
-    overdueEscalationHourChina: int("overdueEscalationHourChina").default(9).notNull(),
+    overdueEscalationHourChina: int("overdueEscalationHourChina")
+      .default(9)
+      .notNull(),
     /** Heartbeat 平台任务 UID，仅由受认证的调度创建/更新流程写入。 */
-    overdueEscalationCronTaskUid: varchar("overdueEscalationCronTaskUid", { length: 65 }),
+    overdueEscalationCronTaskUid: varchar("overdueEscalationCronTaskUid", {
+      length: 65,
+    }),
     createdBy: int("createdBy"),
     updatedBy: int("updatedBy"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectUnique: uniqueIndex("project_risk_rules_project_unique").on(table.projectId), overdueCronTaskIndex: index("project_risk_rules_overdue_cron_task_index").on(table.overdueEscalationCronTaskUid) }),
+  table => ({
+    projectUnique: uniqueIndex("project_risk_rules_project_unique").on(
+      table.projectId
+    ),
+    overdueCronTaskIndex: index(
+      "project_risk_rules_overdue_cron_task_index"
+    ).on(table.overdueEscalationCronTaskUid),
+  })
 );
 
 /** 确定性风险检测结果；仅保存业务编号、数值口径与处置，不复制敏感原始资料。 */
@@ -490,8 +684,15 @@ export const projectRiskAlerts = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     businessDate: date("businessDate").notNull(),
-    category: mysqlEnum("category", ["construction", "attendance", "fuel", "transport"]).notNull(),
-    severity: mysqlEnum("severity", ["notice", "warning", "critical"]).default("warning").notNull(),
+    category: mysqlEnum("category", [
+      "construction",
+      "attendance",
+      "fuel",
+      "transport",
+    ]).notNull(),
+    severity: mysqlEnum("severity", ["notice", "warning", "critical"])
+      .default("warning")
+      .notNull(),
     ruleCode: varchar("ruleCode", { length: 64 }).notNull(),
     sourceType: varchar("sourceType", { length: 64 }).notNull(),
     sourceId: varchar("sourceId", { length: 128 }).notNull(),
@@ -499,7 +700,15 @@ export const projectRiskAlerts = mysqlTable(
     summary: varchar("summary", { length: 1000 }).notNull(),
     /** 仅保存数值、状态与业务编号，不保存姓名、手机号、身份证或设备指纹。 */
     evidenceJson: text("evidenceJson"),
-    status: mysqlEnum("status", ["open", "acknowledged", "in_rectification", "resolved", "ignored"]).default("open").notNull(),
+    status: mysqlEnum("status", [
+      "open",
+      "acknowledged",
+      "in_rectification",
+      "resolved",
+      "ignored",
+    ])
+      .default("open")
+      .notNull(),
     notifiedAt: datetime("notifiedAt"),
     /** 整改责任人必须处于本项目有效管理范围内；其姓名不复制到预警记录。 */
     assigneeUserId: int("assigneeUserId"),
@@ -521,10 +730,19 @@ export const projectRiskAlerts = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectRuleSourceDateUnique: uniqueIndex("project_risk_alerts_unique").on(table.projectId, table.ruleCode, table.sourceId, table.businessDate),
-    projectStatusDateIndex: index("project_risk_alerts_project_status_date_index").on(table.projectId, table.status, table.businessDate),
-    projectDueStatusIndex: index("project_risk_alerts_project_due_status_index").on(table.projectId, table.dueAt, table.status),
-  }),
+    projectRuleSourceDateUnique: uniqueIndex("project_risk_alerts_unique").on(
+      table.projectId,
+      table.ruleCode,
+      table.sourceId,
+      table.businessDate
+    ),
+    projectStatusDateIndex: index(
+      "project_risk_alerts_project_status_date_index"
+    ).on(table.projectId, table.status, table.businessDate),
+    projectDueStatusIndex: index(
+      "project_risk_alerts_project_due_status_index"
+    ).on(table.projectId, table.dueAt, table.status),
+  })
 );
 
 /** AI 仅使用脱敏的风险数量、类型与计算口径生成管理摘要，保留模型与输入快照供人工复核。 */
@@ -540,7 +758,13 @@ export const projectRiskBriefings = mysqlTable(
     generatedBy: int("generatedBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ projectPeriodIndex: index("project_risk_briefings_project_period_index").on(table.projectId, table.period, table.createdAt) }),
+  table => ({
+    projectPeriodIndex: index("project_risk_briefings_project_period_index").on(
+      table.projectId,
+      table.period,
+      table.createdAt
+    ),
+  })
 );
 
 /**
@@ -553,10 +777,14 @@ export const dailyProjectDigestSchedules = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     scopeKey: varchar("scopeKey", { length: 64 }).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
-    timezone: varchar("timezone", { length: 64 }).default("Asia/Shanghai").notNull(),
+    timezone: varchar("timezone", { length: 64 })
+      .default("Asia/Shanghai")
+      .notNull(),
     deliveryHour: int("deliveryHour").default(20).notNull(),
     deliveryMinute: int("deliveryMinute").default(0).notNull(),
-    includeEmptyProjects: boolean("includeEmptyProjects").default(false).notNull(),
+    includeEmptyProjects: boolean("includeEmptyProjects")
+      .default(false)
+      .notNull(),
     scheduleCronTaskUid: varchar("scheduleCronTaskUid", { length: 65 }),
     lastAttemptedAt: datetime("lastAttemptedAt"),
     lastSuccessfulBusinessDate: date("lastSuccessfulBusinessDate"),
@@ -567,9 +795,13 @@ export const dailyProjectDigestSchedules = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    scopeKeyUnique: uniqueIndex("daily_project_digest_schedules_scope_unique").on(table.scopeKey),
-    cronTaskUidIndex: index("daily_project_digest_schedules_task_uid_index").on(table.scheduleCronTaskUid),
-  }),
+    scopeKeyUnique: uniqueIndex(
+      "daily_project_digest_schedules_scope_unique"
+    ).on(table.scopeKey),
+    cronTaskUidIndex: index("daily_project_digest_schedules_task_uid_index").on(
+      table.scheduleCronTaskUid
+    ),
+  })
 );
 
 /** 每个项目、每个业务日的一份汇总运行快照，用于幂等、审计与失败复核。 */
@@ -580,7 +812,15 @@ export const dailyProjectDigestRuns = mysqlTable(
     scheduleId: int("scheduleId").notNull(),
     projectId: int("projectId").notNull(),
     businessDate: date("businessDate").notNull(),
-    status: mysqlEnum("status", ["pending", "completed", "partial", "skipped", "failed"]).default("pending").notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "completed",
+      "partial",
+      "skipped",
+      "failed",
+    ])
+      .default("pending")
+      .notNull(),
     summaryJson: text("summaryJson").notNull(),
     recipientCount: int("recipientCount").default(0).notNull(),
     deliveredCount: int("deliveredCount").default(0).notNull(),
@@ -590,9 +830,13 @@ export const dailyProjectDigestRuns = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    scheduleProjectDateUnique: uniqueIndex("daily_project_digest_runs_schedule_project_date_unique").on(table.scheduleId, table.projectId, table.businessDate),
-    scheduleDateIndex: index("daily_project_digest_runs_schedule_date_index").on(table.scheduleId, table.businessDate),
-  }),
+    scheduleProjectDateUnique: uniqueIndex(
+      "daily_project_digest_runs_schedule_project_date_unique"
+    ).on(table.scheduleId, table.projectId, table.businessDate),
+    scheduleDateIndex: index(
+      "daily_project_digest_runs_schedule_date_index"
+    ).on(table.scheduleId, table.businessDate),
+  })
 );
 
 /** 员工关注认证服务号后的通知身份；OpenID 仅保存密文与不可逆指纹。 */
@@ -603,8 +847,21 @@ export const officialAccountBindings = mysqlTable(
     userId: int("userId").notNull(),
     openIdEncrypted: text("openIdEncrypted").notNull(),
     openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
-    bindingSource: mysqlEnum("bindingSource", ["wechat_oauth", "admin_verified"]).default("wechat_oauth").notNull(),
-    status: mysqlEnum("status", ["pending", "active", "unsubscribed", "revoked", "disabled"]).default("pending").notNull(),
+    bindingSource: mysqlEnum("bindingSource", [
+      "wechat_oauth",
+      "admin_verified",
+    ])
+      .default("wechat_oauth")
+      .notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "active",
+      "unsubscribed",
+      "revoked",
+      "disabled",
+    ])
+      .default("pending")
+      .notNull(),
     boundAt: datetime("boundAt"),
     lastVerifiedAt: datetime("lastVerifiedAt"),
     lastFailureAt: datetime("lastFailureAt"),
@@ -613,10 +870,16 @@ export const officialAccountBindings = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    userUnique: uniqueIndex("official_account_bindings_user_unique").on(table.userId),
-    openIdUnique: uniqueIndex("official_account_bindings_openid_fingerprint_unique").on(table.openIdFingerprint),
-    statusIndex: index("official_account_bindings_status_index").on(table.status),
-  }),
+    userUnique: uniqueIndex("official_account_bindings_user_unique").on(
+      table.userId
+    ),
+    openIdUnique: uniqueIndex(
+      "official_account_bindings_openid_fingerprint_unique"
+    ).on(table.openIdFingerprint),
+    statusIndex: index("official_account_bindings_status_index").on(
+      table.status
+    ),
+  })
 );
 
 /**
@@ -631,11 +894,27 @@ export const officialAccountBroadcasts = mysqlTable(
     title: varchar("title", { length: 200 }).notNull(),
     content: text("content").notNull(),
     deepLink: varchar("deepLink", { length: 512 }),
-    audienceType: mysqlEnum("audienceType", ["project", "organization", "role"]).notNull(),
+    audienceType: mysqlEnum("audienceType", [
+      "project",
+      "organization",
+      "role",
+    ]).notNull(),
     projectId: int("projectId"),
     organizationId: int("organizationId"),
     roleCode: varchar("roleCode", { length: 64 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "rejected", "publishing", "published", "partial", "failed", "cancelled"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "rejected",
+      "publishing",
+      "published",
+      "partial",
+      "failed",
+      "cancelled",
+    ])
+      .default("draft")
+      .notNull(),
     reviewNote: varchar("reviewNote", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     reviewedBy: int("reviewedBy"),
@@ -647,7 +926,9 @@ export const officialAccountBroadcasts = mysqlTable(
     failedCount: int("failedCount").default(0).notNull(),
     skippedCount: int("skippedCount").default(0).notNull(),
     /** 群发默认要求收件人在系统内确认“收到”，确认数仅统计已成功投递的收件人。 */
-    requiresAcknowledgement: boolean("requiresAcknowledgement").default(true).notNull(),
+    requiresAcknowledgement: boolean("requiresAcknowledgement")
+      .default(true)
+      .notNull(),
     acknowledgedCount: int("acknowledgedCount").default(0).notNull(),
     /** 仅记录收件人数、用户 ID 与选择范围；绝不包含 OpenID 或解密后的绑定信息。 */
     audienceSnapshotJson: text("audienceSnapshotJson"),
@@ -655,10 +936,20 @@ export const officialAccountBroadcasts = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    broadcastNoUnique: uniqueIndex("official_account_broadcasts_no_unique").on(table.broadcastNo),
-    statusIndex: index("official_account_broadcasts_status_index").on(table.status, table.updatedAt),
-    scopeIndex: index("official_account_broadcasts_scope_index").on(table.audienceType, table.projectId, table.organizationId, table.roleCode),
-  }),
+    broadcastNoUnique: uniqueIndex("official_account_broadcasts_no_unique").on(
+      table.broadcastNo
+    ),
+    statusIndex: index("official_account_broadcasts_status_index").on(
+      table.status,
+      table.updatedAt
+    ),
+    scopeIndex: index("official_account_broadcasts_scope_index").on(
+      table.audienceType,
+      table.projectId,
+      table.organizationId,
+      table.roleCode
+    ),
+  })
 );
 
 /** 每次群发按收件人保留独立投递结果，发布重试不会生成重复的服务号通知。 */
@@ -673,35 +964,62 @@ export const officialAccountBroadcastDeliveries = mysqlTable(
     recipientRoleSnapshot: varchar("recipientRoleSnapshot", { length: 300 }),
     recipientScopeSnapshot: varchar("recipientScopeSnapshot", { length: 500 }),
     notificationRecordId: bigint("notificationRecordId", { mode: "number" }),
-    deliveryStatus: mysqlEnum("deliveryStatus", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
+    deliveryStatus: mysqlEnum("deliveryStatus", [
+      "pending",
+      "sent",
+      "failed",
+      "skipped",
+    ])
+      .default("pending")
+      .notNull(),
     deliveryReason: varchar("deliveryReason", { length: 64 }),
     providerMessageId: varchar("providerMessageId", { length: 128 }),
     attemptedAt: datetime("attemptedAt"),
     deliveredAt: datetime("deliveredAt"),
-    acknowledgementStatus: mysqlEnum("acknowledgementStatus", ["not_required", "pending", "acknowledged"]).default("pending").notNull(),
+    acknowledgementStatus: mysqlEnum("acknowledgementStatus", [
+      "not_required",
+      "pending",
+      "acknowledged",
+    ])
+      .default("pending")
+      .notNull(),
     acknowledgedAt: datetime("acknowledgedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    broadcastRecipientUnique: uniqueIndex("official_account_broadcast_deliveries_recipient_unique").on(table.broadcastId, table.recipientUserId),
-    broadcastStatusIndex: index("official_account_broadcast_deliveries_status_index").on(table.broadcastId, table.deliveryStatus),
-    broadcastAcknowledgementIndex: index("official_account_broadcast_deliveries_acknowledgement_index").on(table.broadcastId, table.acknowledgementStatus),
-  }),
+    broadcastRecipientUnique: uniqueIndex(
+      "official_account_broadcast_deliveries_recipient_unique"
+    ).on(table.broadcastId, table.recipientUserId),
+    broadcastStatusIndex: index(
+      "official_account_broadcast_deliveries_status_index"
+    ).on(table.broadcastId, table.deliveryStatus),
+    broadcastAcknowledgementIndex: index(
+      "official_account_broadcast_deliveries_acknowledgement_index"
+    ).on(table.broadcastId, table.acknowledgementStatus),
+  })
 );
 
 /** 服务号扫码绑定的短时请求；仅保存令牌指纹，扫码事件到达后一次性消费。 */
-export const officialAccountBindingRequests = mysqlTable("official_account_binding_requests", {
-  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-  userId: int("userId").notNull(),
-  tokenFingerprint: varchar("tokenFingerprint", { length: 64 }).notNull(),
-  expiresAt: datetime("expiresAt").notNull(),
-  consumedAt: datetime("consumedAt"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, table => ({
-  tokenUnique: uniqueIndex("official_account_binding_requests_token_unique").on(table.tokenFingerprint),
-  userIndex: index("official_account_binding_requests_user_index").on(table.userId),
-}));
+export const officialAccountBindingRequests = mysqlTable(
+  "official_account_binding_requests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    tokenFingerprint: varchar("tokenFingerprint", { length: 64 }).notNull(),
+    expiresAt: datetime("expiresAt").notNull(),
+    consumedAt: datetime("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    tokenUnique: uniqueIndex(
+      "official_account_binding_requests_token_unique"
+    ).on(table.tokenFingerprint),
+    userIndex: index("official_account_binding_requests_user_index").on(
+      table.userId
+    ),
+  })
+);
 
 /** 固定 12 类采购字典，后台仅可调整排序和停启用，不能变更标准编码。 */
 export const purchaseCategories = mysqlTable(
@@ -712,10 +1030,14 @@ export const purchaseCategories = mysqlTable(
     name: varchar("name", { length: 128 }).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     isFixed: boolean("isFixed").default(true).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ codeUnique: uniqueIndex("purchase_categories_code_unique").on(table.code) }),
+  table => ({
+    codeUnique: uniqueIndex("purchase_categories_code_unique").on(table.code),
+  })
 );
 
 /** 劳务实名制人员档案，身份证、银行卡等敏感原值仅以密文存储。 */
@@ -725,7 +1047,13 @@ export const laborWorkers = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     teamName: varchar("teamName", { length: 128 }),
-    workerCategory: mysqlEnum("workerCategory", ["company_admin", "labor_team", "temporary_daily"]).default("labor_team").notNull(),
+    workerCategory: mysqlEnum("workerCategory", [
+      "company_admin",
+      "labor_team",
+      "temporary_daily",
+    ])
+      .default("labor_team")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     realName: varchar("realName", { length: 64 }).notNull(),
     identityNoEncrypted: text("identityNoEncrypted"),
@@ -734,18 +1062,37 @@ export const laborWorkers = mysqlTable(
     bankAccountEncrypted: text("bankAccountEncrypted"),
     bankName: varchar("bankName", { length: 128 }),
     /** 实名资料由劳资管理人员人工核验后的状态，不替代身份证密文与证照档案。 */
-    identityVerificationStatus: mysqlEnum("identityVerificationStatus", ["pending", "verified", "rejected"]).default("pending").notNull(),
+    identityVerificationStatus: mysqlEnum("identityVerificationStatus", [
+      "pending",
+      "verified",
+      "rejected",
+    ])
+      .default("pending")
+      .notNull(),
     /** 审核结论说明不得填写身份证号、银行卡号等敏感原文。 */
-    identityVerificationNote: varchar("identityVerificationNote", { length: 500 }),
+    identityVerificationNote: varchar("identityVerificationNote", {
+      length: 500,
+    }),
     identityVerifiedAt: datetime("identityVerifiedAt"),
     identityVerifiedBy: int("identityVerifiedBy"),
-    attendanceStatus: mysqlEnum("attendanceStatus", ["pending", "active", "left"]).default("pending").notNull(),
+    attendanceStatus: mysqlEnum("attendanceStatus", [
+      "pending",
+      "active",
+      "left",
+    ])
+      .default("pending")
+      .notNull(),
     entryDate: date("entryDate"),
     exitDate: date("exitDate"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectIndex: index("labor_workers_project_index").on(table.projectId), phoneFingerprintUnique: uniqueIndex("labor_workers_phone_fingerprint_unique").on(table.phoneFingerprint) }),
+  table => ({
+    projectIndex: index("labor_workers_project_index").on(table.projectId),
+    phoneFingerprintUnique: uniqueIndex(
+      "labor_workers_phone_fingerprint_unique"
+    ).on(table.phoneFingerprint),
+  })
 );
 
 /** 考勤与工时记录，为工资核算提供可追溯来源。 */
@@ -756,17 +1103,30 @@ export const attendanceRecords = mysqlTable(
     workerId: int("workerId").notNull(),
     projectId: int("projectId").notNull(),
     attendanceDate: date("attendanceDate").notNull(),
-    workHours: decimal("workHours", { precision: 7, scale: 2 }).default("0").notNull(),
-    overtimeHours: decimal("overtimeHours", { precision: 7, scale: 2 }).default("0").notNull(),
+    workHours: decimal("workHours", { precision: 7, scale: 2 })
+      .default("0")
+      .notNull(),
+    overtimeHours: decimal("overtimeHours", { precision: 7, scale: 2 })
+      .default("0")
+      .notNull(),
     /** 现场考勤异常、请假原因及补充说明；不得写入身份证、银行卡等敏感原文。 */
     note: varchar("note", { length: 500 }),
-    source: mysqlEnum("source", ["manual", "mobile", "device", "import"]).default("manual").notNull(),
+    source: mysqlEnum("source", ["manual", "mobile", "device", "import"])
+      .default("manual")
+      .notNull(),
     evidenceId: bigint("evidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["draft", "confirmed", "locked"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "confirmed", "locked"])
+      .default("draft")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ workerDateUnique: uniqueIndex("attendance_worker_date_unique").on(table.workerId, table.attendanceDate) }),
+  table => ({
+    workerDateUnique: uniqueIndex("attendance_worker_date_unique").on(
+      table.workerId,
+      table.attendanceDate
+    ),
+  })
 );
 
 /** 移动端一键打卡台账：设备标识仅保存不可逆指纹，定位仅用于现场考勤复核。 */
@@ -780,26 +1140,47 @@ export const attendanceCheckIns = mysqlTable(
     checkedInAt: datetime("checkedInAt").notNull(),
     /** 下班打卡仅在本人完成当日上班打卡后写入；为空表示当天尚未完成下班打卡。 */
     checkedOutAt: datetime("checkedOutAt"),
-    deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
+    deviceFingerprintHash: varchar("deviceFingerprintHash", {
+      length: 128,
+    }).notNull(),
     deviceLabel: varchar("deviceLabel", { length: 160 }),
     /** 打卡时反查得到的中文详细地址；反查失败不阻断打卡，但业务列表绝不改为展示坐标。 */
     checkInAddress: varchar("checkInAddress", { length: 500 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
-    locationAccuracyMeters: decimal("locationAccuracyMeters", { precision: 10, scale: 2 }),
-    status: mysqlEnum("status", ["normal", "location_missing"]).default("normal").notNull(),
+    locationAccuracyMeters: decimal("locationAccuracyMeters", {
+      precision: 10,
+      scale: 2,
+    }),
+    status: mysqlEnum("status", ["normal", "location_missing"])
+      .default("normal")
+      .notNull(),
     checkoutAddress: varchar("checkoutAddress", { length: 500 }),
-    checkoutLongitude: decimal("checkoutLongitude", { precision: 10, scale: 7 }),
+    checkoutLongitude: decimal("checkoutLongitude", {
+      precision: 10,
+      scale: 7,
+    }),
     checkoutLatitude: decimal("checkoutLatitude", { precision: 10, scale: 7 }),
-    checkoutLocationAccuracyMeters: decimal("checkoutLocationAccuracyMeters", { precision: 10, scale: 2 }),
+    checkoutLocationAccuracyMeters: decimal("checkoutLocationAccuracyMeters", {
+      precision: 10,
+      scale: 2,
+    }),
     checkoutStatus: mysqlEnum("checkoutStatus", ["normal", "location_missing"]),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    userProjectDateUnique: uniqueIndex("attendance_check_ins_user_project_date_unique").on(table.userId, table.projectId, table.businessDate),
-    projectDateIndex: index("attendance_check_ins_project_date_index").on(table.projectId, table.businessDate),
-    deviceIndex: index("attendance_check_ins_device_index").on(table.deviceFingerprintHash, table.businessDate),
-  }),
+    userProjectDateUnique: uniqueIndex(
+      "attendance_check_ins_user_project_date_unique"
+    ).on(table.userId, table.projectId, table.businessDate),
+    projectDateIndex: index("attendance_check_ins_project_date_index").on(
+      table.projectId,
+      table.businessDate
+    ),
+    deviceIndex: index("attendance_check_ins_device_index").on(
+      table.deviceFingerprintHash,
+      table.businessDate
+    ),
+  })
 );
 
 /** 考勤设备绑定台账，仅保存服务端生成的设备匿名指纹和可读设备标签。 */
@@ -808,18 +1189,27 @@ export const attendanceDeviceBindings = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     userId: int("userId").notNull(),
-    deviceFingerprintHash: varchar("deviceFingerprintHash", { length: 128 }).notNull(),
+    deviceFingerprintHash: varchar("deviceFingerprintHash", {
+      length: 128,
+    }).notNull(),
     deviceLabel: varchar("deviceLabel", { length: 160 }),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     firstBoundAt: datetime("firstBoundAt").notNull(),
     lastUsedAt: datetime("lastUsedAt").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    userDeviceUnique: uniqueIndex("attendance_device_bindings_user_device_unique").on(table.userId, table.deviceFingerprintHash),
-    userStatusIndex: index("attendance_device_bindings_user_status_index").on(table.userId, table.status),
-  }),
+    userDeviceUnique: uniqueIndex(
+      "attendance_device_bindings_user_device_unique"
+    ).on(table.userId, table.deviceFingerprintHash),
+    userStatusIndex: index("attendance_device_bindings_user_status_index").on(
+      table.userId,
+      table.status
+    ),
+  })
 );
 
 /** 工资条记录，金额与状态须经会计审核后才能推送。 */
@@ -830,12 +1220,29 @@ export const payrollStatements = mysqlTable(
     workerId: int("workerId").notNull(),
     projectId: int("projectId").notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    payableAmount: decimal("payableAmount", { precision: 16, scale: 2 }).notNull(),
-    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    actualAmount: decimal("actualAmount", { precision: 16, scale: 2 }).notNull(),
+    payableAmount: decimal("payableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    actualAmount: decimal("actualAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     bankAccountMasked: varchar("bankAccountMasked", { length: 64 }),
     /** 审核通过后的工资可分笔发放；partial 仅表示存在真实付款明细，不代表已结清。 */
-    status: mysqlEnum("status", ["draft", "reviewing", "approved", "partial", "paid", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "reviewing",
+      "approved",
+      "partial",
+      "paid",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     /** 工资条提交审核时记录责任人；历史数据允许为空，避免破坏既有归档记录。 */
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
@@ -848,9 +1255,13 @@ export const payrollStatements = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    workerProjectPeriodUnique: uniqueIndex("payroll_worker_project_period_unique").on(table.workerId, table.projectId, table.period),
-    projectPeriodStatusIndex: index("payroll_statements_project_period_status_index").on(table.projectId, table.period, table.status),
-  }),
+    workerProjectPeriodUnique: uniqueIndex(
+      "payroll_worker_project_period_unique"
+    ).on(table.workerId, table.projectId, table.period),
+    projectPeriodStatusIndex: index(
+      "payroll_statements_project_period_status_index"
+    ).on(table.projectId, table.period, table.status),
+  })
 );
 
 /**
@@ -863,7 +1274,9 @@ export const payrollGenerationSchedules = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     scopeKey: varchar("scopeKey", { length: 64 }).notNull(),
     enabled: boolean("enabled").default(false).notNull(),
-    timezone: varchar("timezone", { length: 64 }).default("Asia/Shanghai").notNull(),
+    timezone: varchar("timezone", { length: 64 })
+      .default("Asia/Shanghai")
+      .notNull(),
     /** 每月第几天为上一个自然月生成工资草稿，默认次月 1 日。 */
     generationDay: int("generationDay").default(1).notNull(),
     generationHour: int("generationHour").default(9).notNull(),
@@ -878,9 +1291,13 @@ export const payrollGenerationSchedules = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    scopeKeyUnique: uniqueIndex("payroll_generation_schedules_scope_unique").on(table.scopeKey),
-    cronTaskUidIndex: index("payroll_generation_schedules_task_uid_index").on(table.scheduleCronTaskUid),
-  }),
+    scopeKeyUnique: uniqueIndex("payroll_generation_schedules_scope_unique").on(
+      table.scopeKey
+    ),
+    cronTaskUidIndex: index("payroll_generation_schedules_task_uid_index").on(
+      table.scheduleCronTaskUid
+    ),
+  })
 );
 
 /** 每项目、每期间仅保存一份工资生成运行审计，抵抗 Heartbeat 的重试与并发重放。 */
@@ -891,7 +1308,12 @@ export const payrollGenerationRuns = mysqlTable(
     scheduleId: int("scheduleId").notNull(),
     projectId: int("projectId").notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    status: mysqlEnum("status", ["completed", "partial", "skipped", "failed"]).notNull(),
+    status: mysqlEnum("status", [
+      "completed",
+      "partial",
+      "skipped",
+      "failed",
+    ]).notNull(),
     createdCount: int("createdCount").default(0).notNull(),
     skippedCount: int("skippedCount").default(0).notNull(),
     blockedCount: int("blockedCount").default(0).notNull(),
@@ -901,9 +1323,13 @@ export const payrollGenerationRuns = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    scheduleProjectPeriodUnique: uniqueIndex("payroll_generation_runs_schedule_project_period_unique").on(table.scheduleId, table.projectId, table.period),
-    schedulePeriodIndex: index("payroll_generation_runs_schedule_period_index").on(table.scheduleId, table.period),
-  }),
+    scheduleProjectPeriodUnique: uniqueIndex(
+      "payroll_generation_runs_schedule_project_period_unique"
+    ).on(table.scheduleId, table.projectId, table.period),
+    schedulePeriodIndex: index(
+      "payroll_generation_runs_schedule_period_index"
+    ).on(table.scheduleId, table.period),
+  })
 );
 
 /** 临时人员按日结算：审核通过不代表付款，只有登记实际付款后才结算完毕。 */
@@ -914,12 +1340,29 @@ export const temporaryDailyWageSettlements = mysqlTable(
     workerId: int("workerId").notNull(),
     projectId: int("projectId").notNull(),
     settlementDate: date("settlementDate").notNull(),
-    payableAmount: decimal("payableAmount", { precision: 16, scale: 2 }).notNull(),
-    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    actualAmount: decimal("actualAmount", { precision: 16, scale: 2 }).notNull(),
+    payableAmount: decimal("payableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    actualAmount: decimal("actualAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     remarks: varchar("remarks", { length: 500 }),
     /** 临时日结与月度工资使用相同的分笔付款语义。 */
-    status: mysqlEnum("status", ["draft", "reviewing", "approved", "partial", "paid", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "reviewing",
+      "approved",
+      "partial",
+      "paid",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     reviewedBy: int("reviewedBy"),
@@ -930,7 +1373,17 @@ export const temporaryDailyWageSettlements = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ workerDateUnique: uniqueIndex("temporary_daily_wage_worker_date_unique").on(table.workerId, table.settlementDate), projectDateIndex: index("temporary_daily_wage_project_date_index").on(table.projectId, table.settlementDate, table.status) }),
+  table => ({
+    workerDateUnique: uniqueIndex("temporary_daily_wage_worker_date_unique").on(
+      table.workerId,
+      table.settlementDate
+    ),
+    projectDateIndex: index("temporary_daily_wage_project_date_index").on(
+      table.projectId,
+      table.settlementDate,
+      table.status
+    ),
+  })
 );
 
 /** 统一员工档案：公司管理人员、机械操作员与施工队工人统一投影，避免将账号与劳务实名档案混为一体。 */
@@ -943,19 +1396,46 @@ export const employeeProfiles = mysqlTable(
     /** 施工队工人对应的劳务实名档案；公司人员可为空。 */
     laborWorkerId: int("laborWorkerId"),
     projectId: int("projectId"),
-    employeeType: mysqlEnum("employeeType", ["management", "operator", "construction_worker"]).notNull(),
+    employeeType: mysqlEnum("employeeType", [
+      "management",
+      "operator",
+      "construction_worker",
+    ]).notNull(),
     tradeName: varchar("tradeName", { length: 128 }),
     teamName: varchar("teamName", { length: 128 }),
-    employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).default("active").notNull(),
+    employmentStatus: mysqlEnum("employmentStatus", [
+      "active",
+      "suspended",
+      "left",
+    ])
+      .default("active")
+      .notNull(),
     joinedAt: date("joinedAt"),
     leftAt: date("leftAt"),
-    salaryBasis: mysqlEnum("salaryBasis", ["monthly", "daily", "hourly", "piecework"]).default("monthly").notNull(),
+    salaryBasis: mysqlEnum("salaryBasis", [
+      "monthly",
+      "daily",
+      "hourly",
+      "piecework",
+    ])
+      .default("monthly")
+      .notNull(),
     baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }),
     remarks: varchar("remarks", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ userIndex: index("employee_profiles_user_index").on(table.userId), workerIndex: index("employee_profiles_worker_index").on(table.laborWorkerId), projectTypeIndex: index("employee_profiles_project_type_index").on(table.projectId, table.employeeType, table.employmentStatus) }),
+  table => ({
+    userIndex: index("employee_profiles_user_index").on(table.userId),
+    workerIndex: index("employee_profiles_worker_index").on(
+      table.laborWorkerId
+    ),
+    projectTypeIndex: index("employee_profiles_project_type_index").on(
+      table.projectId,
+      table.employeeType,
+      table.employmentStatus
+    ),
+  })
 );
 
 /** 员工工资预支台账。金额只进入劳资业务台账，不在档案详情回显银行卡原值。 */
@@ -968,13 +1448,24 @@ export const employeePayrollAdvances = mysqlTable(
     projectId: int("projectId"),
     advanceDate: date("advanceDate").notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
-    status: mysqlEnum("status", ["draft", "approved", "deducted", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "approved", "deducted", "void"])
+      .default("draft")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ profileDateIndex: index("employee_payroll_advances_profile_date_index").on(table.employeeProfileId, table.advanceDate, table.status), workerIndex: index("employee_payroll_advances_worker_index").on(table.laborWorkerId) }),
+  table => ({
+    profileDateIndex: index("employee_payroll_advances_profile_date_index").on(
+      table.employeeProfileId,
+      table.advanceDate,
+      table.status
+    ),
+    workerIndex: index("employee_payroll_advances_worker_index").on(
+      table.laborWorkerId
+    ),
+  })
 );
 
 /** 一笔工资预支可明确分配至一张或多张工资条；仅 active 分配参与余额与扣款计算。 */
@@ -983,9 +1474,13 @@ export const employeePayrollAdvanceAllocations = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     advanceId: bigint("advanceId", { mode: "number" }).notNull(),
-    payrollStatementId: bigint("payrollStatementId", { mode: "number" }).notNull(),
+    payrollStatementId: bigint("payrollStatementId", {
+      mode: "number",
+    }).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
-    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "reversed"])
+      .default("active")
+      .notNull(),
     allocatedBy: int("allocatedBy").notNull(),
     allocatedAt: datetime("allocatedAt").notNull(),
     reversedBy: int("reversedBy"),
@@ -994,9 +1489,13 @@ export const employeePayrollAdvanceAllocations = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    advanceIndex: index("employee_payroll_advance_allocations_advance_index").on(table.advanceId, table.status),
-    payrollIndex: index("employee_payroll_advance_allocations_payroll_index").on(table.payrollStatementId, table.status),
-  }),
+    advanceIndex: index(
+      "employee_payroll_advance_allocations_advance_index"
+    ).on(table.advanceId, table.status),
+    payrollIndex: index(
+      "employee_payroll_advance_allocations_payroll_index"
+    ).on(table.payrollStatementId, table.status),
+  })
 );
 /** 员工保险台账：按保单留存购买日期与到期日期，供后台到期预警和人事审查使用。 */
 export const employeeInsurancePolicies = mysqlTable(
@@ -1004,7 +1503,13 @@ export const employeeInsurancePolicies = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     employeeProfileId: int("employeeProfileId").notNull(),
-    insuranceType: mysqlEnum("insuranceType", ["work_injury", "accident", "medical", "employer_liability", "other"]).notNull(),
+    insuranceType: mysqlEnum("insuranceType", [
+      "work_injury",
+      "accident",
+      "medical",
+      "employer_liability",
+      "other",
+    ]).notNull(),
     providerName: varchar("providerName", { length: 128 }),
     policyReference: varchar("policyReference", { length: 128 }),
     /** 文件由受控证据库保存；续保新增记录，不覆盖历史保单与附件。 */
@@ -1013,15 +1518,21 @@ export const employeeInsurancePolicies = mysqlTable(
     coverageAmount: decimal("coverageAmount", { precision: 16, scale: 2 }),
     purchasedAt: date("purchasedAt").notNull(),
     expiresAt: date("expiresAt").notNull(),
-    status: mysqlEnum("status", ["active", "expired", "cancelled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "expired", "cancelled"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    profileExpiryIndex: index("employee_insurance_policies_profile_expiry_index").on(table.employeeProfileId, table.expiresAt, table.status),
-    evidenceIndex: index("employee_insurance_policies_evidence_index").on(table.evidenceId),
-  }),
+    profileExpiryIndex: index(
+      "employee_insurance_policies_profile_expiry_index"
+    ).on(table.employeeProfileId, table.expiresAt, table.status),
+    evidenceIndex: index("employee_insurance_policies_evidence_index").on(
+      table.evidenceId
+    ),
+  })
 );
 
 /** 公司自有与外租机械统一台账。 */
@@ -1047,16 +1558,32 @@ export const machines = mysqlTable(
     supplierName: varchar("supplierName", { length: 200 }),
     plateOrAssetNo: varchar("plateOrAssetNo", { length: 64 }),
     /** 核定油箱容量仅用于柴油领用合理性检测，不替代油表读数。 */
-    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", { precision: 10, scale: 2 }),
-    status: mysqlEnum("status", ["idle", "working", "repairing", "offsite", "retired"]).default("idle").notNull(),
+    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", {
+      precision: 10,
+      scale: 2,
+    }),
+    status: mysqlEnum("status", [
+      "idle",
+      "working",
+      "repairing",
+      "offsite",
+      "retired",
+    ])
+      .default("idle")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
     codeUnique: uniqueIndex("machines_code_unique").on(table.code),
-    ownerProjectIndex: index("machines_owner_project_index").on(table.ownerUserId, table.projectId),
-    operatorPersonIndex: index("machines_operator_person_index").on(table.operatorPersonId),
-  }),
+    ownerProjectIndex: index("machines_owner_project_index").on(
+      table.ownerUserId,
+      table.projectId
+    ),
+    operatorPersonIndex: index("machines_operator_person_index").on(
+      table.operatorPersonId
+    ),
+  })
 );
 
 /** 机械租赁计价规则，由合同和项目参数配置，而非硬编码。 */
@@ -1066,15 +1593,32 @@ export const machineLeaseRules = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     machineId: int("machineId").notNull(),
     projectId: int("projectId").notNull(),
-    billingType: mysqlEnum("billingType", ["monthly", "daily", "hourly", "shift"]).notNull(),
+    billingType: mysqlEnum("billingType", [
+      "monthly",
+      "daily",
+      "hourly",
+      "shift",
+    ]).notNull(),
     rate: decimal("rate", { precision: 16, scale: 2 }).notNull(),
-    overtimeHourlyRate: decimal("overtimeHourlyRate", { precision: 16, scale: 2 }).default("0").notNull(),
+    overtimeHourlyRate: decimal("overtimeHourlyRate", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     effectiveFrom: date("effectiveFrom").notNull(),
     effectiveTo: date("effectiveTo"),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ machineIndex: index("machine_lease_rules_machine_index").on(table.machineId, table.status) }),
+  table => ({
+    machineIndex: index("machine_lease_rules_machine_index").on(
+      table.machineId,
+      table.status
+    ),
+  })
 );
 
 /** 机械油料、修理、加班、进退场等成本明细。 */
@@ -1084,9 +1628,19 @@ export const machineCostRecords = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     machineId: int("machineId").notNull(),
     projectId: int("projectId").notNull(),
-    costType: mysqlEnum("costType", ["fuel", "repair", "overtime", "mobilization", "other"]).notNull(),
-    quantity: decimal("quantity", { precision: 12, scale: 3 }).default("0").notNull(),
-    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
+    costType: mysqlEnum("costType", [
+      "fuel",
+      "repair",
+      "overtime",
+      "mobilization",
+      "other",
+    ]).notNull(),
+    quantity: decimal("quantity", { precision: 12, scale: 3 })
+      .default("0")
+      .notNull(),
+    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     /** 现场录入的费用名称，例如：液压油、发动机维修、进场拖运。历史记录允许为空。 */
     costName: varchar("costName", { length: 128 }),
@@ -1096,13 +1650,20 @@ export const machineCostRecords = mysqlTable(
     evidenceId: bigint("evidenceId", { mode: "number" }),
     /** 机械费用的现场说明、维修内容或票据备注；影像文件仍统一保存于证据表。 */
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "approved", "settled", "void"])
+      .default("draft")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    machineDateIndex: index("machine_cost_records_machine_date_index").on(table.machineId, table.occurredAt),
-    dieselRefuelUnique: uniqueIndex("machine_cost_records_diesel_refuel_unique").on(table.dieselRefuelRecordId),
-  }),
+    machineDateIndex: index("machine_cost_records_machine_date_index").on(
+      table.machineId,
+      table.occurredAt
+    ),
+    dieselRefuelUnique: uniqueIndex(
+      "machine_cost_records_diesel_refuel_unique"
+    ).on(table.dieselRefuelRecordId),
+  })
 );
 
 /**
@@ -1124,38 +1685,104 @@ export const machineMonthlyStatements = mysqlTable(
     ownerNameSnapshot: varchar("ownerNameSnapshot", { length: 200 }),
     machineModelSnapshot: varchar("machineModelSnapshot", { length: 128 }),
     leaseBillingType: varchar("leaseBillingType", { length: 16 }).notNull(),
-    leaseRate: decimal("leaseRate", { precision: 16, scale: 2 }).default("0").notNull(),
-    machineOvertimeRate: decimal("machineOvertimeRate", { precision: 16, scale: 2 }).default("0").notNull(),
+    leaseRate: decimal("leaseRate", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    machineOvertimeRate: decimal("machineOvertimeRate", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     /** 机械产值原始口径。出勤天数按模板采用 30 天月、10 小时工作日折算。 */
-    machineWorkDays: decimal("machineWorkDays", { precision: 8, scale: 2 }).default("0").notNull(),
-    machineOvertimeHours: decimal("machineOvertimeHours", { precision: 10, scale: 2 }).default("0").notNull(),
-    driverMonthlyWage: decimal("driverMonthlyWage", { precision: 16, scale: 2 }).default("0").notNull(),
-    driverWorkDays: decimal("driverWorkDays", { precision: 8, scale: 2 }).default("0").notNull(),
-    driverOvertimeHours: decimal("driverOvertimeHours", { precision: 10, scale: 2 }).default("0").notNull(),
+    machineWorkDays: decimal("machineWorkDays", { precision: 8, scale: 2 })
+      .default("0")
+      .notNull(),
+    machineOvertimeHours: decimal("machineOvertimeHours", {
+      precision: 10,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    driverMonthlyWage: decimal("driverMonthlyWage", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    driverWorkDays: decimal("driverWorkDays", { precision: 8, scale: 2 })
+      .default("0")
+      .notNull(),
+    driverOvertimeHours: decimal("driverOvertimeHours", {
+      precision: 10,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     /** 服务端快照计算结果。 */
-    machineBaseOutput: decimal("machineBaseOutput", { precision: 16, scale: 2 }).default("0").notNull(),
-    machineOvertimeOutput: decimal("machineOvertimeOutput", { precision: 16, scale: 2 }).default("0").notNull(),
-    totalOutput: decimal("totalOutput", { precision: 16, scale: 2 }).default("0").notNull(),
-    driverOvertimeWage: decimal("driverOvertimeWage", { precision: 16, scale: 2 }).default("0").notNull(),
-    driverTotalWage: decimal("driverTotalWage", { precision: 16, scale: 2 }).default("0").notNull(),
-    repairAmount: decimal("repairAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    fuelLiters: decimal("fuelLiters", { precision: 14, scale: 3 }).default("0").notNull(),
-    fuelAmount: decimal("fuelAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    shareBaseAmount: decimal("shareBaseAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    machineShareAmount: decimal("machineShareAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    machineBaseOutput: decimal("machineBaseOutput", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    machineOvertimeOutput: decimal("machineOvertimeOutput", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    totalOutput: decimal("totalOutput", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    driverOvertimeWage: decimal("driverOvertimeWage", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    driverTotalWage: decimal("driverTotalWage", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    repairAmount: decimal("repairAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    fuelLiters: decimal("fuelLiters", { precision: 14, scale: 3 })
+      .default("0")
+      .notNull(),
+    fuelAmount: decimal("fuelAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    deductionAmount: decimal("deductionAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    shareBaseAmount: decimal("shareBaseAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    machineShareAmount: decimal("machineShareAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     signatureName: varchar("signatureName", { length: 128 }),
     signedAt: datetime("signedAt"),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "settled",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectPeriodIndex: index("machine_monthly_statements_project_period_index").on(table.projectId, table.period, table.status),
-    machinePeriodUnique: uniqueIndex("machine_monthly_statements_machine_period_unique").on(table.machineId, table.projectId, table.period),
-  }),
+    projectPeriodIndex: index(
+      "machine_monthly_statements_project_period_index"
+    ).on(table.projectId, table.period, table.status),
+    machinePeriodUnique: uniqueIndex(
+      "machine_monthly_statements_machine_period_unique"
+    ).on(table.machineId, table.projectId, table.period),
+  })
 );
 
 /**
@@ -1170,22 +1797,57 @@ export const machinePaymentSettlements = mysqlTable(
     settlementNo: varchar("settlementNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
     machineId: int("machineId").notNull(),
-    monthlyStatementId: bigint("monthlyStatementId", { mode: "number" }).notNull(),
+    monthlyStatementId: bigint("monthlyStatementId", {
+      mode: "number",
+    }).notNull(),
     period: varchar("period", { length: 7 }).notNull(),
     /** 机械月结快照中的应付机械分成；油料与维修仅作结算依据展示，不自动重复扣减。 */
-    grossPayableAmount: decimal("grossPayableAmount", { precision: 16, scale: 2 }).notNull(),
-    fuelCostAmount: decimal("fuelCostAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    repairCostAmount: decimal("repairCostAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    manualDeductionAmount: decimal("manualDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    grossPayableAmount: decimal("grossPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    fuelCostAmount: decimal("fuelCostAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    repairCostAmount: decimal("repairCostAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    manualDeductionAmount: decimal("manualDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    netPayableAmount: decimal("netPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     payeeName: varchar("payeeName", { length: 128 }).notNull(),
     payeeAccount: varchar("payeeAccount", { length: 160 }),
-    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "bank_transfer",
+      "corporate_account",
+      "cash",
+      "wechat",
+      "alipay",
+      "other",
+    ])
+      .default("bank_transfer")
+      .notNull(),
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
     /** approved 为金额已核定待付款，partial 为已登记部分实际付款。 */
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "partial",
+      "paid",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),
@@ -1197,13 +1859,33 @@ export const machinePaymentSettlements = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    settlementNoUnique: uniqueIndex("machine_payment_settlements_no_unique").on(table.settlementNo),
-    statementUnique: uniqueIndex("machine_payment_settlements_statement_unique").on(table.monthlyStatementId),
-    projectMachinePeriodIndex: index("machine_payment_settlements_project_machine_period_index").on(table.projectId, table.machineId, table.period),
-    projectStatusIndex: index("machine_payment_settlements_project_status_index").on(table.projectId, table.status),
-    machineForeignKey: foreignKey({ columns: [table.machineId], foreignColumns: [machines.id], name: "machine_payment_settlements_machine_fk" }).onDelete("restrict").onUpdate("cascade"),
-    monthlyStatementForeignKey: foreignKey({ columns: [table.monthlyStatementId], foreignColumns: [machineMonthlyStatements.id], name: "machine_payment_settlements_statement_fk" }).onDelete("restrict").onUpdate("cascade"),
-  }),
+    settlementNoUnique: uniqueIndex("machine_payment_settlements_no_unique").on(
+      table.settlementNo
+    ),
+    statementUnique: uniqueIndex(
+      "machine_payment_settlements_statement_unique"
+    ).on(table.monthlyStatementId),
+    projectMachinePeriodIndex: index(
+      "machine_payment_settlements_project_machine_period_index"
+    ).on(table.projectId, table.machineId, table.period),
+    projectStatusIndex: index(
+      "machine_payment_settlements_project_status_index"
+    ).on(table.projectId, table.status),
+    machineForeignKey: foreignKey({
+      columns: [table.machineId],
+      foreignColumns: [machines.id],
+      name: "machine_payment_settlements_machine_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    monthlyStatementForeignKey: foreignKey({
+      columns: [table.monthlyStatementId],
+      foreignColumns: [machineMonthlyStatements.id],
+      name: "machine_payment_settlements_statement_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+  })
 );
 
 /**
@@ -1218,26 +1900,61 @@ export const machineDailyOperations = mysqlTable(
     machineId: int("machineId").notNull(),
     occurredOn: date("occurredOn").notNull(),
     operatorUserId: int("operatorUserId"),
-    shiftCount: decimal("shiftCount", { precision: 8, scale: 2 }).default("0").notNull(),
-    shiftRate: decimal("shiftRate", { precision: 16, scale: 2 }).default("0").notNull(),
-    workHours: decimal("workHours", { precision: 8, scale: 2 }).default("0").notNull(),
-    overtimeHours: decimal("overtimeHours", { precision: 8, scale: 2 }).default("0").notNull(),
-    overtimeHourlyRate: decimal("overtimeHourlyRate", { precision: 16, scale: 2 }).default("0").notNull(),
-    shiftAmount: decimal("shiftAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    overtimeAmount: decimal("overtimeAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    outputAmount: decimal("outputAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    driverWageAmount: decimal("driverWageAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    shiftCount: decimal("shiftCount", { precision: 8, scale: 2 })
+      .default("0")
+      .notNull(),
+    shiftRate: decimal("shiftRate", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    workHours: decimal("workHours", { precision: 8, scale: 2 })
+      .default("0")
+      .notNull(),
+    overtimeHours: decimal("overtimeHours", { precision: 8, scale: 2 })
+      .default("0")
+      .notNull(),
+    overtimeHourlyRate: decimal("overtimeHourlyRate", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    shiftAmount: decimal("shiftAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    overtimeAmount: decimal("overtimeAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    outputAmount: decimal("outputAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    driverWageAmount: decimal("driverWageAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     driverNameSnapshot: varchar("driverNameSnapshot", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "settled",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    machineProjectDayUnique: uniqueIndex("machine_daily_operations_machine_project_day_unique").on(table.machineId, table.projectId, table.occurredOn),
-    projectDateIndex: index("machine_daily_operations_project_date_index").on(table.projectId, table.occurredOn, table.status),
-  }),
+    machineProjectDayUnique: uniqueIndex(
+      "machine_daily_operations_machine_project_day_unique"
+    ).on(table.machineId, table.projectId, table.occurredOn),
+    projectDateIndex: index("machine_daily_operations_project_date_index").on(
+      table.projectId,
+      table.occurredOn,
+      table.status
+    ),
+  })
 );
 /** 车辆与机械共用的维修、保养费用台账；不替代既有机械油料/租赁成本明细。 */
 export const assetMaintenanceRecords = mysqlTable(
@@ -1247,18 +1964,32 @@ export const assetMaintenanceRecords = mysqlTable(
     assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(),
     assetId: int("assetId").notNull(),
     projectId: int("projectId").notNull(),
-    costCategory: mysqlEnum("costCategory", ["maintenance", "repair"]).notNull(),
+    costCategory: mysqlEnum("costCategory", [
+      "maintenance",
+      "repair",
+    ]).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     occurredAt: datetime("occurredAt").notNull(),
     serviceProvider: varchar("serviceProvider", { length: 160 }),
     meterReading: decimal("meterReading", { precision: 14, scale: 2 }),
     nextDueAt: date("nextDueAt"),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "approved", "settled", "void"])
+      .default("draft")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ assetDateIndex: index("asset_maintenance_records_asset_date_index").on(table.assetType, table.assetId, table.occurredAt), projectStatusIndex: index("asset_maintenance_records_project_status_index").on(table.projectId, table.status) }),
+  table => ({
+    assetDateIndex: index("asset_maintenance_records_asset_date_index").on(
+      table.assetType,
+      table.assetId,
+      table.occurredAt
+    ),
+    projectStatusIndex: index(
+      "asset_maintenance_records_project_status_index"
+    ).on(table.projectId, table.status),
+  })
 );
 
 /** 渣土车运输车辆档案与货厢参数。 */
@@ -1273,26 +2004,61 @@ export const transportVehicles = mysqlTable(
     organizationId: int("organizationId"),
     plateNo: varchar("plateNo", { length: 32 }).notNull(),
     /** 车辆类型仅描述车辆资源属性，不参与运费计算；默认渣土车兼容既有运输台账。 */
-    vehicleType: mysqlEnum("vehicleType", ["dump_truck", "tractor", "mixer", "flatbed", "pickup", "suv", "other"]).default("dump_truck").notNull(),
+    vehicleType: mysqlEnum("vehicleType", [
+      "dump_truck",
+      "tractor",
+      "mixer",
+      "flatbed",
+      "pickup",
+      "suv",
+      "other",
+    ])
+      .default("dump_truck")
+      .notNull(),
     /** 自有、外租或渣土车按趟结算；仅外租车辆允许启用独立租赁规则。 */
-    ownership: mysqlEnum("ownership", ["owned", "leased", "trip_settlement"]).default("owned").notNull(),
+    ownership: mysqlEnum("ownership", ["owned", "leased", "trip_settlement"])
+      .default("owned")
+      .notNull(),
     ownerName: varchar("ownerName", { length: 128 }),
     driverUserId: int("driverUserId"),
     driverName: varchar("driverName", { length: 128 }),
     driverPhoneEncrypted: text("driverPhoneEncrypted"),
     driverPhoneMasked: varchar("driverPhoneMasked", { length: 32 }),
-    boxLengthMeters: decimal("boxLengthMeters", { precision: 8, scale: 3 }).notNull(),
-    boxWidthMeters: decimal("boxWidthMeters", { precision: 8, scale: 3 }).notNull(),
-    boxHeightMeters: decimal("boxHeightMeters", { precision: 8, scale: 3 }).notNull(),
-    loadFactor: decimal("loadFactor", { precision: 5, scale: 3 }).default("1").notNull(),
+    boxLengthMeters: decimal("boxLengthMeters", {
+      precision: 8,
+      scale: 3,
+    }).notNull(),
+    boxWidthMeters: decimal("boxWidthMeters", {
+      precision: 8,
+      scale: 3,
+    }).notNull(),
+    boxHeightMeters: decimal("boxHeightMeters", {
+      precision: 8,
+      scale: 3,
+    }).notNull(),
+    loadFactor: decimal("loadFactor", { precision: 5, scale: 3 })
+      .default("1")
+      .notNull(),
     payloadTons: decimal("payloadTons", { precision: 10, scale: 3 }),
     /** 核定油箱容量仅用于柴油领用合理性检测，不替代油表读数。 */
-    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", { precision: 10, scale: 2 }),
-    status: mysqlEnum("status", ["active", "suspended", "disabled"]).default("active").notNull(),
+    fuelTankCapacityLiters: decimal("fuelTankCapacityLiters", {
+      precision: 10,
+      scale: 2,
+    }),
+    status: mysqlEnum("status", ["active", "suspended", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(table.plateNo), driverPersonIndex: index("transport_vehicles_driver_person_index").on(table.driverPersonId) }),
+  table => ({
+    plateUnique: uniqueIndex("transport_vehicles_plate_unique").on(
+      table.plateNo
+    ),
+    driverPersonIndex: index("transport_vehicles_driver_person_index").on(
+      table.driverPersonId
+    ),
+  })
 );
 
 /** 外部渣土车司机关注服务号后的车辆通知绑定；不创建系统账号，OpenID 只保存密文与不可逆指纹。 */
@@ -1304,10 +2070,19 @@ export const officialAccountDriverBindings = mysqlTable(
     projectId: int("projectId").notNull(),
     plateNoSnapshot: varchar("plateNoSnapshot", { length: 32 }).notNull(),
     driverNameSnapshot: varchar("driverNameSnapshot", { length: 128 }),
-    driverPhoneMaskedSnapshot: varchar("driverPhoneMaskedSnapshot", { length: 32 }),
+    driverPhoneMaskedSnapshot: varchar("driverPhoneMaskedSnapshot", {
+      length: 32,
+    }),
     openIdEncrypted: text("openIdEncrypted").notNull(),
     openIdFingerprint: varchar("openIdFingerprint", { length: 64 }).notNull(),
-    status: mysqlEnum("status", ["active", "revoked", "disabled", "unsubscribed"]).default("active").notNull(),
+    status: mysqlEnum("status", [
+      "active",
+      "revoked",
+      "disabled",
+      "unsubscribed",
+    ])
+      .default("active")
+      .notNull(),
     boundAt: datetime("boundAt"),
     lastVerifiedAt: datetime("lastVerifiedAt"),
     lastFailureAt: datetime("lastFailureAt"),
@@ -1316,11 +2091,25 @@ export const officialAccountDriverBindings = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    vehicleIndex: index("official_account_driver_bindings_vehicle_index").on(table.vehicleId, table.status),
-    openIdIndex: index("official_account_driver_bindings_openid_index").on(table.openIdFingerprint, table.status),
-    projectStatusIndex: index("official_account_driver_bindings_project_status_index").on(table.projectId, table.status),
-    vehicleFk: foreignKey({ columns: [table.vehicleId], foreignColumns: [transportVehicles.id], name: "official_account_driver_bindings_vehicle_fk" }).onDelete("cascade").onUpdate("cascade"),
-  }),
+    vehicleIndex: index("official_account_driver_bindings_vehicle_index").on(
+      table.vehicleId,
+      table.status
+    ),
+    openIdIndex: index("official_account_driver_bindings_openid_index").on(
+      table.openIdFingerprint,
+      table.status
+    ),
+    projectStatusIndex: index(
+      "official_account_driver_bindings_project_status_index"
+    ).on(table.projectId, table.status),
+    vehicleFk: foreignKey({
+      columns: [table.vehicleId],
+      foreignColumns: [transportVehicles.id],
+      name: "official_account_driver_bindings_vehicle_fk",
+    })
+      .onDelete("cascade")
+      .onUpdate("cascade"),
+  })
 );
 
 /** 外部司机回复“绑定”后生成的短时链接；仅保存令牌指纹与 OpenID 密文，不在 URL 中暴露 OpenID。 */
@@ -1336,9 +2125,13 @@ export const officialAccountDriverBindingRequests = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    tokenUnique: uniqueIndex("official_account_driver_binding_requests_token_unique").on(table.tokenFingerprint),
-    openIdIndex: index("official_account_driver_binding_requests_openid_index").on(table.openIdFingerprint, table.expiresAt),
-  }),
+    tokenUnique: uniqueIndex(
+      "official_account_driver_binding_requests_token_unique"
+    ).on(table.tokenFingerprint),
+    openIdIndex: index(
+      "official_account_driver_binding_requests_openid_index"
+    ).on(table.openIdFingerprint, table.expiresAt),
+  })
 );
 
 /** 外部司机微信通知投递审计；不写入内部用户通知表，避免把外部司机伪造成系统账号。 */
@@ -1354,7 +2147,9 @@ export const officialAccountDriverNotificationRecords = mysqlTable(
     title: varchar("title", { length: 200 }).notNull(),
     content: text("content").notNull(),
     deepLink: varchar("deepLink", { length: 512 }),
-    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped"]).default("pending").notNull(),
+    status: mysqlEnum("status", ["pending", "sent", "failed", "skipped"])
+      .default("pending")
+      .notNull(),
     retryCount: int("retryCount").default(0).notNull(),
     sentAt: datetime("sentAt"),
     providerMessageId: varchar("providerMessageId", { length: 128 }),
@@ -1363,10 +2158,16 @@ export const officialAccountDriverNotificationRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    idempotencyUnique: uniqueIndex("official_account_driver_notifications_idempotency_unique").on(table.idempotencyKey),
-    vehicleStatusIndex: index("official_account_driver_notifications_vehicle_status_index").on(table.vehicleId, table.status),
-    projectCreatedIndex: index("official_account_driver_notifications_project_created_index").on(table.projectId, table.createdAt),
-  }),
+    idempotencyUnique: uniqueIndex(
+      "official_account_driver_notifications_idempotency_unique"
+    ).on(table.idempotencyKey),
+    vehicleStatusIndex: index(
+      "official_account_driver_notifications_vehicle_status_index"
+    ).on(table.vehicleId, table.status),
+    projectCreatedIndex: index(
+      "official_account_driver_notifications_project_created_index"
+    ).on(table.projectId, table.createdAt),
+  })
 );
 
 /** 外租车辆租金规则；车辆自有时不建立启用规则，历史外租合同继续保留用于结算与审计。 */
@@ -1376,15 +2177,26 @@ export const transportVehicleLeaseRules = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     vehicleId: int("vehicleId").notNull(),
     projectId: int("projectId").notNull(),
-    billingType: mysqlEnum("billingType", ["monthly", "daily", "hourly", "shift"]).notNull(),
+    billingType: mysqlEnum("billingType", [
+      "monthly",
+      "daily",
+      "hourly",
+      "shift",
+    ]).notNull(),
     rate: decimal("rate", { precision: 16, scale: 2 }).notNull(),
     effectiveFrom: date("effectiveFrom").notNull(),
     effectiveTo: date("effectiveTo"),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ vehicleStatusIndex: index("transport_vehicle_lease_rules_vehicle_status_index").on(table.vehicleId, table.status) }),
+  table => ({
+    vehicleStatusIndex: index(
+      "transport_vehicle_lease_rules_vehicle_status_index"
+    ).on(table.vehicleId, table.status),
+  })
 );
 
 /** 车辆/车主的默认收款资料。账号按业务要求明文维护，但只对运输、会计、财务授权范围可见。 */
@@ -1395,20 +2207,33 @@ export const transportVehiclePayeeAccounts = mysqlTable(
     vehicleId: int("vehicleId").notNull(),
     projectId: int("projectId").notNull(),
     payeeName: varchar("payeeName", { length: 128 }).notNull(),
-    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "bank_transfer",
+      "corporate_account",
+      "cash",
+      "wechat",
+      "alipay",
+      "other",
+    ]).notNull(),
     accountName: varchar("accountName", { length: 128 }),
     accountNo: varchar("accountNo", { length: 160 }),
     isDefault: boolean("isDefault").default(false).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    vehicleStatusIndex: index("transport_vehicle_payee_accounts_vehicle_status_index").on(table.vehicleId, table.status),
-    vehicleDefaultIndex: index("transport_vehicle_payee_accounts_vehicle_default_index").on(table.vehicleId, table.isDefault),
-  }),
+    vehicleStatusIndex: index(
+      "transport_vehicle_payee_accounts_vehicle_status_index"
+    ).on(table.vehicleId, table.status),
+    vehicleDefaultIndex: index(
+      "transport_vehicle_payee_accounts_vehicle_default_index"
+    ).on(table.vehicleId, table.isDefault),
+  })
 );
 /** 日租、小时租、台班外租车辆的实际使用/出勤依据；月租在有效合同月内按周期结算。 */
 export const transportVehicleUsageRecords = mysqlTable(
@@ -1424,7 +2249,9 @@ export const transportVehicleUsageRecords = mysqlTable(
     evidenceId: bigint("evidenceId", { mode: "number" }),
     /** 被结算后锁定，作废结算单时由受控事务释放。 */
     settlementId: bigint("settlementId", { mode: "number" }),
-    status: mysqlEnum("status", ["confirmed", "void"]).default("confirmed").notNull(),
+    status: mysqlEnum("status", ["confirmed", "void"])
+      .default("confirmed")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     voidedBy: int("voidedBy"),
@@ -1432,10 +2259,16 @@ export const transportVehicleUsageRecords = mysqlTable(
     voidReason: varchar("voidReason", { length: 500 }),
   },
   table => ({
-    vehicleDateIndex: index("transport_vehicle_usage_records_vehicle_date_index").on(table.vehicleId, table.usageDate, table.status),
-    projectDateIndex: index("transport_vehicle_usage_records_project_date_index").on(table.projectId, table.usageDate, table.status),
-    settlementIndex: index("transport_vehicle_usage_records_settlement_index").on(table.settlementId),
-  }),
+    vehicleDateIndex: index(
+      "transport_vehicle_usage_records_vehicle_date_index"
+    ).on(table.vehicleId, table.usageDate, table.status),
+    projectDateIndex: index(
+      "transport_vehicle_usage_records_project_date_index"
+    ).on(table.projectId, table.usageDate, table.status),
+    settlementIndex: index(
+      "transport_vehicle_usage_records_settlement_index"
+    ).on(table.settlementId),
+  })
 );
 /** 项目柴油指导单价；项目部供油按生效规则取价，历史领用保留单价快照。 */
 export const dieselGuidelinePrices = mysqlTable(
@@ -1443,16 +2276,25 @@ export const dieselGuidelinePrices = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
-    pricePerLiter: decimal("pricePerLiter", { precision: 16, scale: 2 }).notNull(),
+    pricePerLiter: decimal("pricePerLiter", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     effectiveFrom: date("effectiveFrom").notNull(),
     effectiveTo: date("effectiveTo"),
-    status: mysqlEnum("status", ["draft", "active", "disabled"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "active", "disabled"])
+      .default("draft")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectStatusDateIndex: index("diesel_guideline_prices_project_status_date_index").on(table.projectId, table.status, table.effectiveFrom) }),
+  table => ({
+    projectStatusDateIndex: index(
+      "diesel_guideline_prices_project_status_date_index"
+    ).on(table.projectId, table.status, table.effectiveFrom),
+  })
 );
 
 /**
@@ -1464,13 +2306,19 @@ export const dieselPriceAlertRules = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
-    thresholdPercent: decimal("thresholdPercent", { precision: 8, scale: 2 }).default("10.00").notNull(),
+    thresholdPercent: decimal("thresholdPercent", { precision: 8, scale: 2 })
+      .default("10.00")
+      .notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectUnique: uniqueIndex("diesel_price_alert_rules_project_unique").on(table.projectId) }),
+  table => ({
+    projectUnique: uniqueIndex("diesel_price_alert_rules_project_unique").on(
+      table.projectId
+    ),
+  })
 );
 
 /**
@@ -1488,12 +2336,18 @@ export const dieselRefuelRecords = mysqlTable(
     machineId: int("machineId"),
     /** 车辆需从运费扣油款时必须关联具体运输趟次；已结算趟次不得重复领用。 */
     transportTripId: bigint("transportTripId", { mode: "number" }),
-    supplyMethod: mysqlEnum("supplyMethod", ["project_supply", "external_station"]).notNull(),
+    supplyMethod: mysqlEnum("supplyMethod", [
+      "project_supply",
+      "external_station",
+    ]).notNull(),
     stationOrSupplierName: varchar("stationOrSupplierName", { length: 160 }),
     liters: decimal("liters", { precision: 12, scale: 3 }).notNull(),
     /** 加油站自购填写实际单价；项目部供油由有效指导价快照写入。 */
     actualUnitPrice: decimal("actualUnitPrice", { precision: 16, scale: 2 }),
-    appliedUnitPrice: decimal("appliedUnitPrice", { precision: 16, scale: 2 }).notNull(),
+    appliedUnitPrice: decimal("appliedUnitPrice", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     deductFromFreight: boolean("deductFromFreight").default(false).notNull(),
     refueledAt: datetime("refueledAt").notNull(),
@@ -1501,7 +2355,9 @@ export const dieselRefuelRecords = mysqlTable(
     receiptNo: varchar("receiptNo", { length: 64 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["draft", "approved", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "approved", "settled", "void"])
+      .default("draft")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     approvedBy: int("approvedBy"),
     approvedAt: datetime("approvedAt"),
@@ -1509,12 +2365,26 @@ export const dieselRefuelRecords = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    recordNoUnique: uniqueIndex("diesel_refuel_records_no_unique").on(table.recordNo),
-    projectDateIndex: index("diesel_refuel_records_project_date_index").on(table.projectId, table.refueledAt),
-    tripStatusIndex: index("diesel_refuel_records_trip_status_index").on(table.transportTripId, table.status),
-    vehicleDateIndex: index("diesel_refuel_records_vehicle_date_index").on(table.vehicleId, table.refueledAt),
-    machineDateIndex: index("diesel_refuel_records_machine_date_index").on(table.machineId, table.refueledAt),
-  }),
+    recordNoUnique: uniqueIndex("diesel_refuel_records_no_unique").on(
+      table.recordNo
+    ),
+    projectDateIndex: index("diesel_refuel_records_project_date_index").on(
+      table.projectId,
+      table.refueledAt
+    ),
+    tripStatusIndex: index("diesel_refuel_records_trip_status_index").on(
+      table.transportTripId,
+      table.status
+    ),
+    vehicleDateIndex: index("diesel_refuel_records_vehicle_date_index").on(
+      table.vehicleId,
+      table.refueledAt
+    ),
+    machineDateIndex: index("diesel_refuel_records_machine_date_index").on(
+      table.machineId,
+      table.refueledAt
+    ),
+  })
 );
 
 /**
@@ -1530,8 +2400,17 @@ export const rfidWriterDevices = mysqlTable(
     displayName: varchar("displayName", { length: 128 }).notNull(),
     /** 用户要求先预留的写卡器型号；可为空以兼容采购前的登记。 */
     model: varchar("model", { length: 128 }),
-    connectionMode: mysqlEnum("connectionMode", ["manual_placeholder", "usb", "serial", "network"]).default("manual_placeholder").notNull(),
-    status: mysqlEnum("status", ["active", "disabled", "maintenance"]).default("active").notNull(),
+    connectionMode: mysqlEnum("connectionMode", [
+      "manual_placeholder",
+      "usb",
+      "serial",
+      "network",
+    ])
+      .default("manual_placeholder")
+      .notNull(),
+    status: mysqlEnum("status", ["active", "disabled", "maintenance"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     lastConfirmedAt: datetime("lastConfirmedAt"),
     createdBy: int("createdBy").notNull(),
@@ -1539,9 +2418,14 @@ export const rfidWriterDevices = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectDeviceCodeUnique: uniqueIndex("rfid_writer_devices_project_code_unique").on(table.projectId, table.deviceCode),
-    projectStatusIndex: index("rfid_writer_devices_project_status_index").on(table.projectId, table.status),
-  }),
+    projectDeviceCodeUnique: uniqueIndex(
+      "rfid_writer_devices_project_code_unique"
+    ).on(table.projectId, table.deviceCode),
+    projectStatusIndex: index("rfid_writer_devices_project_status_index").on(
+      table.projectId,
+      table.status
+    ),
+  })
 );
 
 /**
@@ -1564,7 +2448,9 @@ export const transportVehicleRfidCards = mysqlTable(
     driverPhoneEncrypted: text("driverPhoneEncrypted"),
     driverPhoneMasked: varchar("driverPhoneMasked", { length: 32 }),
     payloadVersion: int("payloadVersion").default(1).notNull(),
-    status: mysqlEnum("status", ["active", "suspended", "revoked"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "suspended", "revoked"])
+      .default("active")
+      .notNull(),
     issuedAt: datetime("issuedAt"),
     lastWrittenAt: datetime("lastWrittenAt"),
     revokedAt: datetime("revokedAt"),
@@ -1573,11 +2459,19 @@ export const transportVehicleRfidCards = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    cardUidUnique: uniqueIndex("transport_vehicle_rfid_cards_uid_unique").on(table.cardUidFingerprint),
-    projectManagementCodeUnique: uniqueIndex("transport_vehicle_rfid_cards_project_management_code_unique").on(table.projectId, table.managementCode),
-    vehicleStatusIndex: index("transport_vehicle_rfid_cards_vehicle_status_index").on(table.vehicleId, table.status),
-    projectStatusIndex: index("transport_vehicle_rfid_cards_project_status_index").on(table.projectId, table.status),
-  }),
+    cardUidUnique: uniqueIndex("transport_vehicle_rfid_cards_uid_unique").on(
+      table.cardUidFingerprint
+    ),
+    projectManagementCodeUnique: uniqueIndex(
+      "transport_vehicle_rfid_cards_project_management_code_unique"
+    ).on(table.projectId, table.managementCode),
+    vehicleStatusIndex: index(
+      "transport_vehicle_rfid_cards_vehicle_status_index"
+    ).on(table.vehicleId, table.status),
+    projectStatusIndex: index(
+      "transport_vehicle_rfid_cards_project_status_index"
+    ).on(table.projectId, table.status),
+  })
 );
 
 /** 每次写卡、补写或挂失均生成任务与载荷指纹，硬件确认失败也要留下审计而不得静默覆盖。 */
@@ -1595,12 +2489,21 @@ export const rfidCardWriteJobs = mysqlTable(
     /** 正式 PC 写卡任务将 RC3 载荷和签名深链 AES-GCM 加密暂存；浏览器和普通任务列表均不返回明文。 */
     payloadEncrypted: text("payloadEncrypted"),
     /** manual_confirmation、mobile_web_nfc、pc_bridge。仅 pc_bridge 可由本地桥接回读后自动确认。 */
-    executionMode: varchar("executionMode", { length: 32 }).default("manual_confirmation").notNull(),
+    executionMode: varchar("executionMode", { length: 32 })
+      .default("manual_confirmation")
+      .notNull(),
     /** 一次性桥接令牌只存 SHA-256 摘要，过期或完成后失效。 */
     bridgeTokenHash: varchar("bridgeTokenHash", { length: 64 }),
     bridgeTokenExpiresAt: datetime("bridgeTokenExpiresAt"),
     payloadVersion: int("payloadVersion").notNull(),
-    status: mysqlEnum("status", ["prepared", "confirmed", "failed", "cancelled"]).default("prepared").notNull(),
+    status: mysqlEnum("status", [
+      "prepared",
+      "confirmed",
+      "failed",
+      "cancelled",
+    ])
+      .default("prepared")
+      .notNull(),
     failureReason: varchar("failureReason", { length: 500 }),
     preparedBy: int("preparedBy").notNull(),
     confirmedBy: int("confirmedBy"),
@@ -1610,9 +2513,15 @@ export const rfidCardWriteJobs = mysqlTable(
   },
   table => ({
     jobNoUnique: uniqueIndex("rfid_card_write_jobs_no_unique").on(table.jobNo),
-    cardCreatedIndex: index("rfid_card_write_jobs_card_created_index").on(table.cardId, table.createdAt),
-    projectStatusIndex: index("rfid_card_write_jobs_project_status_index").on(table.projectId, table.status),
-  }),
+    cardCreatedIndex: index("rfid_card_write_jobs_card_created_index").on(
+      table.cardId,
+      table.createdAt
+    ),
+    projectStatusIndex: index("rfid_card_write_jobs_project_status_index").on(
+      table.projectId,
+      table.status
+    ),
+  })
 );
 
 /** 运输价格规则。步长默认 500 米但允许后台按合同修改。 */
@@ -1622,17 +2531,38 @@ export const freightRateRules = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     materialName: varchar("materialName", { length: 128 }),
-    settlementUnit: mysqlEnum("settlementUnit", ["cubic_meter", "ton", "trip"]).notNull(),
-    startDistanceKm: decimal("startDistanceKm", { precision: 8, scale: 3 }).default("1").notNull(),
-    basePricePerUnit: decimal("basePricePerUnit", { precision: 16, scale: 2 }).notNull(),
+    settlementUnit: mysqlEnum("settlementUnit", [
+      "cubic_meter",
+      "ton",
+      "trip",
+    ]).notNull(),
+    startDistanceKm: decimal("startDistanceKm", { precision: 8, scale: 3 })
+      .default("1")
+      .notNull(),
+    basePricePerUnit: decimal("basePricePerUnit", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     stepMeters: int("stepMeters").default(500).notNull(),
-    stepIncreasePerUnit: decimal("stepIncreasePerUnit", { precision: 16, scale: 2 }).default("0").notNull(),
+    stepIncreasePerUnit: decimal("stepIncreasePerUnit", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     effectiveFrom: date("effectiveFrom").notNull(),
     effectiveTo: date("effectiveTo"),
-    status: mysqlEnum("status", ["draft", "active", "disabled"]).default("draft").notNull(),
+    status: mysqlEnum("status", ["draft", "active", "disabled"])
+      .default("draft")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  table => ({ projectIndex: index("freight_rate_rules_project_index").on(table.projectId, table.status) }),
+  table => ({
+    projectIndex: index("freight_rate_rules_project_index").on(
+      table.projectId,
+      table.status
+    ),
+  })
 );
 
 /** 装土点和卸土点由项目运输管理员维护；每个现场可指定一名负责刷卡确认的管理员。 */
@@ -1649,19 +2579,32 @@ export const transportSites = mysqlTable(
     administratorUserId: int("administratorUserId"),
     /** 卸土点统一安全规则；装土点保留默认值但不参与卸土校验。 */
     minimumTransitMinutes: int("minimumTransitMinutes").default(10).notNull(),
-    minimumTransitEnabled: boolean("minimumTransitEnabled").default(true).notNull(),
+    minimumTransitEnabled: boolean("minimumTransitEnabled")
+      .default(true)
+      .notNull(),
     unloadGeofenceMeters: int("unloadGeofenceMeters").default(300).notNull(),
-    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled").default(true).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled")
+      .default(true)
+      .notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectTypeStatusIndex: index("transport_sites_project_type_status_index").on(table.projectId, table.siteType, table.status),
-    projectNameUnique: uniqueIndex("transport_sites_project_type_name_unique").on(table.projectId, table.siteType, table.name),
-    administratorIndex: index("transport_sites_administrator_index").on(table.administratorUserId, table.status),
-  }),
+    projectTypeStatusIndex: index(
+      "transport_sites_project_type_status_index"
+    ).on(table.projectId, table.siteType, table.status),
+    projectNameUnique: uniqueIndex(
+      "transport_sites_project_type_name_unique"
+    ).on(table.projectId, table.siteType, table.name),
+    administratorIndex: index("transport_sites_administrator_index").on(
+      table.administratorUserId,
+      table.status
+    ),
+  })
 );
 
 /** 装土/卸土现场读卡设备台账；设备归属一个启用地点，实际操作仍要求登录用户处于该项目运输权限和地点管理员边界内。 */
@@ -1673,16 +2616,23 @@ export const transportReaderDevices = mysqlTable(
     siteId: int("siteId").notNull(),
     deviceCode: varchar("deviceCode", { length: 128 }).notNull(),
     displayName: varchar("displayName", { length: 128 }).notNull(),
-    status: mysqlEnum("status", ["active", "disabled", "maintenance"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled", "maintenance"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectDeviceCodeUnique: uniqueIndex("transport_reader_devices_project_code_unique").on(table.projectId, table.deviceCode),
-    siteStatusIndex: index("transport_reader_devices_site_status_index").on(table.siteId, table.status),
-  }),
+    projectDeviceCodeUnique: uniqueIndex(
+      "transport_reader_devices_project_code_unique"
+    ).on(table.projectId, table.deviceCode),
+    siteStatusIndex: index("transport_reader_devices_site_status_index").on(
+      table.siteId,
+      table.status
+    ),
+  })
 );
 
 /** 项目装卸路线预设：票据只选择路线，服务端锁定装卸点、里程与生效运价快照。 */
@@ -1694,76 +2644,138 @@ export const transportRoutePresets = mysqlTable(
     loadSiteId: int("loadSiteId").notNull(),
     unloadSiteId: int("unloadSiteId").notNull(),
     freightRuleId: int("freightRuleId").notNull(),
-    presetDistanceKm: decimal("presetDistanceKm", { precision: 10, scale: 3 }).notNull(),
+    presetDistanceKm: decimal("presetDistanceKm", {
+      precision: 10,
+      scale: 3,
+    }).notNull(),
     /** 车辆装土确认后达到该时间才允许在卸土点闭环；默认 10 分钟，按线路由运输负责人调整。 */
     minimumTransitMinutes: int("minimumTransitMinutes").default(10).notNull(),
     /** 是否将最短运输时间作为卸土硬拦截；关闭后仅留待核验提示。 */
-    minimumTransitEnabled: boolean("minimumTransitEnabled").default(true).notNull(),
+    minimumTransitEnabled: boolean("minimumTransitEnabled")
+      .default(true)
+      .notNull(),
     /** 卸土手机定位与预设卸土点坐标的最大允许偏差，单位米；默认 300 米。 */
     unloadGeofenceMeters: int("unloadGeofenceMeters").default(300).notNull(),
     /** 是否将卸土点定位范围作为卸土硬拦截；关闭后仅留待核验提示。 */
-    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled").default(true).notNull(),
+    unloadGeofenceEnabled: boolean("unloadGeofenceEnabled")
+      .default(true)
+      .notNull(),
     /** 装土点未刷卡时，是否允许本路线仅由卸土点读卡在安全阈值通过后补齐运输闭环；默认关闭。 */
-    unloadOnlyCloseEnabled: boolean("unloadOnlyCloseEnabled").default(false).notNull(),
+    unloadOnlyCloseEnabled: boolean("unloadOnlyCloseEnabled")
+      .default(false)
+      .notNull(),
     isDefault: boolean("isDefault").default(false).notNull(),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ projectStatusIndex: index("transport_route_presets_project_status_index").on(table.projectId, table.status), projectSitesUnique: uniqueIndex("transport_route_presets_project_sites_unique").on(table.projectId, table.loadSiteId, table.unloadSiteId) }),
+  table => ({
+    projectStatusIndex: index(
+      "transport_route_presets_project_status_index"
+    ).on(table.projectId, table.status),
+    projectSitesUnique: uniqueIndex(
+      "transport_route_presets_project_sites_unique"
+    ).on(table.projectId, table.loadSiteId, table.unloadSiteId),
+  })
 );
 
 /** 运输趟次及其由规则快照计算出的金额。 */
 export const transportTrips = mysqlTable(
- "transport_trips",
- {
-   id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-   tripNo: varchar("tripNo", { length: 64 }).notNull(),
-   vehicleId: int("vehicleId").notNull(),
-   projectId: int("projectId").notNull(),
-   freightRuleId: int("freightRuleId").notNull(),
-   /** 票据来源：默认 NFC 车辆卡闭环；车牌直拍为卡片缺失时的有影像备用票据，须人工核验。 */
-   invoiceMode: mysqlEnum("invoiceMode", ["nfc_card", "plate_photo"]).default("nfc_card").notNull(),
-   loadSiteId: int("loadSiteId"),
-   unloadSiteId: int("unloadSiteId"),
-   startAt: datetime("startAt").notNull(),
-   endAt: datetime("endAt"),
-   actualDistanceKm: decimal("actualDistanceKm", { precision: 10, scale: 3 }),
-   volumeCubicMeters: decimal("volumeCubicMeters", { precision: 12, scale: 3 }),
-   weightTons: decimal("weightTons", { precision: 12, scale: 3 }),
-   calculatedUnitPrice: decimal("calculatedUnitPrice", { precision: 16, scale: 2 }),
-   calculatedAmount: decimal("calculatedAmount", { precision: 16, scale: 2 }),
-   /** 仅在结算时由已核准且关联本趟的柴油领用记录汇总，不得由浏览器直接写入。 */
-   fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-   netSettlementAmount: decimal("netSettlementAmount", { precision: 16, scale: 2 }),
-   fuelSettlementSnapshot: json("fuelSettlementSnapshot"),
-   routeSnapshot: json("routeSnapshot"),
-   evidenceId: bigint("evidenceId", { mode: "number" }),
-   status: mysqlEnum("status", ["draft", "submitted", "verified", "settled", "void"]).default("draft").notNull(),
-   createdAt: timestamp("createdAt").defaultNow().notNull(),
-   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-   loadConfirmedAt: datetime("loadConfirmedAt"),
-   unloadConfirmedAt: datetime("unloadConfirmedAt"),
-   loadConfirmedBy: int("loadConfirmedBy"),
-   unloadConfirmedBy: int("unloadConfirmedBy"),
-   loadEventId: bigint("loadEventId", { mode: "number" }),
-   unloadEventId: bigint("unloadEventId", { mode: "number" }),
-   /** 同车同项目在途刷卡会话键，仅在装土确认至卸土确认期间有效，防止重复装土创建并行票据。 */
-   nfcTransitKey: varchar("nfcTransitKey", { length: 128 }),
-   /** 所有开票来源共用的一车一在途锁；仅在卸土、作废或终态结算后清空，数据库唯一索引兜底并发重复开票。 */
-   activeVehicleTransitKey: varchar("activeVehicleTransitKey", { length: 128 }),
-   exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"]).default("none").notNull(),
- },
- table => ({
-   tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
-   vehicleDateIndex: index("transport_trips_vehicle_date_index").on(table.vehicleId, table.startAt),
-    projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(table.projectId, table.loadSiteId, table.startAt),
-    projectStatusStartIndex: index("transport_trips_project_status_start_index").on(table.projectId, table.status, table.startAt),
-    projectUnloadSiteIndex: index("transport_trips_project_unload_site_index").on(table.projectId, table.unloadSiteId, table.startAt),
-    projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(table.projectId, table.nfcTransitKey),
-    projectActiveVehicleTransitUnique: uniqueIndex("transport_trips_project_active_vehicle_transit_unique").on(table.projectId, table.activeVehicleTransitKey),
-  }),
+  "transport_trips",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    tripNo: varchar("tripNo", { length: 64 }).notNull(),
+    vehicleId: int("vehicleId").notNull(),
+    projectId: int("projectId").notNull(),
+    freightRuleId: int("freightRuleId").notNull(),
+    /** 票据来源：默认 NFC 车辆卡闭环；车牌直拍为卡片缺失时的有影像备用票据，须人工核验。 */
+    invoiceMode: mysqlEnum("invoiceMode", ["nfc_card", "plate_photo"])
+      .default("nfc_card")
+      .notNull(),
+    loadSiteId: int("loadSiteId"),
+    unloadSiteId: int("unloadSiteId"),
+    startAt: datetime("startAt").notNull(),
+    endAt: datetime("endAt"),
+    actualDistanceKm: decimal("actualDistanceKm", { precision: 10, scale: 3 }),
+    volumeCubicMeters: decimal("volumeCubicMeters", {
+      precision: 12,
+      scale: 3,
+    }),
+    weightTons: decimal("weightTons", { precision: 12, scale: 3 }),
+    calculatedUnitPrice: decimal("calculatedUnitPrice", {
+      precision: 16,
+      scale: 2,
+    }),
+    calculatedAmount: decimal("calculatedAmount", { precision: 16, scale: 2 }),
+    /** 仅在结算时由已核准且关联本趟的柴油领用记录汇总，不得由浏览器直接写入。 */
+    fuelDeductionAmount: decimal("fuelDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    netSettlementAmount: decimal("netSettlementAmount", {
+      precision: 16,
+      scale: 2,
+    }),
+    fuelSettlementSnapshot: json("fuelSettlementSnapshot"),
+    routeSnapshot: json("routeSnapshot"),
+    evidenceId: bigint("evidenceId", { mode: "number" }),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "verified",
+      "settled",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    loadConfirmedAt: datetime("loadConfirmedAt"),
+    unloadConfirmedAt: datetime("unloadConfirmedAt"),
+    loadConfirmedBy: int("loadConfirmedBy"),
+    unloadConfirmedBy: int("unloadConfirmedBy"),
+    loadEventId: bigint("loadEventId", { mode: "number" }),
+    unloadEventId: bigint("unloadEventId", { mode: "number" }),
+    /** 同车同项目在途刷卡会话键，仅在装土确认至卸土确认期间有效，防止重复装土创建并行票据。 */
+    nfcTransitKey: varchar("nfcTransitKey", { length: 128 }),
+    /** 所有开票来源共用的一车一在途锁；仅在卸土、作废或终态结算后清空，数据库唯一索引兜底并发重复开票。 */
+    activeVehicleTransitKey: varchar("activeVehicleTransitKey", {
+      length: 128,
+    }),
+    exceptionStatus: mysqlEnum("exceptionStatus", ["none", "open", "resolved"])
+      .default("none")
+      .notNull(),
+  },
+  table => ({
+    tripUnique: uniqueIndex("transport_trips_no_unique").on(table.tripNo),
+    vehicleDateIndex: index("transport_trips_vehicle_date_index").on(
+      table.vehicleId,
+      table.startAt
+    ),
+    projectLoadSiteIndex: index("transport_trips_project_load_site_index").on(
+      table.projectId,
+      table.loadSiteId,
+      table.startAt
+    ),
+    projectStatusStartIndex: index(
+      "transport_trips_project_status_start_index"
+    ).on(table.projectId, table.status, table.startAt),
+    projectUnloadSiteIndex: index(
+      "transport_trips_project_unload_site_index"
+    ).on(table.projectId, table.unloadSiteId, table.startAt),
+    projectTransitKeyIndex: index("transport_trips_nfc_transit_key_index").on(
+      table.projectId,
+      table.nfcTransitKey
+    ),
+    projectActiveVehicleTransitUnique: uniqueIndex(
+      "transport_trips_project_active_vehicle_transit_unique"
+    ).on(table.projectId, table.activeVehicleTransitKey),
+  })
 );
 
 /**
@@ -1780,26 +2792,74 @@ export const transportVehicleSettlements = mysqlTable(
     periodStart: date("periodStart").notNull(),
     periodEnd: date("periodEnd").notNull(),
     /** 按趟、外租使用/租赁或经审核的调整结算；历史单据默认兼容 trip。 */
-    settlementKind: mysqlEnum("settlementKind", ["trip", "lease", "adjustment"]).default("trip").notNull(),
+    settlementKind: mysqlEnum("settlementKind", ["trip", "lease", "adjustment"])
+      .default("trip")
+      .notNull(),
     basisDescription: varchar("basisDescription", { length: 500 }),
     tripCount: int("tripCount").notNull(),
-    totalVolumeCubicMeters: decimal("totalVolumeCubicMeters", { precision: 14, scale: 3 }).default("0").notNull(),
-    grossFreightAmount: decimal("grossFreightAmount", { precision: 16, scale: 2 }).notNull(),
-    fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    totalVolumeCubicMeters: decimal("totalVolumeCubicMeters", {
+      precision: 14,
+      scale: 3,
+    })
+      .default("0")
+      .notNull(),
+    grossFreightAmount: decimal("grossFreightAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    fuelDeductionAmount: decimal("fuelDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     /** 车辆配件、维修等经审核资产费用扣款，与柴油扣款分列保留。 */
-    assetDeductionAmount: decimal("assetDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    assetDeductionAmount: decimal("assetDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     /** 前期待收补款在本期运费中抵扣；原始补款与本次抵扣均通过独立分配表可追溯。 */
-    carryForwardDeductionAmount: decimal("carryForwardDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    carryForwardDeductionAmount: decimal("carryForwardDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    netPayableAmount: decimal("netPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     payeeName: varchar("payeeName", { length: 128 }).notNull(),
     /** 人工付款需要原文账户信息以便制作银行导入表；仅受运输/财务权限和项目范围保护。 */
     payeeAccount: varchar("payeeAccount", { length: 160 }),
-    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "bank_transfer",
+      "corporate_account",
+      "cash",
+      "wechat",
+      "alipay",
+      "other",
+    ])
+      .default("bank_transfer")
+      .notNull(),
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
     /** receivable 表示扣款超过本期应付，offset 表示已在后期抵扣；均不产生负数付款。 */
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "receivable", "offset", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "partial",
+      "paid",
+      "receivable",
+      "offset",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),
@@ -1811,11 +2871,23 @@ export const transportVehicleSettlements = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    settlementNoUnique: uniqueIndex("transport_vehicle_settlements_no_unique").on(table.settlementNo),
-    projectVehiclePeriodIndex: index("transport_vehicle_settlements_project_vehicle_period_index").on(table.projectId, table.vehicleId, table.periodStart, table.periodEnd),
-    projectStatusIndex: index("transport_vehicle_settlements_project_status_index").on(table.projectId, table.status),
-    vehicleForeignKey: foreignKey({ columns: [table.vehicleId], foreignColumns: [transportVehicles.id], name: "transport_vehicle_settlements_vehicle_fk" }).onDelete("restrict").onUpdate("cascade"),
-  }),
+    settlementNoUnique: uniqueIndex(
+      "transport_vehicle_settlements_no_unique"
+    ).on(table.settlementNo),
+    projectVehiclePeriodIndex: index(
+      "transport_vehicle_settlements_project_vehicle_period_index"
+    ).on(table.projectId, table.vehicleId, table.periodStart, table.periodEnd),
+    projectStatusIndex: index(
+      "transport_vehicle_settlements_project_status_index"
+    ).on(table.projectId, table.status),
+    vehicleForeignKey: foreignKey({
+      columns: [table.vehicleId],
+      foreignColumns: [transportVehicles.id],
+      name: "transport_vehicle_settlements_vehicle_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+  })
 );
 
 /** 结算单逐趟快照。一个运输趟次只能归属一张非历史迁移结算单，避免重复付款。 */
@@ -1827,18 +2899,47 @@ export const transportVehicleSettlementItems = mysqlTable(
     tripId: bigint("tripId", { mode: "number" }).notNull(),
     tripNo: varchar("tripNo", { length: 64 }).notNull(),
     tripDate: date("tripDate").notNull(),
-    volumeCubicMeters: decimal("volumeCubicMeters", { precision: 14, scale: 3 }).default("0").notNull(),
-    grossFreightAmount: decimal("grossFreightAmount", { precision: 16, scale: 2 }).notNull(),
-    fuelDeductionAmount: decimal("fuelDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
+    volumeCubicMeters: decimal("volumeCubicMeters", { precision: 14, scale: 3 })
+      .default("0")
+      .notNull(),
+    grossFreightAmount: decimal("grossFreightAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    fuelDeductionAmount: decimal("fuelDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    netPayableAmount: decimal("netPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    settlementTripUnique: uniqueIndex("transport_vehicle_settlement_items_trip_unique").on(table.tripId),
-    settlementIndex: index("transport_vehicle_settlement_items_settlement_index").on(table.settlementId),
-    settlementForeignKey: foreignKey({ columns: [table.settlementId], foreignColumns: [transportVehicleSettlements.id], name: "transport_vehicle_settlement_items_settlement_fk" }).onDelete("restrict").onUpdate("cascade"),
-    tripForeignKey: foreignKey({ columns: [table.tripId], foreignColumns: [transportTrips.id], name: "transport_vehicle_settlement_items_trip_fk" }).onDelete("restrict").onUpdate("cascade"),
-  }),
+    settlementTripUnique: uniqueIndex(
+      "transport_vehicle_settlement_items_trip_unique"
+    ).on(table.tripId),
+    settlementIndex: index(
+      "transport_vehicle_settlement_items_settlement_index"
+    ).on(table.settlementId),
+    settlementForeignKey: foreignKey({
+      columns: [table.settlementId],
+      foreignColumns: [transportVehicleSettlements.id],
+      name: "transport_vehicle_settlement_items_settlement_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    tripForeignKey: foreignKey({
+      columns: [table.tripId],
+      foreignColumns: [transportTrips.id],
+      name: "transport_vehicle_settlement_items_trip_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+  })
 );
 
 /**
@@ -1851,18 +2952,33 @@ export const settlementPaymentRecords = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     /** 所有实际收付均落入同一付款明细；分包也必须逐笔关联付款凭证。 */
-    settlementType: mysqlEnum("settlementType", ["transport_vehicle", "machine", "payroll", "daily_wage", "subcontract"]).notNull(),
+    settlementType: mysqlEnum("settlementType", [
+      "transport_vehicle",
+      "machine",
+      "payroll",
+      "daily_wage",
+      "subcontract",
+    ]).notNull(),
     settlementId: bigint("settlementId", { mode: "number" }).notNull(),
     direction: mysqlEnum("direction", ["expense", "income"]).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     paymentDate: date("paymentDate").notNull(),
-    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "bank_transfer",
+      "corporate_account",
+      "cash",
+      "wechat",
+      "alipay",
+      "other",
+    ]).notNull(),
     payeeNameSnapshot: varchar("payeeNameSnapshot", { length: 128 }).notNull(),
     payeeAccountSnapshot: varchar("payeeAccountSnapshot", { length: 160 }),
     paymentReference: varchar("paymentReference", { length: 128 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "reversed"])
+      .default("active")
+      .notNull(),
     paidBy: int("paidBy").notNull(),
     paidAt: datetime("paidAt").notNull(),
     reversedBy: int("reversedBy"),
@@ -1871,11 +2987,28 @@ export const settlementPaymentRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    settlementIndex: index("settlement_payment_records_settlement_index").on(table.settlementType, table.settlementId, table.status),
-    projectDateIndex: index("settlement_payment_records_project_date_index").on(table.projectId, table.paymentDate, table.status),
-    projectDateTypeStatusIndex: index("settlement_payment_records_project_date_type_status_index").on(table.projectId, table.paymentDate, table.settlementType, table.status),
-    evidenceIndex: index("settlement_payment_records_evidence_index").on(table.evidenceId),
-  }),
+    settlementIndex: index("settlement_payment_records_settlement_index").on(
+      table.settlementType,
+      table.settlementId,
+      table.status
+    ),
+    projectDateIndex: index("settlement_payment_records_project_date_index").on(
+      table.projectId,
+      table.paymentDate,
+      table.status
+    ),
+    projectDateTypeStatusIndex: index(
+      "settlement_payment_records_project_date_type_status_index"
+    ).on(
+      table.projectId,
+      table.paymentDate,
+      table.settlementType,
+      table.status
+    ),
+    evidenceIndex: index("settlement_payment_records_evidence_index").on(
+      table.evidenceId
+    ),
+  })
 );
 /** 车辆待收补款用于后期结算抵扣的分配记录；不覆盖原始油料或运输金额。 */
 export const transportVehicleCarryForwardOffsets = mysqlTable(
@@ -1884,10 +3017,16 @@ export const transportVehicleCarryForwardOffsets = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     vehicleId: int("vehicleId").notNull(),
-    sourceSettlementId: bigint("sourceSettlementId", { mode: "number" }).notNull(),
-    targetSettlementId: bigint("targetSettlementId", { mode: "number" }).notNull(),
+    sourceSettlementId: bigint("sourceSettlementId", {
+      mode: "number",
+    }).notNull(),
+    targetSettlementId: bigint("targetSettlementId", {
+      mode: "number",
+    }).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
-    status: mysqlEnum("status", ["active", "reversed"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "reversed"])
+      .default("active")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     reversedBy: int("reversedBy"),
@@ -1895,10 +3034,19 @@ export const transportVehicleCarryForwardOffsets = mysqlTable(
     reversalReason: varchar("reversalReason", { length: 500 }),
   },
   table => ({
-    sourceIndex: index("transport_vehicle_carry_offsets_source_index").on(table.sourceSettlementId, table.status),
-    targetIndex: index("transport_vehicle_carry_offsets_target_index").on(table.targetSettlementId, table.status),
-    vehicleIndex: index("transport_vehicle_carry_offsets_vehicle_index").on(table.vehicleId, table.status),
-  }),
+    sourceIndex: index("transport_vehicle_carry_offsets_source_index").on(
+      table.sourceSettlementId,
+      table.status
+    ),
+    targetIndex: index("transport_vehicle_carry_offsets_target_index").on(
+      table.targetSettlementId,
+      table.status
+    ),
+    vehicleIndex: index("transport_vehicle_carry_offsets_vehicle_index").on(
+      table.vehicleId,
+      table.status
+    ),
+  })
 );
 /** 装土与卸土刷卡原子事件；设备重传和乱序均留痕并进入人工复核。 */
 export const transportCardEvents = mysqlTable(
@@ -1911,7 +3059,13 @@ export const transportCardEvents = mysqlTable(
     eventType: mysqlEnum("eventType", ["load", "unload"]).notNull(),
     siteId: int("siteId"),
     operatorUserId: int("operatorUserId"),
-    source: mysqlEnum("source", ["card_reader", "manual_review", "offline_replay"]).default("card_reader").notNull(),
+    source: mysqlEnum("source", [
+      "card_reader",
+      "manual_review",
+      "offline_replay",
+    ])
+      .default("card_reader")
+      .notNull(),
     idempotencyKey: varchar("idempotencyKey", { length: 160 }).notNull(),
     deviceId: varchar("deviceId", { length: 128 }),
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
@@ -1920,18 +3074,37 @@ export const transportCardEvents = mysqlTable(
     payloadFingerprint: varchar("payloadFingerprint", { length: 64 }),
     occurredAt: datetime("occurredAt").notNull(),
     receivedAt: timestamp("receivedAt").defaultNow().notNull(),
-    validationStatus: mysqlEnum("validationStatus", ["accepted", "duplicate", "rejected", "needs_review"]).default("accepted").notNull(),
+    validationStatus: mysqlEnum("validationStatus", [
+      "accepted",
+      "duplicate",
+      "rejected",
+      "needs_review",
+    ])
+      .default("accepted")
+      .notNull(),
     validationReason: varchar("validationReason", { length: 500 }),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    idempotencyUnique: uniqueIndex("transport_card_events_idempotency_unique").on(table.idempotencyKey),
-    tripIndex: index("transport_card_events_trip_index").on(table.tripId, table.occurredAt),
-    vehicleIndex: index("transport_card_events_vehicle_index").on(table.vehicleId, table.occurredAt),
-    siteEventIndex: index("transport_card_events_site_event_index").on(table.siteId, table.eventType, table.occurredAt),
-  }),
+    idempotencyUnique: uniqueIndex(
+      "transport_card_events_idempotency_unique"
+    ).on(table.idempotencyKey),
+    tripIndex: index("transport_card_events_trip_index").on(
+      table.tripId,
+      table.occurredAt
+    ),
+    vehicleIndex: index("transport_card_events_vehicle_index").on(
+      table.vehicleId,
+      table.occurredAt
+    ),
+    siteEventIndex: index("transport_card_events_site_event_index").on(
+      table.siteId,
+      table.eventType,
+      table.occurredAt
+    ),
+  })
 );
 
 /** 采购申请主单。采购明细、入库、领用通过业务服务层按单据关联。 */
@@ -1943,9 +3116,22 @@ export const purchaseRequests = mysqlTable(
     projectId: int("projectId").notNull(),
     categoryId: int("categoryId").notNull(),
     requesterId: int("requesterId").notNull(),
-    amount: decimal("amount", { precision: 16, scale: 2 }).default("0").notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     description: text("description").notNull(),
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "ordered", "received", "stocked", "closed", "rejected"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "ordered",
+      "received",
+      "stocked",
+      "closed",
+      "rejected",
+    ])
+      .default("draft")
+      .notNull(),
     /** 审批、入库和关闭责任人用于单据全流程追溯；历史数据允许为空。 */
     approvedBy: int("approvedBy"),
     approvedAt: datetime("approvedAt"),
@@ -1955,7 +3141,11 @@ export const purchaseRequests = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ requestUnique: uniqueIndex("purchase_requests_no_unique").on(table.requestNo) }),
+  table => ({
+    requestUnique: uniqueIndex("purchase_requests_no_unique").on(
+      table.requestNo
+    ),
+  })
 );
 
 /** 供应商主数据按组织维护，联系方式不在移动端面向无关岗位暴露。 */
@@ -1968,14 +3158,18 @@ export const suppliers = mysqlTable(
     unifiedSocialCreditCode: varchar("unifiedSocialCreditCode", { length: 64 }),
     contactName: varchar("contactName", { length: 64 }),
     contactPhoneMasked: varchar("contactPhoneMasked", { length: 32 }),
-    status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    organizationIndex: index("suppliers_organization_index").on(table.organizationId),
+    organizationIndex: index("suppliers_organization_index").on(
+      table.organizationId
+    ),
     nameIndex: index("suppliers_name_index").on(table.name),
-  }),
+  })
 );
 
 /** 采购订单承接已审批申请，金额由服务器按订单快照保存，避免移动端覆盖历史金额。 */
@@ -1987,13 +3181,27 @@ export const purchaseOrders = mysqlTable(
     /** 常规订单必须关联已批准申请；小额免申请订单允许为空但必须保存分类、说明和影像证据。 */
     requestId: bigint("requestId", { mode: "number" }),
     projectId: int("projectId").notNull(),
-    procurementMode: mysqlEnum("procurementMode", ["request", "small_direct", "imported"]).default("request").notNull(),
+    procurementMode: mysqlEnum("procurementMode", [
+      "request",
+      "small_direct",
+      "imported",
+    ])
+      .default("request")
+      .notNull(),
     categoryId: int("categoryId"),
     itemDescription: varchar("itemDescription", { length: 500 }),
     /** 清单采购数量与单价由服务端计算金额快照；历史订单允许为空以兼容。 */
     quantity: decimal("quantity", { precision: 16, scale: 3 }),
     unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
+    /** 独立验收依据，不改写历史采购数量或金额。 */
+    inventoryItemName: varchar("inventoryItemName", { length: 200 }),
+    inventoryUnit: varchar("inventoryUnit", { length: 32 }),
+    receiptExpectedQuantity: decimal("receiptExpectedQuantity", {
+      precision: 14,
+      scale: 3,
+    }),
+    receiptBasisReason: varchar("receiptBasisReason", { length: 500 }),
     /** 默认无发票；发生发票时关联原始照片或 PDF 审计附件。 */
     hasInvoice: boolean("hasInvoice").default(false).notNull(),
     invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
@@ -2009,7 +3217,15 @@ export const purchaseOrders = mysqlTable(
     assetDeductedAt: datetime("assetDeductedAt"),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     orderedAt: datetime("orderedAt").notNull(),
-    status: mysqlEnum("status", ["draft", "confirmed", "received", "closed", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "confirmed",
+      "received",
+      "closed",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     confirmedBy: int("confirmedBy"),
     confirmedAt: datetime("confirmedAt"),
@@ -2019,11 +3235,28 @@ export const purchaseOrders = mysqlTable(
   table => ({
     orderNoUnique: uniqueIndex("purchase_orders_no_unique").on(table.orderNo),
     requestIndex: index("purchase_orders_request_index").on(table.requestId),
-    procurementModeIndex: index("purchase_orders_mode_index").on(table.projectId, table.procurementMode, table.status),
-    projectIndex: index("purchase_orders_project_index").on(table.projectId, table.status),
-    assetIndex: index("purchase_orders_asset_index").on(table.projectId, table.assetType, table.assetId, table.status),
-    assetDeductionIndex: index("purchase_orders_asset_deduction_index").on(table.projectId, table.assetType, table.assetId, table.assetDeductionReference),
-  }),
+    procurementModeIndex: index("purchase_orders_mode_index").on(
+      table.projectId,
+      table.procurementMode,
+      table.status
+    ),
+    projectIndex: index("purchase_orders_project_index").on(
+      table.projectId,
+      table.status
+    ),
+    assetIndex: index("purchase_orders_asset_index").on(
+      table.projectId,
+      table.assetType,
+      table.assetId,
+      table.status
+    ),
+    assetDeductionIndex: index("purchase_orders_asset_deduction_index").on(
+      table.projectId,
+      table.assetType,
+      table.assetId,
+      table.assetDeductionReference
+    ),
+  })
 );
 
 /** 库存只保留可审计的收发流水，余额由服务器按项目、物料和单位聚合计算。 */
@@ -2037,11 +3270,24 @@ export const inventoryTransactions = mysqlTable(
     /** 入库、领用或退库的采购/验收凭证；文件本体只保存于对象存储。 */
     evidenceId: bigint("evidenceId", { mode: "number" }),
     transactionNo: varchar("transactionNo", { length: 64 }).notNull(),
-    transactionType: mysqlEnum("transactionType", ["inbound", "outbound", "return"]).notNull(),
+    transactionType: mysqlEnum("transactionType", [
+      "inbound",
+      "outbound",
+      "return",
+    ]).notNull(),
     itemName: varchar("itemName", { length: 200 }).notNull(),
     unit: varchar("unit", { length: 32 }).notNull(),
+    /** 旧流水保留原价，新流水仅按版本化移动加权/原领用退库。 */
+    originalOutboundId: bigint("originalOutboundId", { mode: "number" }),
+    costRuleVersion: varchar("costRuleVersion", { length: 32 })
+      .default("legacy_v1")
+      .notNull(),
+    costingUnitCost: decimal("costingUnitCost", { precision: 24, scale: 8 }),
+    exceptionReason: varchar("exceptionReason", { length: 500 }),
     quantity: decimal("quantity", { precision: 14, scale: 3 }).notNull(),
-    unitCost: decimal("unitCost", { precision: 16, scale: 2 }).default("0").notNull(),
+    unitCost: decimal("unitCost", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     occurredAt: datetime("occurredAt").notNull(),
     operatorId: int("operatorId").notNull(),
@@ -2049,10 +3295,24 @@ export const inventoryTransactions = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    transactionNoUnique: uniqueIndex("inventory_transactions_no_unique").on(table.transactionNo),
-    projectItemIndex: index("inventory_transactions_project_item_index").on(table.projectId, table.itemName, table.unit),
-    evidenceIndex: index("inventory_transactions_evidence_index").on(table.evidenceId),
-  }),
+    transactionNoUnique: uniqueIndex("inventory_transactions_no_unique").on(
+      table.transactionNo
+    ),
+    projectItemIndex: index("inventory_transactions_project_item_index").on(
+      table.projectId,
+      table.itemName,
+      table.unit
+    ),
+    evidenceIndex: index("inventory_transactions_evidence_index").on(
+      table.evidenceId
+    ),
+    originalOutboundIndex: index(
+      "inventory_transactions_original_outbound_index"
+    ).on(table.originalOutboundId),
+    purchaseOrderIndex: index("inventory_transactions_purchase_order_index").on(
+      table.purchaseOrderId
+    ),
+  })
 );
 
 /** 工程计量申报与审核台账。 */
@@ -2063,9 +3323,22 @@ export const measurementClaims = mysqlTable(
     claimNo: varchar("claimNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    declaredAmount: decimal("declaredAmount", { precision: 16, scale: 2 }).notNull(),
+    declaredAmount: decimal("declaredAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     approvedAmount: decimal("approvedAmount", { precision: 16, scale: 2 }),
-    status: mysqlEnum("status", ["draft", "submitted", "reviewing", "approved", "settled", "rejected", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "reviewing",
+      "approved",
+      "settled",
+      "rejected",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy").notNull(),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
@@ -2075,7 +3348,9 @@ export const measurementClaims = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  table => ({ claimUnique: uniqueIndex("measurement_claims_no_unique").on(table.claimNo) }),
+  table => ({
+    claimUnique: uniqueIndex("measurement_claims_no_unique").on(table.claimNo),
+  })
 );
 
 /** 项目部现场计量收方记录；金额仅在审核后按受控规则汇入计量申报，防止前端直接改写申报金额。 */
@@ -2088,12 +3363,35 @@ export const measurementTakeoffRecords = mysqlTable(
     measurementClaimId: bigint("measurementClaimId", { mode: "number" }),
     workItem: varchar("workItem", { length: 200 }).notNull(),
     workLocation: varchar("workLocation", { length: 200 }).notNull(),
-    unit: mysqlEnum("unit", ["m3", "m2", "m", "t", "piece", "set", "other"]).notNull(),
+    unit: mysqlEnum("unit", [
+      "m3",
+      "m2",
+      "m",
+      "t",
+      "piece",
+      "set",
+      "other",
+    ]).notNull(),
     quantity: decimal("quantity", { precision: 16, scale: 3 }).notNull(),
-    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
-    declaredAmount: decimal("declaredAmount", { precision: 16, scale: 2 }).notNull(),
+    unitPrice: decimal("unitPrice", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    declaredAmount: decimal("declaredAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     takeoffDate: date("takeoffDate").notNull(),
-    status: mysqlEnum("status", ["draft", "submitted", "reviewing", "approved", "rejected", "locked", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "reviewing",
+      "approved",
+      "rejected",
+      "locked",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy").notNull(),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
@@ -2103,10 +3401,16 @@ export const measurementTakeoffRecords = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    takeoffNoUnique: uniqueIndex("measurement_takeoff_records_no_unique").on(table.takeoffNo),
-    projectStatusDateIndex: index("measurement_takeoff_records_project_status_date_index").on(table.projectId, table.status, table.takeoffDate),
-    claimIndex: index("measurement_takeoff_records_claim_index").on(table.measurementClaimId),
-  }),
+    takeoffNoUnique: uniqueIndex("measurement_takeoff_records_no_unique").on(
+      table.takeoffNo
+    ),
+    projectStatusDateIndex: index(
+      "measurement_takeoff_records_project_status_date_index"
+    ).on(table.projectId, table.status, table.takeoffDate),
+    claimIndex: index("measurement_takeoff_records_claim_index").on(
+      table.measurementClaimId
+    ),
+  })
 );
 
 /** 收方记录可关联多张水印影像、签认单或监理证据；文件实体始终存于对象存储。 */
@@ -2120,9 +3424,13 @@ export const measurementTakeoffEvidences = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    takeoffEvidenceUnique: uniqueIndex("measurement_takeoff_evidences_unique").on(table.takeoffId, table.evidenceId),
-    takeoffIndex: index("measurement_takeoff_evidences_takeoff_index").on(table.takeoffId),
-  }),
+    takeoffEvidenceUnique: uniqueIndex(
+      "measurement_takeoff_evidences_unique"
+    ).on(table.takeoffId, table.evidenceId),
+    takeoffIndex: index("measurement_takeoff_evidences_takeoff_index").on(
+      table.takeoffId
+    ),
+  })
 );
 
 /** 项目分包施工队台账；与劳务班组不同，专用于工程量分批分包与结算对照。 */
@@ -2135,16 +3443,24 @@ export const subcontractTeams = mysqlTable(
     contactName: varchar("contactName", { length: 100 }),
     contactPhoneEncrypted: text("contactPhoneEncrypted"),
     contactPhoneMasked: varchar("contactPhoneMasked", { length: 32 }),
-    status: mysqlEnum("status", ["active", "suspended", "closed"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "suspended", "closed"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectTeamUnique: uniqueIndex("subcontract_teams_project_name_unique").on(table.projectId, table.teamName),
-    projectStatusIndex: index("subcontract_teams_project_status_index").on(table.projectId, table.status),
-  }),
+    projectTeamUnique: uniqueIndex("subcontract_teams_project_name_unique").on(
+      table.projectId,
+      table.teamName
+    ),
+    projectStatusIndex: index("subcontract_teams_project_status_index").on(
+      table.projectId,
+      table.status
+    ),
+  })
 );
 
 /** 将已确认的项目部收方工程量分批下达给施工队，并独立记录分包结算快照。 */
@@ -2155,23 +3471,57 @@ export const subcontractPackages = mysqlTable(
     packageNo: varchar("packageNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
     measurementTakeoffId: bigint("measurementTakeoffId", { mode: "number" }),
-    subcontractTeamId: bigint("subcontractTeamId", { mode: "number" }).notNull(),
+    subcontractTeamId: bigint("subcontractTeamId", {
+      mode: "number",
+    }).notNull(),
     workItem: varchar("workItem", { length: 200 }).notNull(),
     workLocation: varchar("workLocation", { length: 200 }),
-    unit: mysqlEnum("unit", ["m3", "m2", "m", "t", "piece", "set", "other"]).notNull(),
+    unit: mysqlEnum("unit", [
+      "m3",
+      "m2",
+      "m",
+      "t",
+      "piece",
+      "set",
+      "other",
+    ]).notNull(),
     quantity: decimal("quantity", { precision: 16, scale: 3 }).notNull(),
-    upstreamUnitPrice: decimal("upstreamUnitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
-    subcontractUnitPrice: decimal("subcontractUnitPrice", { precision: 16, scale: 2 }).default("0").notNull(),
-    upstreamAmount: decimal("upstreamAmount", { precision: 16, scale: 2 }).notNull(),
-    subcontractAmount: decimal("subcontractAmount", { precision: 16, scale: 2 }).notNull(),
-    marginAmount: decimal("marginAmount", { precision: 16, scale: 2 }).notNull(),
+    upstreamUnitPrice: decimal("upstreamUnitPrice", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    subcontractUnitPrice: decimal("subcontractUnitPrice", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    upstreamAmount: decimal("upstreamAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    subcontractAmount: decimal("subcontractAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    marginAmount: decimal("marginAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
     /** 分包单价高于上游单价时必须留存业务原因，并在确认与付款前完成双岗复核。 */
     priceExceptionReason: varchar("priceExceptionReason", { length: 500 }),
     confirmedBy: int("confirmedBy"),
     confirmedAt: datetime("confirmedAt"),
     priceExceptionReviewedBy: int("priceExceptionReviewedBy"),
     priceExceptionReviewedAt: datetime("priceExceptionReviewedAt"),
-    status: mysqlEnum("status", ["draft", "allocated", "confirmed", "settled", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "allocated",
+      "confirmed",
+      "settled",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     allocatedAt: datetime("allocatedAt"),
     settledAt: datetime("settledAt"),
     remarks: varchar("remarks", { length: 500 }),
@@ -2180,11 +3530,20 @@ export const subcontractPackages = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    packageNoUnique: uniqueIndex("subcontract_packages_no_unique").on(table.packageNo),
-    projectStatusIndex: index("subcontract_packages_project_status_index").on(table.projectId, table.status),
-    teamIndex: index("subcontract_packages_team_index").on(table.subcontractTeamId),
-    takeoffIndex: index("subcontract_packages_takeoff_index").on(table.measurementTakeoffId),
-  }),
+    packageNoUnique: uniqueIndex("subcontract_packages_no_unique").on(
+      table.packageNo
+    ),
+    projectStatusIndex: index("subcontract_packages_project_status_index").on(
+      table.projectId,
+      table.status
+    ),
+    teamIndex: index("subcontract_packages_team_index").on(
+      table.subcontractTeamId
+    ),
+    takeoffIndex: index("subcontract_packages_takeoff_index").on(
+      table.measurementTakeoffId
+    ),
+  })
 );
 
 /**
@@ -2199,25 +3558,66 @@ export const subcontractPaymentSettlements = mysqlTable(
     settlementNo: varchar("settlementNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
     packageId: bigint("packageId", { mode: "number" }).notNull(),
-    subcontractTeamId: bigint("subcontractTeamId", { mode: "number" }).notNull(),
+    subcontractTeamId: bigint("subcontractTeamId", {
+      mode: "number",
+    }).notNull(),
     packageNoSnapshot: varchar("packageNoSnapshot", { length: 64 }).notNull(),
     workItemSnapshot: varchar("workItemSnapshot", { length: 200 }).notNull(),
-    quantitySnapshot: decimal("quantitySnapshot", { precision: 16, scale: 3 }).notNull(),
+    quantitySnapshot: decimal("quantitySnapshot", {
+      precision: 16,
+      scale: 3,
+    }).notNull(),
     unitSnapshot: varchar("unitSnapshot", { length: 16 }).notNull(),
-    grossPayableAmount: decimal("grossPayableAmount", { precision: 16, scale: 2 }).notNull(),
-    manualDeductionAmount: decimal("manualDeductionAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    netPayableAmount: decimal("netPayableAmount", { precision: 16, scale: 2 }).notNull(),
-    invoiceStatus: mysqlEnum("invoiceStatus", ["missing", "attached", "verified", "rejected"]).default("missing").notNull(),
+    grossPayableAmount: decimal("grossPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    manualDeductionAmount: decimal("manualDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    netPayableAmount: decimal("netPayableAmount", {
+      precision: 16,
+      scale: 2,
+    }).notNull(),
+    invoiceStatus: mysqlEnum("invoiceStatus", [
+      "missing",
+      "attached",
+      "verified",
+      "rejected",
+    ])
+      .default("missing")
+      .notNull(),
     invoiceNo: varchar("invoiceNo", { length: 128 }),
     invoiceEvidenceId: bigint("invoiceEvidenceId", { mode: "number" }),
     payeeName: varchar("payeeName", { length: 128 }).notNull(),
     payeeAccount: varchar("payeeAccount", { length: 160 }),
-    paymentMethod: mysqlEnum("paymentMethod", ["bank_transfer", "corporate_account", "cash", "wechat", "alipay", "other"]).default("bank_transfer").notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "bank_transfer",
+      "corporate_account",
+      "cash",
+      "wechat",
+      "alipay",
+      "other",
+    ])
+      .default("bank_transfer")
+      .notNull(),
     paymentDate: date("paymentDate"),
     paymentReference: varchar("paymentReference", { length: 128 }),
     remarks: varchar("remarks", { length: 500 }),
     /** approved 为金额已核定待付款，partial 为已登记部分实际付款。 */
-    status: mysqlEnum("status", ["draft", "submitted", "approved", "partial", "paid", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "submitted",
+      "approved",
+      "partial",
+      "paid",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     submittedBy: int("submittedBy"),
     submittedAt: datetime("submittedAt"),
     approvedBy: int("approvedBy"),
@@ -2229,13 +3629,33 @@ export const subcontractPaymentSettlements = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    settlementNoUnique: uniqueIndex("subcontract_payment_settlements_no_unique").on(table.settlementNo),
-    packageUnique: uniqueIndex("subcontract_payment_settlements_package_unique").on(table.packageId),
-    projectStatusIndex: index("subcontract_payment_settlements_project_status_index").on(table.projectId, table.status),
-    teamIndex: index("subcontract_payment_settlements_team_index").on(table.subcontractTeamId),
-    packageForeignKey: foreignKey({ columns: [table.packageId], foreignColumns: [subcontractPackages.id], name: "subcontract_payment_settlements_package_fk" }).onDelete("restrict").onUpdate("cascade"),
-    teamForeignKey: foreignKey({ columns: [table.subcontractTeamId], foreignColumns: [subcontractTeams.id], name: "subcontract_payment_settlements_team_fk" }).onDelete("restrict").onUpdate("cascade"),
-  }),
+    settlementNoUnique: uniqueIndex(
+      "subcontract_payment_settlements_no_unique"
+    ).on(table.settlementNo),
+    packageUnique: uniqueIndex(
+      "subcontract_payment_settlements_package_unique"
+    ).on(table.packageId),
+    projectStatusIndex: index(
+      "subcontract_payment_settlements_project_status_index"
+    ).on(table.projectId, table.status),
+    teamIndex: index("subcontract_payment_settlements_team_index").on(
+      table.subcontractTeamId
+    ),
+    packageForeignKey: foreignKey({
+      columns: [table.packageId],
+      foreignColumns: [subcontractPackages.id],
+      name: "subcontract_payment_settlements_package_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    teamForeignKey: foreignKey({
+      columns: [table.subcontractTeamId],
+      foreignColumns: [subcontractTeams.id],
+      name: "subcontract_payment_settlements_team_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+  })
 );
 
 /** 项目外包合同台账：运输、劳务分包、机械租赁等合同只保存受控业务摘要与计价快照，附件影像另行归档。 */
@@ -2245,16 +3665,42 @@ export const outsourceContracts = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     contractNo: varchar("contractNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
-    contractType: mysqlEnum("contractType", ["transport", "labor_subcontract", "machinery_lease", "material_supply", "other"]).notNull(),
+    contractType: mysqlEnum("contractType", [
+      "transport",
+      "labor_subcontract",
+      "machinery_lease",
+      "material_supply",
+      "other",
+    ]).notNull(),
     counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
     counterpartyContact: varchar("counterpartyContact", { length: 100 }),
-    pricingMethod: mysqlEnum("pricingMethod", ["lump_sum", "unit_price", "trip", "ton", "m3", "day", "month", "other"]).notNull(),
+    pricingMethod: mysqlEnum("pricingMethod", [
+      "lump_sum",
+      "unit_price",
+      "trip",
+      "ton",
+      "m3",
+      "day",
+      "month",
+      "other",
+    ]).notNull(),
     unit: varchar("unit", { length: 32 }),
     unitPrice: decimal("unitPrice", { precision: 16, scale: 2 }),
-    contractAmount: decimal("contractAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    contractAmount: decimal("contractAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     startDate: date("startDate"),
     endDate: date("endDate"),
-    status: mysqlEnum("status", ["draft", "active", "suspended", "expired", "closed", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "active",
+      "suspended",
+      "expired",
+      "closed",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     attachmentEvidenceId: bigint("attachmentEvidenceId", { mode: "number" }),
     contractSummary: varchar("contractSummary", { length: 1000 }),
     remarks: varchar("remarks", { length: 500 }),
@@ -2263,10 +3709,18 @@ export const outsourceContracts = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    contractNoUnique: uniqueIndex("outsource_contracts_no_unique").on(table.contractNo),
-    projectStatusIndex: index("outsource_contracts_project_status_index").on(table.projectId, table.status),
-    projectTypeIndex: index("outsource_contracts_project_type_index").on(table.projectId, table.contractType),
-  }),
+    contractNoUnique: uniqueIndex("outsource_contracts_no_unique").on(
+      table.contractNo
+    ),
+    projectStatusIndex: index("outsource_contracts_project_status_index").on(
+      table.projectId,
+      table.status
+    ),
+    projectTypeIndex: index("outsource_contracts_project_type_index").on(
+      table.projectId,
+      table.contractType
+    ),
+  })
 );
 
 /**
@@ -2278,19 +3732,34 @@ export const taxEntityProfiles = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     entityName: varchar("entityName", { length: 200 }).notNull(),
     taxpayerIdentifier: varchar("taxpayerIdentifier", { length: 64 }).notNull(),
-    taxMethod: mysqlEnum("taxMethod", ["general", "small_scale", "simplified", "other"]).default("general").notNull(),
+    taxMethod: mysqlEnum("taxMethod", [
+      "general",
+      "small_scale",
+      "simplified",
+      "other",
+    ])
+      .default("general")
+      .notNull(),
     registeredLocation: varchar("registeredLocation", { length: 300 }),
-    status: mysqlEnum("status", ["active", "suspended", "archived"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "suspended", "archived"])
+      .default("active")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    taxpayerIdentifierUnique: uniqueIndex("tax_entity_profiles_identifier_unique").on(table.taxpayerIdentifier),
+    taxpayerIdentifierUnique: uniqueIndex(
+      "tax_entity_profiles_identifier_unique"
+    ).on(table.taxpayerIdentifier),
     statusIndex: index("tax_entity_profiles_status_index").on(table.status),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "tax_entity_profiles_creator_fk" }).onDelete("restrict"),
-  }),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "tax_entity_profiles_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2304,23 +3773,60 @@ export const projectTaxProfiles = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     projectLocation: varchar("projectLocation", { length: 300 }).notNull(),
-    taxMethod: mysqlEnum("taxMethod", ["general", "small_scale", "simplified", "other"]).default("general").notNull(),
-    contractExTaxAmount: decimal("contractExTaxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    contractTaxRate: decimal("contractTaxRate", { precision: 7, scale: 4 }).default("0").notNull(),
-    crossRegionConstruction: boolean("crossRegionConstruction").default(false).notNull(),
-    subcontractDeductionMethod: mysqlEnum("subcontractDeductionMethod", ["not_applicable", "supporting_document", "other"]).default("not_applicable").notNull(),
+    taxMethod: mysqlEnum("taxMethod", [
+      "general",
+      "small_scale",
+      "simplified",
+      "other",
+    ])
+      .default("general")
+      .notNull(),
+    contractExTaxAmount: decimal("contractExTaxAmount", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    contractTaxRate: decimal("contractTaxRate", { precision: 7, scale: 4 })
+      .default("0")
+      .notNull(),
+    crossRegionConstruction: boolean("crossRegionConstruction")
+      .default(false)
+      .notNull(),
+    subcontractDeductionMethod: mysqlEnum("subcontractDeductionMethod", [
+      "not_applicable",
+      "supporting_document",
+      "other",
+    ])
+      .default("not_applicable")
+      .notNull(),
     remarks: varchar("remarks", { length: 500 }),
-    status: mysqlEnum("status", ["active", "archived"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "archived"])
+      .default("active")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectUnique: uniqueIndex("project_tax_profiles_project_unique").on(table.projectId),
-    entityIndex: index("project_tax_profiles_entity_index").on(table.taxEntityId, table.status),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "project_tax_profiles_entity_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "project_tax_profiles_creator_fk" }).onDelete("restrict"),
-  }),
+    projectUnique: uniqueIndex("project_tax_profiles_project_unique").on(
+      table.projectId
+    ),
+    entityIndex: index("project_tax_profiles_entity_index").on(
+      table.taxEntityId,
+      table.status
+    ),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "project_tax_profiles_entity_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "project_tax_profiles_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2334,29 +3840,67 @@ export const taxAuxiliaryEntries = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    entryType: mysqlEnum("entryType", ["vat_input", "vat_output", "subcontract_deduction", "stamp_duty", "payroll_handoff", "cross_region_prepayment", "book_tax_difference", "other"]).notNull(),
+    entryType: mysqlEnum("entryType", [
+      "vat_input",
+      "vat_output",
+      "subcontract_deduction",
+      "stamp_duty",
+      "payroll_handoff",
+      "cross_region_prepayment",
+      "book_tax_difference",
+      "other",
+    ]).notNull(),
     sourceType: varchar("sourceType", { length: 64 }),
     sourceId: varchar("sourceId", { length: 128 }),
     subject: varchar("subject", { length: 300 }).notNull(),
-    amount: decimal("amount", { precision: 16, scale: 2 }).default("0").notNull(),
+    amount: decimal("amount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     taxBaseAmount: decimal("taxBaseAmount", { precision: 16, scale: 2 }),
     referenceTaxRate: decimal("referenceTaxRate", { precision: 7, scale: 4 }),
-    reportedTaxAmount: decimal("reportedTaxAmount", { precision: 16, scale: 2 }),
+    reportedTaxAmount: decimal("reportedTaxAmount", {
+      precision: 16,
+      scale: 2,
+    }),
     documentReference: varchar("documentReference", { length: 200 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["pending", "handed_off", "receipt_recorded", "void"]).default("pending").notNull(),
+    status: mysqlEnum("status", [
+      "pending",
+      "handed_off",
+      "receipt_recorded",
+      "void",
+    ])
+      .default("pending")
+      .notNull(),
     notes: varchar("notes", { length: 1000 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectPeriodTypeIndex: index("tax_auxiliary_entries_project_period_type_index").on(table.projectId, table.period, table.entryType, table.status),
-    sourceIndex: index("tax_auxiliary_entries_source_index").on(table.sourceType, table.sourceId),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "tax_auxiliary_entries_entity_fk" }).onDelete("restrict"),
-    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "tax_auxiliary_entries_evidence_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "tax_auxiliary_entries_creator_fk" }).onDelete("restrict"),
-  }),
+    projectPeriodTypeIndex: index(
+      "tax_auxiliary_entries_project_period_type_index"
+    ).on(table.projectId, table.period, table.entryType, table.status),
+    sourceIndex: index("tax_auxiliary_entries_source_index").on(
+      table.sourceType,
+      table.sourceId
+    ),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "tax_auxiliary_entries_entity_fk",
+    }).onDelete("restrict"),
+    evidenceFk: foreignKey({
+      columns: [table.evidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "tax_auxiliary_entries_evidence_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "tax_auxiliary_entries_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2371,14 +3915,28 @@ export const taxHandoffBatches = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    handoffType: mysqlEnum("handoffType", ["vat_invoice", "financial_ledger", "payroll", "contract_tax", "cross_region", "combined"]).notNull(),
+    handoffType: mysqlEnum("handoffType", [
+      "vat_invoice",
+      "financial_ledger",
+      "payroll",
+      "contract_tax",
+      "cross_region",
+      "combined",
+    ]).notNull(),
     format: mysqlEnum("format", ["csv"]).default("csv").notNull(),
     recordCount: int("recordCount").default(0).notNull(),
     snapshotHash: varchar("snapshotHash", { length: 64 }).notNull(),
     snapshotJson: text("snapshotJson").notNull(),
     receiptReference: varchar("receiptReference", { length: 200 }),
     receiptEvidenceId: bigint("receiptEvidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["generated", "handed_off", "receipt_recorded", "void"]).default("generated").notNull(),
+    status: mysqlEnum("status", [
+      "generated",
+      "handed_off",
+      "receipt_recorded",
+      "void",
+    ])
+      .default("generated")
+      .notNull(),
     generatedBy: int("generatedBy").notNull(),
     generatedAt: datetime("generatedAt").notNull(),
     receiptRecordedBy: int("receiptRecordedBy"),
@@ -2388,13 +3946,36 @@ export const taxHandoffBatches = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    batchNoUnique: uniqueIndex("tax_handoff_batches_no_unique").on(table.batchNo),
-    projectPeriodIndex: index("tax_handoff_batches_project_period_index").on(table.projectId, table.period, table.handoffType, table.status),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "tax_handoff_batches_entity_fk" }).onDelete("restrict"),
-    receiptEvidenceFk: foreignKey({ columns: [table.receiptEvidenceId], foreignColumns: [evidenceRecords.id], name: "tax_handoff_batches_receipt_evidence_fk" }).onDelete("restrict"),
-    generatorFk: foreignKey({ columns: [table.generatedBy], foreignColumns: [users.id], name: "tax_handoff_batches_generator_fk" }).onDelete("restrict"),
-    receiptRecorderFk: foreignKey({ columns: [table.receiptRecordedBy], foreignColumns: [users.id], name: "tax_handoff_batches_receipt_recorder_fk" }).onDelete("restrict"),
-  }),
+    batchNoUnique: uniqueIndex("tax_handoff_batches_no_unique").on(
+      table.batchNo
+    ),
+    projectPeriodIndex: index("tax_handoff_batches_project_period_index").on(
+      table.projectId,
+      table.period,
+      table.handoffType,
+      table.status
+    ),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "tax_handoff_batches_entity_fk",
+    }).onDelete("restrict"),
+    receiptEvidenceFk: foreignKey({
+      columns: [table.receiptEvidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "tax_handoff_batches_receipt_evidence_fk",
+    }).onDelete("restrict"),
+    generatorFk: foreignKey({
+      columns: [table.generatedBy],
+      foreignColumns: [users.id],
+      name: "tax_handoff_batches_generator_fk",
+    }).onDelete("restrict"),
+    receiptRecorderFk: foreignKey({
+      columns: [table.receiptRecordedBy],
+      foreignColumns: [users.id],
+      name: "tax_handoff_batches_receipt_recorder_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2409,27 +3990,91 @@ export const payrollTaxWithholdingEntries = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    incomeType: mysqlEnum("incomeType", ["resident_wage_salary", "labor_remuneration", "nonresident_wage_salary", "manual_review"]).notNull(),
-    sourceGrossIncome: decimal("sourceGrossIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    incomeType: mysqlEnum("incomeType", [
+      "resident_wage_salary",
+      "labor_remuneration",
+      "nonresident_wage_salary",
+      "manual_review",
+    ]).notNull(),
+    sourceGrossIncome: decimal("sourceGrossIncome", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     sourceDocumentCount: int("sourceDocumentCount").default(0).notNull(),
-    cumulativeGrossIncome: decimal("cumulativeGrossIncome", { precision: 16, scale: 2 }).default("0").notNull(),
-    cumulativeExemptIncome: decimal("cumulativeExemptIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeGrossIncome: decimal("cumulativeGrossIncome", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    cumulativeExemptIncome: decimal("cumulativeExemptIncome", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     employmentMonths: int("employmentMonths").default(0).notNull(),
-    cumulativeBasicDeduction: decimal("cumulativeBasicDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
-    cumulativeSocialInsuranceDeduction: decimal("cumulativeSocialInsuranceDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
-    cumulativeSpecialAdditionalDeduction: decimal("cumulativeSpecialAdditionalDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
-    cumulativeOtherDeduction: decimal("cumulativeOtherDeduction", { precision: 16, scale: 2 }).default("0").notNull(),
-    cumulativeTaxableIncome: decimal("cumulativeTaxableIncome", { precision: 16, scale: 2 }).default("0").notNull(),
+    cumulativeBasicDeduction: decimal("cumulativeBasicDeduction", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    cumulativeSocialInsuranceDeduction: decimal(
+      "cumulativeSocialInsuranceDeduction",
+      { precision: 16, scale: 2 }
+    )
+      .default("0")
+      .notNull(),
+    cumulativeSpecialAdditionalDeduction: decimal(
+      "cumulativeSpecialAdditionalDeduction",
+      { precision: 16, scale: 2 }
+    )
+      .default("0")
+      .notNull(),
+    cumulativeOtherDeduction: decimal("cumulativeOtherDeduction", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    cumulativeTaxableIncome: decimal("cumulativeTaxableIncome", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     applicableRate: decimal("applicableRate", { precision: 7, scale: 4 }),
     quickDeduction: decimal("quickDeduction", { precision: 16, scale: 2 }),
-    calculatedCumulativeTax: decimal("calculatedCumulativeTax", { precision: 16, scale: 2 }),
-    cumulativeTaxWithheldBefore: decimal("cumulativeTaxWithheldBefore", { precision: 16, scale: 2 }).default("0").notNull(),
-    calculatedCurrentWithholding: decimal("calculatedCurrentWithholding", { precision: 16, scale: 2 }),
-    externallyWithheldThisPeriod: decimal("externallyWithheldThisPeriod", { precision: 16, scale: 2 }),
+    calculatedCumulativeTax: decimal("calculatedCumulativeTax", {
+      precision: 16,
+      scale: 2,
+    }),
+    cumulativeTaxWithheldBefore: decimal("cumulativeTaxWithheldBefore", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    calculatedCurrentWithholding: decimal("calculatedCurrentWithholding", {
+      precision: 16,
+      scale: 2,
+    }),
+    externallyWithheldThisPeriod: decimal("externallyWithheldThisPeriod", {
+      precision: 16,
+      scale: 2,
+    }),
     externalReference: varchar("externalReference", { length: 200 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     calculationSnapshotJson: text("calculationSnapshotJson").notNull(),
-    status: mysqlEnum("status", ["draft", "reviewed", "handed_off", "receipt_recorded", "void"]).default("draft").notNull(),
+    status: mysqlEnum("status", [
+      "draft",
+      "reviewed",
+      "handed_off",
+      "receipt_recorded",
+      "void",
+    ])
+      .default("draft")
+      .notNull(),
     reviewNote: varchar("reviewNote", { length: 1000 }),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
@@ -2438,14 +4083,38 @@ export const payrollTaxWithholdingEntries = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    workerEntityPeriodUnique: uniqueIndex("payroll_tax_withholding_worker_entity_period_unique").on(table.workerId, table.taxEntityId, table.period, table.incomeType),
-    projectPeriodIndex: index("payroll_tax_withholding_project_period_index").on(table.projectId, table.period, table.status),
-    workerFk: foreignKey({ columns: [table.workerId], foreignColumns: [laborWorkers.id], name: "payroll_tax_withholding_worker_fk" }).onDelete("restrict"),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "payroll_tax_withholding_entity_fk" }).onDelete("restrict"),
-    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "payroll_tax_withholding_evidence_fk" }).onDelete("restrict"),
-    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "payroll_tax_withholding_reviewer_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "payroll_tax_withholding_creator_fk" }).onDelete("restrict"),
-  }),
+    workerEntityPeriodUnique: uniqueIndex(
+      "payroll_tax_withholding_worker_entity_period_unique"
+    ).on(table.workerId, table.taxEntityId, table.period, table.incomeType),
+    projectPeriodIndex: index(
+      "payroll_tax_withholding_project_period_index"
+    ).on(table.projectId, table.period, table.status),
+    workerFk: foreignKey({
+      columns: [table.workerId],
+      foreignColumns: [laborWorkers.id],
+      name: "payroll_tax_withholding_worker_fk",
+    }).onDelete("restrict"),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "payroll_tax_withholding_entity_fk",
+    }).onDelete("restrict"),
+    evidenceFk: foreignKey({
+      columns: [table.evidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "payroll_tax_withholding_evidence_fk",
+    }).onDelete("restrict"),
+    reviewerFk: foreignKey({
+      columns: [table.reviewedBy],
+      foreignColumns: [users.id],
+      name: "payroll_tax_withholding_reviewer_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "payroll_tax_withholding_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2459,18 +4128,39 @@ export const contractTaxRegistrations = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     contractNoSnapshot: varchar("contractNoSnapshot", { length: 64 }).notNull(),
-    contractTypeSnapshot: varchar("contractTypeSnapshot", { length: 64 }).notNull(),
-    counterpartyNameSnapshot: varchar("counterpartyNameSnapshot", { length: 200 }).notNull(),
+    contractTypeSnapshot: varchar("contractTypeSnapshot", {
+      length: 64,
+    }).notNull(),
+    counterpartyNameSnapshot: varchar("counterpartyNameSnapshot", {
+      length: 200,
+    }).notNull(),
     contractDate: date("contractDate"),
-    contractAmountSnapshot: decimal("contractAmountSnapshot", { precision: 16, scale: 2 }).default("0").notNull(),
+    contractAmountSnapshot: decimal("contractAmountSnapshot", {
+      precision: 16,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     contractEvidenceId: bigint("contractEvidenceId", { mode: "number" }),
     taxItem: varchar("taxItem", { length: 100 }),
     taxBaseAmount: decimal("taxBaseAmount", { precision: 16, scale: 2 }),
     referenceTaxRate: decimal("referenceTaxRate", { precision: 7, scale: 4 }),
-    professionallyConfirmedTaxAmount: decimal("professionallyConfirmedTaxAmount", { precision: 16, scale: 2 }),
+    professionallyConfirmedTaxAmount: decimal(
+      "professionallyConfirmedTaxAmount",
+      { precision: 16, scale: 2 }
+    ),
     paymentReference: varchar("paymentReference", { length: 200 }),
     paymentEvidenceId: bigint("paymentEvidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["pending_review", "confirmed", "handed_off", "receipt_recorded", "not_applicable", "void"]).default("pending_review").notNull(),
+    status: mysqlEnum("status", [
+      "pending_review",
+      "confirmed",
+      "handed_off",
+      "receipt_recorded",
+      "not_applicable",
+      "void",
+    ])
+      .default("pending_review")
+      .notNull(),
     reviewNote: varchar("reviewNote", { length: 1000 }),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
@@ -2479,15 +4169,43 @@ export const contractTaxRegistrations = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    contractUnique: uniqueIndex("contract_tax_registrations_contract_unique").on(table.contractId),
-    projectStatusIndex: index("contract_tax_registrations_project_status_index").on(table.projectId, table.status),
-    contractFk: foreignKey({ columns: [table.contractId], foreignColumns: [outsourceContracts.id], name: "contract_tax_registrations_contract_fk" }).onDelete("restrict"),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "contract_tax_registrations_entity_fk" }).onDelete("restrict"),
-    contractEvidenceFk: foreignKey({ columns: [table.contractEvidenceId], foreignColumns: [evidenceRecords.id], name: "contract_tax_registrations_contract_evidence_fk" }).onDelete("restrict"),
-    paymentEvidenceFk: foreignKey({ columns: [table.paymentEvidenceId], foreignColumns: [evidenceRecords.id], name: "contract_tax_registrations_payment_evidence_fk" }).onDelete("restrict"),
-    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "contract_tax_registrations_reviewer_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "contract_tax_registrations_creator_fk" }).onDelete("restrict"),
-  }),
+    contractUnique: uniqueIndex(
+      "contract_tax_registrations_contract_unique"
+    ).on(table.contractId),
+    projectStatusIndex: index(
+      "contract_tax_registrations_project_status_index"
+    ).on(table.projectId, table.status),
+    contractFk: foreignKey({
+      columns: [table.contractId],
+      foreignColumns: [outsourceContracts.id],
+      name: "contract_tax_registrations_contract_fk",
+    }).onDelete("restrict"),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "contract_tax_registrations_entity_fk",
+    }).onDelete("restrict"),
+    contractEvidenceFk: foreignKey({
+      columns: [table.contractEvidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "contract_tax_registrations_contract_evidence_fk",
+    }).onDelete("restrict"),
+    paymentEvidenceFk: foreignKey({
+      columns: [table.paymentEvidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "contract_tax_registrations_payment_evidence_fk",
+    }).onDelete("restrict"),
+    reviewerFk: foreignKey({
+      columns: [table.reviewedBy],
+      foreignColumns: [users.id],
+      name: "contract_tax_registrations_reviewer_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "contract_tax_registrations_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /**
@@ -2501,17 +4219,42 @@ export const crossRegionConstructionTaxLedgers = mysqlTable(
     projectId: int("projectId").notNull(),
     taxEntityId: bigint("taxEntityId", { mode: "number" }).notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    projectLocationSnapshot: varchar("projectLocationSnapshot", { length: 300 }).notNull(),
-    taxMethodSnapshot: mysqlEnum("taxMethodSnapshot", ["general", "small_scale", "simplified", "other"]).notNull(),
-    projectRegistrationReference: varchar("projectRegistrationReference", { length: 200 }),
-    revenueIncludingTaxAmount: decimal("revenueIncludingTaxAmount", { precision: 16, scale: 2 }),
-    subcontractDeductionAmount: decimal("subcontractDeductionAmount", { precision: 16, scale: 2 }),
-    subcontractDeductionReference: varchar("subcontractDeductionReference", { length: 200 }),
+    projectLocationSnapshot: varchar("projectLocationSnapshot", {
+      length: 300,
+    }).notNull(),
+    taxMethodSnapshot: mysqlEnum("taxMethodSnapshot", [
+      "general",
+      "small_scale",
+      "simplified",
+      "other",
+    ]).notNull(),
+    projectRegistrationReference: varchar("projectRegistrationReference", {
+      length: 200,
+    }),
+    revenueIncludingTaxAmount: decimal("revenueIncludingTaxAmount", {
+      precision: 16,
+      scale: 2,
+    }),
+    subcontractDeductionAmount: decimal("subcontractDeductionAmount", {
+      precision: 16,
+      scale: 2,
+    }),
+    subcontractDeductionReference: varchar("subcontractDeductionReference", {
+      length: 200,
+    }),
     deductionEvidenceId: bigint("deductionEvidenceId", { mode: "number" }),
     prepaidVatAmount: decimal("prepaidVatAmount", { precision: 16, scale: 2 }),
     taxPaymentReference: varchar("taxPaymentReference", { length: 200 }),
     taxPaymentEvidenceId: bigint("taxPaymentEvidenceId", { mode: "number" }),
-    status: mysqlEnum("status", ["pending_review", "ready_for_handoff", "receipt_recorded", "not_applicable", "void"]).default("pending_review").notNull(),
+    status: mysqlEnum("status", [
+      "pending_review",
+      "ready_for_handoff",
+      "receipt_recorded",
+      "not_applicable",
+      "void",
+    ])
+      .default("pending_review")
+      .notNull(),
     reviewNote: varchar("reviewNote", { length: 1000 }),
     reviewedBy: int("reviewedBy"),
     reviewedAt: datetime("reviewedAt"),
@@ -2520,14 +4263,38 @@ export const crossRegionConstructionTaxLedgers = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectPeriodUnique: uniqueIndex("cross_region_construction_tax_project_period_unique").on(table.projectId, table.period),
-    entityPeriodIndex: index("cross_region_construction_tax_entity_period_index").on(table.taxEntityId, table.period, table.status),
-    entityFk: foreignKey({ columns: [table.taxEntityId], foreignColumns: [taxEntityProfiles.id], name: "cross_region_construction_tax_entity_fk" }).onDelete("restrict"),
-    deductionEvidenceFk: foreignKey({ columns: [table.deductionEvidenceId], foreignColumns: [evidenceRecords.id], name: "cross_region_construction_tax_deduction_evidence_fk" }).onDelete("restrict"),
-    paymentEvidenceFk: foreignKey({ columns: [table.taxPaymentEvidenceId], foreignColumns: [evidenceRecords.id], name: "cross_region_construction_tax_payment_evidence_fk" }).onDelete("restrict"),
-    reviewerFk: foreignKey({ columns: [table.reviewedBy], foreignColumns: [users.id], name: "cross_region_construction_tax_reviewer_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "cross_region_construction_tax_creator_fk" }).onDelete("restrict"),
-  }),
+    projectPeriodUnique: uniqueIndex(
+      "cross_region_construction_tax_project_period_unique"
+    ).on(table.projectId, table.period),
+    entityPeriodIndex: index(
+      "cross_region_construction_tax_entity_period_index"
+    ).on(table.taxEntityId, table.period, table.status),
+    entityFk: foreignKey({
+      columns: [table.taxEntityId],
+      foreignColumns: [taxEntityProfiles.id],
+      name: "cross_region_construction_tax_entity_fk",
+    }).onDelete("restrict"),
+    deductionEvidenceFk: foreignKey({
+      columns: [table.deductionEvidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "cross_region_construction_tax_deduction_evidence_fk",
+    }).onDelete("restrict"),
+    paymentEvidenceFk: foreignKey({
+      columns: [table.taxPaymentEvidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "cross_region_construction_tax_payment_evidence_fk",
+    }).onDelete("restrict"),
+    reviewerFk: foreignKey({
+      columns: [table.reviewedBy],
+      foreignColumns: [users.id],
+      name: "cross_region_construction_tax_reviewer_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "cross_region_construction_tax_creator_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /** 收入、支出、应收应付和现金流的统一财务流水。 */
@@ -2541,7 +4308,14 @@ export const financialRecords = mysqlTable(
     category: varchar("category", { length: 64 }).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
     occurredAt: datetime("occurredAt").notNull(),
-    settlementStatus: mysqlEnum("settlementStatus", ["unpaid", "partial", "paid", "void"]).default("unpaid").notNull(),
+    settlementStatus: mysqlEnum("settlementStatus", [
+      "unpaid",
+      "partial",
+      "paid",
+      "void",
+    ])
+      .default("unpaid")
+      .notNull(),
     sourceType: varchar("sourceType", { length: 64 }),
     sourceId: varchar("sourceId", { length: 128 }),
     evidenceId: bigint("evidenceId", { mode: "number" }),
@@ -2552,8 +4326,10 @@ export const financialRecords = mysqlTable(
   },
   table => ({
     recordUnique: uniqueIndex("financial_records_no_unique").on(table.recordNo),
-    projectSettlementOccurredIndex: index("financial_records_project_settlement_occurred_index").on(table.projectId, table.settlementStatus, table.occurredAt),
-  }),
+    projectSettlementOccurredIndex: index(
+      "financial_records_project_settlement_occurred_index"
+    ).on(table.projectId, table.settlementStatus, table.occurredAt),
+  })
 );
 
 /**
@@ -2565,39 +4341,82 @@ export const financialInvoiceOriginals = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     /** 发票代码、号码、销方、方向、日期、价税金额组成的服务端规范化指纹。 */
-    originalFingerprint: varchar("originalFingerprint", { length: 128 }).notNull(),
+    originalFingerprint: varchar("originalFingerprint", {
+      length: 128,
+    }).notNull(),
     invoiceNo: varchar("invoiceNo", { length: 64 }).notNull(),
     invoiceCode: varchar("invoiceCode", { length: 64 }),
     counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
-    invoiceType: mysqlEnum("invoiceType", ["vat_special", "vat_normal", "electronic", "receipt", "other"]).notNull(),
+    invoiceType: mysqlEnum("invoiceType", [
+      "vat_special",
+      "vat_normal",
+      "electronic",
+      "receipt",
+      "other",
+    ]).notNull(),
     direction: mysqlEnum("direction", ["income", "expense"]).notNull(),
     totalAmount: decimal("totalAmount", { precision: 16, scale: 2 }).notNull(),
-    totalTaxAmount: decimal("totalTaxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    taxRate: decimal("taxRate", { precision: 7, scale: 4 }).default("0").notNull(),
+    totalTaxAmount: decimal("totalTaxAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    taxRate: decimal("taxRate", { precision: 7, scale: 4 })
+      .default("0")
+      .notNull(),
     issuedAt: date("issuedAt").notNull(),
     /** 原始 PDF、OFD 或影像归档；旧数据允许为空，但新建电子凭证必须关联受控证据。 */
     evidenceId: bigint("evidenceId", { mode: "number" }),
     structuredPayloadJson: text("structuredPayloadJson"),
-    verificationStatus: mysqlEnum("verificationStatus", ["pending", "manual_verified", "external_verified", "failed", "not_required"]).default("pending").notNull(),
+    verificationStatus: mysqlEnum("verificationStatus", [
+      "pending",
+      "manual_verified",
+      "external_verified",
+      "failed",
+      "not_required",
+    ])
+      .default("pending")
+      .notNull(),
     verificationReference: varchar("verificationReference", { length: 200 }),
     verificationCheckedAt: datetime("verificationCheckedAt"),
     /** 红冲只关联同一原件链，不允许用自由文本伪造红冲关系。 */
     redFlushOriginalId: bigint("redFlushOriginalId", { mode: "number" }),
     redFlushReason: varchar("redFlushReason", { length: 500 }),
-    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"]).default("issued").notNull(),
+    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"])
+      .default("issued")
+      .notNull(),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    fingerprintUnique: uniqueIndex("financial_invoice_originals_fingerprint_unique").on(table.originalFingerprint),
-    statusDateIndex: index("financial_invoice_originals_status_date_index").on(table.status, table.issuedAt),
-    evidenceIndex: index("financial_invoice_originals_evidence_index").on(table.evidenceId),
-    redFlushIndex: index("financial_invoice_originals_red_flush_index").on(table.redFlushOriginalId),
-    evidenceFk: foreignKey({ columns: [table.evidenceId], foreignColumns: [evidenceRecords.id], name: "financial_invoice_originals_evidence_fk" }).onDelete("restrict"),
-    creatorFk: foreignKey({ columns: [table.createdBy], foreignColumns: [users.id], name: "financial_invoice_originals_creator_fk" }).onDelete("restrict"),
-    redFlushFk: foreignKey({ columns: [table.redFlushOriginalId], foreignColumns: [table.id], name: "financial_invoice_originals_red_flush_fk" }).onDelete("restrict"),
-  }),
+    fingerprintUnique: uniqueIndex(
+      "financial_invoice_originals_fingerprint_unique"
+    ).on(table.originalFingerprint),
+    statusDateIndex: index("financial_invoice_originals_status_date_index").on(
+      table.status,
+      table.issuedAt
+    ),
+    evidenceIndex: index("financial_invoice_originals_evidence_index").on(
+      table.evidenceId
+    ),
+    redFlushIndex: index("financial_invoice_originals_red_flush_index").on(
+      table.redFlushOriginalId
+    ),
+    evidenceFk: foreignKey({
+      columns: [table.evidenceId],
+      foreignColumns: [evidenceRecords.id],
+      name: "financial_invoice_originals_evidence_fk",
+    }).onDelete("restrict"),
+    creatorFk: foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [users.id],
+      name: "financial_invoice_originals_creator_fk",
+    }).onDelete("restrict"),
+    redFlushFk: foreignKey({
+      columns: [table.redFlushOriginalId],
+      foreignColumns: [table.id],
+      name: "financial_invoice_originals_red_flush_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /** 成本、收入和付款凭证的项目分摊台账；金额、税额和状态均由服务端校验并保留原始审计链。 */
@@ -2612,31 +4431,72 @@ export const financialInvoices = mysqlTable(
     invoiceNo: varchar("invoiceNo", { length: 64 }).notNull(),
     invoiceCode: varchar("invoiceCode", { length: 64 }),
     counterpartyName: varchar("counterpartyName", { length: 200 }).notNull(),
-    invoiceType: mysqlEnum("invoiceType", ["vat_special", "vat_normal", "electronic", "receipt", "other"]).notNull(),
+    invoiceType: mysqlEnum("invoiceType", [
+      "vat_special",
+      "vat_normal",
+      "electronic",
+      "receipt",
+      "other",
+    ]).notNull(),
     direction: mysqlEnum("direction", ["income", "expense"]).notNull(),
     amount: decimal("amount", { precision: 16, scale: 2 }).notNull(),
-    taxAmount: decimal("taxAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    taxRate: decimal("taxRate", { precision: 7, scale: 4 }).default("0").notNull(),
+    taxAmount: decimal("taxAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    taxRate: decimal("taxRate", { precision: 7, scale: 4 })
+      .default("0")
+      .notNull(),
     issuedAt: date("issuedAt").notNull(),
     verifiedAt: datetime("verifiedAt"),
-    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"]).default("issued").notNull(),
+    status: mysqlEnum("status", ["issued", "verified", "void", "red_flushed"])
+      .default("issued")
+      .notNull(),
     evidenceId: bigint("evidenceId", { mode: "number" }),
     /** 本项目实际分摊金额；同一原件全部有效分摊累计不得超过原件价税合计。 */
-    allocatedAmount: decimal("allocatedAmount", { precision: 16, scale: 2 }).default("0").notNull(),
-    allocationPurpose: mysqlEnum("allocationPurpose", ["expense_deduction", "reimbursement", "income_collection", "reference_only"]).default("expense_deduction").notNull(),
-    allocationStatus: mysqlEnum("allocationStatus", ["active", "void", "red_flushed", "legacy_review"]).default("active").notNull(),
+    allocatedAmount: decimal("allocatedAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    allocationPurpose: mysqlEnum("allocationPurpose", [
+      "expense_deduction",
+      "reimbursement",
+      "income_collection",
+      "reference_only",
+    ])
+      .default("expense_deduction")
+      .notNull(),
+    allocationStatus: mysqlEnum("allocationStatus", [
+      "active",
+      "void",
+      "red_flushed",
+      "legacy_review",
+    ])
+      .default("active")
+      .notNull(),
     voidReason: varchar("voidReason", { length: 500 }),
     createdBy: int("createdBy").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    projectInvoiceNoUnique: uniqueIndex("financial_invoices_project_no_unique").on(table.projectId, table.invoiceNo),
-    projectStatusDateIndex: index("financial_invoices_project_status_date_index").on(table.projectId, table.status, table.issuedAt),
-    financialRecordIndex: index("financial_invoices_financial_record_index").on(table.financialRecordId),
-    originalIndex: index("financial_invoices_original_index").on(table.originalId, table.allocationStatus),
-    originalFk: foreignKey({ columns: [table.originalId], foreignColumns: [financialInvoiceOriginals.id], name: "financial_invoices_original_fk" }).onDelete("restrict"),
-  }),
+    projectInvoiceNoUnique: uniqueIndex(
+      "financial_invoices_project_no_unique"
+    ).on(table.projectId, table.invoiceNo),
+    projectStatusDateIndex: index(
+      "financial_invoices_project_status_date_index"
+    ).on(table.projectId, table.status, table.issuedAt),
+    financialRecordIndex: index("financial_invoices_financial_record_index").on(
+      table.financialRecordId
+    ),
+    originalIndex: index("financial_invoices_original_index").on(
+      table.originalId,
+      table.allocationStatus
+    ),
+    originalFk: foreignKey({
+      columns: [table.originalId],
+      foreignColumns: [financialInvoiceOriginals.id],
+      name: "financial_invoices_original_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 /** 后勤每日开支日结封存快照；已关闭或归档日期不得再写入底层财务流水。 */
@@ -2647,15 +4507,23 @@ export const dailyAccountingClosures = mysqlTable(
     closingNo: varchar("closingNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
     closingDate: date("closingDate").notNull(),
-    totalIncome: decimal("totalIncome", { precision: 16, scale: 2 }).default("0").notNull(),
-    totalExpense: decimal("totalExpense", { precision: 16, scale: 2 }).default("0").notNull(),
+    totalIncome: decimal("totalIncome", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalExpense: decimal("totalExpense", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     recordCount: int("recordCount").default(0).notNull(),
     invoiceCount: int("invoiceCount").default(0).notNull(),
-    invoiceAmount: decimal("invoiceAmount", { precision: 16, scale: 2 }).default("0").notNull(),
+    invoiceAmount: decimal("invoiceAmount", { precision: 16, scale: 2 })
+      .default("0")
+      .notNull(),
     snapshotHash: varchar("snapshotHash", { length: 64 }).notNull(),
     snapshotJson: text("snapshotJson").notNull(),
     /** 反结账期间明确标识为 reopened，禁止把允许调整误记为作废。 */
-    status: mysqlEnum("status", ["closed", "archived", "void", "reopened"]).default("closed").notNull(),
+    status: mysqlEnum("status", ["closed", "archived", "void", "reopened"])
+      .default("closed")
+      .notNull(),
     revision: int("revision").default(1).notNull(),
     closedBy: int("closedBy").notNull(),
     closedAt: datetime("closedAt").notNull(),
@@ -2668,9 +4536,13 @@ export const dailyAccountingClosures = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => ({
-    closingNoUnique: uniqueIndex("daily_accounting_closures_no_unique").on(table.closingNo),
-    projectDateUnique: uniqueIndex("daily_accounting_closures_project_date_unique").on(table.projectId, table.closingDate),
-  }),
+    closingNoUnique: uniqueIndex("daily_accounting_closures_no_unique").on(
+      table.closingNo
+    ),
+    projectDateUnique: uniqueIndex(
+      "daily_accounting_closures_project_date_unique"
+    ).on(table.projectId, table.closingDate),
+  })
 );
 
 /**
@@ -2692,10 +4564,20 @@ export const dailyAccountingClosureEvents = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    closureRevisionEventUnique: uniqueIndex("daily_closure_events_revision_unique").on(table.closureId, table.revision, table.eventType),
-    projectPerformedIndex: index("daily_closure_events_project_performed_index").on(table.projectId, table.performedAt),
-    closureFk: foreignKey({ columns: [table.closureId], foreignColumns: [dailyAccountingClosures.id], name: "daily_closure_events_closure_fk" }).onDelete("restrict").onUpdate("cascade"),
-  }),
+    closureRevisionEventUnique: uniqueIndex(
+      "daily_closure_events_revision_unique"
+    ).on(table.closureId, table.revision, table.eventType),
+    projectPerformedIndex: index(
+      "daily_closure_events_project_performed_index"
+    ).on(table.projectId, table.performedAt),
+    closureFk: foreignKey({
+      columns: [table.closureId],
+      foreignColumns: [dailyAccountingClosures.id],
+      name: "daily_closure_events_closure_fk",
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+  })
 );
 
 /** 水印相机、票据 OCR、GPS 等影像证据的元数据；文件本体保存至对象存储。 */
@@ -2719,7 +4601,9 @@ export const evidenceRecords = mysqlTable(
     capturedAt: datetime("capturedAt"),
     /** 保留期限由经授权的资料政策设置；为空代表尚未确定，不得被系统解释为可删除。 */
     retentionUntil: date("retentionUntil"),
-    status: mysqlEnum("status", ["active", "deleted"]).default("active").notNull(),
+    status: mysqlEnum("status", ["active", "deleted"])
+      .default("active")
+      .notNull(),
     deletedAt: datetime("deletedAt"),
     deletedBy: int("deletedBy"),
     deletionReason: varchar("deletionReason", { length: 500 }),
@@ -2727,71 +4611,296 @@ export const evidenceRecords = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   table => ({
-    sourceIndex: index("evidence_records_source_index").on(table.sourceType, table.sourceId),
-    projectStatusCreatedIndex: index("evidence_records_project_status_created_index").on(table.projectId, table.status, table.createdAt),
-    contentHashIndex: index("evidence_records_content_hash_index").on(table.contentSha256),
-    deletedByFk: foreignKey({ columns: [table.deletedBy], foreignColumns: [users.id], name: "evidence_records_deleted_by_fk" }).onDelete("restrict"),
-  }),
+    sourceIndex: index("evidence_records_source_index").on(
+      table.sourceType,
+      table.sourceId
+    ),
+    projectStatusCreatedIndex: index(
+      "evidence_records_project_status_created_index"
+    ).on(table.projectId, table.status, table.createdAt),
+    contentHashIndex: index("evidence_records_content_hash_index").on(
+      table.contentSha256
+    ),
+    deletedByFk: foreignKey({
+      columns: [table.deletedBy],
+      foreignColumns: [users.id],
+      name: "evidence_records_deleted_by_fk",
+    }).onDelete("restrict"),
+  })
 );
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 /** 人员主档独立于账号与工资旧主体；敏感原文只存服务端密文。 */
-export const personnelPeople = mysqlTable("personnel_people", {
-  id: int("id").autoincrement().primaryKey(),
-  personNo: varchar("personNo", { length: 48 }).notNull(),
-  name: varchar("name", { length: 128 }).notNull(),
-  affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
-  employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).default("active").notNull(),
-  primaryPositionId: int("primaryPositionId"),
-  secondaryPositionIds: json("secondaryPositionIds").$type<number[]>().notNull(),
-  projectId: int("projectId"), teamId: int("teamId"),
-  entryDate: date("entryDate", { mode: "string" }), exitDate: date("exitDate", { mode: "string" }),
-  gender: mysqlEnum("gender", ["male", "female", "unspecified"]), birthDate: date("birthDate", { mode: "string" }),
-  address: varchar("address", { length: 500 }), emergencyContactName: varchar("emergencyContactName", { length: 128 }),
-  emergencyContactPhoneEncrypted: text("emergencyContactPhoneEncrypted"), emergencyContactPhoneMasked: varchar("emergencyContactPhoneMasked", { length: 64 }),
-  remarks: varchar("remarks", { length: 1000 }), avatarEvidenceId: bigint("avatarEvidenceId", { mode: "number" }),
-  payrollEnabled: boolean("payrollEnabled").default(false).notNull(),
-  phoneEncrypted: text("phoneEncrypted"), phoneFingerprint: varchar("phoneFingerprint", { length: 64 }), phoneMasked: varchar("phoneMasked", { length: 64 }),
-  identityNoEncrypted: text("identityNoEncrypted"), identityNoFingerprint: varchar("identityNoFingerprint", { length: 64 }), identityMasked: varchar("identityMasked", { length: 64 }),
-  bankAccountEncrypted: text("bankAccountEncrypted"), bankAccountFingerprint: varchar("bankAccountFingerprint", { length: 64 }), bankMasked: varchar("bankMasked", { length: 64 }), bankName: varchar("bankName", { length: 128 }),
-  userId: int("userId"), legacyProfileId: int("legacyProfileId"), legacyWorkerId: int("legacyWorkerId"),
-  version: int("version").default(1).notNull(), createdBy: int("createdBy").notNull(), updatedBy: int("updatedBy").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, t => ({ personNoUnique: uniqueIndex("personnel_people_no_unique").on(t.personNo), userUnique: uniqueIndex("personnel_people_user_unique").on(t.userId), phoneUnique: uniqueIndex("personnel_people_phone_unique").on(t.phoneFingerprint), identityUnique: uniqueIndex("personnel_people_identity_unique").on(t.identityNoFingerprint), projectIndex: index("personnel_people_project_index").on(t.projectId, t.employmentStatus) }));
-export const personnelPositions = mysqlTable("personnel_positions", {
-  id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 128 }).notNull(),
-  category: mysqlEnum("category", ["management", "technical", "business", "driver", "operator", "construction", "other"]).notNull(),
-  status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, t => ({ nameUnique: uniqueIndex("personnel_positions_name_unique").on(t.name) }));
-export const personnelTeams = mysqlTable("personnel_teams", {
-  id: int("id").autoincrement().primaryKey(), name: varchar("name", { length: 128 }).notNull(), projectId: int("projectId").notNull(),
-  leaderName: varchar("leaderName", { length: 128 }), remarks: varchar("remarks", { length: 1000 }), status: mysqlEnum("status", ["active", "disabled"]).default("active").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-}, t => ({ projectNameUnique: uniqueIndex("personnel_teams_project_name_unique").on(t.projectId, t.name) }));
-export const personnelSourceLinks = mysqlTable("personnel_source_links", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), sourceType: mysqlEnum("sourceType", ["user", "profile", "worker"]).notNull(), sourceId: int("sourceId").notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ sourceUnique: uniqueIndex("personnel_source_unique").on(t.sourceType, t.sourceId), personIndex: index("personnel_source_person_index").on(t.personId) }));
-export const personnelAssignments = mysqlTable("personnel_assignments", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
-  primaryPositionId: int("primaryPositionId"), secondaryPositionIds: json("secondaryPositionIds").$type<number[]>().notNull(), projectId: int("projectId"), teamId: int("teamId"), employmentStatus: mysqlEnum("employmentStatus", ["active", "suspended", "left"]).notNull(),
-  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), version: int("version").notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ personVersionUnique: uniqueIndex("personnel_assignments_person_version_unique").on(t.personId, t.version) }));
-export const personnelSalaryHistory = mysqlTable("personnel_salary_history", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), salaryBasis: mysqlEnum("salaryBasis", ["monthly", "daily", "hourly", "piecework"]).notNull(), baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }), payrollEnabled: boolean("payrollEnabled").notNull(),
-  affiliation: mysqlEnum("affiliation", ["company", "temporary", "labor_team", "external"]).notNull(),
-  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ personEffectiveUnique: uniqueIndex("personnel_salary_person_effective_unique").on(t.personId, t.effectiveFrom) }));
-export const personnelResourceBindings = mysqlTable("personnel_resource_bindings", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(), assetId: int("assetId").notNull(), projectId: int("projectId"),
-  effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(), effectiveTo: date("effectiveTo", { mode: "string" }), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ assetDateIndex: index("personnel_resource_asset_date_index").on(t.assetType, t.assetId, t.effectiveFrom), personIndex: index("personnel_resource_person_index").on(t.personId) }));
-export const personnelDocuments = mysqlTable("personnel_documents", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), projectId: int("projectId"), documentType: mysqlEnum("documentType", ["portrait", "identity", "driver_license", "operator_certificate", "contract", "insurance", "other"]).notNull(),
-  name: varchar("name", { length: 128 }).notNull(), expiresAt: date("expiresAt", { mode: "string" }), evidenceId: bigint("evidenceId", { mode: "number" }).notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ personIndex: index("personnel_documents_person_index").on(t.personId), evidenceUnique: uniqueIndex("personnel_documents_evidence_unique").on(t.evidenceId) }));
-export const personnelChanges = mysqlTable("personnel_changes", {
-  id: int("id").autoincrement().primaryKey(), personId: int("personId").notNull(), action: varchar("action", { length: 64 }).notNull(), version: int("version").notNull(), changes: json("changes").$type<Record<string, { before: unknown; after: unknown }>>().notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
-}, t => ({ personIndex: index("personnel_changes_person_index").on(t.personId, t.createdAt) }));
+export const personnelPeople = mysqlTable(
+  "personnel_people",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personNo: varchar("personNo", { length: 48 }).notNull(),
+    name: varchar("name", { length: 128 }).notNull(),
+    affiliation: mysqlEnum("affiliation", [
+      "company",
+      "temporary",
+      "labor_team",
+      "external",
+    ]).notNull(),
+    employmentStatus: mysqlEnum("employmentStatus", [
+      "active",
+      "suspended",
+      "left",
+    ])
+      .default("active")
+      .notNull(),
+    primaryPositionId: int("primaryPositionId"),
+    secondaryPositionIds: json("secondaryPositionIds")
+      .$type<number[]>()
+      .notNull(),
+    projectId: int("projectId"),
+    teamId: int("teamId"),
+    entryDate: date("entryDate", { mode: "string" }),
+    exitDate: date("exitDate", { mode: "string" }),
+    gender: mysqlEnum("gender", ["male", "female", "unspecified"]),
+    birthDate: date("birthDate", { mode: "string" }),
+    address: varchar("address", { length: 500 }),
+    emergencyContactName: varchar("emergencyContactName", { length: 128 }),
+    emergencyContactPhoneEncrypted: text("emergencyContactPhoneEncrypted"),
+    emergencyContactPhoneMasked: varchar("emergencyContactPhoneMasked", {
+      length: 64,
+    }),
+    remarks: varchar("remarks", { length: 1000 }),
+    avatarEvidenceId: bigint("avatarEvidenceId", { mode: "number" }),
+    payrollEnabled: boolean("payrollEnabled").default(false).notNull(),
+    phoneEncrypted: text("phoneEncrypted"),
+    phoneFingerprint: varchar("phoneFingerprint", { length: 64 }),
+    phoneMasked: varchar("phoneMasked", { length: 64 }),
+    identityNoEncrypted: text("identityNoEncrypted"),
+    identityNoFingerprint: varchar("identityNoFingerprint", { length: 64 }),
+    identityMasked: varchar("identityMasked", { length: 64 }),
+    bankAccountEncrypted: text("bankAccountEncrypted"),
+    bankAccountFingerprint: varchar("bankAccountFingerprint", { length: 64 }),
+    bankMasked: varchar("bankMasked", { length: 64 }),
+    bankName: varchar("bankName", { length: 128 }),
+    userId: int("userId"),
+    legacyProfileId: int("legacyProfileId"),
+    legacyWorkerId: int("legacyWorkerId"),
+    version: int("version").default(1).notNull(),
+    createdBy: int("createdBy").notNull(),
+    updatedBy: int("updatedBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  t => ({
+    personNoUnique: uniqueIndex("personnel_people_no_unique").on(t.personNo),
+    userUnique: uniqueIndex("personnel_people_user_unique").on(t.userId),
+    phoneUnique: uniqueIndex("personnel_people_phone_unique").on(
+      t.phoneFingerprint
+    ),
+    identityUnique: uniqueIndex("personnel_people_identity_unique").on(
+      t.identityNoFingerprint
+    ),
+    projectIndex: index("personnel_people_project_index").on(
+      t.projectId,
+      t.employmentStatus
+    ),
+  })
+);
+export const personnelPositions = mysqlTable(
+  "personnel_positions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 128 }).notNull(),
+    category: mysqlEnum("category", [
+      "management",
+      "technical",
+      "business",
+      "driver",
+      "operator",
+      "construction",
+      "other",
+    ]).notNull(),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  t => ({
+    nameUnique: uniqueIndex("personnel_positions_name_unique").on(t.name),
+  })
+);
+export const personnelTeams = mysqlTable(
+  "personnel_teams",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    name: varchar("name", { length: 128 }).notNull(),
+    projectId: int("projectId").notNull(),
+    leaderName: varchar("leaderName", { length: 128 }),
+    remarks: varchar("remarks", { length: 1000 }),
+    status: mysqlEnum("status", ["active", "disabled"])
+      .default("active")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  t => ({
+    projectNameUnique: uniqueIndex("personnel_teams_project_name_unique").on(
+      t.projectId,
+      t.name
+    ),
+  })
+);
+export const personnelSourceLinks = mysqlTable(
+  "personnel_source_links",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    sourceType: mysqlEnum("sourceType", [
+      "user",
+      "profile",
+      "worker",
+    ]).notNull(),
+    sourceId: int("sourceId").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    sourceUnique: uniqueIndex("personnel_source_unique").on(
+      t.sourceType,
+      t.sourceId
+    ),
+    personIndex: index("personnel_source_person_index").on(t.personId),
+  })
+);
+export const personnelAssignments = mysqlTable(
+  "personnel_assignments",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    affiliation: mysqlEnum("affiliation", [
+      "company",
+      "temporary",
+      "labor_team",
+      "external",
+    ]).notNull(),
+    primaryPositionId: int("primaryPositionId"),
+    secondaryPositionIds: json("secondaryPositionIds")
+      .$type<number[]>()
+      .notNull(),
+    projectId: int("projectId"),
+    teamId: int("teamId"),
+    employmentStatus: mysqlEnum("employmentStatus", [
+      "active",
+      "suspended",
+      "left",
+    ]).notNull(),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(),
+    version: int("version").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    personVersionUnique: uniqueIndex(
+      "personnel_assignments_person_version_unique"
+    ).on(t.personId, t.version),
+  })
+);
+export const personnelSalaryHistory = mysqlTable(
+  "personnel_salary_history",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    salaryBasis: mysqlEnum("salaryBasis", [
+      "monthly",
+      "daily",
+      "hourly",
+      "piecework",
+    ]).notNull(),
+    baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }),
+    payrollEnabled: boolean("payrollEnabled").notNull(),
+    affiliation: mysqlEnum("affiliation", [
+      "company",
+      "temporary",
+      "labor_team",
+      "external",
+    ]).notNull(),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    personEffectiveUnique: uniqueIndex(
+      "personnel_salary_person_effective_unique"
+    ).on(t.personId, t.effectiveFrom),
+  })
+);
+export const personnelResourceBindings = mysqlTable(
+  "personnel_resource_bindings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(),
+    assetId: int("assetId").notNull(),
+    projectId: int("projectId"),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(),
+    effectiveTo: date("effectiveTo", { mode: "string" }),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    assetDateIndex: index("personnel_resource_asset_date_index").on(
+      t.assetType,
+      t.assetId,
+      t.effectiveFrom
+    ),
+    personIndex: index("personnel_resource_person_index").on(t.personId),
+  })
+);
+export const personnelDocuments = mysqlTable(
+  "personnel_documents",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    projectId: int("projectId"),
+    documentType: mysqlEnum("documentType", [
+      "portrait",
+      "identity",
+      "driver_license",
+      "operator_certificate",
+      "contract",
+      "insurance",
+      "other",
+    ]).notNull(),
+    name: varchar("name", { length: 128 }).notNull(),
+    expiresAt: date("expiresAt", { mode: "string" }),
+    evidenceId: bigint("evidenceId", { mode: "number" }).notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    personIndex: index("personnel_documents_person_index").on(t.personId),
+    evidenceUnique: uniqueIndex("personnel_documents_evidence_unique").on(
+      t.evidenceId
+    ),
+  })
+);
+export const personnelChanges = mysqlTable(
+  "personnel_changes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    personId: int("personId").notNull(),
+    action: varchar("action", { length: 64 }).notNull(),
+    version: int("version").notNull(),
+    changes: json("changes")
+      .$type<Record<string, { before: unknown; after: unknown }>>()
+      .notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  t => ({
+    personIndex: index("personnel_changes_person_index").on(
+      t.personId,
+      t.createdAt
+    ),
+  })
+);

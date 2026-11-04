@@ -10,7 +10,10 @@ const { mockNotifyOfficialAccountBusinessEventSafely } = vi.hoisted(() => ({
 
 /** 路由测试隔离数据库和数据范围基础设施，只验证机械、运输的业务权限与状态边界。 */
 vi.mock("./db", () => ({ getDb: vi.fn() }));
-vi.mock("./services/businessNotifier", () => ({ notifyOfficialAccountBusinessEventSafely: mockNotifyOfficialAccountBusinessEventSafely }));
+vi.mock("./services/businessNotifier", () => ({
+  notifyOfficialAccountBusinessEventSafely:
+    mockNotifyOfficialAccountBusinessEventSafely,
+}));
 vi.mock("./access", async importOriginal => {
   const actual = await importOriginal<typeof import("./access")>();
   return {
@@ -24,7 +27,13 @@ vi.mock("./access", async importOriginal => {
   };
 });
 
-import { assertProjectInCurrentScope, getCurrentDataScope, getEffectiveRoleCodes, getSuperAdminAccess, hasUserSpecificOperationPermission } from "./access";
+import {
+  assertProjectInCurrentScope,
+  getCurrentDataScope,
+  getEffectiveRoleCodes,
+  getSuperAdminAccess,
+  hasUserSpecificOperationPermission,
+} from "./access";
 import { getDb } from "./db";
 import { machineryRouter, transportRouter } from "./routers/operations";
 import { encryptSecret } from "./services/secretVault";
@@ -62,7 +71,11 @@ function createSelectDb(rows: unknown[]) {
 }
 
 function createProjectOptionsDb(rows: unknown[]) {
-  return { select: vi.fn(() => ({ from: vi.fn(() => ({ orderBy: vi.fn(async () => rows) })) })) };
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({ orderBy: vi.fn(async () => rows) })),
+    })),
+  };
 }
 
 /** 支持运输保存流程按车辆、影像与运价规则的读取顺序返回不同数据。 */
@@ -76,7 +89,10 @@ function createSelectDbSequence(...responses: unknown[][]) {
           where: vi.fn(() => ({
             orderBy: vi.fn(async () => rows),
             limit: vi.fn(async () => rows),
-            then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+            then: (
+              resolve: (value: unknown[]) => unknown,
+              reject: (reason: unknown) => unknown
+            ) => Promise.resolve(rows).then(resolve, reject),
           })),
         })),
       };
@@ -89,72 +105,235 @@ describe("机械与运输 tRPC 路由", () => {
     vi.clearAllMocks();
     process.env.JWT_SECRET = "operations-router-rfid-test-secret";
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
-    vi.mocked(getCurrentDataScope).mockResolvedValue({ userId: 1, hasAllProjects: false, projectIds: [], organizationIds: [] });
-    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: false, reason: "not_super_admin" });
+    vi.mocked(getCurrentDataScope).mockResolvedValue({
+      userId: 1,
+      hasAllProjects: false,
+      projectIds: [],
+      organizationIds: [],
+    });
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({
+      canAccess: false,
+      reason: "not_super_admin",
+    });
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(false);
-    mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([{ delivered: true, reason: "sent" }]);
+    mockNotifyOfficialAccountBusinessEventSafely.mockResolvedValue([
+      { delivered: true, reason: "sent" },
+    ]);
   });
 
   it("机械台账列表在读取前强制校验调用方的项目数据范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).listMachines({ projectId: 10 })).resolves.toEqual([]);
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .listMachines({ projectId: 10 })
+    ).resolves.toEqual([]);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("机械成本汇总仅返回当前项目内未作废的真实成本，并在读取前校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([
-      { machineId: 7, amount: "1200.50", costType: "repair", status: "approved", occurredAt: new Date("2026-08-16T00:00:00.000Z") },
-      { machineId: 7, amount: "300", costType: "fuel", status: "draft", occurredAt: new Date("2026-08-15T00:00:00.000Z") },
-      { machineId: 8, amount: "999", costType: "repair", status: "void", occurredAt: new Date("2026-08-14T00:00:00.000Z") },
-    ]) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDb([
+        {
+          machineId: 7,
+          amount: "1200.50",
+          costType: "repair",
+          status: "approved",
+          occurredAt: new Date("2026-08-16T00:00:00.000Z"),
+        },
+        {
+          machineId: 7,
+          amount: "300",
+          costType: "fuel",
+          status: "draft",
+          occurredAt: new Date("2026-08-15T00:00:00.000Z"),
+        },
+        {
+          machineId: 8,
+          amount: "999",
+          costType: "repair",
+          status: "void",
+          occurredAt: new Date("2026-08-14T00:00:00.000Z"),
+        },
+      ]) as never
+    );
 
-    await expect(machineryRouter.createCaller(createAuthContext()).listCostSummaries({ projectId: 10 })).resolves.toEqual([
-      expect.objectContaining({ machineId: 7, totalAmount: 1500.5, repairAmount: 1200.5, recordCount: 2 }),
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .listCostSummaries({ projectId: 10 })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        machineId: 7,
+        totalAmount: 1500.5,
+        repairAmount: 1200.5,
+        recordCount: 2,
+      }),
     ]);
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("会计机械月度明细只读取当前项目与期间的审计快照，并在读取前校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([
-      { id: 91, projectId: 10, machineId: 7, period: "2026-08", status: "draft", totalOutput: "6800", driverTotalWage: "2400", machineShareAmount: "1800" },
-    ]) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDb([
+        {
+          id: 91,
+          projectId: 10,
+          machineId: 7,
+          period: "2026-08",
+          status: "draft",
+          totalOutput: "6800",
+          driverTotalWage: "2400",
+          machineShareAmount: "1800",
+        },
+      ]) as never
+    );
 
-    await expect(machineryRouter.createCaller(createAuthContext()).listMonthlyStatements({ projectId: 10, period: "2026-08" })).resolves.toEqual([
-      expect.objectContaining({ id: 91, projectId: 10, machineId: 7, period: "2026-08", status: "draft" }),
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .listMonthlyStatements({ projectId: 10, period: "2026-08" })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: 91,
+        projectId: 10,
+        machineId: 7,
+        period: "2026-08",
+        status: "draft",
+      }),
     ]);
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("单机分析仅汇总当前项目的日作业、维修和柴油凭证，并以柴油台账优先避免油料重复计入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
-      [{ id: 7, projectId: 10, name: "挖掘机", code: "EX-007", model: "375" }],
-      [{ id: 81, machineId: 7, projectId: 10, period: "2026-08", totalOutput: "10000", driverTotalWage: "2500", repairAmount: "600", fuelAmount: "800", fuelLiters: "100", status: "draft" }],
-      [{ id: 91, machineId: 7, projectId: 10, occurredOn: new Date("2026-08-16T00:00:00.000Z"), workHours: "10", overtimeHours: "2", outputAmount: "1200", driverWageAmount: "300", status: "draft", remarks: null }],
-      [{ id: 101, machineId: 7, projectId: 10, occurredAt: new Date("2026-08-16T03:00:00.000Z"), costType: "fuel", quantity: "80", amount: "620", status: "approved" }],
-      [{ id: 102, assetId: 7, projectId: 10, assetType: "machine", occurredAt: new Date("2026-08-16T04:00:00.000Z"), costCategory: "repair", amount: "200", status: "approved" }],
-      [{ id: 103, machineId: 7, projectId: 10, assetType: "machine", refueledAt: new Date("2026-08-16T05:00:00.000Z"), liters: "90", amount: "720", status: "approved" }],
-    ) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence(
+        [
+          {
+            id: 7,
+            projectId: 10,
+            name: "挖掘机",
+            code: "EX-007",
+            model: "375",
+          },
+        ],
+        [
+          {
+            id: 81,
+            machineId: 7,
+            projectId: 10,
+            period: "2026-08",
+            totalOutput: "10000",
+            driverTotalWage: "2500",
+            repairAmount: "600",
+            fuelAmount: "800",
+            fuelLiters: "100",
+            status: "draft",
+          },
+        ],
+        [
+          {
+            id: 91,
+            machineId: 7,
+            projectId: 10,
+            occurredOn: new Date("2026-08-16T00:00:00.000Z"),
+            workHours: "10",
+            overtimeHours: "2",
+            outputAmount: "1200",
+            driverWageAmount: "300",
+            status: "draft",
+            remarks: null,
+          },
+        ],
+        [
+          {
+            id: 101,
+            machineId: 7,
+            projectId: 10,
+            occurredAt: new Date("2026-08-16T03:00:00.000Z"),
+            costType: "fuel",
+            quantity: "80",
+            amount: "620",
+            status: "approved",
+          },
+        ],
+        [
+          {
+            id: 102,
+            assetId: 7,
+            projectId: 10,
+            assetType: "machine",
+            occurredAt: new Date("2026-08-16T04:00:00.000Z"),
+            costCategory: "repair",
+            amount: "200",
+            status: "approved",
+          },
+        ],
+        [
+          {
+            id: 103,
+            machineId: 7,
+            projectId: 10,
+            assetType: "machine",
+            refueledAt: new Date("2026-08-16T05:00:00.000Z"),
+            liters: "90",
+            amount: "720",
+            status: "approved",
+          },
+        ]
+      ) as never
+    );
 
-    const result = await machineryRouter.createCaller(createAuthContext()).getMachineAnalysis({ machineId: 7, projectId: 10, period: "2026-08" });
+    const result = await machineryRouter
+      .createCaller(createAuthContext())
+      .getMachineAnalysis({ machineId: 7, projectId: 10, period: "2026-08" });
 
     expect(result.machine).toMatchObject({ id: 7, code: "EX-007" });
-    expect(result.monthly[0]).toMatchObject({ totalOutput: 10000, netIncome: 6100 });
-    expect(result.daily[0]).toMatchObject({ outputAmount: 1200, driverWageAmount: 300, repairAmount: 200, fuelLiters: 90, fuelAmount: 720, netIncome: -20 });
+    expect(result.monthly[0]).toMatchObject({
+      totalOutput: 10000,
+      netIncome: 6100,
+    });
+    expect(result.daily[0]).toMatchObject({
+      outputAmount: 1200,
+      driverWageAmount: 300,
+      repairAmount: 200,
+      fuelLiters: 90,
+      fuelAmount: 720,
+      netIncome: -20,
+    });
   });
 
-  it("保存机械台班时由服务端核算台班金额、加班金额并快照驾驶员", async () => {
+  it("保存机械仅加班合法输入时服务端核算加班金额并快照驾驶员，不恢复台班", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 7, projectId: 10, name: "挖掘机", code: "EX-007", operatorUserId: 2, driverName: "档案驾驶员" }],
+        [
+          {
+            id: 7,
+            projectId: 10,
+            name: "挖掘机",
+            code: "EX-007",
+            operatorUserId: 2,
+            driverName: "档案驾驶员",
+          },
+        ],
         [],
-        [{ id: 2, name: "张师傅" }],
+        [{ id: 2, name: "张师傅" }]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
@@ -164,120 +343,286 @@ describe("机械与运输 tRPC 路由", () => {
       machineId: 7,
       occurredOn: "2026-10-17",
       operatorUserId: 2,
-      shiftCount: 1.5,
-      workHours: 15,
+      shiftCount: 0,
+      workHours: 0,
       overtimeHours: 2,
-      shiftRate: 800,
+      shiftRate: 0,
       overtimeHourlyRate: 120,
-      outputAmount: 3000,
-      driverWageAmount: 500,
+      outputAmount: 0,
+      driverWageAmount: 0,
       remarks: "夜间加班两小时",
     });
 
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
-      shiftCount: "1.5",
-      shiftRate: "800",
-      overtimeHours: "2",
-      overtimeHourlyRate: "120",
-      shiftAmount: "1200",
-      overtimeAmount: "240",
-      driverNameSnapshot: "张师傅",
-    }));
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shiftCount: "0",
+        shiftRate: "0",
+        workHours: "0",
+        outputAmount: "0",
+        driverWageAmount: "0",
+        overtimeHours: "2",
+        overtimeHourlyRate: "120",
+        shiftAmount: "0",
+        overtimeAmount: "240",
+        driverNameSnapshot: "张师傅",
+      })
+    );
   });
 
   it("已结算机械日作业不可回退，且状态流转仍校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 93, projectId: 10, machineId: 7, status: "settled" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      ...createSelectDb([
+        { id: 93, projectId: 10, machineId: 7, status: "settled" },
+      ]),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     } as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).transitionDailyOperation({ id: 93, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .transitionDailyOperation({ id: 93, projectId: 10, nextStatus: "void" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("用户专属运输查看权限可在已有项目范围内读取项目选项，不再受旧岗位白名单误拦截", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValueOnce(true);
-    vi.mocked(getCurrentDataScope).mockResolvedValueOnce({ userId: 1, hasAllProjects: false, projectIds: [88], organizationIds: [] });
-    vi.mocked(getDb).mockResolvedValue(createProjectOptionsDb([{ id: 88, code: "TR-88", name: "运输授权项目", status: "active", organizationId: null }]) as never);
+    vi.mocked(getCurrentDataScope).mockResolvedValueOnce({
+      userId: 1,
+      hasAllProjects: false,
+      projectIds: [88],
+      organizationIds: [],
+    });
+    vi.mocked(getDb).mockResolvedValue(
+      createProjectOptionsDb([
+        {
+          id: 88,
+          code: "TR-88",
+          name: "运输授权项目",
+          status: "active",
+          organizationId: null,
+        },
+      ]) as never
+    );
 
-    await expect(transportRouter.createCaller(createAuthContext()).projectOptions()).resolves.toEqual([{ id: 88, code: "TR-88", name: "运输授权项目", status: "active", organizationId: null }]);
-    expect(vi.mocked(hasUserSpecificOperationPermission)).toHaveBeenCalledWith(expect.anything(), "TRANSPORT", "read");
+    await expect(
+      transportRouter.createCaller(createAuthContext()).projectOptions()
+    ).resolves.toEqual([
+      {
+        id: 88,
+        code: "TR-88",
+        name: "运输授权项目",
+        status: "active",
+        organizationId: null,
+      },
+    ]);
+    expect(vi.mocked(hasUserSpecificOperationPermission)).toHaveBeenCalledWith(
+      expect.anything(),
+      "TRANSPORT",
+      "read"
+    );
   });
 
   it("拒绝外租机械遗漏出租方、租金或租赁起止时间，防止产生无法结算的台账", async () => {
-    await expect(machineryRouter.createCaller(createAuthContext()).saveMachine({
-      projectId: 10,
-      operatorUserId: null,
-      code: "EXC-001",
-      name: "挖掘机",
-      model: null,
-      ownership: "leased",
-      supplierName: null,
-      plateOrAssetNo: null,
-      status: "idle",
-      leaseTerms: null,
-    })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("外租机械") });
+    await expect(
+      machineryRouter.createCaller(createAuthContext()).saveMachine({
+        projectId: 10,
+        operatorUserId: null,
+        code: "EXC-001",
+        name: "挖掘机",
+        model: null,
+        ownership: "leased",
+        supplierName: null,
+        plateOrAssetNo: null,
+        status: "idle",
+        leaseTerms: null,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("外租机械"),
+    });
   });
 
   it("纯司机岗位仅能读取分配给本人的车辆台账", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
     const db = createSelectDb([
-      { id: 11, projectId: 10, driverUserId: 1, plateNo: "粤A12345", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "0.9" },
-      { id: 12, projectId: 10, driverUserId: 2, plateNo: "粤B67890", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "0.9" },
+      {
+        id: 11,
+        projectId: 10,
+        driverUserId: 1,
+        plateNo: "粤A12345",
+        boxLengthMeters: "6",
+        boxWidthMeters: "2.3",
+        boxHeightMeters: "1.2",
+        loadFactor: "0.9",
+      },
+      {
+        id: 12,
+        projectId: 10,
+        driverUserId: 2,
+        plateNo: "粤B67890",
+        boxLengthMeters: "6",
+        boxWidthMeters: "2.3",
+        boxHeightMeters: "1.2",
+        loadFactor: "0.9",
+      },
     ]);
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).listVehicles({ projectId: 10 });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .listVehicles({ projectId: 10 });
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ id: 11, driverUserId: 1, theoreticalVolumeCubicMeters: 14.904 });
+    expect(result[0]).toMatchObject({
+      id: 11,
+      driverUserId: 1,
+      theoreticalVolumeCubicMeters: 14.904,
+    });
   });
 
   it("运输管理角色可为车辆卡绑定预填驾驶员电话，但车辆查询绝不返回电话加密密文", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{
-      id: 11,
-      projectId: 10,
-      driverUserId: 1,
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDb([
+        {
+          id: 11,
+          projectId: 10,
+          driverUserId: 1,
+          plateNo: "粤A12345",
+          driverName: "王师傅",
+          driverPhoneEncrypted: encryptSecret("13800138000"),
+          driverPhoneMasked: "138****8000",
+          boxLengthMeters: "6",
+          boxWidthMeters: "2.3",
+          boxHeightMeters: "1.2",
+          loadFactor: "0.9",
+        },
+      ]) as never
+    );
+
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .listVehicles({ projectId: 10 });
+    expect(result[0]).toMatchObject({
       plateNo: "粤A12345",
       driverName: "王师傅",
-      driverPhoneEncrypted: encryptSecret("13800138000"),
-      driverPhoneMasked: "138****8000",
-      boxLengthMeters: "6",
-      boxWidthMeters: "2.3",
-      boxHeightMeters: "1.2",
-      loadFactor: "0.9",
-    }]) as never);
-
-    const result = await transportRouter.createCaller(createAuthContext()).listVehicles({ projectId: 10 });
-    expect(result[0]).toMatchObject({ plateNo: "粤A12345", driverName: "王师傅", driverPhone: "13800138000" });
+      driverPhone: "13800138000",
+    });
     expect(result[0]).not.toHaveProperty("driverPhoneEncrypted");
   });
 
   it("单车分析只汇总当前项目的运输、柴油和维修记录，并按柴油金额计算占运输收入比例", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
-      [{ id: 11, projectId: 10, plateNo: "粤A12345", vehicleType: "dump_truck", ownership: "owned", ownerName: null, status: "active", driverUserId: 1 }],
-      [
-        { id: 71, vehicleId: 11, projectId: 10, tripNo: "TR-001", startAt: new Date("2026-08-16T08:00:00.000Z"), actualDistanceKm: "35", calculatedAmount: "1000", netSettlementAmount: "880", status: "settled" },
-        { id: 72, vehicleId: 11, projectId: 10, tripNo: "TR-VOID", startAt: new Date("2026-08-16T09:00:00.000Z"), actualDistanceKm: "20", calculatedAmount: "500", netSettlementAmount: "500", status: "void" },
-      ],
-      [{ id: 81, vehicleId: 11, projectId: 10, assetType: "vehicle", refueledAt: new Date("2026-08-16T10:00:00.000Z"), liters: "20", amount: "160", status: "approved" }],
-      [
-        { id: 91, assetId: 11, projectId: 10, assetType: "vehicle", occurredAt: new Date("2026-08-16T11:00:00.000Z"), costCategory: "repair", amount: "100", status: "approved" },
-        { id: 92, assetId: 11, projectId: 10, assetType: "vehicle", occurredAt: new Date("2026-08-16T12:00:00.000Z"), costCategory: "maintenance", amount: "40", status: "approved" },
-      ],
-      [],
-    ) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence(
+        [
+          {
+            id: 11,
+            projectId: 10,
+            plateNo: "粤A12345",
+            vehicleType: "dump_truck",
+            ownership: "owned",
+            ownerName: null,
+            status: "active",
+            driverUserId: 1,
+          },
+        ],
+        [
+          {
+            id: 71,
+            vehicleId: 11,
+            projectId: 10,
+            tripNo: "TR-001",
+            startAt: new Date("2026-08-16T08:00:00.000Z"),
+            actualDistanceKm: "35",
+            calculatedAmount: "1000",
+            netSettlementAmount: "880",
+            status: "settled",
+          },
+          {
+            id: 72,
+            vehicleId: 11,
+            projectId: 10,
+            tripNo: "TR-VOID",
+            startAt: new Date("2026-08-16T09:00:00.000Z"),
+            actualDistanceKm: "20",
+            calculatedAmount: "500",
+            netSettlementAmount: "500",
+            status: "void",
+          },
+        ],
+        [
+          {
+            id: 81,
+            vehicleId: 11,
+            projectId: 10,
+            assetType: "vehicle",
+            refueledAt: new Date("2026-08-16T10:00:00.000Z"),
+            liters: "20",
+            amount: "160",
+            status: "approved",
+          },
+        ],
+        [
+          {
+            id: 91,
+            assetId: 11,
+            projectId: 10,
+            assetType: "vehicle",
+            occurredAt: new Date("2026-08-16T11:00:00.000Z"),
+            costCategory: "repair",
+            amount: "100",
+            status: "approved",
+          },
+          {
+            id: 92,
+            assetId: 11,
+            projectId: 10,
+            assetType: "vehicle",
+            occurredAt: new Date("2026-08-16T12:00:00.000Z"),
+            costCategory: "maintenance",
+            amount: "40",
+            status: "approved",
+          },
+        ],
+        []
+      ) as never
+    );
 
-    const result = await transportRouter.createCaller(createAuthContext()).getVehicleAnalysis({ vehicleId: 11, projectId: 10, period: "2026-08" });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .getVehicleAnalysis({ vehicleId: 11, projectId: 10, period: "2026-08" });
 
     expect(result.vehicle).toMatchObject({ id: 11, plateNo: "粤A12345" });
-    expect(result.summary).toMatchObject({ tripCount: 1, grossIncome: 1000, settlementIncome: 880, fuelLiters: 20, fuelAmount: 160, repairAmount: 100, maintenanceAmount: 40, fuelCostRatio: 16, netIncome: 700 });
-    expect(result.daily[0]).toMatchObject({ date: "2026-08-16", tripCount: 1, fuelAmount: 160, netIncome: 700 });
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(result.summary).toMatchObject({
+      tripCount: 1,
+      grossIncome: 1000,
+      settlementIncome: 880,
+      fuelLiters: 20,
+      fuelAmount: 160,
+      repairAmount: 100,
+      maintenanceAmount: 40,
+      fuelCostRatio: 16,
+      netIncome: 700,
+    });
+    expect(result.daily[0]).toMatchObject({
+      date: "2026-08-16",
+      tripCount: 1,
+      fuelAmount: 160,
+      netIncome: 700,
+    });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("运输趟次将 GPS 与影像关联固化为快照，并由服务端返回缺失证据预警", async () => {
@@ -285,17 +630,74 @@ describe("机械与运输 tRPC 路由", () => {
     const values = vi.fn(async () => undefined);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
-        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            boxLengthMeters: "6",
+            boxWidthMeters: "2",
+            boxHeightMeters: "1",
+            loadFactor: "1",
+          },
+        ],
+        [
+          {
+            id: 12,
+            projectId: 10,
+            status: "active",
+            effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+            effectiveTo: null,
+            settlementUnit: "cubic_meter",
+            startDistanceKm: "0",
+            basePricePerUnit: "10",
+            stepMeters: 500,
+            stepIncreasePerUnit: "0",
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-TEST-01", vehicleId: 11, projectId: 10, freightRuleId: 12, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 0.1, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .saveTrip({
+        tripNo: "TR-TEST-01",
+        vehicleId: 11,
+        projectId: 10,
+        freightRuleId: 12,
+        startAt: "2026-07-25T08:00:00.000Z",
+        endAt: null,
+        actualDistanceKm: 0.1,
+        volumeCubicMeters: 2,
+        weightTons: null,
+        evidenceId: null,
+        startLatitude: 30.2,
+        startLongitude: 120.1,
+        endLatitude: null,
+        endLongitude: null,
+      });
 
-    expect(result.anomalies.map(item => item.code)).toEqual(expect.arrayContaining(["MISSING_EVIDENCE", "MISSING_GPS", "MISSING_END_TIME", "ABNORMAL_DISTANCE"]));
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ evidenceId: null, routeSnapshot: expect.objectContaining({ startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null }) }));
+    expect(result.anomalies.map(item => item.code)).toEqual(
+      expect.arrayContaining([
+        "MISSING_EVIDENCE",
+        "MISSING_GPS",
+        "MISSING_END_TIME",
+        "ABNORMAL_DISTANCE",
+      ])
+    );
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidenceId: null,
+        routeSnapshot: expect.objectContaining({
+          startLatitude: 30.2,
+          startLongitude: 120.1,
+          endLatitude: null,
+          endLongitude: null,
+        }),
+      })
+    );
   });
 
   it("未提供趟次编号时由服务端生成以日期时间秒为主体的项目内审计编号", async () => {
@@ -303,80 +705,208 @@ describe("机械与运输 tRPC 路由", () => {
     const values = vi.fn(async () => undefined);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
-        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            boxLengthMeters: "6",
+            boxWidthMeters: "2",
+            boxHeightMeters: "1",
+            loadFactor: "1",
+          },
+        ],
+        [
+          {
+            id: 12,
+            projectId: 10,
+            status: "active",
+            effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+            effectiveTo: null,
+            settlementUnit: "cubic_meter",
+            startDistanceKm: "0",
+            basePricePerUnit: "10",
+            stepMeters: 500,
+            stepIncreasePerUnit: "0",
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).saveTrip({ vehicleId: 11, projectId: 10, freightRuleId: 12, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 1, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: null, startLongitude: null, endLatitude: null, endLongitude: null });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .saveTrip({
+        vehicleId: 11,
+        projectId: 10,
+        freightRuleId: 12,
+        startAt: "2026-07-25T08:00:00.000Z",
+        endAt: null,
+        actualDistanceKm: 1,
+        volumeCubicMeters: 2,
+        weightTons: null,
+        evidenceId: null,
+        startLatitude: null,
+        startLongitude: null,
+        endLatitude: null,
+        endLongitude: null,
+      });
 
     expect(result.tripNo).toMatch(/^TR-10-\d{14}-\d{2}$/);
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ tripNo: result.tripNo }));
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({ tripNo: result.tripNo })
+    );
   });
 
   it("机械成本和运输趟次的状态流转均保留项目范围校验，已结算记录不可回退", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const machineCostDb = {
       ...createSelectDb([{ id: 21, projectId: 10, status: "settled" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     vi.mocked(getDb).mockResolvedValue(machineCostDb as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 21, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .transitionCost({ id: 21, projectId: 10, nextStatus: "void" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
 
     const tripDb = {
-      ...createSelectDb([{ id: 31, projectId: 10, vehicleId: 11, status: "settled" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      ...createSelectDbSequence(
+        [{ id: 31, projectId: 10, vehicleId: 11, status: "settled" }],
+        []
+      ),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     vi.mocked(getDb).mockResolvedValue(tripDb as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .transitionTrip({ id: 31, projectId: 10, nextStatus: "void" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("会计机械月度明细按草稿、提交、审核、结算状态机流转，已结算快照不可回退", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const updateValues = vi.fn();
     const monthlyStatementDb = {
-      ...createSelectDb([{ id: 92, projectId: 10, status: "draft", machineId: 7, period: "2026-08" }]),
-      update: vi.fn(() => ({ set: vi.fn((values: unknown) => { updateValues(values); return { where: vi.fn(async () => undefined) }; }) })),
+      ...createSelectDb([
+        {
+          id: 92,
+          projectId: 10,
+          status: "draft",
+          machineId: 7,
+          period: "2026-08",
+        },
+      ]),
+      update: vi.fn(() => ({
+        set: vi.fn((values: unknown) => {
+          updateValues(values);
+          return { where: vi.fn(async () => undefined) };
+        }),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     vi.mocked(getDb).mockResolvedValue(monthlyStatementDb as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).transitionMonthlyStatement({ id: 92, projectId: 10, nextStatus: "submitted" })).resolves.toEqual({ success: true });
-    expect(updateValues).toHaveBeenCalledWith(expect.objectContaining({ status: "submitted" }));
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .transitionMonthlyStatement({
+          id: 92,
+          projectId: 10,
+          nextStatus: "submitted",
+        })
+    ).resolves.toEqual({ success: true });
+    expect(updateValues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "submitted" })
+    );
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("运输结算将已核准的项目供油从总运费扣除，固化净结算快照并锁定柴油记录", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const settlementWrites: unknown[] = [];
-    const update = vi.fn(() => ({ set: vi.fn((values: unknown) => {
-      settlementWrites.push(values);
-      return { where: vi.fn(async () => [{ affectedRows: 1 }]) };
-    }) }));
+    const update = vi.fn(() => ({
+      set: vi.fn((values: unknown) => {
+        settlementWrites.push(values);
+        return { where: vi.fn(async () => [{ affectedRows: 1 }]) };
+      }),
+    }));
     const auditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 33, projectId: 10, vehicleId: 11, status: "verified", calculatedAmount: "1200.00" }],
-        [{ id: 701, recordNo: "DS1001", liters: "60", appliedUnitPrice: "7.50", amount: "450.00", supplyMethod: "project_supply", deductFromFreight: true, status: "approved" }],
+        [
+          {
+            id: 33,
+            projectId: 10,
+            vehicleId: 11,
+            status: "verified",
+            calculatedAmount: "1200.00",
+          },
+        ],
+        [{ ownership: "owned" }],
+        [
+          {
+            id: 701,
+            recordNo: "DS1001",
+            liters: "60",
+            appliedUnitPrice: "7.50",
+            amount: "450.00",
+            supplyMethod: "project_supply",
+            deductFromFreight: true,
+            status: "approved",
+          },
+        ]
       ),
       update,
       insert: vi.fn(() => ({ values: auditValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 33, projectId: 10, nextStatus: "settled" })).resolves.toEqual({ success: true });
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .transitionTrip({ id: 33, projectId: 10, nextStatus: "settled" })
+    ).resolves.toEqual({ success: true });
 
-    expect(settlementWrites).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: "settled", fuelDeductionAmount: "450", netSettlementAmount: "750", fuelSettlementSnapshot: expect.objectContaining({ grossFreightAmount: 1200, fuelDeductionAmount: 450, netSettlementAmount: 750 }) }),
-      expect.objectContaining({ status: "settled" }),
-    ]));
-    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "transition_trip", summary: expect.stringContaining("油款扣减¥450.00") }));
+    expect(settlementWrites).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "settled",
+          fuelDeductionAmount: "450",
+          netSettlementAmount: "750",
+          fuelSettlementSnapshot: expect.objectContaining({
+            grossFreightAmount: 1200,
+            fuelDeductionAmount: 450,
+            netSettlementAmount: 750,
+          }),
+        }),
+        expect.objectContaining({ status: "settled" }),
+      ])
+    );
+    expect(auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        action: "transition_trip",
+        summary: expect.stringContaining("油款扣减¥450.00"),
+      })
+    );
   });
 
   it("机械与运输正向流转同时留下审计和公众号业务深链", async () => {
@@ -384,29 +914,69 @@ describe("机械与运输 tRPC 路由", () => {
     const machineAuditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDb([{ id: 22, projectId: 10, status: "draft" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
       insert: vi.fn(() => ({ values: machineAuditValues })),
     } as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 22, projectId: 10, nextStatus: "approved" })).resolves.toEqual({ success: true });
-    expect(machineAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "machinery", action: "transition_cost", targetId: "22" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
-      module: "machinery", eventCode: "machine_cost_approved", targetId: "22", deepLink: "/mobile/machinery",
-    }));
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .transitionCost({ id: 22, projectId: 10, nextStatus: "approved" })
+    ).resolves.toEqual({ success: true });
+    expect(machineAuditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "machinery",
+        action: "transition_cost",
+        targetId: "22",
+      })
+    );
+    expect(
+      mockNotifyOfficialAccountBusinessEventSafely
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        module: "machinery",
+        eventCode: "machine_cost_approved",
+        targetId: "22",
+        deepLink: "/mobile/machinery",
+      })
+    );
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const tripAuditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 32, projectId: 10, vehicleId: 11, status: "draft" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      ...createSelectDb([
+        { id: 32, projectId: 10, vehicleId: 11, status: "draft" },
+      ]),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
       insert: vi.fn(() => ({ values: tripAuditValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 32, projectId: 10, nextStatus: "submitted" })).resolves.toEqual({ success: true });
-    expect(tripAuditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "transition_trip", targetId: "32" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
-      module: "transport", eventCode: "transport_trip_submitted", targetId: "32", deepLink: "/mobile/transport",
-    }));
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .transitionTrip({ id: 32, projectId: 10, nextStatus: "submitted" })
+    ).resolves.toEqual({ success: true });
+    expect(tripAuditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        action: "transition_trip",
+        targetId: "32",
+      })
+    );
+    expect(
+      mockNotifyOfficialAccountBusinessEventSafely
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        eventCode: "transport_trip_submitted",
+        targetId: "32",
+        deepLink: "/mobile/transport",
+      })
+    );
   });
 
   it("机械成本和运输趟次在条件状态更新冲突时不继续审计或投递通知", async () => {
@@ -415,11 +985,17 @@ describe("机械与运输 tRPC 路由", () => {
     const machineUpdateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDb([{ id: 41, projectId: 10, status: "draft" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: machineUpdateWhere })) })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: machineUpdateWhere })),
+      })),
       insert: vi.fn(() => ({ values: machineAuditValues })),
     } as never);
 
-    await expect(machineryRouter.createCaller(createAuthContext()).transitionCost({ id: 41, projectId: 10, nextStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      machineryRouter
+        .createCaller(createAuthContext())
+        .transitionCost({ id: 41, projectId: 10, nextStatus: "approved" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
     expect(machineUpdateWhere).toHaveBeenCalledTimes(1);
     expect(machineAuditValues).not.toHaveBeenCalled();
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
@@ -428,12 +1004,18 @@ describe("机械与运输 tRPC 路由", () => {
     const tripAuditValues = vi.fn(async () => undefined);
     const tripUpdateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 42, projectId: 10, vehicleId: 11, status: "draft" }]),
+      ...createSelectDb([
+        { id: 42, projectId: 10, vehicleId: 11, status: "draft" },
+      ]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: tripUpdateWhere })) })),
       insert: vi.fn(() => ({ values: tripAuditValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).transitionTrip({ id: 42, projectId: 10, nextStatus: "submitted" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .transitionTrip({ id: 42, projectId: 10, nextStatus: "submitted" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
     expect(tripUpdateWhere).toHaveBeenCalledTimes(1);
     expect(tripAuditValues).not.toHaveBeenCalled();
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
@@ -441,14 +1023,42 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("新建运输票据必须同时配置装土点和卸土点，避免无法闭环的单地点票据", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
-      { id: 11, projectId: 10, status: "active", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" },
-    ]) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence([
+        {
+          id: 11,
+          projectId: 10,
+          status: "active",
+          boxLengthMeters: "6",
+          boxWidthMeters: "2",
+          boxHeightMeters: "1",
+          loadFactor: "1",
+        },
+      ]) as never
+    );
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({
-      tripNo: "TR-SITE-PARTIAL", vehicleId: 11, projectId: 10, freightRuleId: 12, loadSiteId: 71, startAt: "2026-07-25T08:00:00.000Z", endAt: null,
-      actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: null, startLatitude: null, startLongitude: null, endLatitude: null, endLongitude: null,
-    })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("同时选择装土点和卸土点") });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).saveTrip({
+        tripNo: "TR-SITE-PARTIAL",
+        vehicleId: 11,
+        projectId: 10,
+        freightRuleId: 12,
+        loadSiteId: 71,
+        startAt: "2026-07-25T08:00:00.000Z",
+        endAt: null,
+        actualDistanceKm: 8,
+        volumeCubicMeters: 2,
+        weightTons: null,
+        evidenceId: null,
+        startLatitude: null,
+        startLongitude: null,
+        endLatitude: null,
+        endLongitude: null,
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("同时选择装土点和卸土点"),
+    });
   });
 
   it("车牌直拍票据必须关联现场影像、直接进入待核验并向主管投递核验提醒", async () => {
@@ -456,49 +1066,229 @@ describe("机械与运输 tRPC 路由", () => {
     const inserted: unknown[] = [];
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" }],
-        [{ id: 71, projectId: 10, siteType: "load", status: "active", name: "K12 装土区", administratorUserId: 1 }],
-        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1 }],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            plateNo: "湘A12345",
+            boxLengthMeters: "6",
+            boxWidthMeters: "2",
+            boxHeightMeters: "1",
+            loadFactor: "1",
+          },
+        ],
+        [
+          {
+            id: 71,
+            projectId: 10,
+            siteType: "load",
+            status: "active",
+            name: "K12 装土区",
+            administratorUserId: 1,
+          },
+        ],
+        [
+          {
+            id: 72,
+            projectId: 10,
+            siteType: "unload",
+            status: "active",
+            name: "K18 卸土区",
+            administratorUserId: 1,
+          },
+        ],
         [{ id: 301, projectId: 10, sourceType: "transport" }],
-        [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-07-01T00:00:00.000Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
+        [
+          {
+            id: 12,
+            projectId: 10,
+            status: "active",
+            effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+            effectiveTo: null,
+            settlementUnit: "cubic_meter",
+            startDistanceKm: "0",
+            basePricePerUnit: "10",
+            stepMeters: 500,
+            stepIncreasePerUnit: "0",
+          },
+        ],
         [],
         [{ id: 82, projectId: 10, vehicleId: 11, tripNo: "TR-PLATE-001" }],
-        [{ id: 81, projectId: 10, status: "submitted", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: null }],
+        [
+          {
+            id: 81,
+            projectId: 10,
+            status: "submitted",
+            loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"),
+            unloadConfirmedAt: null,
+          },
+        ]
       ),
-      insert: vi.fn(() => ({ values: vi.fn(async (value: unknown) => { inserted.push(value); }) })),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: vi.fn(() => ({
+        values: vi.fn(async (value: unknown) => {
+          inserted.push(value);
+        }),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+      })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveTrip({ tripNo: "TR-PLATE-001", vehicleId: 11, projectId: 10, freightRuleId: 12, invoiceMode: "plate_photo", loadSiteId: 71, unloadSiteId: 72, startAt: "2026-07-25T08:00:00.000Z", endAt: null, actualDistanceKm: 8, volumeCubicMeters: 2, weightTons: null, evidenceId: 301, startLatitude: 30.2, startLongitude: 120.1, endLatitude: null, endLongitude: null })).resolves.toMatchObject({ success: true, tripNo: "TR-PLATE-001", vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2 });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).saveTrip({
+        tripNo: "TR-PLATE-001",
+        vehicleId: 11,
+        projectId: 10,
+        freightRuleId: 12,
+        invoiceMode: "plate_photo",
+        loadSiteId: 71,
+        unloadSiteId: 72,
+        startAt: "2026-07-25T08:00:00.000Z",
+        endAt: null,
+        actualDistanceKm: 8,
+        volumeCubicMeters: 2,
+        weightTons: null,
+        evidenceId: 301,
+        startLatitude: 30.2,
+        startLongitude: 120.1,
+        endLatitude: null,
+        endLongitude: null,
+      })
+    ).resolves.toMatchObject({
+      success: true,
+      tripNo: "TR-PLATE-001",
+      vehiclePlateNo: "湘A12345",
+      dailyVehicleTripOrdinal: 2,
+    });
 
-    expect(inserted).toEqual(expect.arrayContaining([expect.objectContaining({ tripNo: "TR-PLATE-001", invoiceMode: "plate_photo", evidenceId: 301, status: "submitted", routeSnapshot: expect.objectContaining({ invoiceMode: "plate_photo", platePhotoEvidenceId: 301 }) })]));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_plate_photo_ticket_submitted", targetId: "TR-PLATE-001" }));
+    expect(inserted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tripNo: "TR-PLATE-001",
+          invoiceMode: "plate_photo",
+          evidenceId: 301,
+          status: "submitted",
+          routeSnapshot: expect.objectContaining({
+            invoiceMode: "plate_photo",
+            platePhotoEvidenceId: 301,
+          }),
+        }),
+      ])
+    );
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventCode: "transport_plate_photo_ticket_submitted",
+        targetId: "TR-PLATE-001",
+      })
+    );
   });
 
   it("车牌直拍票据仍不允许误送入 NFC 装卸刷卡状态机，但可走拍照卸土接口", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
-      { id: 62, projectId: 10, vehicleId: 11, invoiceMode: "plate_photo", status: "submitted", loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: null, unloadConfirmedAt: null },
-    ]) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence([
+        {
+          id: 62,
+          projectId: 10,
+          vehicleId: 11,
+          invoiceMode: "plate_photo",
+          status: "submitted",
+          loadSiteId: 71,
+          unloadSiteId: 72,
+          loadConfirmedAt: null,
+          unloadConfirmedAt: null,
+        },
+      ]) as never
+    );
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 62, projectId: 10, siteId: 71, idempotencyKey: "reader-photo-block-0001", occurredAt: "2026-07-25T08:00:00.000Z" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("不进入 NFC 刷卡流程") });
-    const operationsSource = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
-    expect(operationsSource).not.toContain('if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });');
-    expect(operationsSource).toContain('unloadConfirmationMode: "photo"');
+    await expect(
+      transportRouter.createCaller(createAuthContext()).recordLoadEvent({
+        tripId: 62,
+        projectId: 10,
+        siteId: 71,
+        idempotencyKey: "reader-photo-block-0001",
+        occurredAt: "2026-07-25T08:00:00.000Z",
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("不进入 NFC 刷卡流程"),
+    });
+    const operationsSource = readFileSync(
+      new URL("./routers/operations.ts", import.meta.url),
+      "utf8"
+    );
+    expect(
+      operationsSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).not.toContain(
+      'if (trip.invoiceMode !== "plate_photo") throw new TRPCError({ code: "BAD_REQUEST", message: "该运单应通过 NFC 刷卡闭环，不适用直拍卸土确认" });'
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      operationsSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      'unloadConfirmationMode: "photo"'
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
   });
 
   it("运输日汇总按车辆拆分 NFC 与直拍票据数量，并保留运费与待核验数量", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
-      [
-        { id: 81, projectId: 10, vehicleId: 11, invoiceMode: "nfc_card", status: "verified", startAt: new Date("2026-07-25T08:00:00.000Z"), volumeCubicMeters: "3", weightTons: "0", calculatedAmount: "150", routeSnapshot: {}, evidenceId: 1 },
-        { id: 82, projectId: 10, vehicleId: 11, invoiceMode: "plate_photo", status: "submitted", startAt: new Date("2026-07-25T09:00:00.000Z"), volumeCubicMeters: "2", weightTons: "0", calculatedAmount: "100", routeSnapshot: {}, evidenceId: 2 },
-      ],
-      [{ id: 11, plateNo: "湘A12345" }],
-    ) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence(
+        [
+          {
+            id: 81,
+            projectId: 10,
+            vehicleId: 11,
+            invoiceMode: "nfc_card",
+            status: "verified",
+            startAt: new Date("2026-07-25T08:00:00.000Z"),
+            volumeCubicMeters: "3",
+            weightTons: "0",
+            calculatedAmount: "150",
+            routeSnapshot: {},
+            evidenceId: 1,
+          },
+          {
+            id: 82,
+            projectId: 10,
+            vehicleId: 11,
+            invoiceMode: "plate_photo",
+            status: "submitted",
+            startAt: new Date("2026-07-25T09:00:00.000Z"),
+            volumeCubicMeters: "2",
+            weightTons: "0",
+            calculatedAmount: "100",
+            routeSnapshot: {},
+            evidenceId: 2,
+          },
+        ],
+        [{ id: 11, plateNo: "湘A12345" }]
+      ) as never
+    );
 
-    const result = await transportRouter.createCaller(createAuthContext()).dailySummary({ projectId: 10, date: "2026-07-25" });
-    expect(result).toMatchObject({ tripCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, vehicleSummaries: [expect.objectContaining({ plateNo: "湘A12345", ticketCount: 2, nfcCardTicketCount: 1, platePhotoTicketCount: 1, amount: 250, pendingReviewCount: 1 })] });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .dailySummary({ projectId: 10, date: "2026-07-25" });
+    expect(result).toMatchObject({
+      tripCount: 2,
+      nfcCardTicketCount: 1,
+      platePhotoTicketCount: 1,
+      amount: 250,
+      vehicleSummaries: [
+        expect.objectContaining({
+          plateNo: "湘A12345",
+          ticketCount: 2,
+          nfcCardTicketCount: 1,
+          platePhotoTicketCount: 1,
+          amount: 250,
+          pendingReviewCount: 1,
+        }),
+      ],
+    });
   });
 
   it("地点无需配置现场管理员即可由具备运输权限的用户保存", async () => {
@@ -509,7 +1299,18 @@ describe("机械与运输 tRPC 路由", () => {
       insert,
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveSite({ projectId: 10, siteType: "load", name: "K12 装土区", address: null, latitude: null, longitude: null, administratorUserId: null, status: "active" })).resolves.toMatchObject({ success: true, id: 71 });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).saveSite({
+        projectId: 10,
+        siteType: "load",
+        name: "K12 装土区",
+        address: null,
+        latitude: null,
+        longitude: null,
+        administratorUserId: null,
+        status: "active",
+      })
+    ).resolves.toMatchObject({ success: true, id: 71 });
     expect(insert).toHaveBeenCalled();
   });
 
@@ -517,13 +1318,28 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).getNfcSingleScanCloseSetting({ projectId: 10 })).resolves.toEqual({ enabled: false, minimumIntervalPolicy: "route_minimum_transit_minutes" });
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .getNfcSingleScanCloseSetting({ projectId: 10 })
+    ).resolves.toEqual({
+      enabled: false,
+      minimumIntervalPolicy: "route_minimum_transit_minutes",
+    });
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("仅超级管理员可启用单次刷卡闭环并留下审计记录", async () => {
-    vi.mocked(getSuperAdminAccess).mockResolvedValue({ canAccess: true, reason: "super_admin" });
-    const settingUpdate = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    vi.mocked(getSuperAdminAccess).mockResolvedValue({
+      canAccess: true,
+      reason: "super_admin",
+    });
+    const settingUpdate = vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    }));
     const auditValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDb([{ id: 900, version: 2 }]),
@@ -531,25 +1347,81 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: auditValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).resolves.toEqual({ success: true, enabled: true });
-    expect(settingUpdate).toHaveBeenCalledWith(expect.objectContaining({ valueJson: "true", status: "published", version: 3 }));
-    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "set_nfc_single_scan_close", targetId: "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT:10" }));
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })
+    ).resolves.toEqual({ success: true, enabled: true });
+    expect(settingUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        valueJson: "true",
+        status: "published",
+        version: 3,
+      })
+    );
+    expect(auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        action: "set_nfc_single_scan_close",
+        targetId: "TRANSPORT_NFC_SINGLE_SCAN_CLOSE_PROJECT:10",
+      })
+    );
   });
 
   it("非超级管理员不得通过移动端或接口启用单次刷卡闭环", async () => {
-    await expect(transportRouter.createCaller(createAuthContext()).setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .setNfcSingleScanCloseSetting({ projectId: 10, enabled: true })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("NFC 单次闭环保留最小连续开票拦截和真实状态标记，不伪造卸土刷卡事件", () => {
-    const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
-    const supportSource = readFileSync(new URL("./services/transportNfcSupport.ts", import.meta.url), "utf8");
-    expect(source).toContain("assertVehicleMinimumNfcInvoiceInterval");
-    expect(source).toContain("minimumTransitMinutes: route.minimumTransitMinutes");
-    expect(source).toContain("completeNfcTripBySingleScan");
-    expect(supportSource).toContain("nfcSingleScanClosed: true");
-    expect(source).toContain("singleScanClosed");
-    expect(supportSource).toContain("activeVehicleTransitKey: null");
-    expect(supportSource).toContain("nfcTransitKey: null");
+    const source = readFileSync(
+      new URL("./routers/operations.ts", import.meta.url),
+      "utf8"
+    );
+    const supportSource = readFileSync(
+      new URL("./services/transportNfcSupport.ts", import.meta.url),
+      "utf8"
+    );
+    expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
+      "assertVehicleMinimumNfcInvoiceInterval"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
+      "minimumTransitMinutes: effectiveTransportSafety(unloadSite, route).minimumTransitMinutes"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
+      "completeNfcTripBySingleScan"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      supportSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "nfcSingleScanClosed: true"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
+      "singleScanClosed".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      supportSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "activeVehicleTransitKey: null"
+        .replace(/\s+/g, "")
+        .replace(/,([})\]])/g, "$1")
+    );
+    expect(
+      supportSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    ).toContain(
+      "nfcTransitKey: null".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
+    );
   });
 
   it("装土刷卡按事件幂等记录、条件更新趟次，并向已绑定司机账号写入站内消息", async () => {
@@ -558,70 +1430,286 @@ describe("机械与运输 tRPC 路由", () => {
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 50, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
-        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", driverUserId: 7 }],
+        [
+          {
+            id: 50,
+            projectId: 10,
+            vehicleId: 11,
+            status: "draft",
+            loadConfirmedAt: null,
+            unloadConfirmedAt: null,
+          },
+        ],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            plateNo: "湘A12345",
+            driverUserId: 7,
+          },
+        ],
         [],
-        [{ id: 100, tripId: 50, eventType: "load", validationStatus: "accepted", validationReason: null }],
-        [{ id: 49, status: "submitted", loadConfirmedAt: new Date("2026-07-25T07:00:00.000Z"), unloadConfirmedAt: null }],
+        [
+          {
+            id: 100,
+            tripId: 50,
+            eventType: "load",
+            validationStatus: "accepted",
+            validationReason: null,
+          },
+        ],
+        [
+          {
+            id: 49,
+            status: "submitted",
+            loadConfirmedAt: new Date("2026-07-25T07:00:00.000Z"),
+            unloadConfirmedAt: null,
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 50, projectId: 10, idempotencyKey: "reader-load-0001", occurredAt: "2026-07-25T08:00:00.000Z" });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .recordLoadEvent({
+        tripId: 50,
+        projectId: 10,
+        idempotencyKey: "reader-load-0001",
+        occurredAt: "2026-07-25T08:00:00.000Z",
+      });
 
-    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 100, vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2, driverNotificationQueued: true });
-    expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({ tripId: 50, vehicleId: 11, eventType: "load", validationStatus: "accepted" }));
+    expect(result).toMatchObject({
+      success: true,
+      duplicate: false,
+      needsReview: false,
+      eventId: 100,
+      vehiclePlateNo: "湘A12345",
+      dailyVehicleTripOrdinal: 2,
+      driverNotificationQueued: true,
+    });
+    expect(insertValues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        tripId: 50,
+        vehicleId: 11,
+        eventType: "load",
+        validationStatus: "accepted",
+      })
+    );
     expect(updateWhere).toHaveBeenCalledTimes(1);
-    expect(insertValues).toHaveBeenNthCalledWith(2, expect.objectContaining({ module: "transport", action: "record_load_card_event", targetId: "100" }));
-    expect(insertValues).toHaveBeenNthCalledWith(3, expect.objectContaining({ eventCode: "transport_load_driver_notice", recipientUserId: 7, idempotencyKey: "inapp:transport-load:100:7", channel: "in_app", deepLink: "/mobile/transport" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_card_confirmed", targetId: "100" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_load_driver_notice" }));
+    expect(insertValues).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        module: "transport",
+        action: "record_load_card_event",
+        targetId: "100",
+      })
+    );
+    expect(insertValues).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        eventCode: "transport_load_driver_notice",
+        recipientUserId: 7,
+        idempotencyKey: "inapp:transport-load:100:7",
+        channel: "in_app",
+        deepLink: "/mobile/transport",
+      })
+    );
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventCode: "transport_load_card_confirmed",
+        targetId: "100",
+      })
+    );
+    expect(
+      mockNotifyOfficialAccountBusinessEventSafely
+    ).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventCode: "transport_load_driver_notice" })
+    );
   });
 
   it("卸土刷卡成功按同项目同车辆当日已完成卸土次数返回序号，不与装土次数混算", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    const insertValues = vi.fn(() => ({ onDuplicateKeyUpdate: vi.fn(async () => undefined) }));
+    const insertValues = vi.fn(() => ({
+      onDuplicateKeyUpdate: vi.fn(async () => undefined),
+    }));
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 51, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: null, unloadSiteId: 72, routeSnapshot: { routePresetId: 91 }, actualDistanceKm: "8", calculatedAmount: "80" }],
-        [{ id: 11, projectId: 10, status: "active", plateNo: "湘A12345", driverUserId: 7 }],
-        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1, latitude: null, longitude: null }],
+        [
+          {
+            id: 51,
+            projectId: 10,
+            vehicleId: 11,
+            status: "draft",
+            loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"),
+            unloadConfirmedAt: null,
+            unloadSiteId: 72,
+            routeSnapshot: { routePresetId: 91 },
+            actualDistanceKm: "8",
+            calculatedAmount: "80",
+          },
+        ],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            plateNo: "湘A12345",
+            driverUserId: 7,
+          },
+        ],
+        [
+          {
+            id: 72,
+            projectId: 10,
+            siteType: "unload",
+            status: "active",
+            name: "K18 卸土区",
+            administratorUserId: 1,
+            latitude: null,
+            longitude: null,
+          },
+        ],
         [],
-        [{ id: 102, tripId: 51, eventType: "unload", validationStatus: "accepted", validationReason: null }],
-        [{ id: 91, projectId: 10, minimumTransitMinutes: 10, minimumTransitEnabled: true, unloadGeofenceEnabled: false, unloadGeofenceMeters: 300 }],
-        [{ id: 72, projectId: 10, siteType: "unload", status: "active", name: "K18 卸土区", administratorUserId: 1, latitude: null, longitude: null }],
-        [{ id: 49, status: "submitted", loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"), unloadConfirmedAt: new Date("2026-07-25T00:05:00.000Z") }],
+        [
+          {
+            id: 102,
+            tripId: 51,
+            eventType: "unload",
+            validationStatus: "accepted",
+            validationReason: null,
+          },
+        ],
+        [
+          {
+            id: 91,
+            projectId: 10,
+            minimumTransitMinutes: 10,
+            minimumTransitEnabled: true,
+            unloadGeofenceEnabled: false,
+            unloadGeofenceMeters: 300,
+          },
+        ],
+        [
+          {
+            id: 72,
+            projectId: 10,
+            siteType: "unload",
+            status: "active",
+            name: "K18 卸土区",
+            administratorUserId: 1,
+            latitude: null,
+            longitude: null,
+          },
+        ],
+        [
+          {
+            id: 72,
+            projectId: 10,
+            siteType: "unload",
+            status: "active",
+            minimumTransitMinutes: 10,
+            minimumTransitEnabled: true,
+            unloadGeofenceEnabled: false,
+            unloadGeofenceMeters: 300,
+          },
+        ],
+        [
+          {
+            id: 49,
+            status: "submitted",
+            loadConfirmedAt: new Date("2026-07-25T00:00:00.000Z"),
+            unloadConfirmedAt: new Date("2026-07-25T00:05:00.000Z"),
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, siteId: 72, idempotencyKey: "reader-unload-count-0001", occurredAt: "2026-07-25T00:10:00.000Z" });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .recordUnloadEvent({
+        tripId: 51,
+        projectId: 10,
+        siteId: 72,
+        idempotencyKey: "reader-unload-count-0001",
+        occurredAt: "2026-07-25T00:10:00.000Z",
+      });
 
-    expect(result).toMatchObject({ success: true, duplicate: false, needsReview: false, eventId: 102, vehiclePlateNo: "湘A12345", dailyVehicleTripOrdinal: 2 });
+    expect(result).toMatchObject({
+      success: true,
+      duplicate: false,
+      needsReview: false,
+      eventId: 102,
+      vehiclePlateNo: "湘A12345",
+      dailyVehicleTripOrdinal: 2,
+    });
     expect(updateWhere).toHaveBeenCalled();
   });
 
   it("同一装土读卡事件重复重放时不重复写入、不重复提醒", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    const input = { tripId: 50, projectId: 10, idempotencyKey: "reader-load-0002", occurredAt: "2026-07-25T08:00:00.000Z" };
-    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ eventType: "load", tripId: 50, projectId: 10, siteId: null, idempotencyKey: "reader-load-0002", deviceId: null, cardFingerprint: null, latitude: null, longitude: null, occurredAt: "2026-07-25T08:00:00.000Z" })).digest("hex");
+    const input = {
+      tripId: 50,
+      projectId: 10,
+      idempotencyKey: "reader-load-0002",
+      occurredAt: "2026-07-25T08:00:00.000Z",
+    };
+    const payloadFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          eventType: "load",
+          tripId: 50,
+          projectId: 10,
+          siteId: null,
+          idempotencyKey: "reader-load-0002",
+          deviceId: null,
+          cardFingerprint: null,
+          latitude: null,
+          longitude: null,
+          occurredAt: "2026-07-25T08:00:00.000Z",
+        })
+      )
+      .digest("hex");
     const insertValues = vi.fn(async () => undefined);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 50, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [
+          {
+            id: 50,
+            projectId: 10,
+            vehicleId: 11,
+            status: "draft",
+            loadConfirmedAt: null,
+            unloadConfirmedAt: null,
+          },
+        ],
         [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
-        [{ id: 101, tripId: 50, eventType: "load", payloadFingerprint, validationStatus: "accepted", validationReason: null }],
+        [
+          {
+            id: 101,
+            tripId: 50,
+            eventType: "load",
+            payloadFingerprint,
+            validationStatus: "accepted",
+            validationReason: null,
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent(input)).resolves.toMatchObject({ success: true, duplicate: true, eventId: 101 });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).recordLoadEvent(input)
+    ).resolves.toMatchObject({ success: true, duplicate: true, eventId: 101 });
     expect(insertValues).not.toHaveBeenCalled();
     expect(mockNotifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
@@ -632,46 +1720,182 @@ describe("机械与运输 tRPC 路由", () => {
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
     const db = {
       ...createSelectDbSequence(
-        [{ id: 51, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [
+          {
+            id: 51,
+            projectId: 10,
+            vehicleId: 11,
+            status: "draft",
+            loadConfirmedAt: null,
+            unloadConfirmedAt: null,
+          },
+        ],
         [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
         [],
-        [{ id: 102, tripId: 51, eventType: "unload", validationStatus: "accepted", validationReason: null }],
+        [
+          {
+            id: 102,
+            tripId: 51,
+            eventType: "unload",
+            validationStatus: "accepted",
+            validationReason: null,
+          },
+        ]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
     vi.mocked(getDb).mockResolvedValue(db as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordUnloadEvent({ tripId: 51, projectId: 10, idempotencyKey: "reader-unload-0001", occurredAt: "2026-07-25T08:10:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).recordUnloadEvent({
+        tripId: 51,
+        projectId: 10,
+        idempotencyKey: "reader-unload-0001",
+        occurredAt: "2026-07-25T08:10:00.000Z",
+      })
+    ).resolves.toMatchObject({
+      success: false,
+      needsReview: true,
+      validationStatus: "needs_review",
+    });
     expect(updateWhere).toHaveBeenCalledTimes(2);
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ module: "transport", action: "record_card_event_needs_review", targetId: "102" }));
-    expect(insertValues).toHaveBeenLastCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", recipientUserId: 7, idempotencyKey: "inapp:transport-card-review:102:7", channel: "in_app", deepLink: "/mobile/transport" }));
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "102" }));
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        action: "record_card_event_needs_review",
+        targetId: "102",
+      })
+    );
+    expect(insertValues).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        eventCode: "transport_card_event_exception",
+        recipientUserId: 7,
+        idempotencyKey: "inapp:transport-card-review:102:7",
+        channel: "in_app",
+        deepLink: "/mobile/transport",
+      })
+    );
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventCode: "transport_card_event_exception",
+        targetId: "102",
+      })
+    );
   });
 
   it("司机柴油扣款明细仅投影本人车辆的有效运输扣油记录和加油机表数", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
-      [
-        { id: 11, plateNo: "川A12345", driverUserId: 1 },
-        { id: 12, plateNo: "川A99999", driverUserId: 2 },
-      ],
-      [
-        { id: 201, recordNo: "DS1001", vehicleId: 11, transportTripId: 50, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:30:00.000Z"), liters: "42.5", amount: "310.25", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: "项目油库", meterReading: "1234.5", receiptNo: "RC-001", evidenceId: null, remarks: "当日运输扣油" },
-        { id: 202, recordNo: "DS1002", vehicleId: 12, transportTripId: 51, assetType: "vehicle", deductFromFreight: true, status: "approved", refueledAt: new Date("2026-08-26T02:40:00.000Z"), liters: "30", amount: "219", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: "2000", receiptNo: null, evidenceId: null, remarks: null },
-        { id: 203, recordNo: "DS1003", vehicleId: 11, transportTripId: 52, assetType: "vehicle", deductFromFreight: false, status: "approved", refueledAt: new Date("2026-08-26T02:50:00.000Z"), liters: "20", amount: "146", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
-        { id: 204, recordNo: "DS1004", vehicleId: 11, transportTripId: 53, assetType: "vehicle", deductFromFreight: true, status: "void", refueledAt: new Date("2026-08-26T03:00:00.000Z"), liters: "10", amount: "73", appliedUnitPrice: "7.30", supplyMethod: "project_supply", stationOrSupplierName: null, meterReading: null, receiptNo: null, evidenceId: null, remarks: null },
-      ],
-    ) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence(
+        [
+          { id: 11, plateNo: "川A12345", driverUserId: 1 },
+          { id: 12, plateNo: "川A99999", driverUserId: 2 },
+        ],
+        [
+          {
+            id: 201,
+            recordNo: "DS1001",
+            vehicleId: 11,
+            transportTripId: 50,
+            assetType: "vehicle",
+            deductFromFreight: true,
+            status: "approved",
+            refueledAt: new Date("2026-08-26T02:30:00.000Z"),
+            liters: "42.5",
+            amount: "310.25",
+            appliedUnitPrice: "7.30",
+            supplyMethod: "project_supply",
+            stationOrSupplierName: "项目油库",
+            meterReading: "1234.5",
+            receiptNo: "RC-001",
+            evidenceId: null,
+            remarks: "当日运输扣油",
+          },
+          {
+            id: 202,
+            recordNo: "DS1002",
+            vehicleId: 12,
+            transportTripId: 51,
+            assetType: "vehicle",
+            deductFromFreight: true,
+            status: "approved",
+            refueledAt: new Date("2026-08-26T02:40:00.000Z"),
+            liters: "30",
+            amount: "219",
+            appliedUnitPrice: "7.30",
+            supplyMethod: "project_supply",
+            stationOrSupplierName: null,
+            meterReading: "2000",
+            receiptNo: null,
+            evidenceId: null,
+            remarks: null,
+          },
+          {
+            id: 203,
+            recordNo: "DS1003",
+            vehicleId: 11,
+            transportTripId: 52,
+            assetType: "vehicle",
+            deductFromFreight: false,
+            status: "approved",
+            refueledAt: new Date("2026-08-26T02:50:00.000Z"),
+            liters: "20",
+            amount: "146",
+            appliedUnitPrice: "7.30",
+            supplyMethod: "project_supply",
+            stationOrSupplierName: null,
+            meterReading: null,
+            receiptNo: null,
+            evidenceId: null,
+            remarks: null,
+          },
+          {
+            id: 204,
+            recordNo: "DS1004",
+            vehicleId: 11,
+            transportTripId: 53,
+            assetType: "vehicle",
+            deductFromFreight: true,
+            status: "void",
+            refueledAt: new Date("2026-08-26T03:00:00.000Z"),
+            liters: "10",
+            amount: "73",
+            appliedUnitPrice: "7.30",
+            supplyMethod: "project_supply",
+            stationOrSupplierName: null,
+            meterReading: null,
+            receiptNo: null,
+            evidenceId: null,
+            remarks: null,
+          },
+        ]
+      ) as never
+    );
 
-    await expect(transportRouter.createCaller(createAuthContext()).driverFuelDeductionDetails({ projectId: 10, date: "2026-08-26" })).resolves.toMatchObject({
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .driverFuelDeductionDetails({ projectId: 10, date: "2026-08-26" })
+    ).resolves.toMatchObject({
       date: "2026-08-26",
       recordCount: 1,
       totalLiters: 42.5,
       totalAmount: 310.25,
-      records: [expect.objectContaining({ id: 201, vehiclePlateNo: "川A12345", meterReading: 1234.5, receiptNo: "RC-001", evidence: null })],
+      records: [
+        expect.objectContaining({
+          id: 201,
+          vehiclePlateNo: "川A12345",
+          meterReading: 1234.5,
+          receiptNo: "RC-001",
+          evidence: null,
+        }),
+      ],
     });
-    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(expect.anything(), 10);
+    expect(vi.mocked(assertProjectInCurrentScope)).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
   });
 
   it("现场传入未绑定的射频卡指纹时只留痕待复核，不能确认装土状态", async () => {
@@ -680,19 +1904,53 @@ describe("机械与运输 tRPC 路由", () => {
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 52, projectId: 10, vehicleId: 11, status: "draft", loadConfirmedAt: null, unloadConfirmedAt: null }],
+        [
+          {
+            id: 52,
+            projectId: 10,
+            vehicleId: 11,
+            status: "draft",
+            loadConfirmedAt: null,
+            unloadConfirmedAt: null,
+          },
+        ],
         [{ id: 11, projectId: 10, status: "active", driverUserId: 7 }],
         [],
-        [{ id: 103, tripId: 52, eventType: "load", validationStatus: "accepted", validationReason: null }],
-        [],
+        [
+          {
+            id: 103,
+            tripId: 52,
+            eventType: "load",
+            validationStatus: "accepted",
+            validationReason: null,
+          },
+        ],
+        []
       ),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordLoadEvent({ tripId: 52, projectId: 10, idempotencyKey: "reader-load-unbound-card", cardFingerprint: "a".repeat(64), occurredAt: "2026-07-25T08:00:00.000Z" })).resolves.toMatchObject({ success: false, needsReview: true, validationStatus: "needs_review" });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).recordLoadEvent({
+        tripId: 52,
+        projectId: 10,
+        idempotencyKey: "reader-load-unbound-card",
+        cardFingerprint: "a".repeat(64),
+        occurredAt: "2026-07-25T08:00:00.000Z",
+      })
+    ).resolves.toMatchObject({
+      success: false,
+      needsReview: true,
+      validationStatus: "needs_review",
+    });
     expect(updateWhere).toHaveBeenCalledTimes(2);
-    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ eventCode: "transport_card_event_exception", targetId: "103" }));
+    expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventCode: "transport_card_event_exception",
+        targetId: "103",
+      })
+    );
   });
 
   it("车辆射频卡绑定只保存 UID 指纹、司机电话密文与掩码，并在实体写入前保持待写入", async () => {
@@ -700,41 +1958,123 @@ describe("机械与运输 tRPC 路由", () => {
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345" }],
-        [],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            driverUserId: null,
+            driverName: "张司机",
+            plateNo: "粤A12345",
+          },
+        ],
+        []
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ projectId: 10, vehicleId: 11, writerDeviceId: null, managementCode: "RFID-001", cardUid: "ABCD1234", driverPhone: "13800138000", status: "active" })).resolves.toEqual({ success: true });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({
+        projectId: 10,
+        vehicleId: 11,
+        writerDeviceId: null,
+        managementCode: "RFID-001",
+        cardUid: "ABCD1234",
+        driverPhone: "13800138000",
+        status: "active",
+      })
+    ).resolves.toEqual({ success: true });
     const binding = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(binding).toMatchObject({ vehicleId: 11, managementCode: "RFID-001", cardUidMasked: "****1234", driverPhoneMasked: "*******8000", status: "suspended" });
+    expect(binding).toMatchObject({
+      vehicleId: 11,
+      managementCode: "RFID-001",
+      cardUidMasked: "****1234",
+      driverPhoneMasked: "*******8000",
+      status: "suspended",
+    });
     expect(binding).not.toHaveProperty("lastWrittenAt");
     expect(binding.cardUidFingerprint).not.toBe("ABCD1234");
     expect(binding.driverPhoneEncrypted).not.toBe("13800138000");
-    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "bind_vehicle_rfid_card", summary: expect.not.stringContaining("13800138000") });
+    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({
+      action: "bind_vehicle_rfid_card",
+      summary: expect.not.stringContaining("13800138000"),
+    });
   });
 
   it("仅允许已挂失且已解绑的同一实体卡受控重新绑定为待写入，并使旧载荷版本失效", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const updateSet = vi.fn(() => ({
+      where: vi.fn(async () => [{ affectedRows: 1 }]),
+    }));
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345" }],
-        [{ id: 31, projectId: 10, vehicleId: null, writerDeviceId: 2, status: "revoked", cardUidFingerprint: createHash("sha256").update("road-rfid-card:v1:ABCD1234").digest("hex"), cardUidMasked: "****1234", lastWrittenAt: null, payloadVersion: 3, revokedAt: new Date(), driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            driverUserId: null,
+            driverName: "张司机",
+            plateNo: "粤A12345",
+          },
+        ],
+        [
+          {
+            id: 31,
+            projectId: 10,
+            vehicleId: null,
+            writerDeviceId: 2,
+            status: "revoked",
+            cardUidFingerprint: createHash("sha256")
+              .update("road-rfid-card:v1:ABCD1234")
+              .digest("hex"),
+            cardUidMasked: "****1234",
+            lastWrittenAt: null,
+            payloadVersion: 3,
+            revokedAt: new Date(),
+            driverPhoneEncrypted: encryptSecret("13800138000"),
+          },
+        ],
         [{ id: 31 }],
         [],
-        [],
+        []
       ),
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({ id: 31, projectId: 10, vehicleId: 11, writerDeviceId: null, managementCode: "RFID-031", cardUid: "ABCD1234", driverPhone: "13800138000", status: "active", reuseRevokedUnboundCard: true })).resolves.toEqual({ success: true });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).saveVehicleRfidCard({
+        id: 31,
+        projectId: 10,
+        vehicleId: 11,
+        writerDeviceId: null,
+        managementCode: "RFID-031",
+        cardUid: "ABCD1234",
+        driverPhone: "13800138000",
+        status: "active",
+        reuseRevokedUnboundCard: true,
+      })
+    ).resolves.toEqual({ success: true });
 
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: 11, managementCode: "RFID-031", status: "suspended", revokedAt: null, lastWrittenAt: null, payloadVersion: 4 }));
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "rebind_revoked_unbound_vehicle_rfid_card", targetId: "31", summary: expect.not.stringContaining("13800138000") }));
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        vehicleId: 11,
+        managementCode: "RFID-031",
+        status: "suspended",
+        revokedAt: null,
+        lastWrittenAt: null,
+        payloadVersion: 4,
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "rebind_revoked_unbound_vehicle_rfid_card",
+        targetId: "31",
+        summary: expect.not.stringContaining("13800138000"),
+      })
+    );
   });
 
   it("待写入车辆卡可以生成首次写卡任务，载荷仅临时返回且数据库只保存摘要", async () => {
@@ -742,20 +2082,78 @@ describe("机械与运输 tRPC 路由", () => {
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 21, projectId: 10, vehicleId: 11, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138000") }],
+        [
+          {
+            id: 21,
+            projectId: 10,
+            vehicleId: 11,
+            writerDeviceId: null,
+            status: "suspended",
+            lastWrittenAt: null,
+            payloadVersion: 1,
+            driverPhoneEncrypted: encryptSecret("13800138000"),
+          },
+        ],
         [],
-        [{ id: 11, projectId: 10, status: "active", driverUserId: null, driverName: "张司机", plateNo: "粤A12345", vehicleType: "dump_truck", boxLengthMeters: "6", boxWidthMeters: "2.3", boxHeightMeters: "1.2", loadFactor: "1" }],
-        [{ id: 401 }],
+        [
+          {
+            id: 11,
+            projectId: 10,
+            status: "active",
+            driverUserId: null,
+            driverName: "张司机",
+            plateNo: "粤A12345",
+            vehicleType: "dump_truck",
+            boxLengthMeters: "6",
+            boxWidthMeters: "2.3",
+            boxHeightMeters: "1.2",
+            loadFactor: "1",
+          },
+        ],
+        [{ id: 401 }]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    const result = await transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 21, writerDeviceId: null, action: "issue" });
-    expect(result).toMatchObject({ success: true, jobId: 401, hardwareMode: "manual_confirmation", payload: { t: "RC3", c: 21, p: 10, r: 1, v: "粤A12345", d: "张司机", h: "13800138000", n: expect.any(String), s: expect.any(String) } });
-    expect(JSON.stringify(result.payload)).not.toMatch(/route|amount|volume|cargo|settlement/i);
-    expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ cardId: 21, payloadVersion: 1, action: "issue" });
-    expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain("13800138000");
-    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({ action: "prepare_rfid_card_write", targetId: "401" });
+    const result = await transportRouter
+      .createCaller(createAuthContext())
+      .prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 21,
+        writerDeviceId: null,
+        action: "issue",
+      });
+    expect(result).toMatchObject({
+      success: true,
+      jobId: 401,
+      hardwareMode: "manual_confirmation",
+      payload: {
+        t: "RC3",
+        c: 21,
+        p: 10,
+        r: 1,
+        v: "粤A12345",
+        d: "张司机",
+        h: "13800138000",
+        n: expect.any(String),
+        s: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(result.payload)).not.toMatch(
+      /route|amount|volume|cargo|settlement/i
+    );
+    expect(insertValues.mock.calls[0]?.[0]).toMatchObject({
+      cardId: 21,
+      payloadVersion: 1,
+      action: "issue",
+    });
+    expect(JSON.stringify(insertValues.mock.calls[0]?.[0])).not.toContain(
+      "13800138000"
+    );
+    expect(insertValues.mock.calls[1]?.[0]).toMatchObject({
+      action: "prepare_rfid_card_write",
+      targetId: "401",
+    });
   });
 
   it("兼容历史上被提前标记启用但从未成功写入的车辆卡执行首次写入", async () => {
@@ -763,116 +2161,316 @@ describe("机械与运输 tRPC 路由", () => {
     const insertValues = vi.fn(async () => undefined);
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 22, projectId: 10, vehicleId: 12, writerDeviceId: null, status: "active", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138001") }],
+        [
+          {
+            id: 22,
+            projectId: 10,
+            vehicleId: 12,
+            writerDeviceId: null,
+            status: "active",
+            lastWrittenAt: null,
+            payloadVersion: 1,
+            driverPhoneEncrypted: encryptSecret("13800138001"),
+          },
+        ],
         [],
-        [{ id: 12, projectId: 10, status: "active", driverName: "李司机", plateNo: "粤B12345" }],
-        [{ id: 402 }],
+        [
+          {
+            id: 12,
+            projectId: 10,
+            status: "active",
+            driverName: "李司机",
+            plateNo: "粤B12345",
+          },
+        ],
+        [{ id: 402 }]
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 22, writerDeviceId: null, action: "issue" })).resolves.toMatchObject({ success: true, jobId: 402 });
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ cardId: 22, action: "issue" }));
+    await expect(
+      transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 22,
+        writerDeviceId: null,
+        action: "issue",
+      })
+    ).resolves.toMatchObject({ success: true, jobId: 402 });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ cardId: 22, action: "issue" })
+    );
   });
 
   it("首次写入与补写严格区分：已写入卡不能再次 issue，待写入卡不能 rewrite", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
-      { id: 23, projectId: 10, vehicleId: 13, status: "active", lastWrittenAt: new Date("2026-08-30T03:00:00.000Z") },
-    ]) as never);
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 23, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("补写") });
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence([
+        {
+          id: 23,
+          projectId: 10,
+          vehicleId: 13,
+          status: "active",
+          lastWrittenAt: new Date("2026-08-30T03:00:00.000Z"),
+        },
+      ]) as never
+    );
+    await expect(
+      transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 23,
+        writerDeviceId: null,
+        action: "issue",
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("补写"),
+    });
 
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence([
-      { id: 24, projectId: 10, vehicleId: 14, status: "suspended", lastWrittenAt: null },
-    ]) as never);
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 24, writerDeviceId: null, action: "rewrite" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("已成功写入") });
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence([
+        {
+          id: 24,
+          projectId: 10,
+          vehicleId: 14,
+          status: "suspended",
+          lastWrittenAt: null,
+        },
+      ]) as never
+    );
+    await expect(
+      transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 24,
+        writerDeviceId: null,
+        action: "rewrite",
+      })
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("已成功写入"),
+    });
   });
 
   it("同一车辆卡存在处理中写卡任务时拒绝重复生成任务", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDbSequence(
-      [{ id: 25, projectId: 10, vehicleId: 15, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138002") }],
-      [{ id: 403 }],
-    ) as never);
+    vi.mocked(getDb).mockResolvedValue(
+      createSelectDbSequence(
+        [
+          {
+            id: 25,
+            projectId: 10,
+            vehicleId: 15,
+            writerDeviceId: null,
+            status: "suspended",
+            lastWrittenAt: null,
+            payloadVersion: 1,
+            driverPhoneEncrypted: encryptSecret("13800138002"),
+          },
+        ],
+        [{ id: 403 }]
+      ) as never
+    );
 
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 25, writerDeviceId: null, action: "issue" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("未完成写卡任务") });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 25,
+        writerDeviceId: null,
+        action: "issue",
+      })
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("未完成写卡任务"),
+    });
   });
 
   it("已到期的 PC 桥接写卡任务会安全作废，不阻塞新的首次写卡任务", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
+    const updateSet = vi.fn(() => ({
+      where: vi.fn(async () => [{ affectedRows: 1 }]),
+    }));
     const tx = {
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: insertValues })),
     };
     vi.mocked(getDb).mockResolvedValue({
       ...createSelectDbSequence(
-        [{ id: 27, projectId: 10, vehicleId: 17, writerDeviceId: null, status: "suspended", lastWrittenAt: null, payloadVersion: 1, driverPhoneEncrypted: encryptSecret("13800138003") }],
-        [{ id: 405, jobNo: "CARD-EXPIRED", executionMode: "pc_bridge", bridgeTokenExpiresAt: new Date(Date.now() - 60_000) }],
-        [{ id: 17, projectId: 10, status: "active", driverName: "王司机", plateNo: "粤C12345" }],
-        [{ id: 406 }],
+        [
+          {
+            id: 27,
+            projectId: 10,
+            vehicleId: 17,
+            writerDeviceId: null,
+            status: "suspended",
+            lastWrittenAt: null,
+            payloadVersion: 1,
+            driverPhoneEncrypted: encryptSecret("13800138003"),
+          },
+        ],
+        [
+          {
+            id: 405,
+            jobNo: "CARD-EXPIRED",
+            executionMode: "pc_bridge",
+            bridgeTokenExpiresAt: new Date(Date.now() - 60_000),
+          },
+        ],
+        [
+          {
+            id: 17,
+            projectId: 10,
+            status: "active",
+            driverName: "王司机",
+            plateNo: "粤C12345",
+          },
+        ],
+        [{ id: 406 }]
       ),
-      transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+      transaction: vi.fn(
+        async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx)
+      ),
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({ projectId: 10, cardId: 27, writerDeviceId: null, action: "issue" })).resolves.toMatchObject({ success: true, jobId: 406 });
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "cancelled", failureReason: "bridge_token_expired_before_start" }));
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ action: "cancel_expired_rfid_card_write", targetId: "405" }));
+    await expect(
+      transportRouter.createCaller(createAuthContext()).prepareRfidCardWrite({
+        projectId: 10,
+        cardId: 27,
+        writerDeviceId: null,
+        action: "issue",
+      })
+    ).resolves.toMatchObject({ success: true, jobId: 406 });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "cancelled",
+        failureReason: "bridge_token_expired_before_start",
+      })
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "cancel_expired_rfid_card_write",
+        targetId: "405",
+      })
+    );
   });
 
   it("写卡确认成功才在同一事务中启用车辆卡，记录失败时不更新卡状态", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const successfulWrites: unknown[] = [];
     const tx = {
-      update: vi.fn(() => ({ set: vi.fn((value: unknown) => { successfulWrites.push(value); return { where: vi.fn(async () => [{ affectedRows: 1 }]) }; }) })),
+      update: vi.fn(() => ({
+        set: vi.fn((value: unknown) => {
+          successfulWrites.push(value);
+          return { where: vi.fn(async () => [{ affectedRows: 1 }]) };
+        }),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 404, projectId: 10, cardId: 26, writerDeviceId: null, action: "issue", status: "prepared", executionMode: "manual_confirmation" }]),
-      transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+      ...createSelectDb([
+        {
+          id: 404,
+          projectId: 10,
+          cardId: 26,
+          writerDeviceId: null,
+          action: "issue",
+          status: "prepared",
+          executionMode: "manual_confirmation",
+        },
+      ]),
+      transaction: vi.fn(
+        async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx)
+      ),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).confirmRfidCardWrite({ id: 404, projectId: 10, success: true })).resolves.toEqual({ success: true, status: "confirmed" });
+    await expect(
+      transportRouter
+        .createCaller(createAuthContext())
+        .confirmRfidCardWrite({ id: 404, projectId: 10, success: true })
+    ).resolves.toEqual({ success: true, status: "confirmed" });
     expect(successfulWrites).toHaveLength(2);
     expect(successfulWrites[0]).toMatchObject({ status: "confirmed" });
-    expect(successfulWrites[1]).toMatchObject({ status: "active", lastWrittenAt: expect.any(Date), revokedAt: null });
+    expect(successfulWrites[1]).toMatchObject({
+      status: "active",
+      lastWrittenAt: expect.any(Date),
+      revokedAt: null,
+    });
 
     const failedWrites: unknown[] = [];
     const failedTx = {
-      update: vi.fn(() => ({ set: vi.fn((value: unknown) => { failedWrites.push(value); return { where: vi.fn(async () => [{ affectedRows: 1 }]) }; }) })),
+      update: vi.fn(() => ({
+        set: vi.fn((value: unknown) => {
+          failedWrites.push(value);
+          return { where: vi.fn(async () => [{ affectedRows: 1 }]) };
+        }),
+      })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     vi.mocked(getDb).mockResolvedValue({
-      ...createSelectDb([{ id: 405, projectId: 10, cardId: 27, writerDeviceId: null, action: "issue", status: "prepared", executionMode: "manual_confirmation" }]),
-      transaction: vi.fn(async (callback: (client: typeof failedTx) => Promise<unknown>) => callback(failedTx)),
+      ...createSelectDb([
+        {
+          id: 405,
+          projectId: 10,
+          cardId: 27,
+          writerDeviceId: null,
+          action: "issue",
+          status: "prepared",
+          executionMode: "manual_confirmation",
+        },
+      ]),
+      transaction: vi.fn(
+        async (callback: (client: typeof failedTx) => Promise<unknown>) =>
+          callback(failedTx)
+      ),
     } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).confirmRfidCardWrite({ id: 405, projectId: 10, success: false, failureReason: "现场回读失败" })).resolves.toEqual({ success: true, status: "failed" });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).confirmRfidCardWrite({
+        id: 405,
+        projectId: 10,
+        success: false,
+        failureReason: "现场回读失败",
+      })
+    ).resolves.toEqual({ success: true, status: "failed" });
     expect(failedWrites).toHaveLength(1);
-    expect(failedWrites[0]).toMatchObject({ status: "failed", failureReason: "现场回读失败" });
+    expect(failedWrites[0]).toMatchObject({
+      status: "failed",
+      failureReason: "现场回读失败",
+    });
   });
 
   it("本地硬件测试只登记项目范围内的读写结果和 UID 指纹摘要，不会签发或激活正式车辆卡", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({ insert: vi.fn(() => ({ values: auditValues })) } as never);
+    vi.mocked(getDb).mockResolvedValue({
+      insert: vi.fn(() => ({ values: auditValues })),
+    } as never);
 
-    await expect(transportRouter.createCaller(createAuthContext()).recordRfidHardwareTest({
-      projectId: 10,
-      writerDeviceId: null,
-      success: true,
-      cardUidFingerprint: "a".repeat(64),
-    })).resolves.toEqual({ success: true });
+    await expect(
+      transportRouter.createCaller(createAuthContext()).recordRfidHardwareTest({
+        projectId: 10,
+        writerDeviceId: null,
+        success: true,
+        cardUidFingerprint: "a".repeat(64),
+      })
+    ).resolves.toEqual({ success: true });
 
-    expect(assertProjectInCurrentScope).toHaveBeenCalledWith(expect.anything(), 10);
-    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
-      module: "transport",
-      action: "rfid_hardware_test_success",
-      targetType: "rfid_writer_hardware_test",
-      summary: expect.stringContaining("uTrust 本地测试写卡与回读通过"),
-    }));
-    expect(JSON.stringify(auditValues.mock.calls[0]?.[0])).not.toContain("a".repeat(64));
+    expect(assertProjectInCurrentScope).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
+    expect(auditValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "transport",
+        action: "rfid_hardware_test_success",
+        targetType: "rfid_writer_hardware_test",
+        summary: expect.stringContaining("uTrust 本地测试写卡与回读通过"),
+      })
+    );
+    expect(JSON.stringify(auditValues.mock.calls[0]?.[0])).not.toContain(
+      "a".repeat(64)
+    );
   });
 });

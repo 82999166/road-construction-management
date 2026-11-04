@@ -652,6 +652,13 @@
       "when": 1793720426275,
       "tag": "0092_young_mandarin",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "5",
+      "when": 1793754342836,
+      "tag": "0093_modern_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

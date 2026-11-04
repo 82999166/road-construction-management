@@ -18,7 +18,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import ConstructionWorkspace, {
+  type ConstructionWorkspaceReport,
+} from "@/components/ConstructionWorkspace";
 import { PersonnelResourceSelect } from "@/components/PersonnelResourceSelect";
+import { PurchasingWorkspace } from "@/components/PurchasingWorkspace";
+import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout, {
   type DashboardMenuItem,
@@ -46,6 +51,15 @@ import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import type { DieselPrintRecord } from "@/components/DieselRefuelPrintDialog";
 import type { LaborWorkspaceRenderState } from "@/components/LaborWorkspaceLoader";
 import type { TransportLedgerFilter } from "@/components/TransportTripLedger";
+import { BusinessWorkspaceNavigation as TransportWorkspaceNavigation } from "@/components/BusinessWorkspaceNavigation";
+import { FinanceRetainedPanel as TransportRetainedPanel } from "@/components/FinanceWorkspaceNavigation";
+import {
+  TRANSPORT_WORKSPACE_TABS,
+  type TransportWorkspaceTab,
+  type TransportReviewView,
+} from "@/lib/transportWorkspace";
+import type { TransportSettlementFocusTrip } from "@/components/TransportVehicleSettlementManager";
+import { TransportReaderTerminalManager } from "@/components/TransportReaderTerminalManager";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -144,6 +158,7 @@ import {
   lazy,
   Suspense,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -186,8 +201,8 @@ const TransportFreightRuleManager = lazy(() =>
 const TransportVehicleSettlementManager = lazy(
   () => import("@/components/TransportVehicleSettlementManager")
 );
-const MachinePaymentSettlementManager = lazy(
-  () => import("@/components/MachinePaymentSettlementManager")
+const MachineryWorkspace = lazy(
+  () => import("@/components/MachineryWorkspace")
 );
 const SettlementPaymentFinancialBoard = lazy(
   () => import("@/components/SettlementPaymentFinancialBoard")
@@ -1000,10 +1015,10 @@ const EMPTY_MACHINE_DAILY_OPERATION_FORM: MachineDailyOperationForm = {
   projectId: "",
   occurredOn: toLocalDateInput(),
   operatorUserId: "",
-  shiftCount: "1",
-  workHours: "10",
+  shiftCount: "0",
+  workHours: "0",
   overtimeHours: "0",
-  shiftRate: "",
+  shiftRate: "0",
   overtimeHourlyRate: "",
   outputAmount: "0",
   driverWageAmount: "0",
@@ -2331,6 +2346,7 @@ export default function AdminPage({
   const isMachinery = activeSection === "machinery";
   const isTransport = activeSection === "transport";
   const isPurchasing = activeSection === "purchasing";
+  const { isSuperAdmin: purchasingIsSuperAdmin } = useManagementPermissions();
   const isMeasurementTools = activeSection === "measurement-tools";
   const isSubcontract = activeSection === "subcontract";
   const isContracts = activeSection === "contracts";
@@ -2486,6 +2502,81 @@ export default function AdminPage({
     useState("");
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [machineDetailOpen, setMachineDetailOpen] = useState(false);
+  // transport-workspace-v1: hooks are unconditional; each current-tab query is enabled explicitly.
+  const [transportWorkspaceTab, setTransportWorkspaceTab] =
+    useState<TransportWorkspaceTab>("ledger");
+  const [workspaceDrafts, setWorkspaceDrafts] = useState<
+    Record<string, boolean>
+  >({});
+  const recordWorkspaceDirty = useCallback((key: string, dirty: boolean) => {
+    setWorkspaceDrafts(current =>
+      current[key] === dirty ? current : { ...current, [key]: dirty }
+    );
+  }, []);
+  const onPurchasingDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("purchasing", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onTransportSettlementDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("transport-settlement", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onTransportRatesDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("transport-rates", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onTransportRoutesDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("transport-routes", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onTransportTerminalsDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("transport-terminals", dirty),
+    [recordWorkspaceDirty]
+  );
+  const hasWorkspaceDraft = Object.values(workspaceDrafts).some(Boolean);
+  useEffect(() => {
+    if (!hasWorkspaceDraft) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const beforeNavigate = (event: MouseEvent) => {
+      const target =
+        event.target instanceof Element
+          ? event.target.closest("a[href]")
+          : null;
+      if (!target) return;
+      const href = new URL(
+        target.getAttribute("href") || "",
+        window.location.href
+      );
+      if (
+        href.origin !== window.location.origin ||
+        !href.pathname.startsWith("/admin") ||
+        href.pathname === window.location.pathname
+      )
+        return;
+      if (
+        !window.confirm(
+          "有尚未保存的业务资料，离开当前模块将放弃未保存内容。确认离开吗？"
+        )
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", beforeNavigate, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", beforeNavigate, true);
+    };
+  }, [hasWorkspaceDraft]);
+
+  const [transportReviewView, setTransportReviewView] =
+    useState<TransportReviewView>("pending");
+  const [transportSettlementFocusTrip, setTransportSettlementFocusTrip] =
+    useState<TransportSettlementFocusTrip | null>(null);
   const [transportLedgerFilter, setTransportLedgerFilter] =
     useState<TransportLedgerFilter>({
       periodMode: "day",
@@ -2723,15 +2814,8 @@ export default function AdminPage({
     useState<PayrollPaymentTarget | null>(null);
   const [constructionReportEditor, setConstructionReportEditor] =
     useState<ConstructionReportEditor | null>(null);
-  const [constructionReportFilter, setConstructionReportFilter] = useState(
-    () => ({
-      dateFrom: toChinaDateInput(),
-      dateTo: toChinaDateInput(),
-      createdBy: "all",
-      keyword: "",
-    })
-  );
-  const [isConstructionPrinting, setIsConstructionPrinting] = useState(false);
+  const [constructionEditorSnapshot, setConstructionEditorSnapshot] =
+    useState("");
   const [desktopRecordDetail, setDesktopRecordDetail] =
     useState<DesktopRecordDetail | null>(null);
   const [purchasingOrderUploader, setPurchasingOrderUploader] = useState("all");
@@ -2805,19 +2889,6 @@ export default function AdminPage({
     () => ({ projectId: workspaceProjectId }),
     [workspaceProjectId]
   );
-  const constructionReportFilterInput = useMemo(
-    () => ({
-      projectId: workspaceProjectId,
-      dateFrom: constructionReportFilter.dateFrom || undefined,
-      dateTo: constructionReportFilter.dateTo || undefined,
-      createdBy:
-        constructionReportFilter.createdBy === "all"
-          ? undefined
-          : Number(constructionReportFilter.createdBy),
-      keyword: constructionReportFilter.keyword.trim() || undefined,
-    }),
-    [constructionReportFilter, workspaceProjectId]
-  );
   const machineCostWorkspaceInput = useMemo(
     () => ({
       machineId: Number(selectedMachineId || 0),
@@ -2880,6 +2951,8 @@ export default function AdminPage({
   const transportWorkspaceInput = useMemo(
     () => ({
       projectId: workspaceProjectId,
+      reviewView:
+        transportWorkspaceTab === "review" ? transportReviewView : undefined,
       date:
         transportLedgerFilter.periodMode === "day"
           ? transportLedgerFilter.date || undefined
@@ -2914,7 +2987,12 @@ export default function AdminPage({
           ? undefined
           : Number(transportLedgerFilter.routePresetId),
     }),
-    [transportLedgerFilter, workspaceProjectId]
+    [
+      transportLedgerFilter,
+      workspaceProjectId,
+      transportWorkspaceTab,
+      transportReviewView,
+    ]
   );
   const subcontractPackagesInput = useMemo(
     () => ({
@@ -3045,18 +3123,36 @@ export default function AdminPage({
       retry: false,
     }
   );
-  const constructionDailyReports = trpc.construction.listReports.useQuery(
-    constructionReportFilterInput,
-    { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject }
-  );
-  const constructionDailySummary = trpc.construction.summary.useQuery(
-    constructionReportFilterInput,
-    { enabled: canQuery && isConstruction && hasBusinessWorkspaceProject }
-  );
-  const constructionReportSubmitters =
-    trpc.construction.reportSubmitterOptions.useQuery(workspaceProjectInput, {
+  const constructionEditorCapabilities =
+    trpc.construction.capabilities.useQuery(workspaceProjectInput, {
       enabled: canQuery && isConstruction && hasBusinessWorkspaceProject,
+      retry: false,
     });
+  const constructionEditorDirty =
+    Boolean(constructionReportEditor) &&
+    JSON.stringify(constructionReportEditor) !== constructionEditorSnapshot;
+  useEffect(() => {
+    if (
+      constructionReportEditor &&
+      constructionReportEditor.projectId !== workspaceProjectId
+    ) {
+      setConstructionReportEditor(null);
+      setConstructionEditorSnapshot("");
+      toast.info(
+        "当前项目已变化，原项目日报编辑窗口已关闭，请在原项目重新打开记录"
+      );
+    }
+  }, [workspaceProjectId, constructionReportEditor]);
+  useEffect(() => {
+    const protect = (event: BeforeUnloadEvent) => {
+      if (constructionEditorDirty) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", protect);
+    return () => window.removeEventListener("beforeunload", protect);
+  }, [constructionEditorDirty]);
   const machineryLedger = trpc.machinery.listMachines.useQuery(
     workspaceProjectInput,
     { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject }
@@ -3064,38 +3160,24 @@ export default function AdminPage({
   const machineCosts = trpc.machinery.listCosts.useQuery(
     machineCostWorkspaceInput,
     {
-      enabled:
-        canQuery &&
-        isMachinery &&
-        hasBusinessWorkspaceProject &&
-        Boolean(selectedMachineId),
+      enabled: false,
     }
   );
   const machineCostSummaries = trpc.machinery.listCostSummaries.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isMachinery && hasBusinessWorkspaceProject }
+    { enabled: false }
   );
   const machineMonthlyStatements =
     trpc.machinery.listMonthlyStatements.useQuery(
       machineMonthlyStatementsInput,
       {
-        enabled:
-          canQuery &&
-          isMachinery &&
-          hasBusinessWorkspaceProject &&
-          Boolean(machineStatementPeriod),
+        enabled: false,
       }
     );
   const machineAnalysis = trpc.machinery.getMachineAnalysis.useQuery(
     machineAnalysisInput,
     {
-      enabled:
-        canQuery &&
-        isMachinery &&
-        hasBusinessWorkspaceProject &&
-        machineDetailOpen &&
-        machineAnalysisInput.machineId > 0 &&
-        /^\d{4}-(0[1-9]|1[0-2])$/.test(machineAnalysisInput.period),
+      enabled: false,
       retry: false,
     }
   );
@@ -3142,25 +3224,65 @@ export default function AdminPage({
   );
   const transportTrips = trpc.transport.listTrips.useQuery(
     transportWorkspaceInput,
-    { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        ["ledger", "review"].includes(transportWorkspaceTab),
+    }
   );
   const transportSites = trpc.transport.listSites.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        transportWorkspaceTab === "terminals",
+    }
   );
   const transportRoutePresets = trpc.transport.listRoutePresets.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        ["ledger", "review", "terminals"].includes(transportWorkspaceTab),
+    }
   );
   const transportFreightRules = trpc.transport.listFreightRules.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        ["rates", "terminals"].includes(transportWorkspaceTab),
+    }
   );
   const rfidWriterDevices = trpc.transport.listRfidWriterDevices.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        transportWorkspaceTab === "terminals",
+    }
   );
   const vehicleRfidCards = trpc.transport.listVehicleRfidCards.useQuery(
+    workspaceProjectInput,
+    {
+      enabled:
+        canQuery &&
+        isTransport &&
+        hasBusinessWorkspaceProject &&
+        transportWorkspaceTab === "terminals",
+    }
+  );
+  const transportWorkspaceAccess = trpc.transport.workspaceAccess.useQuery(
     workspaceProjectInput,
     { enabled: canQuery && isTransport && hasBusinessWorkspaceProject }
   );
@@ -3193,19 +3315,19 @@ export default function AdminPage({
   });
   const purchasingRequests = trpc.purchasing.listRequests.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject }
+    { enabled: false }
   );
   const purchasingOrders = trpc.purchasing.listOrders.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject }
+    { enabled: false }
   );
   const purchasingInventory = trpc.purchasing.listInventory.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject }
+    { enabled: false }
   );
   const purchasingSettlements = trpc.purchasing.listSettlements.useQuery(
     workspaceProjectInput,
-    { enabled: canQuery && isPurchasing && hasBusinessWorkspaceProject }
+    { enabled: false }
   );
   const financeSummary = trpc.finance.summary.useQuery(
     { projectId: Number(financeProjectId || 0), period: financePeriod },
@@ -3974,6 +4096,10 @@ export default function AdminPage({
   const [machineForm, setMachineForm] =
     useState<MachineForm>(EMPTY_MACHINE_FORM);
   const [machineDialogOpen, setMachineDialogOpen] = useState(false);
+  const [machineryPaymentFormOpen, setMachineryPaymentFormOpen] =
+    useState(false);
+  const confirmMachineryFormClose = () =>
+    window.confirm("当前机械表单有未保存内容，确认放弃并关闭？");
   const [machineCostForm, setMachineCostForm] = useState<MachineCostForm>(
     EMPTY_MACHINE_COST_FORM
   );
@@ -4823,14 +4949,18 @@ export default function AdminPage({
   });
   const saveMachineCost = trpc.machinery.saveCost.useMutation({
     onSuccess: async data => {
+      await Promise.all([
+        trpcUtils.machinery.listDailyOperations.invalidate(),
+        trpcUtils.machinery.printSummary.invalidate(),
+      ]);
       toast.success(
         `机械成本已录入，系统核算金额 ¥${displayMoney(data.amount)}`
       );
       setMachineCostForm(EMPTY_MACHINE_COST_FORM);
       setMachineCostDialogOpen(false);
       await Promise.all([
-        machineCosts.refetch(),
-        machineCostSummaries.refetch(),
+        trpcUtils.machinery.listCosts.invalidate(),
+        trpcUtils.machinery.listCostSummaries.invalidate(),
         audits.refetch(),
       ]);
     },
@@ -4839,24 +4969,35 @@ export default function AdminPage({
   const saveMachineDailyOperation =
     trpc.machinery.saveDailyOperation.useMutation({
       onSuccess: async () => {
+        await Promise.all([
+          trpcUtils.machinery.listDailyOperations.invalidate(),
+          trpcUtils.machinery.printSummary.invalidate(),
+        ]);
         toast.success("机械加班记录已保存，金额由服务端核算");
         setMachineDailyOperationDialogOpen(false);
         setMachineDailyOperationForm(EMPTY_MACHINE_DAILY_OPERATION_FORM);
-        await Promise.all([machineAnalysis.refetch(), audits.refetch()]);
+        await Promise.all([
+          trpcUtils.machinery.getMachineAnalysis.invalidate(),
+          audits.refetch(),
+        ]);
       },
       onError: error => toast.error(getUserFacingErrorMessage(error)),
     });
   const saveMachineMonthlyStatement =
     trpc.machinery.saveMonthlyStatement.useMutation({
       onSuccess: async result => {
+        await Promise.all([
+          trpcUtils.machinery.listDailyOperations.invalidate(),
+          trpcUtils.machinery.printSummary.invalidate(),
+        ]);
         toast.success(
           `会计机械月度明细已保存：总产值 ¥${displayMoney(result.preview.statement.totalOutput)}`
         );
         setMachineStatementDialogOpen(false);
         setMachineStatementForm(EMPTY_MACHINE_MONTHLY_STATEMENT_FORM);
         await Promise.all([
-          machineMonthlyStatements.refetch(),
-          machineCostSummaries.refetch(),
+          trpcUtils.machinery.listMonthlyStatements.invalidate(),
+          trpcUtils.machinery.listCostSummaries.invalidate(),
           audits.refetch(),
         ]);
       },
@@ -4865,9 +5006,13 @@ export default function AdminPage({
   const transitionMachineMonthlyStatement =
     trpc.machinery.transitionMonthlyStatement.useMutation({
       onSuccess: async () => {
+        await Promise.all([
+          trpcUtils.machinery.listDailyOperations.invalidate(),
+          trpcUtils.machinery.printSummary.invalidate(),
+        ]);
         toast.success("机械月度明细状态已更新");
         await Promise.all([
-          machineMonthlyStatements.refetch(),
+          trpcUtils.machinery.listMonthlyStatements.invalidate(),
           audits.refetch(),
         ]);
       },
@@ -6239,8 +6384,9 @@ export default function AdminPage({
       onSuccess: async () => {
         toast.success("施工日报状态已更新");
         await Promise.all([
-          constructionDailyReports.refetch(),
-          constructionDailySummary.refetch(),
+          trpcUtils.construction.listReports.invalidate(),
+          trpcUtils.construction.summary.invalidate(),
+          trpcUtils.mobile.workbench.invalidate(),
         ]);
       },
       onError: error => toast.error(getUserFacingErrorMessage(error)),
@@ -6251,10 +6397,12 @@ export default function AdminPage({
         result.created ? "施工日报已在 PC 后台保存" : "施工日报已在 PC 后台更新"
       );
       setConstructionReportEditor(null);
+      setConstructionEditorSnapshot("");
       await Promise.all([
-        constructionDailyReports.refetch(),
-        constructionDailySummary.refetch(),
-        constructionReportSubmitters.refetch(),
+        trpcUtils.construction.listReports.invalidate(),
+        trpcUtils.construction.summary.invalidate(),
+        trpcUtils.construction.reportSubmitterOptions.invalidate(),
+        trpcUtils.mobile.workbench.invalidate(),
       ]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
@@ -6293,10 +6441,14 @@ export default function AdminPage({
   });
   const transitionMachineCost = trpc.machinery.transitionCost.useMutation({
     onSuccess: async () => {
+      await Promise.all([
+        trpcUtils.machinery.listDailyOperations.invalidate(),
+        trpcUtils.machinery.printSummary.invalidate(),
+      ]);
       toast.success("机械成本状态已更新");
       await Promise.all([
-        machineCosts.refetch(),
-        machineCostSummaries.refetch(),
+        trpcUtils.machinery.listCosts.invalidate(),
+        trpcUtils.machinery.listCostSummaries.invalidate(),
       ]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
@@ -7886,6 +8038,7 @@ export default function AdminPage({
         </section>
         {settlementProjectId ? (
           <TransportVehicleSettlementManager
+            onDirtyChange={onTransportSettlementDirtyChange}
             projectId={settlementProjectId}
             vehicles={rows.filter(
               item => item.projectId === settlementProjectId
@@ -11261,9 +11414,8 @@ export default function AdminPage({
               : "max-w-6xl"
           }
         >
-          <section
-            className={`space-y-4 ${settingsCategory === "integrations" ? "hidden" : ""}`}
-          >
+          <section className="space-y-4">
+            {/* 通知与接入中的短信组件必须可见；不改变其他系统配置布局。 */}
             {settingsCategory === "business" ? (
               <Card className="border-amber-200 bg-amber-50/60">
                 <CardHeader className="pb-3">
@@ -13648,9 +13800,27 @@ export default function AdminPage({
           <Label htmlFor="business-workspace-project">当前项目</Label>
           <Select
             value={businessWorkspaceProjectId || "UNASSIGNED"}
-            onValueChange={value =>
-              setBusinessWorkspaceProjectId(value === "UNASSIGNED" ? "" : value)
-            }
+            onValueChange={value => {
+              if (
+                constructionReportEditor ||
+                machineDialogOpen ||
+                machineDailyOperationDialogOpen ||
+                machineCostDialogOpen ||
+                machineStatementDialogOpen ||
+                inventoryTransactionDialogOpen ||
+                purchaseSpreadsheetImportOpen ||
+                machineryPaymentFormOpen ||
+                hasWorkspaceDraft
+              ) {
+                toast.info(
+                  "请先保存或关闭当前录入窗口，再切换项目，避免资料关联到错误项目"
+                );
+                return;
+              }
+              setBusinessWorkspaceProjectId(
+                value === "UNASSIGNED" ? "" : value
+              );
+            }}
           >
             <SelectTrigger id="business-workspace-project" className="mt-1">
               <SelectValue placeholder="选择已授权项目" />
@@ -13683,2010 +13853,566 @@ export default function AdminPage({
     </Card>
   );
 
-  const printConstructionReports = async () => {
-    if (!hasBusinessWorkspaceProject) return;
-    setIsConstructionPrinting(true);
-    try {
-      const printableRows = await trpcUtils.construction.printReports.fetch(
-        constructionReportFilterInput
-      );
-      const projectName = selectedWorkspaceProject?.name ?? "当前项目";
-      const selectedSubmitter =
-        constructionReportSubmitters.data?.find(
-          item => String(item.id) === constructionReportFilter.createdBy
-        )?.name ?? "全部管理员";
-      const filterText = [
-        `日期：${constructionReportFilter.dateFrom || "不限"} 至 ${constructionReportFilter.dateTo || "不限"}`,
-        `提交管理员：${selectedSubmitter}`,
-        `关键词：${constructionReportFilter.keyword.trim() || "全部"}`,
-      ].join("　|　");
-      const statusCounts = printableRows.reduce(
-        (counts, item) => ({
-          ...counts,
-          [item.status]: (counts[item.status] ?? 0) + 1,
-        }),
-        {} as Record<string, number>
-      );
-      const rows = printableRows
-        .map(
-          (item, index) =>
-            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(displayDate(item.reportDate))}</td><td>${escapePrintHtml(item.createdByName)}</td><td>${escapePrintHtml(item.workArea)}</td><td>${escapePrintHtml(CONSTRUCTION_WEATHER_LABELS[item.weather])}</td><td class="right">${escapePrintHtml(Number(item.progressPercent).toFixed(2))}%</td><td>${escapePrintHtml(getBusinessStatusLabel(item.status))}</td><td>${escapePrintHtml(item.workContent)}</td><td>${escapePrintHtml(item.safetyNotes || "—")}</td><td>${escapePrintHtml(item.issueNotes || item.reviewReply || "—")}</td></tr>`
-        )
-        .join("");
-      openA4LandscapePrintDocument({
-        title: "施工日报筛选明细表",
-        bodyHtml: `<h1>施工日报筛选明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　${escapePrintHtml(filterText)}</p><p class="sub">生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}　|　本表仅打印当前筛选、当前项目和当前账号已授权的施工日报</p><hr class="rule"><table><thead><tr><th style="width:4%">序号</th><th style="width:8%">日期</th><th style="width:9%">提交管理员</th><th style="width:10%">作业面</th><th style="width:5%">天气</th><th style="width:7%">进度</th><th style="width:7%">状态</th><th style="width:19%">施工内容</th><th style="width:15%">安全情况</th><th style="width:16%">问题 / 审核回复</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="center">当前筛选范围暂无施工日报</td></tr>'}<tr class="summary"><td colspan="10">合计：施工日报 ${printableRows.length} 份；待审核 ${statusCounts.submitted ?? 0} 份，已归档 ${statusCounts.locked ?? 0} 份，已退回 ${statusCounts.rejected ?? 0} 份。</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>复核人：________________</span></div>`,
-      });
-    } catch (error) {
-      toast.error(
-        getUserFacingErrorMessage(
-          error,
-          "施工日报批量打印未生成，请检查筛选范围与打印权限"
-        )
-      );
-    } finally {
-      setIsConstructionPrinting(false);
-    }
-  };
-
   const renderConstruction = () => {
-    const rows = constructionDailyReports.data ?? [];
-    const summary = constructionDailySummary.data;
-    const editorCanEdit = isEditableConstructionReport(
-      constructionReportEditor
-    );
-    const openConstructionEditor = (item?: (typeof rows)[number]) =>
-      setConstructionReportEditor(
-        item
-          ? {
-              id: Number(item.id),
-              projectId: workspaceProjectId,
-              status: item.status,
-              reportDate: toBusinessDateInput(item.reportDate),
-              workArea: item.workArea,
-              weather: item.weather,
-              workContent: item.workContent,
-              safetyNotes: item.safetyNotes ?? "",
-              issueNotes: item.issueNotes ?? "",
-              progressPercent: String(item.progressPercent),
-            }
-          : {
-              projectId: workspaceProjectId,
-              status: "draft",
-              reportDate: toLocalDateInput(),
-              workArea: "",
-              weather: "other",
-              workContent: "",
-              safetyNotes: "",
-              issueNotes: "",
-              progressPercent: "0",
-            }
-      );
-    const showConstructionEvidence = (item: (typeof rows)[number]) => {
-      setDesktopRecordDetail({
-        title: `施工日报关联影像 · ${item.workArea}`,
-        description:
-          "仅在打开本详情后读取当前日报的短时签名照片，仍受当前项目范围与施工读取权限校验。",
-        fields: [
-          {
-            label: "关联现场照片",
-            value: (
-              <ConstructionReportEvidenceDetail
-                projectId={workspaceProjectId}
-                reportId={Number(item.id)}
-              />
-            ),
-          },
-        ],
-      });
-    };
-    return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-[#203c48]">
-              施工执行 · 真实业务台账
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-              施工日报与现场进度
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-500">
-              仅查询所选项目的真实施工日报。提交、审核、退回和归档均继续通过服务端项目范围、岗位和状态机校验。
-            </p>
-          </div>
-          <Button
-            onClick={() => openConstructionEditor()}
-            disabled={!hasBusinessWorkspaceProject}
-          >
-            新建施工日报
-          </Button>
-        </div>
-        {renderWorkspaceProjectFilter(
-          "施工项目范围",
-          "选择项目后加载日报、累计进度和待处理状态；未选择项目时不会请求或展示施工生产记录。"
-        )}
-        {hasBusinessWorkspaceProject ? (
-          <Card className="border-[#d8e3e0] bg-[#f8fcfb]">
-            <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(130px,1fr)_minmax(130px,1fr)_minmax(170px,1fr)_minmax(220px,2fr)_auto] lg:items-end">
-              <div>
-                <Label htmlFor="construction-report-date-from">
-                  日报开始日期
-                </Label>
-                <Input
-                  id="construction-report-date-from"
-                  className="mt-1"
-                  type="date"
-                  value={constructionReportFilter.dateFrom}
-                  max={constructionReportFilter.dateTo || undefined}
-                  onChange={event =>
-                    setConstructionReportFilter(current => ({
-                      ...current,
-                      dateFrom: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div>
-                <Label htmlFor="construction-report-date-to">
-                  日报结束日期
-                </Label>
-                <Input
-                  id="construction-report-date-to"
-                  className="mt-1"
-                  type="date"
-                  value={constructionReportFilter.dateTo}
-                  min={constructionReportFilter.dateFrom || undefined}
-                  onChange={event =>
-                    setConstructionReportFilter(current => ({
-                      ...current,
-                      dateTo: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div>
-                <Label htmlFor="construction-report-submitter">
-                  提交管理员
-                </Label>
-                <Select
-                  value={constructionReportFilter.createdBy}
-                  onValueChange={createdBy =>
-                    setConstructionReportFilter(current => ({
-                      ...current,
-                      createdBy,
-                    }))
-                  }
-                >
-                  <SelectTrigger
-                    id="construction-report-submitter"
-                    className="mt-1"
-                  >
-                    <SelectValue placeholder="全部管理员" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部管理员</SelectItem>
-                    {(constructionReportSubmitters.data ?? []).map(item => (
-                      <SelectItem key={item.id} value={String(item.id)}>
-                        {item.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="construction-report-keyword">关键字查询</Label>
-                <Input
-                  id="construction-report-keyword"
-                  className="mt-1"
-                  value={constructionReportFilter.keyword}
-                  maxLength={100}
-                  placeholder="作业面、施工内容、安全或问题"
-                  onChange={event =>
-                    setConstructionReportFilter(current => ({
-                      ...current,
-                      keyword: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setConstructionReportFilter({
-                      dateFrom: toChinaDateInput(),
-                      dateTo: toChinaDateInput(),
-                      createdBy: "all",
-                      keyword: "",
-                    })
-                  }
-                >
-                  恢复当天
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setConstructionReportFilter(current => ({
-                      ...current,
-                      dateFrom: "",
-                      dateTo: "",
-                    }))
-                  }
-                >
-                  不限日期
-                </Button>
-              </div>
-              <div className="lg:col-span-5">
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8e3e0] bg-white px-3 py-2.5">
-                  <p className="text-xs leading-5 text-slate-600">
-                    列表、统计和打印均按当前日期、提交管理员和关键字的服务端筛选结果生成；打印不包含现场照片或坐标。
-                  </p>
-                  <CurrentFilterPrintActions
-                    disabled={!rows.length}
-                    printing={isConstructionPrinting}
-                    printLabel="批量打印当前筛选日报"
-                    onPrint={() => {
-                      void printConstructionReports();
-                    }}
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
-        {!hasBusinessWorkspaceProject ? (
-          <EmptyState text="请先选择已授权项目，以读取真实施工日报。" />
-        ) : constructionDailyReports.isLoading ||
-          constructionDailySummary.isLoading ? (
-          <EmptyState text="正在读取施工日报与进度汇总…" />
-        ) : constructionDailyReports.isError ||
-          constructionDailySummary.isError ? (
-          <EmptyState text="暂无法读取施工业务数据，请确认当前账号的服务端授权后重试。" />
-        ) : (
-          <>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="日报总数"
-                value={summary?.total}
-                description={selectedWorkspaceProject?.name ?? "当前项目"}
-                icon={FolderKanban}
-              />
-              <MetricCard
-                title="待审核日报"
-                value={summary?.submitted}
-                description="已提交，待处理"
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="已归档日报"
-                value={summary?.locked}
-                description="不可再回退"
-                icon={ShieldCheck}
-              />
-              <MetricCard
-                title="平均进度"
-                value={summary?.averageProgressPercent}
-                description="来自真实日报申报比例"
-                icon={BarChart3}
-              />
-            </section>
-            <Card className="w-full border-[#d8e3e0] shadow-sm">
-              <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0">
-                <div>
-                  <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                    施工执行 · 综合台账
-                  </p>
-                  <CardTitle className="mt-1 text-base">
-                    施工日报、现场影像与审核台账
-                  </CardTitle>
-                  <CardDescription className="mt-1">
-                    每份日报行内汇总作业面、天气、累计进度、影像数量、安全问题和审核状态；详情、编辑、提交、审核、退回与归档均在同一条业务记录办理。
-                  </CardDescription>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    Promise.all([
-                      constructionDailyReports.refetch(),
-                      constructionDailySummary.refetch(),
-                      constructionReportSubmitters.refetch(),
-                    ])
-                  }
-                  disabled={
-                    constructionDailyReports.isFetching ||
-                    constructionDailySummary.isFetching ||
-                    constructionReportSubmitters.isFetching
-                  }
-                >
-                  刷新台账
-                </Button>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1480px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          日报日期
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          提交管理员
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          作业面 / 内容
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          天气 / 进度
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          安全 / 问题
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          关联影像
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          状态
-                        </TableHead>
-                        <TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">
-                          操作
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {rows.length ? (
-                        rows.map(item => (
-                          <TableRow
-                            key={item.id}
-                            className="border-[#edf0ee] hover:bg-[#fbfaf1]"
-                          >
-                            <TableCell className="px-4 py-3 text-slate-700">
-                              {displayDate(item.reportDate)}
-                            </TableCell>
-                            <TableCell className="px-4 py-3 text-slate-700">
-                              {item.createdByName ||
-                                `管理员 #${item.createdBy}`}
-                            </TableCell>
-                            <TableCell className="max-w-[280px] px-4 py-3">
-                              <p className="font-semibold text-[#203c48]">
-                                {item.workArea}
-                              </p>
-                              <p className="mt-1 line-clamp-2 text-slate-500">
-                                {item.workContent}
-                              </p>
-                            </TableCell>
-                            <TableCell className="px-4 py-3">
-                              <p className="text-slate-700">
-                                {CONSTRUCTION_WEATHER_LABELS[item.weather]}
-                              </p>
-                              <p className="mt-1 text-slate-500">
-                                {Number(item.progressPercent).toFixed(2)}%
-                              </p>
-                            </TableCell>
-                            <TableCell className="max-w-[240px] px-4 py-3">
-                              <p className="line-clamp-1 text-slate-700">
-                                安全：{item.safetyNotes || "未记录"}
-                              </p>
-                              <p className="mt-1 line-clamp-1 text-slate-500">
-                                问题：{item.issueNotes || "未记录"}
-                              </p>
-                            </TableCell>
-                            <TableCell className="px-4 py-3">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => showConstructionEvidence(item)}
-                              >
-                                查看照片
-                              </Button>
-                            </TableCell>
-                            <TableCell className="px-4 py-3">
-                              <BusinessStatusBadge status={item.status} />
-                            </TableCell>
-                            <TableCell className="px-4 py-3 text-right">
-                              <div className="flex justify-end gap-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => openConstructionEditor(item)}
-                                >
-                                  {["draft", "rejected"].includes(item.status)
-                                    ? "查看/编辑"
-                                    : "详情"}
-                                </Button>
-                                {item.status === "draft" ? (
-                                  <Button
-                                    size="sm"
-                                    onClick={() =>
-                                      transitionConstructionReport.mutate({
-                                        id: item.id,
-                                        projectId: workspaceProjectId,
-                                        nextStatus: "submitted",
-                                      })
-                                    }
-                                    disabled={
-                                      transitionConstructionReport.isPending
-                                    }
-                                  >
-                                    提交
-                                  </Button>
-                                ) : null}
-                                {item.status === "submitted" ? (
-                                  <>
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        transitionConstructionReport.mutate({
-                                          id: item.id,
-                                          projectId: workspaceProjectId,
-                                          nextStatus: "approved",
-                                        })
-                                      }
-                                      disabled={
-                                        transitionConstructionReport.isPending
-                                      }
-                                    >
-                                      审核
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        transitionConstructionReport.mutate({
-                                          id: item.id,
-                                          projectId: workspaceProjectId,
-                                          nextStatus: "rejected",
-                                        })
-                                      }
-                                      disabled={
-                                        transitionConstructionReport.isPending
-                                      }
-                                    >
-                                      退回
-                                    </Button>
-                                  </>
-                                ) : null}
-                                {item.status === "approved" ? (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      transitionConstructionReport.mutate({
-                                        id: item.id,
-                                        projectId: workspaceProjectId,
-                                        nextStatus: "locked",
-                                      })
-                                    }
-                                    disabled={
-                                      transitionConstructionReport.isPending
-                                    }
-                                  >
-                                    归档
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={8}
-                            className="px-4 py-10 text-center text-slate-500"
-                          >
-                            当前项目尚无真实施工日报。请使用右上方“新建施工日报”录入现场记录。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-                <p className="mt-3 text-xs text-slate-500">
-                  手机端可左右滑动查看完整字段；照片、审批与归档仍由服务端按项目范围、岗位和状态机复核。
-                </p>
-              </CardContent>
-            </Card>
-            <Dialog
-              open={Boolean(constructionReportEditor)}
-              onOpenChange={open => {
-                if (!open) setConstructionReportEditor(null);
-              }}
-            >
-              <DialogContent className="max-h-[88vh] w-[calc(100vw-3rem)] max-w-5xl xl:max-w-6xl overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>
-                    {constructionReportEditor?.id
-                      ? "施工日报查看与编辑"
-                      : "新建施工日报"}
-                  </DialogTitle>
-                  <DialogDescription>
-                    {editorCanEdit
-                      ? "当前日报可在 PC 后台直接维护。保存后由服务端重新校验项目范围、岗位和草稿/退回状态。"
-                      : "该日报已进入受控状态，PC 后台仅允许查看；如需处理，请使用本页状态操作。"}
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="grid gap-4 py-2">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="日报日期">
-                      <Input
-                        type="date"
-                        value={constructionReportEditor?.reportDate ?? ""}
-                        disabled={!editorCanEdit}
-                        onChange={event =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? { ...current, reportDate: event.target.value }
-                              : current
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="天气">
-                      <Select
-                        value={constructionReportEditor?.weather ?? "other"}
-                        disabled={!editorCanEdit}
-                        onValueChange={weather =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? {
-                                  ...current,
-                                  weather: weather as ConstructionWeather,
-                                }
-                              : current
-                          )
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(
-                            Object.keys(
-                              CONSTRUCTION_WEATHER_LABELS
-                            ) as ConstructionWeather[]
-                          ).map(weather => (
-                            <SelectItem key={weather} value={weather}>
-                              {CONSTRUCTION_WEATHER_LABELS[weather]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
-                    <Field label="施工部位 / 作业面">
-                      <Input
-                        value={constructionReportEditor?.workArea ?? ""}
-                        disabled={!editorCanEdit}
-                        onChange={event =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? { ...current, workArea: event.target.value }
-                              : current
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="累计完成比例（%）">
-                      <Input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.01"
-                        value={constructionReportEditor?.progressPercent ?? ""}
-                        disabled={!editorCanEdit}
-                        onChange={event =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? {
-                                  ...current,
-                                  progressPercent: event.target.value,
-                                }
-                              : current
-                          )
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <Field label="当日施工内容">
-                    <Textarea
-                      className="min-h-32"
-                      value={constructionReportEditor?.workContent ?? ""}
-                      disabled={!editorCanEdit}
-                      onChange={event =>
-                        setConstructionReportEditor(current =>
-                          current
-                            ? { ...current, workContent: event.target.value }
-                            : current
-                        )
-                      }
-                    />
-                  </Field>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="安全记录（可选）">
-                      <Textarea
-                        value={constructionReportEditor?.safetyNotes ?? ""}
-                        disabled={!editorCanEdit}
-                        onChange={event =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? { ...current, safetyNotes: event.target.value }
-                              : current
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="问题记录（可选）">
-                      <Textarea
-                        value={constructionReportEditor?.issueNotes ?? ""}
-                        disabled={!editorCanEdit}
-                        onChange={event =>
-                          setConstructionReportEditor(current =>
-                            current
-                              ? { ...current, issueNotes: event.target.value }
-                              : current
-                          )
-                        }
-                      />
-                    </Field>
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    onClick={() => setConstructionReportEditor(null)}
-                    disabled={saveConstructionReport.isPending}
-                  >
-                    关闭
-                  </Button>
-                  {editorCanEdit ? (
-                    <Button
-                      disabled={
-                        !constructionReportEditor ||
-                        !constructionReportEditor.reportDate ||
-                        constructionReportEditor.workArea.trim().length < 2 ||
-                        constructionReportEditor.workContent.trim().length <
-                          4 ||
-                        !Number.isFinite(
-                          Number(constructionReportEditor.progressPercent)
-                        ) ||
-                        saveConstructionReport.isPending
-                      }
-                      onClick={() =>
-                        constructionReportEditor &&
-                        saveConstructionReport.mutate({
-                          id: constructionReportEditor.id,
-                          projectId: constructionReportEditor.projectId,
-                          reportDate: constructionReportEditor.reportDate,
-                          workArea: constructionReportEditor.workArea.trim(),
-                          weather: constructionReportEditor.weather,
-                          workContent:
-                            constructionReportEditor.workContent.trim(),
-                          safetyNotes:
-                            constructionReportEditor.safetyNotes.trim() || null,
-                          issueNotes:
-                            constructionReportEditor.issueNotes.trim() || null,
-                          progressPercent: Number(
-                            constructionReportEditor.progressPercent
-                          ),
-                        })
-                      }
-                    >
-                      {saveConstructionReport.isPending
-                        ? "正在保存…"
-                        : constructionReportEditor.id
-                          ? "保存修改"
-                          : "保存日报"}
-                    </Button>
-                  ) : null}
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </>
-        )}
-      </div>
-    );
-  };
-
-  const renderPurchasing = () => {
-    const requests = purchasingRequests.data ?? [];
-    const orders = purchasingOrders.data ?? [];
-    const uploaderOptions = Array.from(
-      new Map(
-        orders
-          .map(item => {
-            const id = item.documentUploadedBy ?? item.createdBy;
-            const name =
-              item.documentUploadedByName ??
-              item.createdByName ??
-              `管理员 #${id}`;
-            return [id, name] as const;
-          })
-          .filter(([id]) => Boolean(id))
-      )
-    )
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-    const purchaserOptions = Array.from(
-      new Set(
-        orders
-          .map(item => item.purchaserName)
-          .filter((name): name is string => Boolean(name))
-      )
-    ).sort((a, b) => a.localeCompare(b, "zh-CN"));
-    const categoryOptions = Array.from(
-      new Map(
-        orders.map(
-          item =>
-            [
-              String(item.categoryId ?? "unassigned"),
-              item.categoryName ?? "采购申请关联",
-            ] as const
-        )
-      )
-    )
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-    const orderDateKey = (value: Date | string) => toChinaDateInput(value);
-    const filteredOrders = orders.filter(item => {
-      const uploaderMatches =
-        purchasingOrderUploader === "all" ||
-        String(item.documentUploadedBy ?? item.createdBy) ===
-          purchasingOrderUploader;
-      const purchaserMatches =
-        purchasingOrderPurchaser === "all" ||
-        item.purchaserName === purchasingOrderPurchaser;
-      const categoryMatches =
-        purchasingOrderCategory === "all" ||
-        String(item.categoryId ?? "unassigned") === purchasingOrderCategory;
-      const invoiceMatches =
-        purchasingOrderInvoice === "all" ||
-        (purchasingOrderInvoice === "yes" ? item.hasInvoice : !item.hasInvoice);
-      const dateKey = orderDateKey(item.orderedAt);
-      const dateFromMatches =
-        !purchasingOrderDateFrom || dateKey >= purchasingOrderDateFrom;
-      const dateToMatches =
-        !purchasingOrderDateTo || dateKey <= purchasingOrderDateTo;
-      return (
-        uploaderMatches &&
-        purchaserMatches &&
-        categoryMatches &&
-        invoiceMatches &&
-        dateFromMatches &&
-        dateToMatches
-      );
-    });
-    const categorySummary = Array.from(
-      filteredOrders
-        .reduce((map, item) => {
-          const key = item.categoryName ?? "采购申请关联";
-          const current = map.get(key) ?? {
-            name: key,
-            orderCount: 0,
-            amount: 0,
-            invoiceCount: 0,
+    const editorCanEdit =
+      isEditableConstructionReport(constructionReportEditor) &&
+      (constructionReportEditor?.id
+        ? Boolean(constructionEditorCapabilities.data?.canEdit)
+        : Boolean(constructionEditorCapabilities.data?.canCreate)) &&
+      constructionReportEditor?.projectId === workspaceProjectId;
+    const openConstructionEditor = (item?: ConstructionWorkspaceReport) => {
+      const next: ConstructionReportEditor = item
+        ? {
+            id: item.id,
+            projectId: workspaceProjectId,
+            status: item.status,
+            reportDate: toBusinessDateInput(item.reportDate),
+            workArea: item.workArea,
+            weather: item.weather,
+            workContent: item.workContent,
+            safetyNotes: item.safetyNotes ?? "",
+            issueNotes: item.issueNotes ?? "",
+            progressPercent: String(item.progressPercent),
+          }
+        : {
+            projectId: workspaceProjectId,
+            status: "draft",
+            reportDate: toChinaDateInput(),
+            workArea: "",
+            weather: "other",
+            workContent: "",
+            safetyNotes: "",
+            issueNotes: "",
+            progressPercent: "0",
           };
-          current.orderCount += 1;
-          current.amount += Number(item.amount);
-          current.invoiceCount += item.hasInvoice ? 1 : 0;
-          map.set(key, current);
-          return map;
-        }, new Map<string, { name: string; orderCount: number; amount: number; invoiceCount: number }>())
-        .values()
-    ).sort((a, b) => b.amount - a.amount);
-    const inventoryData = purchasingInventory.data;
-    const inventoryBalances = Array.isArray(inventoryData)
-      ? []
-      : (inventoryData?.balances ?? []);
-    const inventoryTransactions = Array.isArray(inventoryData)
-      ? []
-      : (inventoryData?.transactions ?? []);
-    const settlementTotals = purchasingSettlements.data?.totalsByOrder ?? {};
-    const submittedRequests = requests.filter(
-      item => item.status === "submitted"
-    );
-    const activeOrders = orders.filter(
-      item => !["closed", "void"].includes(item.status)
-    );
-    const totalInventoryValue = inventoryBalances.reduce(
-      (sum, item) => sum + Number(item.totalAmount),
-      0
-    );
-    const pendingSettlementAmount = Object.values(settlementTotals).reduce(
-      (sum, item) => sum + Number(item.remainingAmount),
-      0
-    );
-    const statusLabel = (status: string) =>
-      ({
-        draft: "草稿",
-        pending_approval: "待审核",
-        submitted: "待审核",
-        approved: "已通过",
-        ordered: "已通过",
-        confirmed: "已通过",
-        received: "已收货",
-        stocked: "已收货",
-        closed: "已结算",
-        cancelled: "已作废",
-        void: "已作废",
-        rejected: "已退回",
-      })[status] ?? getBusinessStatusLabel(status);
-    const transactionLabel = (type: string) =>
-      type === "inbound" ? "入库" : type === "outbound" ? "领用出库" : "退库";
-    const printPurchaseReceipt = (item: (typeof orders)[number]) => {
-      const attachment = item.documentAttachment;
-      const uploaderName =
-        item.documentUploadedByName ??
-        item.createdByName ??
-        `管理员 #${item.documentUploadedBy ?? item.createdBy}`;
-      const fieldOperator = item.createdByName ?? `管理员 #${item.createdBy}`;
-      const reimbursementUser =
-        item.purchaserName || item.createdByName || `管理员 #${item.createdBy}`;
-      const remarks = item.ocrSummary || item.itemDescription || "未填写";
-      const printWindow = window.open("", "_blank");
-      if (!printWindow)
-        return toast.error("浏览器阻止了打印页，请允许弹出窗口后重试");
-      printWindow.document.write(
-        `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>采购费用票据报销详单 · ${escapePrintHtml(item.orderNo)}</title><style>*{box-sizing:border-box}html,body{margin:0;background:#eee;color:#273337;font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif}.receipt-page{width:210mm;height:148.5mm;margin:0 auto;padding:6mm 7mm;background:#fff;border:1px solid #b8c4c4}.receipt-title{text-align:center;margin:0 0 5mm;font-size:20px;font-weight:700;letter-spacing:3px;color:#182f36;text-decoration:underline;text-underline-offset:3px}.receipt-main{display:grid;grid-template-columns:minmax(0,1fr) 84mm;gap:7mm}.receipt-left{min-width:0}.receipt-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:4mm;font-size:11px;color:#394a4e}.receipt-meta b{font-size:12px}.expense-table{width:100%;border-collapse:collapse;font-size:10px}.expense-table th,.expense-table td{border-bottom:1px dashed #aebabc;padding:2.8mm 2mm;text-align:left;vertical-align:middle}.expense-table th{width:15%;color:#52656a;font-weight:500;white-space:nowrap}.expense-table td{width:35%;font-weight:600;word-break:break-word}.expense-table .amount{font-size:13px}.total-line{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #273337;padding:4mm 0 3mm;font-weight:700;font-size:12px}.total-line .status{color:#25734b}.note{margin-top:3mm;color:#596a6e;font-size:10px}.signatures{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8mm;margin-top:7mm;border-top:1px solid #273337;padding-top:5mm;font-size:10px}.signature{white-space:nowrap}.signature span{display:inline-block;width:22mm;margin-left:2mm;border-bottom:1px solid #52656a;height:5mm;vertical-align:bottom}.voucher-panel{display:grid;grid-template-columns:1fr 1fr;gap:4mm;align-items:start}.voucher-box{height:62mm;border:1px dashed #8d9b9e;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#879497;font-size:10px;text-align:center;overflow:hidden}.voucher-box img{width:82%;height:82%;object-fit:contain}.voucher-label{margin-bottom:2mm;font-weight:600;color:#5e7074}.voucher-box .blank-note{line-height:1.7}.right-caption{grid-column:1 / -1;text-align:center;margin:-1mm 0 0;font-size:11px;color:#52656a;font-weight:600}.original-caption{margin-top:3mm;text-align:center;font-size:10px;color:#68797d}@media print{html,body{background:#fff}.receipt-page{width:210mm;height:148.5mm;margin:0;border:0;break-inside:avoid;page-break-inside:avoid}@page{size:A4 portrait;margin:0}}</style></head><body><section class="receipt-page"><h1 class="receipt-title">采购费用票据报销详单</h1><div class="receipt-main"><div class="receipt-left"><div class="receipt-meta"><span>单据编号：${escapePrintHtml(item.orderNo)}</span><span>日期：<b>${escapePrintHtml(toChinaDateInput(item.orderedAt))}</b></span></div><table class="expense-table"><tbody><tr><th>采购者</th><td>${escapePrintHtml(reimbursementUser)}</td><th>采购模式</th><td>${escapePrintHtml(item.procurementMode === "small_direct" ? "小额直接采购" : item.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单")}</td></tr><tr><th>订单金额</th><td>¥${escapePrintHtml(Number(item.amount).toFixed(2))}</td><th>物资说明</th><td>${escapePrintHtml(item.itemDescription || "采购申请关联订单")}</td></tr><tr><th>单价</th><td>¥${item.unitPrice == null ? "—" : escapePrintHtml(Number(item.unitPrice).toFixed(2))}</td><th>备注</th><td>${escapePrintHtml(remarks)}</td></tr><tr><th>提交上传管理员</th><td>${escapePrintHtml(uploaderName)}</td><th>现场管理员</th><td>${escapePrintHtml(fieldOperator)}</td></tr></tbody></table><div class="total-line"><span>合计金额：伍拾元整（¥${escapePrintHtml(Number(item.amount).toFixed(2))}）</span><span class="status">审核状态：${escapePrintHtml(statusLabel(item.status))}</span></div><p class="note">注：支付明细及原始凭证请见右侧附件并粘贴。</p></div><div class="voucher-panel"><div class="right-caption">报销凭证图片</div><div class="voucher-box">${attachment?.url ? `<img src="${escapePrintHtml(attachment.url)}" alt="报销凭证图片" />` : `<span class="blank-note">付款凭证<br />粘贴处</span>`}</div><div class="voucher-box"><span class="blank-note">原始票据<br />粘贴处</span></div></div></div><div class="signatures"><div class="signature">报销人：<span></span></div><div class="signature">部门审批：<span></span></div><div class="signature">会计主管：<span></span></div><div class="signature">复核：<span></span></div></div></section><script>window.onload=function(){var page=document.querySelector(".receipt-page");if(page)page.after(page.cloneNode(true));setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`
-      );
-      printWindow.document.close();
+      setConstructionEditorSnapshot(JSON.stringify(next));
+      setConstructionReportEditor(next);
     };
-    const openInventoryDialog = (
-      transactionType: InventoryTransactionForm["transactionType"]
-    ) => {
-      setInventoryTransactionForm({
-        ...EMPTY_INVENTORY_TRANSACTION_FORM,
-        projectId: String(workspaceProjectId),
-        transactionType,
-        occurredAt: toLocalDateTimeInput(new Date()),
-      });
-      setInventoryTransactionDialogOpen(true);
+    const closeConstructionEditor = () => {
+      if (saveConstructionReport.isPending) return;
+      if (
+        constructionEditorDirty &&
+        !window.confirm("施工日报有未保存修改，关闭将放弃本次内容，是否继续？")
+      )
+        return;
+      setConstructionReportEditor(null);
+      setConstructionEditorSnapshot("");
     };
     return (
-      <div className="space-y-6">
-        <Card className="border-[#d8e3e0] bg-[#f8fbfa]">
-          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="font-semibold text-[#203c48]">生活开支采购录入</p>
-              <p className="mt-1 text-sm leading-6 text-slate-500">
-                食堂食材、宿舍营地、水电气网络、办公用品和通勤后勤等生活类支出，使用“清单采购录入”按固定类别登记。请先在手机端拍摄清单水印影像，再填写数量、单价和下单时间；金额、审核开关与审计由服务端控制。
-              </p>
+      <div className="w-full min-w-0 space-y-6">
+        <div>
+          <p className="text-sm font-medium text-[#203c48]">
+            施工执行 · 真实业务台账
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold">施工日报与现场进度</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            四栏目使用同一服务端授权筛选。保留原日报录入与状态流程，不重写历史。
+          </p>
+        </div>
+        <Card>
+          <CardContent className="grid w-full min-w-0 gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="min-w-0">
+              <Label htmlFor="construction-workspace-project">当前项目</Label>
+              <Select
+                value={businessWorkspaceProjectId || "UNASSIGNED"}
+                onValueChange={value => {
+                  if (
+                    saveConstructionReport.isPending ||
+                    transitionConstructionReport.isPending
+                  ) {
+                    toast.info("施工日报正在保存或处理，请完成后再切换项目");
+                    return;
+                  }
+                  if (
+                    constructionEditorDirty &&
+                    !window.confirm(
+                      "施工日报有未保存修改，切换项目将放弃本次内容，是否继续？"
+                    )
+                  )
+                    return;
+                  setConstructionReportEditor(null);
+                  setConstructionEditorSnapshot("");
+                  setBusinessWorkspaceProjectId(
+                    value === "UNASSIGNED" ? "" : value
+                  );
+                }}
+              >
+                <SelectTrigger
+                  id="construction-workspace-project"
+                  className="mt-1 w-full min-w-0"
+                >
+                  <SelectValue placeholder="选择已授权项目" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="UNASSIGNED">请选择项目</SelectItem>
+                  {(projects.data ?? []).map(project => (
+                    <SelectItem key={project.id} value={String(project.id)}>
+                      {project.name}
+                      {project.status === "archived" ? "（归档项目）" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <Button
-              className="shrink-0"
-              onClick={() =>
-                window.location.assign(
-                  `/mobile/purchasing?projectId=${workspaceProjectId}`
-                )
-              }
-              disabled={!hasBusinessWorkspaceProject}
+              size="sm"
+              variant="outline"
+              disabled={projects.isFetching}
+              onClick={() => void projects.refetch()}
             >
-              前往生活开支采购录入
+              刷新项目
             </Button>
           </CardContent>
         </Card>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-sm font-medium text-[#203c48]">
-              采购与仓储 · 采购闭环与库存审计
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-              采购订单与库存台账
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-              集中查看采购申请、清单小额采购、订单收货、结算余额以及不可变库存收发流水。库存余额由服务端按项目、物料和单位实时汇总，不能直接改写。
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => openInventoryDialog("outbound")}
-              disabled={!hasBusinessWorkspaceProject}
-            >
-              登记领用出库
-            </Button>
-            <Button
-              onClick={() => openInventoryDialog("inbound")}
-              disabled={!hasBusinessWorkspaceProject}
-            >
-              登记入库
-            </Button>
-          </div>
-        </div>
-        {renderWorkspaceProjectFilter(
-          "采购仓储项目范围",
-          "选择项目后读取该项目采购申请、采购订单、实际结算与库存收发流水；未选择项目不会显示或办理库存数据。"
-        )}
-        {!hasBusinessWorkspaceProject ? (
-          <EmptyState text="请先选择已授权项目，以读取采购申请、订单、仓储余额和出入库台账。" />
-        ) : purchasingRequests.isLoading ||
-          purchasingOrders.isLoading ||
-          purchasingInventory.isLoading ||
-          purchasingSettlements.isLoading ? (
-          <EmptyState text="正在读取采购与仓储台账…" />
-        ) : purchasingRequests.isError ||
-          purchasingOrders.isError ||
-          purchasingInventory.isError ||
-          purchasingSettlements.isError ? (
-          <EmptyState text="暂无法读取采购与仓储数据，请确认当前账号的采购模块、岗位与项目范围授权。" />
-        ) : (
-          <>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="待审批申请"
-                value={submittedRequests.length}
-                description={`采购申请共 ${requests.length} 单`}
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="在途采购订单"
-                value={activeOrders.length}
-                description={`订单总金额 ¥${displayMoney(activeOrders.reduce((sum, item) => sum + Number(item.amount), 0))}`}
-                icon={ShoppingCart}
-              />
-              <MetricCard
-                title="库存物料品种"
-                value={
-                  inventoryBalances.filter(
-                    item => Number(item.balanceQuantity) > 0
-                  ).length
-                }
-                description="按物料名称与单位汇总"
-                icon={DatabaseBackup}
-              />
-              <MetricCard
-                title="库存账面金额"
-                value={`¥${displayMoney(totalInventoryValue)}`}
-                description={`待结算 ¥${displayMoney(pendingSettlementAmount)}`}
-                icon={BarChart3}
-              />
-            </section>
-            <Card className="border-[#d8e3e0]">
-              <CardHeader>
-                <CardTitle className="text-base">采购类别汇总</CardTitle>
-                <CardDescription>
-                  按实际采购者、提交管理员、日期、发票和类别筛选条件汇总；金额为订单金额。
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  {categorySummary.length ? (
-                    categorySummary.map(item => (
-                      <div
-                        key={item.name}
-                        className="rounded-xl border border-[#e1e8e4] bg-[#f8fbfa] p-3"
-                      >
-                        <p className="text-sm font-semibold text-[#203c48]">
-                          {item.name}
-                        </p>
-                        <p className="mt-2 text-lg font-semibold text-slate-900">
-                          ¥{displayMoney(item.amount)}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {item.orderCount} 单 · 有发票 {item.invoiceCount} 单
-                        </p>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="col-span-full py-2 text-sm text-slate-500">
-                      当前筛选条件下暂无采购类别汇总。
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-[#d8e3e0]">
-              <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0">
-                <div>
-                  <CardTitle className="text-base">
-                    采购申请与订单闭环
-                  </CardTitle>
-                  <CardDescription>
-                    采购申请与清单小额采购继续沿用既有移动端录入、主管审核开关和普通单据影像归档规则；本页用于项目级全流程复核。
-                  </CardDescription>
-                </div>
-                <div className="flex max-w-full flex-wrap gap-2">
-                  <Select
-                    value={purchasingOrderUploader}
-                    onValueChange={setPurchasingOrderUploader}
-                  >
-                    <SelectTrigger className="h-9 w-[170px] bg-white">
-                      <SelectValue placeholder="按提交管理员筛选" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部提交管理员</SelectItem>
-                      {uploaderOptions.map(item => (
-                        <SelectItem key={item.id} value={String(item.id)}>
-                          {item.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={purchasingOrderPurchaser}
-                    onValueChange={setPurchasingOrderPurchaser}
-                  >
-                    <SelectTrigger className="h-9 w-[150px] bg-white">
-                      <SelectValue placeholder="按采购者筛选" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部采购者</SelectItem>
-                      {purchaserOptions.map(name => (
-                        <SelectItem key={name} value={name}>
-                          {name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={purchasingOrderCategory}
-                    onValueChange={setPurchasingOrderCategory}
-                  >
-                    <SelectTrigger className="h-9 w-[155px] bg-white">
-                      <SelectValue placeholder="采购类别" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部采购类别</SelectItem>
-                      {categoryOptions.map(item => (
-                        <SelectItem key={item.id} value={item.id}>
-                          {item.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={purchasingOrderInvoice}
-                    onValueChange={setPurchasingOrderInvoice}
-                  >
-                    <SelectTrigger className="h-9 w-[118px] bg-white">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部发票</SelectItem>
-                      <SelectItem value="yes">有发票</SelectItem>
-                      <SelectItem value="no">无发票</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    aria-label="采购下单日期开始"
-                    className="h-9 w-[142px] bg-white"
-                    type="date"
-                    value={purchasingOrderDateFrom}
-                    onChange={event =>
-                      setPurchasingOrderDateFrom(event.target.value)
-                    }
-                  />
-                  <Input
-                    aria-label="采购下单日期结束"
-                    className="h-9 w-[142px] bg-white"
-                    type="date"
-                    value={purchasingOrderDateTo}
-                    onChange={event =>
-                      setPurchasingOrderDateTo(event.target.value)
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      const today = toChinaDateInput();
-                      setPurchasingOrderUploader("all");
-                      setPurchasingOrderPurchaser("all");
-                      setPurchasingOrderCategory("all");
-                      setPurchasingOrderInvoice("all");
-                      setPurchasingOrderDateFrom(today);
-                      setPurchasingOrderDateTo(today);
-                    }}
-                  >
-                    当天
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={purchasingCategories.isLoading}
-                    onClick={() => {
-                      void downloadPurchaseSpreadsheetTemplate(
-                        (purchasingCategories.data ?? []).map(category => ({
-                          name: category.name,
-                        }))
-                      ).catch(error =>
-                        toast.error(
-                          getUserFacingErrorMessage(
-                            error,
-                            "导入模板生成失败，请稍后重试"
-                          )
-                        )
-                      );
-                    }}
-                  >
-                    <FileSpreadsheet className="mr-1 h-4 w-4" />
-                    下载导入模板
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setPurchaseSpreadsheetImportPreview(null);
-                      setPurchaseSpreadsheetImportOpen(true);
-                    }}
-                  >
-                    <FileSpreadsheet className="mr-1 h-4 w-4" />
-                    导入 Excel
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!filteredOrders.length}
-                    onClick={() =>
-                      downloadCsvFile(
-                        `采购订单-筛选结果-${new Date().toISOString().slice(0, 10)}.csv`,
-                        [
-                          "订单号",
-                          "采购者",
-                          "采购类别",
-                          "是否有发票",
-                          "关联车辆/机械",
-                          "提交/上传管理员",
-                          "物资说明",
-                          "下单时间",
-                          "数量",
-                          "单价",
-                          "金额",
-                          "状态",
-                        ],
-                        filteredOrders.map(item => [
-                          item.orderNo,
-                          item.purchaserName || "",
-                          item.categoryName,
-                          item.hasInvoice ? "有发票" : "无发票",
-                          item.assetLabel ?? "",
-                          item.documentUploadedByName ??
-                            item.createdByName ??
-                            `管理员 #${item.documentUploadedBy ?? item.createdBy}`,
-                          item.itemDescription || "采购申请关联订单",
-                          displayDate(item.orderedAt),
-                          item.quantity ?? "",
-                          item.unitPrice ?? "",
-                          item.amount,
-                          statusLabel(item.status),
-                        ])
-                      )
-                    }
-                  >
-                    导出订单
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      Promise.all([
-                        purchasingRequests.refetch(),
-                        purchasingOrders.refetch(),
-                        purchasingSettlements.refetch(),
-                      ])
-                    }
-                  >
-                    刷新采购台账
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[980px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow>
-                        <TableHead>采购申请</TableHead>
-                        <TableHead>金额</TableHead>
-                        <TableHead>说明</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead>创建时间</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {requests.length ? (
-                        requests.map(item => (
-                          <TableRow key={item.id}>
-                            <TableCell className="font-medium text-[#203c48]">
-                              {item.requestNo}
-                            </TableCell>
-                            <TableCell>¥{displayMoney(item.amount)}</TableCell>
-                            <TableCell className="max-w-[440px] truncate">
-                              {item.description}
-                            </TableCell>
-                            <TableCell>
-                              <BusinessStatusBadge status={item.status} />
-                            </TableCell>
-                            <TableCell>{displayDate(item.updatedAt)}</TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={5}
-                            className="h-20 text-center text-slate-500"
-                          >
-                            当前项目暂无采购申请记录。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1260px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow>
-                        <TableHead>采购订单</TableHead>
-                        <TableHead>采购类别 / 发票</TableHead>
-                        <TableHead>提交/上传管理员</TableHead>
-                        <TableHead>模式 / 物资 / 关联设备</TableHead>
-                        <TableHead>订单金额</TableHead>
-                        <TableHead>已结算 / 待结算</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead>操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredOrders.length ? (
-                        filteredOrders.map(item => {
-                          const settlement = settlementTotals[
-                            String(item.id)
-                          ] ?? {
-                            settledAmount: 0,
-                            remainingAmount: Number(item.amount),
-                          };
-                          return (
-                            <TableRow key={item.id}>
-                              <TableCell className="font-medium text-[#203c48]">
-                                <p>{item.orderNo}</p>
-                                <p className="mt-1 text-slate-500">
-                                  采购者：{item.purchaserName || "—"}
-                                </p>
-                              </TableCell>
-                              <TableCell>
-                                <p className="font-medium text-slate-700">
-                                  {item.categoryName}
-                                </p>
-                                <Badge
-                                  variant="outline"
-                                  className={`mt-1 ${item.hasInvoice ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}
-                                >
-                                  {item.hasInvoice ? "有发票" : "无发票"}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                {item.documentUploadedByName ??
-                                  item.createdByName ??
-                                  `管理员 #${item.documentUploadedBy ?? item.createdBy}`}
-                              </TableCell>
-                              <TableCell>
-                                <p>
-                                  {item.procurementMode === "small_direct"
-                                    ? "小额直接采购"
-                                    : item.procurementMode === "imported"
-                                      ? "历史 Excel 导入"
-                                      : "采购申请转订单"}
-                                </p>
-                                <p className="mt-1 max-w-[260px] truncate text-slate-500">
-                                  {item.itemDescription || "采购申请关联订单"}
-                                </p>
-                                {item.assetLabel ? (
-                                  <p className="mt-1 font-medium text-[#2b6660]">
-                                    {item.assetLabel}
-                                  </p>
-                                ) : null}
-                              </TableCell>
-                              <TableCell>
-                                ¥{displayMoney(item.amount)}
-                              </TableCell>
-                              <TableCell>
-                                <p>¥{displayMoney(settlement.settledAmount)}</p>
-                                <p className="mt-1 text-slate-500">
-                                  待 ¥{displayMoney(settlement.remainingAmount)}
-                                </p>
-                              </TableCell>
-                              <TableCell>
-                                <Badge
-                                  variant="outline"
-                                  className={
-                                    item.status === "received" ||
-                                    item.status === "closed"
-                                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                      : item.status === "void"
-                                        ? "border-rose-200 bg-rose-50 text-rose-700"
-                                        : "border-amber-200 bg-amber-50 text-amber-700"
-                                  }
-                                >
-                                  {statusLabel(item.status)}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex flex-wrap gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => printPurchaseReceipt(item)}
-                                  >
-                                    <Printer className="mr-1 h-4 w-4" />
-                                    打印
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      setDesktopRecordDetail({
-                                        title: `采购订单详情 · ${item.orderNo}`,
-                                        description:
-                                          "采购金额、结算余额和状态均来自服务端受控业务记录。",
-                                        fields: [
-                                          {
-                                            label: "采购者",
-                                            value: item.purchaserName || "—",
-                                          },
-                                          {
-                                            label: "采购模式",
-                                            value:
-                                              item.procurementMode ===
-                                              "small_direct"
-                                                ? "小额直接采购"
-                                                : item.procurementMode ===
-                                                    "imported"
-                                                  ? "历史 Excel 导入"
-                                                  : "采购申请转订单",
-                                          },
-                                          {
-                                            label: "采购类别",
-                                            value: item.categoryName,
-                                          },
-                                          {
-                                            label: "物资说明",
-                                            value: item.itemDescription || "—",
-                                          },
-                                          {
-                                            label: "关联车辆/机械",
-                                            value:
-                                              item.assetLabel ?? "未关联设备",
-                                          },
-                                          {
-                                            label: "数量",
-                                            value:
-                                              item.quantity === null
-                                                ? "—"
-                                                : displayMoney(item.quantity),
-                                          },
-                                          {
-                                            label: "单价",
-                                            value:
-                                              item.unitPrice === null
-                                                ? "—"
-                                                : `¥ ${displayMoney(item.unitPrice)}`,
-                                          },
-                                          {
-                                            label: "下单时间",
-                                            value: displayDate(item.orderedAt),
-                                          },
-                                          {
-                                            label: "订单金额",
-                                            value: `¥ ${displayMoney(item.amount)}`,
-                                          },
-                                          {
-                                            label: "已结算",
-                                            value: `¥ ${displayMoney(settlement.settledAmount)}`,
-                                          },
-                                          {
-                                            label: "待结算",
-                                            value: `¥ ${displayMoney(settlement.remainingAmount)}`,
-                                          },
-                                          {
-                                            label: "当前状态",
-                                            value: statusLabel(item.status),
-                                          },
-                                          {
-                                            label: "提交/上传管理员",
-                                            value:
-                                              item.documentUploadedByName ??
-                                              item.createdByName ??
-                                              `管理员 #${item.documentUploadedBy ?? item.createdBy}`,
-                                          },
-                                          {
-                                            label: "采购单据",
-                                            value: item.documentAttachment ? (
-                                              <ProtectedImagePreview
-                                                file={item.documentAttachment}
-                                                title="采购单据"
-                                                description="照片在当前页面内预览，不会下载。"
-                                                className="font-medium text-[#2b6660] underline"
-                                              >
-                                                查看采购单据：
-                                                {
-                                                  item.documentAttachment
-                                                    .fileName
-                                                }
-                                              </ProtectedImagePreview>
-                                            ) : (
-                                              "未关联采购单据"
-                                            ),
-                                          },
-                                          {
-                                            label: "发票附件",
-                                            value: item.hasInvoice ? (
-                                              item.invoiceAttachment ? (
-                                                <ProtectedImagePreview
-                                                  file={item.invoiceAttachment}
-                                                  title="发票附件"
-                                                  description="照片在当前页面内预览，不会下载。"
-                                                  className="font-medium text-[#2b6660] underline"
-                                                >
-                                                  查看发票附件：
-                                                  {
-                                                    item.invoiceAttachment
-                                                      .fileName
-                                                  }
-                                                </ProtectedImagePreview>
-                                              ) : (
-                                                "已登记发票，但未找到归档附件"
-                                              )
-                                            ) : (
-                                              "本单未登记发票"
-                                            ),
-                                          },
-                                        ],
-                                        onPrint: () =>
-                                          printPurchaseReceipt(item),
-                                      })
-                                    }
-                                  >
-                                    详情
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={7}
-                            className="h-20 text-center text-slate-500"
-                          >
-                            当前筛选下暂无采购订单记录。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-[#d8e3e0]">
-              <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0">
-                <div>
-                  <CardTitle className="text-base">
-                    仓储余额与收发流水
-                  </CardTitle>
-                  <CardDescription>
-                    入库、领用出库、退库均写入不可变流水；出库不会修改历史入库记录，库存余额由服务端汇总。请按实物和项目范围登记。
-                  </CardDescription>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openInventoryDialog("return")}
-                  >
-                    登记退库
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => purchasingInventory.refetch()}
-                  >
-                    刷新库存
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[820px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow>
-                        <TableHead>物料</TableHead>
-                        <TableHead>单位</TableHead>
-                        <TableHead>库存余额</TableHead>
-                        <TableHead>库存账面金额</TableHead>
-                        <TableHead>状态</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {inventoryBalances.length ? (
-                        inventoryBalances.map(item => (
-                          <TableRow key={`${item.itemName}-${item.unit}`}>
-                            <TableCell className="font-medium text-[#203c48]">
-                              {item.itemName}
-                            </TableCell>
-                            <TableCell>{item.unit}</TableCell>
-                            <TableCell
-                              className={
-                                Number(item.balanceQuantity) < 0
-                                  ? "font-semibold text-rose-700"
-                                  : "font-semibold text-emerald-700"
-                              }
-                            >
-                              {displayMoney(item.balanceQuantity)}
-                            </TableCell>
-                            <TableCell>
-                              ¥{displayMoney(item.totalAmount)}
-                            </TableCell>
-                            <TableCell>
-                              {Number(item.balanceQuantity) < 0 ? (
-                                <Badge
-                                  variant="outline"
-                                  className="border-rose-200 text-rose-700"
-                                >
-                                  账面负库存待核查
-                                </Badge>
-                              ) : Number(item.balanceQuantity) === 0 ? (
-                                <Badge variant="outline">无库存</Badge>
-                              ) : (
-                                <Badge
-                                  variant="outline"
-                                  className="border-emerald-200 text-emerald-700"
-                                >
-                                  可用
-                                </Badge>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={5}
-                            className="h-20 text-center text-slate-500"
-                          >
-                            当前项目暂无库存流水；请从入库、领用出库或退库开始登记。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[920px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow>
-                        <TableHead>流水单号</TableHead>
-                        <TableHead>类型</TableHead>
-                        <TableHead>物料</TableHead>
-                        <TableHead>数量 / 单位</TableHead>
-                        <TableHead>金额</TableHead>
-                        <TableHead>发生时间</TableHead>
-                        <TableHead>备注</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {inventoryTransactions.length ? (
-                        inventoryTransactions.slice(0, 30).map(item => (
-                          <TableRow key={item.id}>
-                            <TableCell className="font-medium text-[#203c48]">
-                              {item.transactionNo}
-                            </TableCell>
-                            <TableCell>
-                              {transactionLabel(item.transactionType)}
-                            </TableCell>
-                            <TableCell>{item.itemName}</TableCell>
-                            <TableCell>
-                              {displayMoney(item.quantity)} {item.unit}
-                            </TableCell>
-                            <TableCell>¥{displayMoney(item.amount)}</TableCell>
-                            <TableCell>
-                              {displayDate(item.occurredAt)}
-                            </TableCell>
-                            <TableCell className="max-w-[260px] truncate">
-                              {item.remarks || "—"}
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            colSpan={7}
-                            className="h-20 text-center text-slate-500"
-                          >
-                            暂无库存收发流水。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-          </>
-        )}
+        <ConstructionWorkspace
+          projectId={workspaceProjectId}
+          projectName={selectedWorkspaceProject?.name}
+          active={canQuery && isConstruction && hasBusinessWorkspaceProject}
+          onCreate={() => openConstructionEditor()}
+          onEdit={openConstructionEditor}
+          transitionPending={transitionConstructionReport.isPending}
+          onTransition={(report, nextStatus) => {
+            const labels = {
+              submitted: "提交审核",
+              approved: "审核通过",
+              rejected: "退回修改",
+              locked: "归档锁定",
+              draft: "草稿",
+            };
+            if (
+              window.confirm(
+                `确认对“${report.workArea}”执行${labels[nextStatus]}？状态变更仍由服务端复核原权限。`
+              )
+            )
+              transitionConstructionReport.mutate({
+                id: report.id,
+                projectId: workspaceProjectId,
+                nextStatus,
+              });
+          }}
+        />
         <Dialog
-          open={purchaseSpreadsheetImportOpen}
+          open={Boolean(constructionReportEditor)}
           onOpenChange={open => {
-            setPurchaseSpreadsheetImportOpen(open);
-            if (!open) setPurchaseSpreadsheetImportPreview(null);
+            if (!open) closeConstructionEditor();
           }}
         >
-          <DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>导入采购仓储 Excel 数据</DialogTitle>
-              <DialogDescription>
-                请先下载系统模板。选择文件后会在本地预检；确认导入时，服务端会再次校验项目范围、标准类别、时间、金额和重复单号。采购订单一律作为“历史
-                Excel
-                导入草稿”写入，不自动审核、结算、通知或扣款；库存流水将写入不可变台账。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div className="rounded-xl border border-dashed border-[#b7cfca] bg-[#f7fbf9] p-4">
-                <Label htmlFor="purchase-spreadsheet-import">
-                  选择 .xlsx Excel 文件
-                </Label>
-                <Input
-                  id="purchase-spreadsheet-import"
-                  className="mt-2 cursor-pointer bg-white"
-                  type="file"
-                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                  onChange={event => {
-                    const file = event.target.files?.[0];
-                    event.currentTarget.value = "";
-                    if (!file) return;
-                    void parsePurchaseSpreadsheetImport(
-                      file,
-                      (purchasingCategories.data ?? []).map(
-                        category => category.name
-                      )
-                    )
-                      .then(preview => {
-                        setPurchaseSpreadsheetImportPreview(preview);
-                        toast.success(
-                          `文件预检通过：采购订单 ${preview.orders.length} 条、库存流水 ${preview.inventoryTransactions.length} 条`
-                        );
-                      })
-                      .catch(error => {
-                        setPurchaseSpreadsheetImportPreview(null);
-                        toast.error(
-                          getUserFacingErrorMessage(
-                            error,
-                            "文件预检失败，请检查模板内容后重试"
-                          )
-                        );
-                      });
-                  }}
-                />
-                <p className="mt-2 text-xs leading-5 text-slate-600">
-                  不支持图片/PDF随 Excel
-                  直接上传；有发票的订单导入后，请在订单详情补传附件。单次最多
-                  500 条，导入中任一行不通过校验则整批不写入。
-                </p>
-              </div>
-              {purchaseSpreadsheetImportPreview ? (
-                <div className="space-y-3 rounded-xl border border-[#d8e3e0] bg-white p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium text-[#203c48]">
-                        已预检：{purchaseSpreadsheetImportPreview.fileName}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-600">
-                        采购订单{" "}
-                        <strong>
-                          {purchaseSpreadsheetImportPreview.orders.length}
-                        </strong>{" "}
-                        条（均导入为草稿） · 库存流水{" "}
-                        <strong>
-                          {
-                            purchaseSpreadsheetImportPreview
-                              .inventoryTransactions.length
-                          }
-                        </strong>{" "}
-                        条
-                      </p>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className="border-amber-200 bg-amber-50 text-amber-800"
-                    >
-                      确认后整批写入
-                    </Badge>
-                  </div>
-                  <div className="max-h-52 overflow-auto rounded-lg border border-slate-100">
-                    <Table className="min-w-[780px] text-xs">
-                      <TableHeader className="bg-[#edf1ed]">
-                        <TableRow>
-                          <TableHead>类型</TableHead>
-                          <TableHead>单据号</TableHead>
-                          <TableHead>内容</TableHead>
-                          <TableHead>金额 / 数量</TableHead>
-                          <TableHead>业务时间</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {[
-                          ...purchaseSpreadsheetImportPreview.orders.map(
-                            item => ({
-                              type: "采购订单",
-                              no: item.orderNo || "系统自动生成",
-                              content: `${item.purchaserName} · ${item.categoryName} · ${item.itemDescription}`,
-                              amount: `¥${item.amount.toFixed(2)}`,
-                              occurredAt: item.orderedAt,
-                            })
-                          ),
-                          ...purchaseSpreadsheetImportPreview.inventoryTransactions.map(
-                            item => ({
-                              type:
-                                item.transactionType === "inbound"
-                                  ? "库存入库"
-                                  : item.transactionType === "outbound"
-                                    ? "库存领用出库"
-                                    : "库存退库",
-                              no: item.transactionNo || "系统自动生成",
-                              content: `${item.itemName} · ${item.unit}`,
-                              amount: `${item.quantity} × ¥${item.unitCost.toFixed(2)}`,
-                              occurredAt: item.occurredAt,
-                            })
-                          ),
-                        ]
-                          .slice(0, 20)
-                          .map((item, index) => (
-                            <TableRow key={`${item.type}-${item.no}-${index}`}>
-                              <TableCell>{item.type}</TableCell>
-                              <TableCell className="font-medium text-[#203c48]">
-                                {item.no}
-                              </TableCell>
-                              <TableCell>{item.content}</TableCell>
-                              <TableCell>{item.amount}</TableCell>
-                              <TableCell>
-                                {formatChinaDateTime(item.occurredAt)}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  {purchaseSpreadsheetImportPreview.orders.length +
-                    purchaseSpreadsheetImportPreview.inventoryTransactions
-                      .length >
-                  20 ? (
-                    <p className="text-xs text-slate-500">
-                      仅预览前 20 条，确认时将导入全部{" "}
-                      {purchaseSpreadsheetImportPreview.orders.length +
-                        purchaseSpreadsheetImportPreview.inventoryTransactions
-                          .length}{" "}
-                      条。
-                    </p>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">
-                  尚未选择通过预检的 Excel 文件。
-                </p>
-              )}
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setPurchaseSpreadsheetImportOpen(false)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                disabled={
-                  !purchaseSpreadsheetImportPreview ||
-                  importPurchaseSpreadsheet.isPending
-                }
-                onClick={() => {
-                  if (!purchaseSpreadsheetImportPreview || !workspaceProjectId)
-                    return;
-                  importPurchaseSpreadsheet.mutate({
-                    projectId: workspaceProjectId,
-                    orders: purchaseSpreadsheetImportPreview.orders,
-                    inventoryTransactions:
-                      purchaseSpreadsheetImportPreview.inventoryTransactions,
-                  });
-                }}
-              >
-                {importPurchaseSpreadsheet.isPending
-                  ? "正在整批导入…"
-                  : "确认导入并写入台账"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <Dialog
-          open={inventoryTransactionDialogOpen}
-          onOpenChange={open => {
-            setInventoryTransactionDialogOpen(open);
-            if (!open)
-              setInventoryTransactionForm(EMPTY_INVENTORY_TRANSACTION_FORM);
-          }}
-        >
-          <DialogContent className="w-[calc(100vw-3rem)] max-w-3xl xl:max-w-4xl">
+          <DialogContent className="max-h-[88vh] w-[calc(100vw-3rem)] max-w-5xl xl:max-w-6xl overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
-                登记库存
-                {transactionLabel(inventoryTransactionForm.transactionType)}
+                {constructionReportEditor?.id
+                  ? "施工日报查看与编辑"
+                  : "新建施工日报"}
               </DialogTitle>
               <DialogDescription>
-                库存金额由数量 ×
-                单价在服务器重新计算并写入不可变流水。请以实际物料、数量和发生时间为准，禁止用负数冲销。
+                {editorCanEdit
+                  ? "保留原日报表单。保存后服务端重新校验权限、项目范围和草稿/退回状态。"
+                  : "当前账号或日报状态不允许修改，仅只读查看；完整审核与影像请使用列表详情。"}
               </DialogDescription>
             </DialogHeader>
-            <form
-              className="space-y-4"
-              onSubmit={event => {
-                event.preventDefault();
-                saveInventoryTransaction.mutate({
-                  projectId: Number(inventoryTransactionForm.projectId),
-                  transactionType: inventoryTransactionForm.transactionType,
-                  itemName: inventoryTransactionForm.itemName.trim(),
-                  unit: inventoryTransactionForm.unit.trim(),
-                  quantity: Number(inventoryTransactionForm.quantity),
-                  unitCost: Number(inventoryTransactionForm.unitCost),
-                  occurredAt: new Date(
-                    inventoryTransactionForm.occurredAt
-                  ).toISOString(),
-                  remarks: inventoryTransactionForm.remarks.trim() || null,
-                });
-              }}
-            >
+            <div className="grid gap-4 py-2">
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="项目">
+                <Field label="日报日期">
                   <Input
-                    value={selectedWorkspaceProject?.name ?? ""}
-                    disabled
+                    type="date"
+                    value={constructionReportEditor?.reportDate ?? ""}
+                    disabled={!editorCanEdit}
+                    onChange={event =>
+                      setConstructionReportEditor(current =>
+                        current
+                          ? { ...current, reportDate: event.target.value }
+                          : current
+                      )
+                    }
                   />
                 </Field>
-                <Field label="收发类型">
+                <Field label="天气">
                   <Select
-                    value={inventoryTransactionForm.transactionType}
-                    onValueChange={value =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        transactionType:
-                          value as InventoryTransactionForm["transactionType"],
-                      }))
+                    value={constructionReportEditor?.weather ?? "other"}
+                    disabled={!editorCanEdit}
+                    onValueChange={weather =>
+                      setConstructionReportEditor(current =>
+                        current
+                          ? {
+                              ...current,
+                              weather: weather as ConstructionWeather,
+                            }
+                          : current
+                      )
                     }
                   >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="inbound">入库</SelectItem>
-                      <SelectItem value="outbound">领用出库</SelectItem>
-                      <SelectItem value="return">退库</SelectItem>
+                      {(
+                        Object.keys(
+                          CONSTRUCTION_WEATHER_LABELS
+                        ) as ConstructionWeather[]
+                      ).map(weather => (
+                        <SelectItem key={weather} value={weather}>
+                          {CONSTRUCTION_WEATHER_LABELS[weather]}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </Field>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="物料名称">
+              <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
+                <Field label="施工部位 / 作业面">
                   <Input
-                    value={inventoryTransactionForm.itemName}
                     maxLength={200}
-                    placeholder="例如：水泥 P.O 42.5"
+                    value={constructionReportEditor?.workArea ?? ""}
+                    disabled={!editorCanEdit}
                     onChange={event =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        itemName: event.target.value,
-                      }))
+                      setConstructionReportEditor(current =>
+                        current
+                          ? { ...current, workArea: event.target.value }
+                          : current
+                      )
                     }
                   />
                 </Field>
-                <Field label="计量单位">
-                  <Input
-                    value={inventoryTransactionForm.unit}
-                    maxLength={32}
-                    placeholder="例如：袋、吨、件"
-                    onChange={event =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        unit: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-3">
-                <Field label="数量">
-                  <Input
-                    type="number"
-                    min="0.001"
-                    step="0.001"
-                    value={inventoryTransactionForm.quantity}
-                    onChange={event =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        quantity: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="单价（元）">
+                <Field label="累计完成比例（%）">
                   <Input
                     type="number"
                     min="0"
+                    max="100"
                     step="0.01"
-                    value={inventoryTransactionForm.unitCost}
+                    value={constructionReportEditor?.progressPercent ?? ""}
+                    disabled={!editorCanEdit}
                     onChange={event =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        unitCost: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="发生时间">
-                  <Input
-                    type="datetime-local"
-                    value={inventoryTransactionForm.occurredAt}
-                    onChange={event =>
-                      setInventoryTransactionForm(current => ({
-                        ...current,
-                        occurredAt: event.target.value,
-                      }))
+                      setConstructionReportEditor(current =>
+                        current
+                          ? {
+                              ...current,
+                              progressPercent: event.target.value,
+                            }
+                          : current
+                      )
                     }
                   />
                 </Field>
               </div>
-              <Field label="备注">
+              <Field label="当日施工内容">
                 <Textarea
-                  value={inventoryTransactionForm.remarks}
-                  maxLength={500}
-                  placeholder="可填写领用班组、存放位置、单据号或退库原因"
+                  className="min-h-32"
+                  maxLength={8000}
+                  value={constructionReportEditor?.workContent ?? ""}
+                  disabled={!editorCanEdit}
                   onChange={event =>
-                    setInventoryTransactionForm(current => ({
-                      ...current,
-                      remarks: event.target.value,
-                    }))
+                    setConstructionReportEditor(current =>
+                      current
+                        ? { ...current, workContent: event.target.value }
+                        : current
+                    )
                   }
                 />
               </Field>
-              <DialogFooter>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="安全记录（可选）">
+                  <Textarea
+                    maxLength={1000}
+                    value={constructionReportEditor?.safetyNotes ?? ""}
+                    disabled={!editorCanEdit}
+                    onChange={event =>
+                      setConstructionReportEditor(current =>
+                        current
+                          ? { ...current, safetyNotes: event.target.value }
+                          : current
+                      )
+                    }
+                  />
+                </Field>
+                <Field label="问题记录（可选）">
+                  <Textarea
+                    maxLength={1000}
+                    value={constructionReportEditor?.issueNotes ?? ""}
+                    disabled={!editorCanEdit}
+                    onChange={event =>
+                      setConstructionReportEditor(current =>
+                        current
+                          ? { ...current, issueNotes: event.target.value }
+                          : current
+                      )
+                    }
+                  />
+                </Field>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={closeConstructionEditor}
+                disabled={saveConstructionReport.isPending}
+              >
+                关闭
+              </Button>
+              {editorCanEdit ? (
                 <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setInventoryTransactionDialogOpen(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="submit"
                   disabled={
-                    !inventoryTransactionForm.projectId ||
-                    !inventoryTransactionForm.itemName.trim() ||
-                    !inventoryTransactionForm.unit.trim() ||
+                    !constructionReportEditor ||
+                    !constructionReportEditor.reportDate ||
+                    constructionReportEditor.workArea.trim().length < 2 ||
+                    constructionReportEditor.workContent.trim().length < 4 ||
                     !Number.isFinite(
-                      Number(inventoryTransactionForm.quantity)
+                      Number(constructionReportEditor.progressPercent)
                     ) ||
-                    Number(inventoryTransactionForm.quantity) <= 0 ||
-                    !Number.isFinite(
-                      Number(inventoryTransactionForm.unitCost)
-                    ) ||
-                    Number(inventoryTransactionForm.unitCost) < 0 ||
-                    !inventoryTransactionForm.occurredAt ||
-                    saveInventoryTransaction.isPending
+                    saveConstructionReport.isPending
+                  }
+                  onClick={() =>
+                    constructionReportEditor &&
+                    saveConstructionReport.mutate({
+                      id: constructionReportEditor.id,
+                      projectId: constructionReportEditor.projectId,
+                      reportDate: constructionReportEditor.reportDate,
+                      workArea: constructionReportEditor.workArea.trim(),
+                      weather: constructionReportEditor.weather,
+                      workContent: constructionReportEditor.workContent.trim(),
+                      safetyNotes:
+                        constructionReportEditor.safetyNotes.trim() || null,
+                      issueNotes:
+                        constructionReportEditor.issueNotes.trim() || null,
+                      progressPercent: Number(
+                        constructionReportEditor.progressPercent
+                      ),
+                    })
                   }
                 >
-                  {saveInventoryTransaction.isPending
-                    ? "正在登记…"
-                    : `确认${transactionLabel(inventoryTransactionForm.transactionType)}`}
+                  {saveConstructionReport.isPending
+                    ? "正在保存…"
+                    : constructionReportEditor.id
+                      ? "保存修改"
+                      : "保存日报"}
                 </Button>
-              </DialogFooter>
-            </form>
+              ) : null}
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
     );
   };
+
+  const renderPurchasing = () => (
+    <div className="w-full min-w-0 space-y-4">
+      {renderWorkspaceProjectFilter(
+        "采购仓储项目范围",
+        "所有申请、订单、验收、收发与采购结算均限定已授权项目。"
+      )}
+      {hasBusinessWorkspaceProject ? (
+        <PurchasingWorkspace
+          onDirtyChange={onPurchasingDirtyChange}
+          projectId={workspaceProjectId}
+          projectName={selectedWorkspaceProject?.name ?? "已授权项目"}
+          active={canQuery && isPurchasing}
+          isSuperAdmin={purchasingIsSuperAdmin}
+          onOpenLegacyImport={() => setPurchaseSpreadsheetImportOpen(true)}
+          onDownloadLegacyTemplate={() => {
+            void downloadPurchaseSpreadsheetTemplate(
+              (purchasingCategories.data ?? []).map(category => ({
+                name: category.name,
+              }))
+            );
+          }}
+        />
+      ) : (
+        <EmptyState text="请先选择已授权项目，读取采购仓储业务。" />
+      )}
+      <Dialog
+        open={purchaseSpreadsheetImportOpen}
+        onOpenChange={open => {
+          setPurchaseSpreadsheetImportOpen(open);
+          if (!open) setPurchaseSpreadsheetImportPreview(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>导入采购仓储 Excel 数据</DialogTitle>
+            <DialogDescription>
+              请先下载系统模板。选择文件后会在本地预检；确认导入时，服务端会再次校验项目范围、标准类别、时间、金额和重复单号。采购订单一律作为“历史
+              Excel
+              导入草稿”写入，不自动审核、结算、通知或扣款；库存流水将写入不可变台账。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-xl border border-dashed border-[#b7cfca] bg-[#f7fbf9] p-4">
+              <Label htmlFor="purchase-spreadsheet-import">
+                选择 .xlsx Excel 文件
+              </Label>
+              <Input
+                id="purchase-spreadsheet-import"
+                className="mt-2 cursor-pointer bg-white"
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={event => {
+                  const file = event.target.files?.[0];
+                  event.currentTarget.value = "";
+                  if (!file) return;
+                  void parsePurchaseSpreadsheetImport(
+                    file,
+                    (purchasingCategories.data ?? []).map(
+                      category => category.name
+                    )
+                  )
+                    .then(preview => {
+                      setPurchaseSpreadsheetImportPreview(preview);
+                      toast.success(
+                        `文件预检通过：采购订单 ${preview.orders.length} 条、库存流水 ${preview.inventoryTransactions.length} 条`
+                      );
+                    })
+                    .catch(error => {
+                      setPurchaseSpreadsheetImportPreview(null);
+                      toast.error(
+                        getUserFacingErrorMessage(
+                          error,
+                          "文件预检失败，请检查模板内容后重试"
+                        )
+                      );
+                    });
+                }}
+              />
+              <p className="mt-2 text-xs leading-5 text-slate-600">
+                不支持图片/PDF随 Excel
+                直接上传；有发票的订单导入后，请在订单详情补传附件。单次最多 500
+                条，导入中任一行不通过校验则整批不写入。
+              </p>
+            </div>
+            {purchaseSpreadsheetImportPreview ? (
+              <div className="space-y-3 rounded-xl border border-[#d8e3e0] bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-medium text-[#203c48]">
+                      已预检：{purchaseSpreadsheetImportPreview.fileName}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      采购订单{" "}
+                      <strong>
+                        {purchaseSpreadsheetImportPreview.orders.length}
+                      </strong>{" "}
+                      条（均导入为草稿） · 库存流水{" "}
+                      <strong>
+                        {
+                          purchaseSpreadsheetImportPreview.inventoryTransactions
+                            .length
+                        }
+                      </strong>{" "}
+                      条
+                    </p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className="border-amber-200 bg-amber-50 text-amber-800"
+                  >
+                    确认后整批写入
+                  </Badge>
+                </div>
+                <div className="max-h-52 overflow-auto rounded-lg border border-slate-100">
+                  <Table className="min-w-[780px] text-xs">
+                    <TableHeader className="bg-[#edf1ed]">
+                      <TableRow>
+                        <TableHead>类型</TableHead>
+                        <TableHead>单据号</TableHead>
+                        <TableHead>内容</TableHead>
+                        <TableHead>金额 / 数量</TableHead>
+                        <TableHead>业务时间</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {[
+                        ...purchaseSpreadsheetImportPreview.orders.map(
+                          item => ({
+                            type: "采购订单",
+                            no: item.orderNo || "系统自动生成",
+                            content: `${item.purchaserName} · ${item.categoryName} · ${item.itemDescription}`,
+                            amount: `¥${item.amount.toFixed(2)}`,
+                            occurredAt: item.orderedAt,
+                          })
+                        ),
+                        ...purchaseSpreadsheetImportPreview.inventoryTransactions.map(
+                          item => ({
+                            type:
+                              item.transactionType === "inbound"
+                                ? "库存入库"
+                                : item.transactionType === "outbound"
+                                  ? "库存领用出库"
+                                  : "库存退库",
+                            no: item.transactionNo || "系统自动生成",
+                            content: `${item.itemName} · ${item.unit}`,
+                            amount: `${item.quantity} × ¥${item.unitCost.toFixed(2)}`,
+                            occurredAt: item.occurredAt,
+                          })
+                        ),
+                      ]
+                        .slice(0, 20)
+                        .map((item, index) => (
+                          <TableRow key={`${item.type}-${item.no}-${index}`}>
+                            <TableCell>{item.type}</TableCell>
+                            <TableCell className="font-medium text-[#203c48]">
+                              {item.no}
+                            </TableCell>
+                            <TableCell>{item.content}</TableCell>
+                            <TableCell>{item.amount}</TableCell>
+                            <TableCell>
+                              {formatChinaDateTime(item.occurredAt)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                {purchaseSpreadsheetImportPreview.orders.length +
+                  purchaseSpreadsheetImportPreview.inventoryTransactions
+                    .length >
+                20 ? (
+                  <p className="text-xs text-slate-500">
+                    仅预览前 20 条，确认时将导入全部{" "}
+                    {purchaseSpreadsheetImportPreview.orders.length +
+                      purchaseSpreadsheetImportPreview.inventoryTransactions
+                        .length}{" "}
+                    条。
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="rounded-lg bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                尚未选择通过预检的 Excel 文件。
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPurchaseSpreadsheetImportOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                !purchaseSpreadsheetImportPreview ||
+                importPurchaseSpreadsheet.isPending
+              }
+              onClick={() => {
+                if (!purchaseSpreadsheetImportPreview || !workspaceProjectId)
+                  return;
+                importPurchaseSpreadsheet.mutate({
+                  projectId: workspaceProjectId,
+                  orders: purchaseSpreadsheetImportPreview.orders,
+                  inventoryTransactions:
+                    purchaseSpreadsheetImportPreview.inventoryTransactions,
+                });
+              }}
+            >
+              {importPurchaseSpreadsheet.isPending
+                ? "正在整批导入…"
+                : "确认导入并写入台账"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
 
   const renderSubcontract = () => {
     const teams = subcontractTeams.data ?? [];
@@ -17766,10 +16492,7 @@ export default function AdminPage({
         operatorUserId: machine.operatorUserId
           ? String(machine.operatorUserId)
           : "",
-        shiftRate:
-          machine.leaseTerms?.billingType === "shift"
-            ? String(machine.leaseTerms.rate)
-            : "",
+        shiftRate: "0",
       });
       setMachineDailyOperationDialogOpen(true);
     };
@@ -17829,1037 +16552,48 @@ export default function AdminPage({
       machine.leaseTerms
         ? `${toLocalDateInput(machine.leaseTerms.effectiveFrom)} 至 ${machine.leaseTerms.effectiveTo ? toLocalDateInput(machine.leaseTerms.effectiveTo) : "长期"}`
         : "—";
+    const machineryFormOpen =
+      machineDialogOpen ||
+      machineCostDialogOpen ||
+      machineDailyOperationDialogOpen ||
+      machineStatementDialogOpen ||
+      assetMaintenanceDialogOpen ||
+      machineryPaymentFormOpen;
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[#203c48]">
-              机械资源 · 真实业务台账
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-              机械台账与成本结算
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-500">
-              机械档案、操作员、产权/租赁、状态、成本录入与结算均在当前 PC
-              台账完成；已退役设备保留历史责任链。
-            </p>
-          </div>
-          <Button
-            className="min-h-11 w-full text-sm sm:w-auto"
-            onClick={() => openMachineEditor()}
-            disabled={!hasBusinessWorkspaceProject}
-          >
-            新建机械档案
-          </Button>
+      <div className="min-w-0 space-y-4">
+        <div>
+          <h1 className="text-2xl font-semibold">机械管理</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            机械档案、司机加班、费用统计、租金结算；沿用原合同、月结依据和凭证分笔付款。
+          </p>
         </div>
-        {hasBusinessWorkspaceProject &&
-        !machineryLedger.isLoading &&
-        !machineryLedger.isError ? (
-          <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
-              title="机械总数"
-              value={machines.length}
-              description={selectedWorkspaceProject?.name ?? "当前项目"}
-              icon={Settings2}
-            />
-            <MetricCard
-              title="作业中"
-              value={machines.filter(item => item.status === "working").length}
-              description="当前可见机械资源"
-              icon={BarChart3}
-            />
-            <MetricCard
-              title="机械维修保养费"
-              value={`¥${displayMoney(Number(assetMaintenanceSummary.data?.machineMaintenanceAmount ?? 0) + Number(assetMaintenanceSummary.data?.machineRepairAmount ?? 0))}`}
-              description="独立于油料、租赁等运行成本"
-              icon={ScrollText}
-            />
-            <MetricCard
-              title="车辆/机械费用汇总"
-              value={`¥${displayMoney(assetMaintenanceSummary.data?.totalAmount ?? 0)}`}
-              description="车辆维修保养 + 机械维修保养/运行成本"
-              icon={ShieldCheck}
-            />
-          </section>
-        ) : null}
-        {renderWorkspaceProjectFilter(
-          "机械项目范围",
-          "选择项目后读取机械资源台账。选择具体机械后再读取其真实成本记录，避免无筛选的成本明细暴露。"
-        )}
-        {hasBusinessWorkspaceProject ? (
-          <Card className="border-slate-200">
-            <CardContent className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto]">
-              <div>
-                <Label>机械检索</Label>
-                <Input
-                  className="mt-1 min-h-11"
-                  value={machineLedgerFilter.search}
-                  onChange={event =>
-                    setMachineLedgerFilter(current => ({
-                      ...current,
-                      search: event.target.value,
-                    }))
-                  }
-                  placeholder="名称、编号、型号或供应商"
-                />
-              </div>
-              <div>
-                <Label>资源性质</Label>
-                <Select
-                  value={machineLedgerFilter.ownership}
-                  onValueChange={value =>
-                    setMachineLedgerFilter(current => ({
-                      ...current,
-                      ownership: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="mt-1 min-h-11">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部性质</SelectItem>
-                    <SelectItem value="owned">公司自有</SelectItem>
-                    <SelectItem value="leased">外租机械</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>机械状态</Label>
-                <Select
-                  value={machineLedgerFilter.status}
-                  onValueChange={value =>
-                    setMachineLedgerFilter(current => ({
-                      ...current,
-                      status: value,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="mt-1 min-h-11">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部状态</SelectItem>
-                    <SelectItem value="idle">闲置</SelectItem>
-                    <SelectItem value="working">作业中</SelectItem>
-                    <SelectItem value="repairing">维修中</SelectItem>
-                    <SelectItem value="offsite">场外</SelectItem>
-                    <SelectItem value="retired">已退役</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                className="min-h-11 w-full self-end text-sm xl:w-auto"
-                size="sm"
-                variant="outline"
-                disabled={!machines.length}
-                onClick={() =>
-                  downloadCsvFile(
-                    `机械综合台账-${toLocalDateInput()}.csv`,
-                    [
-                      "机械名称",
-                      "编号",
-                      "项目",
-                      "操作员",
-                      "资源性质",
-                      "状态",
-                      "出租方",
-                      "租赁方式",
-                      "租金",
-                      "起租日期",
-                      "截止日期",
-                      "维修保养费",
-                      "维修成本",
-                      "累计成本",
-                    ],
-                    machines.map(machine => {
-                      const summary = machineCostSummaryById.get(machine.id);
-                      return [
-                        machine.name,
-                        machine.code,
-                        selectedWorkspaceProject?.name ?? machine.projectId,
-                        machine.operatorUserId
-                          ? (userNameById.get(machine.operatorUserId) ??
-                            `#${machine.operatorUserId}`)
-                          : "未分配",
-                        machine.ownership === "owned" ? "公司自有" : "外租",
-                        getBusinessStatusLabel(machine.status),
-                        machine.supplierName || "",
-                        getMachineLeaseBillingTypeLabel(
-                          machine.leaseTerms?.billingType
-                        ),
-                        machine.leaseTerms?.rate ?? "",
-                        machine.leaseTerms?.effectiveFrom
-                          ? toLocalDateInput(machine.leaseTerms.effectiveFrom)
-                          : "",
-                        machine.leaseTerms?.effectiveTo
-                          ? toLocalDateInput(machine.leaseTerms.effectiveTo)
-                          : "",
-                        machineMaintenanceAmountById.get(machine.id) ?? 0,
-                        summary?.repairAmount ?? 0,
-                        summary?.totalAmount ?? 0,
-                      ];
-                    })
-                  )
-                }
-              >
-                导出 CSV
-              </Button>
-            </CardContent>
-          </Card>
-        ) : null}
+        <fieldset disabled={machineryFormOpen} className="min-w-0">
+          {renderWorkspaceProjectFilter(
+            "机械项目范围",
+            "档案不绑定创建日期；列表、合计、打印与导出按同一授权筛选。表单未关闭时不可切项目。"
+          )}
+        </fieldset>
         {!hasBusinessWorkspaceProject ? (
-          <EmptyState text="请先选择已授权项目，以读取真实机械资源台账。" />
-        ) : machineryLedger.isLoading ? (
-          <EmptyState text="正在读取机械资源台账…" />
-        ) : machineryLedger.isError ? (
-          <EmptyState text="暂无法读取机械资源，请确认当前账号的服务端授权后重试。" />
+          <EmptyState text="请先选择已授权项目。" />
         ) : (
-          <>
-            <Card className="w-full border-[#d8e3e0] shadow-sm">
-              <CardHeader>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <p className="text-xs font-semibold tracking-[0.12em] text-[#467067]">
-                      机械资源 · 综合台账
-                    </p>
-                    <CardTitle className="mt-1 text-base">
-                      机械资源、维修与会计计价台账
-                    </CardTitle>
-                    <CardDescription className="mt-1">
-                      每台机械仅保留一行综合台账，行内汇总当期收益、支出、加油、维修与审计状态；点击详情查看按日、按月分析。
-                    </CardDescription>
-                  </div>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div>
-                      <Label htmlFor="machine-ledger-period">分析期间</Label>
-                      <Input
-                        id="machine-ledger-period"
-                        className="mt-1 w-[150px]"
-                        type="month"
-                        value={machineStatementPeriod}
-                        onChange={event =>
-                          setMachineStatementPeriod(event.target.value)
-                        }
-                      />
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        void Promise.all([
-                          machineryLedger.refetch(),
-                          machineCostSummaries.refetch(),
-                          assetMaintenanceRecords.refetch(),
-                          machineMonthlyStatements.refetch(),
-                          machineAnalysis.refetch(),
-                        ])
-                      }
-                    >
-                      刷新台账
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
-                  <Table className="min-w-[1750px] text-xs">
-                    <TableHeader className="bg-[#edf1ed]">
-                      <TableRow className="border-[#dce3de] hover:bg-[#edf1ed]">
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          机械 / 编号
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          型号 / 资产编号
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          操作员
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          资源 / 状态
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          出租方 / 车主
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          产值计价 / 有效日期
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          本月收益 / 净收益
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          本月支出
-                        </TableHead>
-                        <TableHead className="h-11 px-4 font-semibold text-[#46615a]">
-                          油耗 / 维修
-                        </TableHead>
-                        <TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">
-                          操作
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {machines.length ? (
-                        machines.map(machine => {
-                          const summary = machineCostSummaryById.get(
-                            machine.id
-                          );
-                          const statement = statementByMachineId.get(
-                            machine.id
-                          );
-                          const netIncome = statement
-                            ? Number(statement.totalOutput) -
-                              Number(statement.driverTotalWage) -
-                              Number(statement.repairAmount) -
-                              Number(statement.fuelAmount)
-                            : null;
-                          return (
-                            <TableRow
-                              key={machine.id}
-                              className="border-[#edf0ee] hover:bg-[#fbfaf1]"
-                            >
-                              <TableCell className="px-4 py-3">
-                                <p className="font-semibold text-[#203c48]">
-                                  {machine.name}
-                                </p>
-                                <p className="mt-1 text-slate-500">
-                                  {machine.code}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                <p>{machine.model || "未登记"}</p>
-                                <p className="mt-1 text-slate-500">
-                                  {machine.plateOrAssetNo || "未登记"}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                {machine.operatorUserId
-                                  ? (userNameById.get(machine.operatorUserId) ??
-                                    `用户 #${machine.operatorUserId}`)
-                                  : "未分配"}
-                              </TableCell>
-                              <TableCell className="px-4 py-3">
-                                <div className="flex flex-wrap gap-1">
-                                  <Badge variant="outline">
-                                    {machine.ownership === "owned"
-                                      ? "公司自有"
-                                      : "外租"}
-                                  </Badge>
-                                  <BusinessStatusBadge
-                                    status={machine.status}
-                                  />
-                                </div>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                {machine.supplierName ||
-                                  (machine.ownership === "leased"
-                                    ? "未登记"
-                                    : "公司自有")}
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                <p>{formatMachineLease(machine)}</p>
-                                <p className="mt-1 text-slate-500">
-                                  {formatLeaseDates(machine)}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                <p className="font-medium text-slate-900">
-                                  {statement
-                                    ? `¥${displayMoney(statement.totalOutput)}`
-                                    : "待生成"}
-                                </p>
-                                <p className="mt-1 text-slate-500">
-                                  {netIncome === null
-                                    ? "未生成当期快照"
-                                    : `净收益 ¥${displayMoney(netIncome)}`}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                <p>
-                                  司机 ¥
-                                  {displayMoney(
-                                    statement?.driverTotalWage ?? 0
-                                  )}
-                                </p>
-                                <p className="mt-1">
-                                  其他 ¥
-                                  {displayMoney(
-                                    statement?.deductionAmount
-                                      ? Number(statement.deductionAmount) -
-                                          Number(statement.driverTotalWage) -
-                                          Number(statement.repairAmount) -
-                                          Number(statement.fuelAmount)
-                                      : 0
-                                  )}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-slate-700">
-                                <p>
-                                  油{" "}
-                                  {statement
-                                    ? `${statement.fuelLiters} L / ¥${displayMoney(statement.fuelAmount)}`
-                                    : "待核算"}
-                                </p>
-                                <p className="mt-1">
-                                  维修 ¥
-                                  {displayMoney(
-                                    statement?.repairAmount ??
-                                      (machineMaintenanceAmountById.get(
-                                        machine.id
-                                      ) ?? 0) + (summary?.repairAmount ?? 0)
-                                  )}
-                                </p>
-                              </TableCell>
-                              <TableCell className="px-4 py-3 text-right">
-                                <div className="flex justify-end gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => openMachineDetail(machine)}
-                                  >
-                                    详情
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    onClick={() =>
-                                      openMachineDailyOperationEditor(machine)
-                                    }
-                                  >
-                                    登记台班
-                                  </Button>
-                                  {!statement ||
-                                  statement.status === "draft" ? (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        openMachineMonthlyStatement(machine)
-                                      }
-                                    >
-                                      月度明细
-                                    </Button>
-                                  ) : null}
-                                  {statement?.status === "draft" ? (
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        transitionMachineMonthlyStatement.mutate(
-                                          {
-                                            id: statement.id,
-                                            projectId: workspaceProjectId,
-                                            nextStatus: "submitted",
-                                          }
-                                        )
-                                      }
-                                      disabled={
-                                        transitionMachineMonthlyStatement.isPending
-                                      }
-                                    >
-                                      提交
-                                    </Button>
-                                  ) : null}
-                                  {statement?.status === "submitted" ? (
-                                    <>
-                                      <Button
-                                        size="sm"
-                                        onClick={() =>
-                                          transitionMachineMonthlyStatement.mutate(
-                                            {
-                                              id: statement.id,
-                                              projectId: workspaceProjectId,
-                                              nextStatus: "approved",
-                                            }
-                                          )
-                                        }
-                                        disabled={
-                                          transitionMachineMonthlyStatement.isPending
-                                        }
-                                      >
-                                        审核
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() =>
-                                          transitionMachineMonthlyStatement.mutate(
-                                            {
-                                              id: statement.id,
-                                              projectId: workspaceProjectId,
-                                              nextStatus: "void",
-                                            }
-                                          )
-                                        }
-                                        disabled={
-                                          transitionMachineMonthlyStatement.isPending
-                                        }
-                                      >
-                                        作废
-                                      </Button>
-                                    </>
-                                  ) : null}
-                                  {statement?.status === "approved" ? (
-                                    <>
-                                      <span className="px-2 py-1 text-xs text-[#56746c]">
-                                        请在下方付款台账生成结算
-                                      </span>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() =>
-                                          transitionMachineMonthlyStatement.mutate(
-                                            {
-                                              id: statement.id,
-                                              projectId: workspaceProjectId,
-                                              nextStatus: "void",
-                                            }
-                                          )
-                                        }
-                                        disabled={
-                                          transitionMachineMonthlyStatement.isPending
-                                        }
-                                      >
-                                        作废
-                                      </Button>
-                                    </>
-                                  ) : null}
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => openMachineEditor(machine)}
-                                  >
-                                    编辑
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })
-                      ) : (
-                        <TableRow>
-                          <TableCell
-                            className="px-4 py-8 text-center text-slate-500"
-                            colSpan={10}
-                          >
-                            当前筛选条件下没有机械资源。
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-                <p className="mt-3 text-xs text-slate-500">
-                  会计月度明细固定使用 30 天月、每天 10
-                  小时的模板口径；产值、成本、油耗和分成均由服务端按当前项目的真实记录和计价规则生成快照。
-                </p>
-              </CardContent>
-            </Card>
-            <MachinePaymentSettlementManager projectId={workspaceProjectId} />
-            <Dialog
-              open={machineDetailOpen}
-              onOpenChange={setMachineDetailOpen}
-            >
-              <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-6xl 2xl:max-w-[1440px]">
-                <DialogHeader>
-                  <DialogTitle>
-                    {selectedMachine
-                      ? `${selectedMachine.name} · 机械业务详情`
-                      : "机械业务详情"}
-                  </DialogTitle>
-                  <DialogDescription>
-                    当前明细来自已授权项目的真实机械档案、租赁规则、维修保养与成本记录；状态操作不会绕过服务端状态机与审计。
-                  </DialogDescription>
-                </DialogHeader>
-                {selectedMachine ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-3 rounded-xl bg-slate-50 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                      <div>
-                        <p className="text-xs text-slate-500">
-                          机械编号 / 型号
-                        </p>
-                        <p className="mt-1 font-medium text-slate-800">
-                          {selectedMachine.code} ·{" "}
-                          {selectedMachine.model || "未登记"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">操作员 / 状态</p>
-                        <p className="mt-1 font-medium text-slate-800">
-                          {selectedMachine.operatorUserId
-                            ? (userNameById.get(
-                                selectedMachine.operatorUserId
-                              ) ?? `用户 #${selectedMachine.operatorUserId}`)
-                            : "未分配"}
-                        </p>
-                        <div className="mt-1">
-                          <BusinessStatusBadge
-                            status={selectedMachine.status}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">外租规则</p>
-                        <p className="mt-1 font-medium text-slate-800">
-                          {formatMachineLease(selectedMachine)}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {formatLeaseDates(selectedMachine)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">成本汇总</p>
-                        <p className="mt-1 font-medium text-slate-800">
-                          维修保养 ¥
-                          {displayMoney(
-                            machineMaintenanceAmountById.get(
-                              selectedMachine.id
-                            ) ?? 0
-                          )}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          业务成本 ¥
-                          {displayMoney(
-                            machineCostSummaryById.get(selectedMachine.id)
-                              ?.totalAmount ?? 0
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                    {machineAnalysis.isLoading ? (
-                      <EmptyState text="正在汇总该设备的按日、按月收益支出分析…" />
-                    ) : machineAnalysis.error ? (
-                      <EmptyState text="暂无法读取该机械分析数据。" />
-                    ) : machineAnalysis.data ? (
-                      <section className="space-y-4 rounded-xl border border-[#d8e3e0] bg-[#f8fcfb] p-3">
-                        <div>
-                          <p className="text-sm font-semibold text-[#203c48]">
-                            单机收益与成本分析
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            月度收益以已保存会计快照为准；日度收益来自日作业记录，油料优先读取柴油领用台账，避免与历史油料成本重复计算。
-                          </p>
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                          <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
-                            <p className="text-xs text-slate-500">合同月租</p>
-                            <p className="mt-1 font-semibold text-[#203c48]">
-                              {machineAnalysis.data.rental?.monthlyRate == null
-                                ? "—"
-                                : `¥${displayMoney(machineAnalysis.data.rental.monthlyRate)}`}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {machineAnalysis.data.rental?.billingType ===
-                              "monthly"
-                                ? "当前生效月租合同"
-                                : "非月租合同不换算"}
-                            </p>
-                          </div>
-                          <div className="rounded-lg border border-[#dce7e1] bg-white p-3">
-                            <p className="text-xs text-slate-500">日租费用</p>
-                            <p className="mt-1 font-semibold text-[#203c48]">
-                              {machineAnalysis.data.rental?.dailyRate == null
-                                ? "—"
-                                : `¥${displayMoney(machineAnalysis.data.rental.dailyRate)} / 天`}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              月租按当月自然日折算，仅供日成本查看
-                            </p>
-                          </div>
-                          <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
-                            <p className="text-xs text-slate-500">
-                              本期日作业加班费
-                            </p>
-                            <p className="mt-1 font-semibold text-[#8a4b25]">
-                              ¥
-                              {displayMoney(
-                                machineAnalysis.data.overtime.operationAmount
-                              )}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {machineAnalysis.data.overtime.hours} 小时 ×
-                              当日记录费率
-                            </p>
-                          </div>
-                          <div className="rounded-lg border border-[#f0dfca] bg-[#fffaf5] p-3">
-                            <p className="text-xs text-slate-500">
-                              独立加班成本
-                            </p>
-                            <p className="mt-1 font-semibold text-[#8a4b25]">
-                              ¥
-                              {displayMoney(
-                                machineAnalysis.data.overtime.costRecordAmount
-                              )}
-                            </p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              成本台账单列，不与日作业加班重复相加
-                            </p>
-                          </div>
-                        </div>
-                        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                          <Table className="min-w-[940px] text-xs">
-                            <TableHeader className="bg-[#edf1ed]">
-                              <TableRow>
-                                <TableHead>月份</TableHead>
-                                <TableHead>产值 / 收益</TableHead>
-                                <TableHead>司机工资</TableHead>
-                                <TableHead>油耗 / 油费</TableHead>
-                                <TableHead>维修</TableHead>
-                                <TableHead>净收益</TableHead>
-                                <TableHead>签字 / 状态</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {machineAnalysis.data.monthly.length ? (
-                                machineAnalysis.data.monthly.map(item => (
-                                  <TableRow key={item.id}>
-                                    <TableCell>{item.period}</TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.totalOutput)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.driverTotalWage)}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.fuelLiters} L / ¥
-                                      {displayMoney(item.fuelAmount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.repairAmount)}
-                                    </TableCell>
-                                    <TableCell className="font-medium">
-                                      ¥{displayMoney(item.netIncome)}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.signatureName || "未签字"} ·{" "}
-                                      <BusinessStatusBadge
-                                        status={item.status}
-                                      />
-                                    </TableCell>
-                                  </TableRow>
-                                ))
-                              ) : (
-                                <TableRow>
-                                  <TableCell
-                                    colSpan={7}
-                                    className="py-6 text-center text-slate-500"
-                                  >
-                                    暂无已保存月度结算快照。
-                                  </TableCell>
-                                </TableRow>
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
-                        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                          <Table className="min-w-[1100px] text-xs">
-                            <TableHeader className="bg-[#edf1ed]">
-                              <TableRow>
-                                <TableHead>日期</TableHead>
-                                <TableHead>工时 / 加班</TableHead>
-                                <TableHead>日收益</TableHead>
-                                <TableHead>司机工资</TableHead>
-                                <TableHead>加油</TableHead>
-                                <TableHead>维修 / 保养</TableHead>
-                                <TableHead>其他支出</TableHead>
-                                <TableHead>净收益</TableHead>
-                                <TableHead>审计状态</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {machineAnalysis.data.daily.length ? (
-                                machineAnalysis.data.daily.map(item => (
-                                  <TableRow key={item.date}>
-                                    <TableCell>{item.date}</TableCell>
-                                    <TableCell>
-                                      <p>
-                                        {item.shiftCount} 台班 / 加班{" "}
-                                        {item.overtimeHours} 小时
-                                      </p>
-                                      <p className="mt-1 text-slate-500">
-                                        台班 ¥{displayMoney(item.shiftRate)} ·
-                                        加班 ¥
-                                        {displayMoney(item.overtimeHourlyRate)}
-                                      </p>
-                                      <p className="mt-1 text-slate-500">
-                                        驾驶员：{item.driverName || "未登记"}
-                                      </p>
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.outputAmount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.driverWageAmount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.fuelLiters} L / ¥
-                                      {displayMoney(item.fuelAmount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.repairAmount)} / ¥
-                                      {displayMoney(item.maintenanceAmount)}
-                                    </TableCell>
-                                    <TableCell>
-                                      ¥{displayMoney(item.otherExpenseAmount)}
-                                    </TableCell>
-                                    <TableCell className="font-medium">
-                                      ¥{displayMoney(item.netIncome)}
-                                    </TableCell>
-                                    <TableCell>
-                                      {item.operationStatus ? (
-                                        <BusinessStatusBadge
-                                          status={item.operationStatus}
-                                        />
-                                      ) : (
-                                        "仅有费用凭证"
-                                      )}
-                                    </TableCell>
-                                  </TableRow>
-                                ))
-                              ) : (
-                                <TableRow>
-                                  <TableCell
-                                    colSpan={9}
-                                    className="py-6 text-center text-slate-500"
-                                  >
-                                    当前期间暂无日作业、加油、维修或成本凭证。
-                                  </TableCell>
-                                </TableRow>
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
-                      </section>
-                    ) : null}
-                    <div className="space-y-2">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-800">
-                          关联配件采购明细
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          仅显示本期已结算、已关联本机械的采购订单；外租机械生成付款结算单时会自动扣除尚未扣款的配件费用。
-                        </p>
-                      </div>
-                      {machineAnalysis.data?.partsPurchases.length ? (
-                        machineAnalysis.data.partsPurchases.map(item => (
-                          <div
-                            key={item.id}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#c9ded7] bg-[#f8fcfb] p-3"
-                          >
-                            <div>
-                              <p className="font-medium text-slate-800">
-                                {item.itemDescription}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">
-                                {item.orderNo} · {displayDate(item.orderedAt)} ·{" "}
-                                {item.hasInvoice ? "有发票" : "无发票"}
-                              </p>
-                            </div>
-                            <p className="font-medium text-[#2b6660]">
-                              ¥{displayMoney(item.amount)}
-                            </p>
-                          </div>
-                        ))
-                      ) : (
-                        <EmptyState text="该机械本期暂无已结算的关联配件采购。" />
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-800">
-                            维修保养明细
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            维修与保养费用独立留档，作废记录不计入汇总。
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            openMachineMaintenanceEditor(selectedMachine)
-                          }
-                        >
-                          登记维修保养
-                        </Button>
-                      </div>
-                      {machineMaintenanceRows.filter(
-                        item => item.assetId === selectedMachine.id
-                      ).length ? (
-                        machineMaintenanceRows
-                          .filter(item => item.assetId === selectedMachine.id)
-                          .map(item => (
-                            <div
-                              key={item.id}
-                              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
-                            >
-                              <div>
-                                <p className="font-medium text-slate-800">
-                                  {item.costCategory === "repair"
-                                    ? "维修"
-                                    : "保养"}
-                                </p>
-                                <p className="mt-1 text-xs text-slate-500">
-                                  {displayDate(item.occurredAt)} ·{" "}
-                                  {item.serviceProvider || "未登记服务单位"}
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="font-medium text-slate-800">
-                                  ¥{displayMoney(item.amount)}
-                                </p>
-                                <p className="mt-1 text-xs text-slate-500">
-                                  {item.status === "void"
-                                    ? "已作废"
-                                    : item.status === "approved"
-                                      ? "已核准"
-                                      : "草稿"}
-                                </p>
-                              </div>
-                            </div>
-                          ))
-                      ) : (
-                        <EmptyState text="该机械尚无维修保养记录。" />
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-800">
-                            机械成本明细
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            审核、结算与作废仍按成本状态机逐笔办理。
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          onClick={() => openMachineCostEditor(selectedMachine)}
-                        >
-                          录入成本
-                        </Button>
-                      </div>
-                      {machineCosts.isLoading ? (
-                        <EmptyState text="正在读取该机械的真实成本记录…" />
-                      ) : machineCosts.isError ? (
-                        <EmptyState text="暂无法读取该机械成本记录。" />
-                      ) : costs.length ? (
-                        costs.map(item => (
-                          <div
-                            key={item.id}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
-                          >
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-medium text-slate-800">
-                                  {item.costName || "未命名费用"}
-                                </p>
-                                <span className="text-xs text-slate-500">
-                                  {item.costType === "fuel"
-                                    ? "油料"
-                                    : item.costType === "repair"
-                                      ? "维修"
-                                      : item.costType === "overtime"
-                                        ? "加班"
-                                        : item.costType === "mobilization"
-                                          ? "进退场"
-                                          : "其他"}
-                                </span>
-                                <BusinessStatusBadge status={item.status} />
-                              </div>
-                              <p className="mt-1 text-xs text-slate-500">
-                                {displayDate(item.occurredAt)} · 数量{" "}
-                                {item.quantity} · 单价 ¥
-                                {displayMoney(item.unitPrice)} · 金额 ¥
-                                {displayMoney(item.amount)}
-                              </p>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              {item.status === "draft" ? (
-                                <Button
-                                  size="sm"
-                                  onClick={() =>
-                                    transitionMachineCost.mutate({
-                                      id: item.id,
-                                      projectId: workspaceProjectId,
-                                      nextStatus: "approved",
-                                    })
-                                  }
-                                  disabled={transitionMachineCost.isPending}
-                                >
-                                  审核
-                                </Button>
-                              ) : null}
-                              {item.status === "approved" ? (
-                                <Button
-                                  size="sm"
-                                  onClick={() =>
-                                    transitionMachineCost.mutate({
-                                      id: item.id,
-                                      projectId: workspaceProjectId,
-                                      nextStatus: "settled",
-                                    })
-                                  }
-                                  disabled={transitionMachineCost.isPending}
-                                >
-                                  确认结算
-                                </Button>
-                              ) : null}
-                              {["draft", "approved"].includes(item.status) ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    transitionMachineCost.mutate({
-                                      id: item.id,
-                                      projectId: workspaceProjectId,
-                                      nextStatus: "void",
-                                    })
-                                  }
-                                  disabled={transitionMachineCost.isPending}
-                                >
-                                  作废
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <EmptyState text="该机械尚无真实成本记录。" />
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState text="请选择机械后查看详情。" />
-                )}
-                <DialogFooter>
-                  {selectedMachine ? (
-                    <>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => openMachineEditor(selectedMachine)}
-                      >
-                        编辑档案
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setLocation("/admin/transport")}
-                      >
-                        关联运输调度
-                      </Button>
-                    </>
-                  ) : null}
-                  <Button
-                    type="button"
-                    onClick={() => setMachineDetailOpen(false)}
-                  >
-                    关闭
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </>
+          <Suspense fallback={<EmptyState text="正在载入机械工作区…" />}>
+            <MachineryWorkspace
+              projectId={workspaceProjectId}
+              active={isMachinery}
+              period={machineStatementPeriod}
+              onPeriodChange={setMachineStatementPeriod}
+              selectedMachineId={selectedMachineId}
+              onSelectMachine={setSelectedMachineId}
+              formOpen={machineryFormOpen}
+              onPaymentFormOpenChange={setMachineryPaymentFormOpen}
+              onCreate={() => openMachineEditor()}
+              onEdit={openMachineEditor}
+              onOvertime={openMachineDailyOperationEditor}
+              onCost={openMachineCostEditor}
+              onMonthly={openMachineMonthlyStatement}
+              onMaintenance={openMachineMaintenanceEditor}
+            />
+          </Suspense>
         )}
       </div>
     );
@@ -18867,138 +16601,176 @@ export default function AdminPage({
 
   const renderTransport = () => {
     const vehiclesForProject = transportVehicleLedger.data ?? [];
-    const trips = transportTrips.data ?? [];
-    const activeTrips = trips.filter(item => item.status !== "void");
-    const totalAmount = activeTrips.reduce(
-      (sum, item) => sum + Number(item.calculatedAmount ?? 0),
-      0
-    );
+    const rights = transportWorkspaceAccess.data;
+    const ledgerActive =
+      transportWorkspaceTab === "ledger" || transportWorkspaceTab === "review";
+    const openTripSettlement = (trip: any) => {
+      setTransportSettlementFocusTrip({
+        id: trip.id,
+        vehicleId: trip.vehicleId,
+        date: toChinaDateInput(trip.startAt),
+        legacyUnlinkedSettled: trip.legacyUnlinkedSettled,
+        requestId: Date.now(),
+      });
+      setTransportWorkspaceTab("settlements");
+    };
     return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="w-full min-w-0 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-medium text-[#203c48]">
               运输调度 · 真实业务台账
             </p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-              车辆、趟次与结算状态
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-500">
-              展示真实车辆资源与指定自然日趟次。运价快照、理论方量、异常检测、核验、详情查看和结算均在当前
-              PC 台账中完成。
+            <h1 className="mt-1 text-2xl font-semibold">运单核验与运输结算</h1>
+            <p className="mt-2 text-sm text-slate-500">
+              日常运单默认业务当天；核验、结算单与实际付款独立处理。场站终端保留原双向刷卡、拍照与RFID全流程。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
-              disabled={!hasBusinessWorkspaceProject}
-              onClick={() => {
-                setVehicleForm({
-                  ...EMPTY_VEHICLE_FORM,
-                  projectId: String(workspaceProjectId),
-                });
-                setVehicleEditorOpen(true);
-                setLocation("/admin/vehicles");
-              }}
-            >
-              <Truck className="mr-1.5 h-4 w-4" />
-              录入车辆档案
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
               onClick={() => setLocation("/admin/vehicles")}
             >
-              单车柴油分析
+              共用车辆档案 / 柴油分析
             </Button>
+            {rights?.canManageResources ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setVehicleForm({
+                    ...EMPTY_VEHICLE_FORM,
+                    projectId: String(workspaceProjectId),
+                  });
+                  setVehicleEditorOpen(true);
+                  setLocation("/admin/vehicles");
+                }}
+              >
+                录入车辆档案
+              </Button>
+            ) : null}
           </div>
         </div>
         {renderWorkspaceProjectFilter(
           "运输项目范围",
-          "选择项目后读取车辆台账和实际运输趟次。司机、运输管理和财务操作由服务端按角色、项目和状态分别校验。"
+          "项目范围由服务端授权；切换项目后请重新核对运单与待生成结算，不沿用其他项目草稿。"
         )}
+        <TransportWorkspaceNavigation
+          tabs={TRANSPORT_WORKSPACE_TABS}
+          value={transportWorkspaceTab}
+          onValueChange={setTransportWorkspaceTab}
+          label="运输工作区栏目"
+          disabled={!hasBusinessWorkspaceProject}
+        />
         {!hasBusinessWorkspaceProject ? (
-          <EmptyState text="请先选择已授权项目，以配置装卸土点、运输路线和安全规则。" />
+          <EmptyState text="请先选择已授权项目。" />
         ) : (
-          <Suspense
-            fallback={<EmptyState text="正在加载装卸土点与运输路线配置…" />}
-          >
-            <TransportFreightRuleManager projectId={workspaceProjectId} />
-          </Suspense>
-        )}
-        {!hasBusinessWorkspaceProject ? null : (
-          <Suspense
-            fallback={<EmptyState text="正在加载装卸土点与运输路线配置…" />}
-          >
-            <TransportRouteConfigurationEditor projectId={workspaceProjectId} />
-          </Suspense>
-        )}
-        {!hasBusinessWorkspaceProject ? (
-          <EmptyState text="请先选择已授权项目，以读取真实运输调度台账。" />
-        ) : transportVehicleLedger.isLoading || transportTrips.isLoading ? (
-          <EmptyState text="正在读取车辆和运输趟次…" />
-        ) : transportVehicleLedger.isError || transportTrips.isError ? (
-          <EmptyState text="暂无法读取运输调度数据，请确认当前账号的服务端授权后重试。" />
-        ) : (
-          <>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                title="可见车辆"
-                value={vehiclesForProject.length}
-                description={selectedWorkspaceProject?.name ?? "当前项目"}
-                icon={Truck}
-              />
-              <MetricCard
-                title="可调度车辆"
-                value={
-                  vehiclesForProject.filter(item => item.status === "active")
-                    .length
-                }
-                description="车辆状态来自真实台账"
-                icon={ShieldCheck}
-              />
-              <MetricCard
-                title="当日有效趟次"
-                value={activeTrips.length}
-                description={transportDate || "全部日期"}
-                icon={ScrollText}
-              />
-              <MetricCard
-                title="可结算金额"
-                value={Math.round(totalAmount * 100) / 100}
-                description="非作废趟次金额合计"
-                icon={BarChart3}
-              />
-            </section>
-            {/* 运输完整明细、筛选、导出与状态操作统一由下方 TransportTripLedger 承担；简版车辆趟次卡已移除，避免同一运单重复展示。 */}
-            <div id="transport-trip-ledger-upgrade">
-              <TransportTripLedger
-                filter={transportLedgerFilter}
-                onFilterChange={setTransportLedgerFilter}
-                trips={trips}
-                vehicles={vehiclesForProject}
-                routePresets={transportRoutePresets.data ?? []}
-                loading={transportTrips.isLoading}
-                projectName={selectedWorkspaceProject?.name ?? "当前项目"}
-                onTransition={(id, nextStatus) =>
-                  transitionTransportTrip.mutate({
-                    id,
-                    projectId: workspaceProjectId,
-                    nextStatus,
-                  })
-                }
-                transitionPending={transitionTransportTrip.isPending}
-                onExport={(headers, rows) =>
-                  downloadCsvFile(
-                    `运输车辆趟次台账-${new Date().toISOString().slice(0, 10)}.csv`,
-                    headers,
-                    rows
-                  )
-                }
-              />
-            </div>
-          </>
+          <div key={workspaceProjectId} className="min-w-0">
+            <TransportRetainedPanel
+              active={ledgerActive}
+              label={
+                transportWorkspaceTab === "review"
+                  ? "运输核验与异常"
+                  : "运输运单台账"
+              }
+            >
+              {transportTrips.isError || transportVehicleLedger.isError ? (
+                <EmptyState text="运输台账读取失败，请确认授权后重试。" />
+              ) : (
+                <Suspense
+                  fallback={<EmptyState text="正在加载运输运单台账…" />}
+                >
+                  <TransportTripLedger
+                    filter={transportLedgerFilter}
+                    onFilterChange={setTransportLedgerFilter}
+                    trips={transportTrips.data ?? []}
+                    vehicles={vehiclesForProject}
+                    routePresets={transportRoutePresets.data ?? []}
+                    loading={transportTrips.isLoading}
+                    projectName={selectedWorkspaceProject?.name ?? "当前项目"}
+                    active={ledgerActive}
+                    reviewMode={transportWorkspaceTab === "review"}
+                    reviewView={transportReviewView}
+                    onReviewViewChange={setTransportReviewView}
+                    canReview={rights?.canReview ?? false}
+                    canCreateSettlement={rights?.canCreateSettlement ?? false}
+                    canDirectSettle={rights?.canSettle ?? false}
+                    onCreateSettlement={openTripSettlement}
+                    onTransition={(id, nextStatus, reviewRemarks) =>
+                      transitionTransportTrip.mutate({
+                        id,
+                        projectId: workspaceProjectId,
+                        nextStatus,
+                        reviewRemarks,
+                      })
+                    }
+                    transitionPending={transitionTransportTrip.isPending}
+                    onExport={(headers, rows) =>
+                      downloadCsvFile(
+                        `运输车辆趟次台账-${toChinaDateInput(new Date())}.csv`,
+                        headers,
+                        rows
+                      )
+                    }
+                  />
+                </Suspense>
+              )}
+            </TransportRetainedPanel>
+            <TransportRetainedPanel
+              active={transportWorkspaceTab === "settlements"}
+              label="运输运费结算"
+            >
+              <Suspense fallback={<EmptyState text="正在加载真实运输结算…" />}>
+                <TransportVehicleSettlementManager
+                  projectId={workspaceProjectId}
+                  vehicles={vehiclesForProject}
+                  active={transportWorkspaceTab === "settlements"}
+                  canCreate={rights?.canCreateSettlement ?? false}
+                  canApprove={rights?.canSettle ?? false}
+                  focusTrip={transportSettlementFocusTrip}
+                />
+              </Suspense>
+            </TransportRetainedPanel>
+            <TransportRetainedPanel
+              active={transportWorkspaceTab === "rates"}
+              label="运输合同运价"
+            >
+              <Suspense fallback={<EmptyState text="正在加载合同运价…" />}>
+                <TransportFreightRuleManager
+                  onDirtyChange={onTransportRatesDirtyChange}
+                  projectId={workspaceProjectId}
+                  active={transportWorkspaceTab === "rates"}
+                  canManage={rights?.canManageResources ?? false}
+                />
+              </Suspense>
+            </TransportRetainedPanel>
+            <TransportRetainedPanel
+              active={transportWorkspaceTab === "terminals"}
+              label="运输场站路线与终端"
+            >
+              <div className="space-y-4">
+                <Suspense fallback={<EmptyState text="正在加载场站路线…" />}>
+                  <TransportRouteConfigurationEditor
+                    onDirtyChange={onTransportRoutesDirtyChange}
+                    projectId={workspaceProjectId}
+                    active={transportWorkspaceTab === "terminals"}
+                    canManage={rights?.canManageSites ?? false}
+                    canConfigureSafety={rights?.canConfigureSafety ?? false}
+                  />
+                </Suspense>
+                <TransportReaderTerminalManager
+                  onDirtyChange={onTransportTerminalsDirtyChange}
+                  projectId={workspaceProjectId}
+                  active={transportWorkspaceTab === "terminals"}
+                  canManage={rights?.canManageResources ?? false}
+                />
+                {transportWorkspaceTab === "terminals"
+                  ? renderRfidManagement()
+                  : null}
+              </div>
+            </TransportRetainedPanel>
+          </div>
         )}
       </div>
     );
@@ -24877,10 +22649,7 @@ export default function AdminPage({
     ) : activeSection === "machinery" ? (
       renderMachinery()
     ) : activeSection === "transport" ? (
-      <>
-        {renderTransport()}
-        {renderRfidManagement()}
-      </>
+      renderTransport()
     ) : activeSection === "purchasing" ? (
       renderPurchasing()
     ) : activeSection === "measurement-tools" ? (
@@ -25044,7 +22813,9 @@ export default function AdminPage({
           }
         >
           {content}
-          {activeSection === "transport" && workspaceProjectId ? (
+          {activeSection === "transport" &&
+          transportWorkspaceTab === "terminals" &&
+          workspaceProjectId ? (
             <RfidLocalWriterPanel
               projectId={workspaceProjectId}
               onUidRead={uid => {
@@ -25215,6 +22986,7 @@ export default function AdminPage({
         <Dialog
           open={machineDialogOpen}
           onOpenChange={open => {
+            if (!open && !confirmMachineryFormClose()) return;
             if (!open) {
               setMachineDialogOpen(false);
               setMachineForm(EMPTY_MACHINE_FORM);
@@ -25588,6 +23360,7 @@ export default function AdminPage({
                   type="button"
                   variant="outline"
                   onClick={() => {
+                    if (!confirmMachineryFormClose()) return;
                     setMachineDialogOpen(false);
                     setMachineForm(EMPTY_MACHINE_FORM);
                   }}
@@ -25620,6 +23393,7 @@ export default function AdminPage({
         <Dialog
           open={machineDailyOperationDialogOpen}
           onOpenChange={open => {
+            if (!open && !confirmMachineryFormClose()) return;
             setMachineDailyOperationDialogOpen(open);
             if (!open)
               setMachineDailyOperationForm(EMPTY_MACHINE_DAILY_OPERATION_FORM);
@@ -25636,6 +23410,13 @@ export default function AdminPage({
               className="space-y-4"
               onSubmit={event => {
                 event.preventDefault();
+                if (
+                  Number(machineDailyOperationForm.projectId) !==
+                  workspaceProjectId
+                ) {
+                  toast.error("机械项目已变更，请关闭表单后重新录入");
+                  return;
+                }
                 saveMachineDailyOperation.mutate({
                   id: machineDailyOperationForm.id,
                   machineId: Number(machineDailyOperationForm.machineId),
@@ -25645,7 +23426,7 @@ export default function AdminPage({
                     ? Number(machineDailyOperationForm.operatorUserId)
                     : null,
                   shiftCount: 0,
-                  workHours: Number(machineDailyOperationForm.workHours),
+                  workHours: 0,
                   overtimeHours: Number(
                     machineDailyOperationForm.overtimeHours
                   ),
@@ -25653,10 +23434,8 @@ export default function AdminPage({
                   overtimeHourlyRate: Number(
                     machineDailyOperationForm.overtimeHourlyRate
                   ),
-                  outputAmount: Number(machineDailyOperationForm.outputAmount),
-                  driverWageAmount: Number(
-                    machineDailyOperationForm.driverWageAmount
-                  ),
+                  outputAmount: 0,
+                  driverWageAmount: 0,
                   remarks: machineDailyOperationForm.remarks.trim() || null,
                 });
               }}
@@ -25725,51 +23504,6 @@ export default function AdminPage({
                   />
                 </Field>
               </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Field label="折算工时">
-                  <Input
-                    type="number"
-                    min="0"
-                    max="24"
-                    step="0.5"
-                    value={machineDailyOperationForm.workHours}
-                    onChange={event =>
-                      setMachineDailyOperationForm(current => ({
-                        ...current,
-                        workHours: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="当日产值（元）">
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={machineDailyOperationForm.outputAmount}
-                    onChange={event =>
-                      setMachineDailyOperationForm(current => ({
-                        ...current,
-                        outputAmount: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field label="司机工资（元）">
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={machineDailyOperationForm.driverWageAmount}
-                    onChange={event =>
-                      setMachineDailyOperationForm(current => ({
-                        ...current,
-                        driverWageAmount: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-              </div>
               <Field label="备注">
                 <Textarea
                   value={machineDailyOperationForm.remarks}
@@ -25794,7 +23528,10 @@ export default function AdminPage({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setMachineDailyOperationDialogOpen(false)}
+                  onClick={() => {
+                    if (confirmMachineryFormClose())
+                      setMachineDailyOperationDialogOpen(false);
+                  }}
                 >
                   取消
                 </Button>
@@ -25805,7 +23542,7 @@ export default function AdminPage({
                     !machineDailyOperationForm.machineId ||
                     !machineDailyOperationForm.projectId ||
                     !machineDailyOperationForm.occurredOn ||
-                    Number(machineDailyOperationForm.overtimeHours) < 0 ||
+                    Number(machineDailyOperationForm.overtimeHours) <= 0 ||
                     Number(machineDailyOperationForm.overtimeHourlyRate) < 0
                   }
                 >
@@ -25820,6 +23557,7 @@ export default function AdminPage({
         <Dialog
           open={machineCostDialogOpen}
           onOpenChange={open => {
+            if (!open && !confirmMachineryFormClose()) return;
             if (!open) {
               setMachineCostDialogOpen(false);
               setMachineCostForm(EMPTY_MACHINE_COST_FORM);
@@ -25961,6 +23699,7 @@ export default function AdminPage({
                   type="button"
                   variant="outline"
                   onClick={() => {
+                    if (!confirmMachineryFormClose()) return;
                     setMachineCostDialogOpen(false);
                     setMachineCostForm(EMPTY_MACHINE_COST_FORM);
                   }}
@@ -25990,6 +23729,7 @@ export default function AdminPage({
         <Dialog
           open={machineStatementDialogOpen}
           onOpenChange={open => {
+            if (!open && !confirmMachineryFormClose()) return;
             setMachineStatementDialogOpen(open);
             if (!open)
               setMachineStatementForm(EMPTY_MACHINE_MONTHLY_STATEMENT_FORM);
@@ -26306,7 +24046,10 @@ export default function AdminPage({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setMachineStatementDialogOpen(false)}
+                  onClick={() => {
+                    if (confirmMachineryFormClose())
+                      setMachineStatementDialogOpen(false);
+                  }}
                 >
                   取消
                 </Button>
@@ -26331,6 +24074,12 @@ export default function AdminPage({
         <Dialog
           open={assetMaintenanceDialogOpen}
           onOpenChange={open => {
+            if (
+              !open &&
+              assetMaintenanceForm.assetType === "machine" &&
+              !confirmMachineryFormClose()
+            )
+              return;
             setAssetMaintenanceDialogOpen(open);
             if (!open) setAssetMaintenanceForm(EMPTY_ASSET_MAINTENANCE_FORM);
           }}
@@ -26350,6 +24099,13 @@ export default function AdminPage({
               className="space-y-4"
               onSubmit={event => {
                 event.preventDefault();
+                if (
+                  assetMaintenanceForm.assetType === "machine" &&
+                  Number(assetMaintenanceForm.projectId) !== workspaceProjectId
+                ) {
+                  toast.error("机械项目已变更，请关闭原表单后重新录入");
+                  return;
+                }
                 saveAssetMaintenance.mutate({
                   id: assetMaintenanceForm.id,
                   assetType: assetMaintenanceForm.assetType,
@@ -26515,7 +24271,13 @@ export default function AdminPage({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setAssetMaintenanceDialogOpen(false)}
+                  onClick={() => {
+                    if (
+                      assetMaintenanceForm.assetType !== "machine" ||
+                      confirmMachineryFormClose()
+                    )
+                      setAssetMaintenanceDialogOpen(false);
+                  }}
                 >
                   取消
                 </Button>

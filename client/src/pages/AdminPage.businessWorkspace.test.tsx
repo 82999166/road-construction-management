@@ -21,6 +21,18 @@ const readSource = (url: URL) => normalizeSource(readFileSync(url, "utf8"));
 const ADMIN_PAGE_SOURCE = readSource(
   new URL("./AdminPage.tsx", import.meta.url)
 );
+const CONSTRUCTION_SOURCE = readSource(
+  new URL("../components/ConstructionWorkspace.tsx", import.meta.url)
+);
+const MACHINERY_SOURCE = readSource(
+  new URL("../components/MachineryWorkspace.tsx", import.meta.url)
+);
+const PURCHASING_SOURCE = readSource(
+  new URL("../components/PurchasingWorkspace.tsx", import.meta.url)
+);
+const PURCHASING_OUTPUT_SOURCE = readSource(
+  new URL("../lib/purchasingWorkspace.ts", import.meta.url)
+);
 const expectSourceToContain = (source: string, expected: string) =>
   expect(source).toContain(normalizeSource(expected));
 const expectSourceNotToContain = (source: string, expected: string) =>
@@ -119,48 +131,59 @@ describe("统一后台业务工作区范围保护", () => {
   });
 
   it("在 PC 超级管理后台承载员工、车辆与机械的关键维护闭环", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "普通管理人员账号");
-    expectSourceToContain(source, "为人员分配岗位与数据范围");
-    expectSourceToContain(source, "车辆统一台账");
-    expectSourceToContain(source, "RFID 写卡");
-    expectSourceToContain(source, "机械资源、维修与会计计价台账");
-    expectSourceToContain(source, "新建机械档案");
-    expectSourceToContain(source, "机械业务详情");
-    expectSourceToContain(source, "录入成本");
-    expectSourceToContain(source, "会计产值计价规则");
-    expectSourceToContain(source, "外租车辆");
-    expectSourceToContain(source, "起租日期");
-    expectSourceToContain(source, "截止日期");
-    expectSourceToContain(source, 'Field label="驾驶员姓名"');
-    expectSourceToContain(source, 'Field label="驾驶员手机"');
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "普通管理人员账号");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "为人员分配岗位与数据范围");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆统一台账");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "RFID 写卡");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "新建机械档案");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "会计产值计价规则");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "外租车辆");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "起租日期");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "截止日期");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, 'Field label="驾驶员姓名"');
+    expectSourceToContain(ADMIN_PAGE_SOURCE, 'Field label="驾驶员手机"');
     expectSourceToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       "driverName: machineForm.driverName.trim() || null"
     );
     expectSourceToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       "driverPhone: machineForm.driverPhone.trim() || null"
     );
-    expectSourceToContain(source, "saveMachine.mutate");
-    expectSourceToContain(source, "saveMachineCost.mutate");
-    expectSourceToContain(source, 'Field label="费用名称（必填）"');
-    expectSourceToContain(source, 'Field label="备注"');
-    expectSourceToContain(source, "costName: machineCostForm.costName.trim()");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "saveMachine.mutate");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "saveMachineCost.mutate");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, 'Field label="费用名称（必填）"');
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "costName: machineCostForm.costName.trim()"
+    );
+    expectSourceToContain(MACHINERY_SOURCE, "机械档案");
+    expectSourceToContain(MACHINERY_SOURCE, "机械业务详情");
+    expectSourceToContain(MACHINERY_SOURCE, "props.onCost");
+    expectSourceToContain(MACHINERY_SOURCE, "登记维修保养");
   });
 
   it("在 PC 运输管理中提供独立的阶梯运价设置入口，避免只显示路线而无法维护合同价格", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "const TransportFreightRuleManager = lazy(");
     expectSourceToContain(
-      source,
-      "<TransportFreightRuleManager projectId={workspaceProjectId} />"
+      ADMIN_PAGE_SOURCE,
+      "const TransportFreightRuleManager = lazy("
+    );
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<TransportFreightRuleManager");
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      'active={transportWorkspaceTab === "rates"}'
     );
     expectSourceToContain(
-      source,
-      "<TransportRouteConfigurationEditor projectId={workspaceProjectId} />"
+      ADMIN_PAGE_SOURCE,
+      "<TransportRouteConfigurationEditor"
+    );
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      'active={transportWorkspaceTab === "terminals"}'
+    );
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "canManage={rights?.canManageResources ?? false}"
     );
   });
 
@@ -394,19 +417,19 @@ describe("统一后台业务工作区范围保护", () => {
   });
 
   it("统一人员入口保留保险到期、历史档案数与筛选导出，资源成本仍独立", () => {
-    const source = ADMIN_PAGE_SOURCE;
     const personnelSource = readSource(
       new URL("../components/UnifiedPersonnelDirectory.tsx", import.meta.url)
     );
-    expectSourceToContain(source, "<UnifiedPersonnelDirectory");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<UnifiedPersonnelDirectory");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆维修保养费");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "saveAssetMaintenance.mutate");
     expectSourceToContain(personnelSource, "historicalDuplicateProfileCount");
     expectSourceToContain(personnelSource, "insuranceStatus");
     expectSourceToContain(personnelSource, "30天内到期");
     expectSourceToContain(personnelSource, "personnelCsv");
-    expectSourceToContain(source, "车辆维修保养费");
-    expectSourceToContain(source, "车辆/机械费用汇总");
-    expectSourceToContain(source, "登记维修保养");
-    expectSourceToContain(source, "saveAssetMaintenance.mutate");
+    expectSourceToContain(MACHINERY_SOURCE, "累计机械成本台账");
+    expectSourceToContain(MACHINERY_SOURCE, "登记维修保养");
+    expectSourceToContain(MACHINERY_SOURCE, "维修保养明细");
   });
 
   it("账号页与劳务页复用同一人员档案组件，账号授权保持独立", () => {
@@ -540,27 +563,21 @@ describe("统一后台业务工作区范围保护", () => {
   });
 
   it("将高频业务台账统一提供响应式表格式总览，保留详情入口和既有状态操作", () => {
-    const source = ADMIN_PAGE_SOURCE;
-    const payrollSource = readSource(
-      new URL("../components/PayrollStatementLedger.tsx", import.meta.url)
-    );
-
-    expectSourceToContain(source, "function LedgerTable");
-    expectSourceToContain(source, "台账列表 · 可筛选 / 可导出");
-    expectSourceToContain(source, "手机端可左右滑动查看完整字段");
-    expectSourceToContain(source, "<UnifiedPersonnelDirectory");
-    expectSourceToContain(source, "车辆统一台账");
-    expectSourceToContain(source, "施工日报、现场影像与审核台账");
-    expectSourceToContain(
-      source,
-      'lazy(() => import("@/components/PayrollStatementLedger"))'
-    );
-    expectSourceToContain(source, "<PayrollStatementLedger");
-    expectSourceToContain(payrollSource, "工资条详细台账");
-    expectSourceToContain(source, "机械资源、维修与会计计价台账");
-    expectSourceToContain(source, "<TransportTripLedger");
-    expectSourceToContain(source, "发票、成本与审计台账");
-    expectSourceToContain(source, "站内通知、投递与确认台账");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "function LedgerTable");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "台账列表 · 可筛选 / 可导出");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "手机端可左右滑动查看完整字段");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<UnifiedPersonnelDirectory");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆统一台账");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<ConstructionWorkspace");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<MachineryWorkspace");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<TransportTripLedger");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<PurchasingWorkspace");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<PayrollStatementLedger");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "发票、成本与审计台账");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "站内通知、投递与确认台账");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "施工日报、现场影像与审核台账");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "查看详情 / 照片");
+    expectSourceToContain(MACHINERY_SOURCE, "机械详情分区");
   });
 
   it("将车辆资源改为全宽表格台账，并把新增车辆档案放在台账上方的受控档案区", () => {
@@ -633,55 +650,48 @@ describe("统一后台业务工作区范围保护", () => {
   });
 
   it("在车辆主表汇总柴油、收益与净收益，并从运输调度提供受控车辆档案入口", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "加油升数 / 金额");
-    expectSourceToContain(source, "本月收益 / 净收益");
-    expectSourceToContain(source, "导出详细 CSV");
-    expectSourceToContain(source, "单车收益支出分析");
-    expectSourceToContain(source, "录入车辆档案");
-    expectSourceToContain(source, "单车柴油分析");
-    expectSourceToContain(source, "车辆分析期间");
-    expectSourceToContain(source, "本期 / 累计总趟数");
-    expectSourceToContain(source, "柴油占比 / 每趟油费");
-    expectSourceToContain(source, "w-[calc(100vw-2rem)] max-w-[1320px]");
-    expectSourceToContain(source, "md:col-span-3 xl:col-span-4");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "加油升数 / 金额");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "本月收益 / 净收益");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "导出详细 CSV");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "单车收益支出分析");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "录入车辆档案");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "共用车辆档案 / 柴油分析");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "车辆分析期间");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "本期 / 累计总趟数");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "柴油占比 / 每趟油费");
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "w-[calc(100vw-2rem)] max-w-[1320px]"
+    );
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "md:col-span-3 xl:col-span-4");
   });
 
   it("将机械档案、维修保养、会计月度快照收敛为单条主台账，并提供单机日月收益支出分析", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "trpc.machinery.listCostSummaries.useQuery");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<MachineryWorkspace");
     expectSourceToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
+      "trpc.machinery.previewMonthlyStatement.useQuery"
+    );
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "生成会计明细草稿");
+    expectSourceToContain(
+      MACHINERY_SOURCE,
       "trpc.machinery.listMonthlyStatements.useQuery"
     );
     expectSourceToContain(
-      source,
-      "trpc.machinery.previewMonthlyStatement.useQuery"
+      MACHINERY_SOURCE,
+      "trpc.machinery.getMachineAnalysis.useQuery"
     );
-    expectSourceToContain(source, "trpc.machinery.getMachineAnalysis.useQuery");
-    expectSourceToContain(source, "机械资源 · 综合台账");
-    expectSourceToContain(source, "机械资源、维修与会计计价台账");
-    expectSourceToContain(source, "本月收益 / 净收益");
-    expectSourceToContain(source, "本月支出");
-    expectSourceToContain(source, "油耗 / 维修");
-    expectSourceToContain(source, "产值计价 / 有效日期");
-    expectSourceToContain(source, "单机收益与成本分析");
-    expectSourceToContain(source, "日收益");
-    expectSourceToContain(source, "仅有费用凭证");
-    expectSourceToContain(source, "生成会计明细草稿");
-    expectSourceToContain(source, "机械业务详情");
-    const machineMetricIndex = source.indexOf('title="机械总数"');
-    const machineProjectFilterIndex = source.indexOf(
-      'renderWorkspaceProjectFilter("机械项目范围"'
-    );
-    expect(machineMetricIndex).toBeGreaterThan(-1);
-    expect(machineMetricIndex).toBeLessThan(machineProjectFilterIndex);
-    expect(source.match(/title="机械总数"/g)).toHaveLength(1);
-    expectSourceNotToContain(source, "会计机械明细 · 月度结算快照");
+    expectSourceToContain(MACHINERY_SOURCE, "机械档案");
+    expectSourceToContain(MACHINERY_SOURCE, "机械业务详情");
+    expectSourceToContain(MACHINERY_SOURCE, "合同月租");
+    expectSourceToContain(MACHINERY_SOURCE, "日租费用");
+    expectSourceToContain(MACHINERY_SOURCE, "原日净额");
+    expectSourceToContain(MACHINERY_SOURCE, "维修保养明细");
+    expect(
+      (ADMIN_PAGE_SOURCE.match(/<MachineryWorkspace /g) ?? []).length
+    ).toBe(1);
     expectSourceNotToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       'activeSection === "machinery" ? <LedgerTable'
     );
   });
@@ -765,80 +775,81 @@ describe("统一后台业务工作区范围保护", () => {
   });
 
   it("在 PC 施工日报台账中提供按单条读取的受控照片预览入口", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "trpc.construction.reportEvidence.useQuery");
-    expectSourceToContain(source, "ConstructionReportEvidenceDetail");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<ConstructionWorkspace");
     expectSourceToContain(
-      source,
-      "仅在用户主动打开单份日报详情时申请短时影像URL"
+      CONSTRUCTION_SOURCE,
+      "trpc.construction.reportEvidence.useQuery"
     );
-    expectSourceToContain(source, "查看照片");
-    expectSourceToContain(source, "施工日报、现场影像与审核台账");
-    expectSourceToContain(source, "施工日报关联影像");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "reportIds: [report.id]");
+    expectSourceToContain(
+      CONSTRUCTION_SOURCE,
+      "enabled: active && report.projectId > 0 && report.id > 0"
+    );
+    expectSourceToContain(CONSTRUCTION_SOURCE, "查看详情 / 照片");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "关联现场照片");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "<ProtectedImagePreview");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "审核结果与回复");
   });
 
   it("在 PC 施工日报台账中按日期、提交管理员和关键字服务端筛选，并按当前筛选批量打印", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "constructionReportFilterInput");
-    expectSourceToContain(source, "日报开始日期");
-    expectSourceToContain(source, "日报结束日期");
-    expectSourceToContain(source, "提交管理员");
-    expectSourceToContain(source, "关键字查询");
     expectSourceToContain(
-      source,
+      CONSTRUCTION_SOURCE,
+      "constructionFilterInput(projectId, tab, filter)"
+    );
+    expectSourceToContain(CONSTRUCTION_SOURCE, "日报开始日期");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "日报结束日期");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "提交管理员");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "关键字查询");
+    expectSourceToContain(
+      CONSTRUCTION_SOURCE,
       "trpc.construction.reportSubmitterOptions.useQuery"
     );
-    expectSourceToContain(source, "trpcUtils.construction.printReports.fetch");
-    expectSourceToContain(source, "批量打印当前筛选日报");
-    expectSourceToContain(source, "施工日报筛选明细表");
-    expectSourceToContain(source, "openA4LandscapePrintDocument");
+    expectSourceToContain(
+      CONSTRUCTION_SOURCE,
+      "utils.construction.outputManifest.fetch"
+    );
+    expectSourceToContain(
+      CONSTRUCTION_SOURCE,
+      "utils.construction.printReports.fetch"
+    );
+    expectSourceToContain(CONSTRUCTION_SOURCE, "批量打印当前筛选日报");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "施工日报筛选明细表");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "openA4LandscapePrintDocument");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "reportIds: batch.ids");
   });
 
   it("移除各业务页顶部重复台账，仅保留工作区中的统一主表格和行内详情流程", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceNotToContain(
-      source,
-      'activeSection === "labor" ? <LedgerTable'
-    );
-    expectSourceNotToContain(
-      source,
-      'activeSection === "transport" ? <LedgerTable'
-    );
-    expectSourceNotToContain(
-      source,
-      'activeSection === "finance" ? <LedgerTable'
-    );
-    expectSourceNotToContain(
-      source,
-      'activeSection === "broadcast" ? <LedgerTable'
-    );
-    expectSourceNotToContain(
-      source,
-      'activeSection === "permission" ? <LedgerTable'
-    );
-    expectSourceToContain(source, "投递明细与确认状态");
-    expectSourceToContain(source, "机械业务详情");
-    expectSourceToContain(source, "施工日报查看与编辑");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "投递明细与确认状态");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "施工日报查看与编辑");
+    expectSourceToContain(MACHINERY_SOURCE, "机械业务详情");
+    for (const module of [
+      "labor",
+      "transport",
+      "finance",
+      "broadcast",
+      "permission",
+    ])
+      expectSourceNotToContain(
+        ADMIN_PAGE_SOURCE,
+        'activeSection === "' + module + '" ? <LedgerTable'
+      );
   });
 
   it("仅保留统计卡下方的一套施工日报工作区，避免同一日报在页面顶部和底部重复展示", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
+    expect(
+      (ADMIN_PAGE_SOURCE.match(/<ConstructionWorkspace /g) ?? []).length
+    ).toBe(1);
     expectSourceNotToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       'activeSection === "construction" ? <LedgerTable'
     );
-    expectSourceToContain(source, "施工日报、现场影像与审核台账");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "施工日报、现场影像与审核台账");
     expectSourceToContain(
-      source,
-      "每份日报行内汇总作业面、天气、累计进度、影像数量、安全问题和审核状态"
+      CONSTRUCTION_SOURCE,
+      "pagination.pageRows.map(report"
     );
-    expect((source.match(/施工日报、现场影像与审核台账/g) ?? []).length).toBe(
-      1
-    );
+    expectSourceToContain(CONSTRUCTION_SOURCE, "FinancePagination");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "CONSTRUCTION_WORKSPACE_TABS");
   });
 
   it("对可维护主数据提供行内编辑与受控批量处理，同时不将历史业务单据误作物理删除", () => {
@@ -1184,54 +1195,63 @@ describe("后台劳务台账独立懒加载", () => {
 
 describe("采购订单详情与附件收敛", () => {
   it("移除独立缩略图影像板块，并仅在订单详情中提供受控文件入口", () => {
-    const source = ADMIN_PAGE_SOURCE;
-    expectSourceNotToContain(source, "订单单据与发票影像");
+    expectSourceToContain(PURCHASING_SOURCE, "PurchasingEvidencePreview");
+    expectSourceToContain(PURCHASING_SOURCE, "documentAttachment");
+    expectSourceToContain(PURCHASING_SOURCE, "invoiceAttachment");
+    expectSourceToContain(PURCHASING_SOURCE, "业务详情、附件和操作");
     expectSourceToContain(
-      source,
-      "查看采购单据： {item.documentAttachment.fileName}"
+      PURCHASING_OUTPUT_SOURCE,
+      'closed: "已关闭（不代表历史付清）"'
     );
-    expectSourceToContain(
-      source,
-      "查看发票附件： {item.invoiceAttachment.fileName}"
-    );
-    expectSourceNotToContain(source, "alt={`采购单据 ${item.orderNo}`}");
-    expectSourceToContain(source, 'pending_approval: "待审核"');
-    expectSourceToContain(source, 'closed: "已结算"');
+    expectSourceNotToContain(ADMIN_PAGE_SOURCE, "订单单据与发票影像");
   });
 });
 
 describe("采购费用票据报销详单打印", () => {
   it("使用正式报销单表格、顶部居中标题、人员字段、备注和较小票据图片", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceToContain(source, "采购费用票据报销详单");
-    expectSourceToContain(source, "提交上传管理员");
-    expectSourceToContain(source, "现场管理员");
-    expectSourceToContain(source, "报销人");
-    expectSourceToContain(source, "备注");
-    expectSourceToContain(source, "receipt-title");
-    expectSourceToContain(source, "height:62mm");
-    expectSourceToContain(source, "expense-table");
-    expectSourceToContain(source, "报销凭证图片");
-    expectSourceToContain(source, "原始票据");
-    expectSourceToContain(source, "voucher-panel");
-    expectSourceToContain(source, "height:62mm");
-    expectSourceToContain(source, "toChinaDateInput(item.orderedAt)");
-    expectSourceNotToContain(
-      source,
-      'new Date(item.orderedAt).toLocaleDateString("zh-CN")'
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "采购费用票据报销详单");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "提交上传管理员");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "现场管理员");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "报销人");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "备注");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "receipt-title");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "height:62mm");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "expense-table");
+    expectSourceToContain(PURCHASING_OUTPUT_SOURCE, "voucher-panel");
+    expectSourceToContain(
+      PURCHASING_OUTPUT_SOURCE,
+      "toChinaDateInput(order.orderedAt)"
     );
+    expectSourceToContain(
+      PURCHASING_OUTPUT_SOURCE,
+      "amountToChineseUppercase(order.amount)"
+    );
+    expectSourceToContain(
+      PURCHASING_OUTPUT_SOURCE,
+      "width:210mm;height:148.5mm"
+    );
+    expectSourceNotToContain(PURCHASING_OUTPUT_SOURCE, "伍拾元");
   });
 });
 
 describe("运输台账展示收敛", () => {
   it("运输页面仅保留完整全台账作为运单筛选、导出与操作入口", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
-    expectSourceNotToContain(source, "车辆趟次、异常与结算台账");
-    expectSourceToContain(source, "<TransportTripLedger");
-    expectSourceToContain(source, "transport-trip-ledger-upgrade");
-    expectSourceToContain(source, "简版车辆趟次卡已移除");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "<TransportTripLedger");
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "onCreateSettlement={openTripSettlement}"
+    );
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "TransportRetainedPanel active={ledgerActive}"
+    );
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      'transportWorkspaceTab === "terminals" ? renderRfidManagement() : null'
+    );
+    expect(
+      (ADMIN_PAGE_SOURCE.match(/<TransportTripLedger /g) ?? []).length
+    ).toBe(1);
   });
 });
 
@@ -1260,28 +1280,20 @@ describe("柴油台账状态中文化", () => {
 
 describe("劳务与机械导出中文化", () => {
   it("不直接回显考勤来源、状态或租赁计费枚举", () => {
-    const source = ADMIN_PAGE_SOURCE;
-
     expectSourceToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       'import { getAttendanceSourceLabel, getInvoiceTypeLabel } from "@shared/domain";'
     );
     expectSourceToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       "getAttendanceSourceLabel(item.source), getBusinessStatusLabel(item.status)"
     );
-    expectSourceToContain(
-      source,
-      "getMachineLeaseBillingTypeLabel(machine.leaseTerms?.billingType)"
-    );
-    expectSourceToContain(source, "getBusinessStatusLabel(machine.status)");
+    expectSourceToContain(MACHINERY_SOURCE, "leaseLabel(machine)");
+    expectSourceToContain(MACHINERY_SOURCE, "machineStatus(machine.status)");
+    expectSourceToContain(MACHINERY_SOURCE, "历史台班合同");
     expectSourceNotToContain(
-      source,
+      ADMIN_PAGE_SOURCE,
       "item.workHours, item.overtimeHours, item.source, item.status"
-    );
-    expectSourceNotToContain(
-      source,
-      'machine.status, machine.supplierName || "", machine.leaseTerms?.billingType'
     );
   });
 });

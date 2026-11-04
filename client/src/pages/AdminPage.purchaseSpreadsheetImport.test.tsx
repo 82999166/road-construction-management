@@ -2,12 +2,20 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const source = readFileSync(resolve(process.cwd(), "client/src/pages/AdminPage.tsx"), "utf8");
+const source =
+  readFileSync(
+    resolve(process.cwd(), "client/src/pages/AdminPage.tsx"),
+    "utf8"
+  ) +
+  readFileSync(
+    resolve(process.cwd(), "client/src/components/PurchasingWorkspace.tsx"),
+    "utf8"
+  );
 
 describe("采购仓储 Excel 导入界面", () => {
   it("提供系统模板下载与管理员确认导入入口", () => {
-    expect(source).toContain("下载导入模板");
-    expect(source).toContain("导入 Excel");
+    expect(source).toContain("下载原导入模板");
+    expect(source).toContain("Excel历史导入");
     expect(source).toContain("导入采购仓储 Excel 数据");
     expect(source).toContain("确认导入并写入台账");
   });
@@ -28,7 +36,7 @@ describe("采购仓储 Excel 导入界面", () => {
     expect(source).toContain("单次最多导入 500 条记录");
     expect(source).toContain("订单金额须等于数量×单价");
     expect(source).toContain("请填写“采购者（必填）”");
-    expect(source).toContain("按采购者筛选");
-    expect(source).toContain("采购者：{item.purchaserName");
+    expect(source).toContain("采购者筛选");
+    expect(source).toContain("purchaser: o.purchaserName");
   });
 });
