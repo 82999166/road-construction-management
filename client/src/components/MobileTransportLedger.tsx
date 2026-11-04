@@ -14,7 +14,7 @@ type MobileTransportLedgerProps = {
   projectId: number;
   workDate: string;
   vehicles: Array<{ id: number; plateNo: string }>;
-  onConfirmPlatePhotoUnload?: (tripId: number) => void;
+  onConfirmPlatePhotoUnload?: (tripId: number, unloadSiteId?: number) => void;
   onConfirmCardUnload?: (tripId: number) => void;
 };
 
@@ -61,7 +61,7 @@ export function MobileTransportLedger({ projectId, workDate, vehicles, onConfirm
   const selectedTrip = trips.find(trip => trip.id === selectedTripId) ?? null;
   const openPhotoUnload = (tripId: number) => {
     setSelectedTripId(null);
-    onConfirmPlatePhotoUnload?.(tripId);
+    onConfirmPlatePhotoUnload?.(tripId, trips.find(trip => trip.id === tripId)?.unloadSiteId ?? undefined);
   };
 
   const openCardUnload = (tripId: number) => {
@@ -106,7 +106,7 @@ function LedgerMetric({ label, value, warning, success, onClick, active }: { lab
   return <Card className={className} onClick={onClick}><CardContent className="p-2 text-center"><p className={`text-sm font-bold ${warning ? "text-[#a55f25]" : success ? "text-[#3f7549]" : "text-[#43291e]"}`}>{value}</p><p className="mt-1 text-[10px] text-[#8f7566]">{label}</p></CardContent></Card>;
 }
 
-function TripDetail({ trip, onConfirmPlatePhotoUnload, onConfirmCardUnload }: { trip: any; onConfirmPlatePhotoUnload?: (tripId: number) => void; onConfirmCardUnload?: (tripId: number) => void }) {
+function TripDetail({ trip, onConfirmPlatePhotoUnload, onConfirmCardUnload }: { trip: any; onConfirmPlatePhotoUnload?: (tripId: number, unloadSiteId?: number) => void; onConfirmCardUnload?: (tripId: number) => void }) {
   const progress = tripProgress(trip);
   const cardEventRows: Array<[string, string]> = trip.cardEvents?.length
     ? trip.cardEvents.map((event: any) => {

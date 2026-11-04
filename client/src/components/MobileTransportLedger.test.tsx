@@ -28,7 +28,7 @@ describe("移动运输运单台账", () => {
     expect(source).toContain('!["void", "settled"].includes(trip.status)');
     expect(source).toContain("拍照卸土");
     expect(source).toContain("拍摄卸土现场并确认卸土");
-    expect(source).toContain("onConfirmPlatePhotoUnload?.(tripId)");
+    expect(source).toContain("onConfirmPlatePhotoUnload?.(tripId, trips.find(trip => trip.id === tripId)?.unloadSiteId ?? undefined)");
     expect(source).toContain("运输运单详情");
     expect(source).toContain("查看受控加油凭证");
     expect(source).toContain("ProtectedImagePreview");

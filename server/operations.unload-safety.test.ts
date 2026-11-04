@@ -23,9 +23,8 @@ describe("运输卸土时长与地点安全校验", () => {
     expect(schema).toContain("unloadGeofenceMeters");
     expect(schema).toContain("minimumTransitEnabled");
     expect(schema).toContain("unloadGeofenceEnabled");
-    expect(source).toContain(
-      'input.siteType === "unload" ? input.minimumTransitMinutes : 10'
-    );
+    expect(source).toContain("effectiveTransportSafety(input, previousSafety)");
+    expect(source).toContain("...requestedSafety");
   });
 
   it("卸土必须同时达到最短运输时间和卸土点定位容差，否则仅进入待核验", () => {
@@ -64,7 +63,14 @@ describe("运输卸土时长与地点安全校验", () => {
       ),
       "utf8"
     );
-    expect(component).toContain("navigator.geolocation.getCurrentPosition");
+    expect(component).toContain(
+      "collectUnloadLocation(navigator.geolocation, 0)"
+    );
+    const locationHelper = readFileSync(
+      new URL("../client/src/lib/transportUnloadLocation.ts", import.meta.url),
+      "utf8"
+    );
+    expect(locationHelper).toContain("geolocation.getCurrentPosition");
     expect(component).toContain("不能确认已到达卸土点");
     expect(component).toContain("latitude, longitude");
   });

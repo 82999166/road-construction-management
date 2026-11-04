@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { collectUnloadLocation } from "@/lib/transportUnloadLocation";
 import { CircleCheck, Radio, RotateCw, SmartphoneNfc, Truck, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -244,14 +245,10 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, ex
     let latitude: number | undefined;
     let longitude: number | undefined;
     if (preview.data.activeTrip) {
-      if (!navigator.geolocation) return toast.error("当前设备无法获取定位，不能确认已到达卸土点");
-      try {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 }));
-        latitude = position.coords.latitude;
-        longitude = position.coords.longitude;
-      } catch {
-        return toast.error("未取得卸土定位，不能确认已到达卸土点。请允许定位权限后重试");
-      }
+      const location = await collectUnloadLocation(navigator.geolocation, 0);
+      latitude = location?.latitude;
+      longitude = location?.longitude;
+      if (!location) toast.info("未取得卸土定位，正在按地点规则提交核验；定位硬拦截开启时不能确认已到达卸土点，关闭时会留提示待核验。");
     }
     issue.mutate({ token, expectedUnloadTripId, routePresetId: preview.data.activeTrip ? undefined : Number(routePresetId), idempotencyKey: `mobile-nfc-${crypto.randomUUID()}`, latitude, longitude, occurredAt: new Date().toISOString() });
   };
@@ -265,20 +262,9 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, ex
     setOperationError("");
     setScanStatus("已识别为卸土点补刷卡，正在核验最短运输时间与现场定位…");
     unlockSpeech();
-    if (!navigator.geolocation) {
-      const message = "当前设备无法获取定位，不能自动确认已到达卸土点";
-      setOperationError(message);
-      toast.error(message);
-      return;
-    }
-    try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 }));
-      issue.mutate({ token, expectedUnloadTripId, idempotencyKey: `mobile-nfc-unload-${crypto.randomUUID()}`, latitude: position.coords.latitude, longitude: position.coords.longitude, occurredAt: new Date().toISOString() });
-    } catch {
-      const message = "未取得卸土定位，不能自动确认卸土。请允许定位权限后重新刷卡";
-      setOperationError(message);
-      toast.error(message);
-    }
+    const location = await collectUnloadLocation(navigator.geolocation, 0);
+    if (!location) toast.info("未取得卸土定位，正在提交服务端核验；定位硬拦截开启时不会自动确认卸土，关闭时会留提示待核验。");
+    issue.mutate({ token, expectedUnloadTripId, idempotencyKey: `mobile-nfc-unload-${crypto.randomUUID()}`, latitude: location?.latitude, longitude: location?.longitude, occurredAt: new Date().toISOString() });
   };
 
   const unloadOnlyAutoClose = Boolean(preview.data?.activeTrip?.unloadOnlyCloseEnabled);

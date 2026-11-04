@@ -41,7 +41,7 @@ describe("移动端拍照车牌发票", () => {
     const submit = source.slice(source.indexOf("async function submitTrip()"), source.indexOf("function openTripDialog"));
     const unload = source.slice(source.indexOf("async function confirmPlatePhotoTripUnload"), source.indexOf("if (loading || !isAuthenticated"));
     expect(submit.indexOf("prepareSpeech()")).toBeLessThan(submit.indexOf("await createWatermarkedTransportImage"));
-    expect(unload.indexOf("prepareSpeech()")).toBeLessThan(unload.indexOf("navigator.geolocation.getCurrentPosition"));
+    expect(unload.indexOf("prepareSpeech()")).toBeLessThan(unload.indexOf("await resolvePhotoUnloadLocation"));
     expect(source).toContain('aria-label="运输成功语音回执"');
     expect(source).toContain("测试语音播报（不提交发票）");
     expect(source).toContain('onClick={replaySpeech}');
@@ -50,6 +50,18 @@ describe("移动端拍照车牌发票", () => {
     expect(hook).not.toContain("trpc");
     expect(hook).not.toContain("mutate");
     expect(hook).toContain("controller.speakTransportReceipt(lastMessage, true)");
+  });
+
+  it("拍照卸土按定位硬拦截开关处理GPS失败，并保留空坐标和提交保护", () => {
+    const unload = source.slice(source.indexOf("async function confirmPlatePhotoTripUnload"), source.indexOf("if (loading || !isAuthenticated"));
+    expect(unload).toContain("resolvePhotoUnloadLocation(unloadSite?.unloadGeofenceEnabled, navigator.geolocation)");
+    expect(unload).toContain("latitude: location?.latitude ?? null");
+    expect(unload).toContain("longitude: location?.longitude ?? null");
+    expect(unload).toContain("unloadSubmissionRef.current");
+    expect(unload).toContain("plateUnloadSiteId ?? trip?.unloadSiteId");
+    expect(unload).toContain("confirmPlatePhotoUnload.mutateAsync");
+    expect(unload).not.toContain("不能确认直拍票据卸土");
+    expect(source).toContain("现场定位：未取得（待核验）");
   });
 
   it("禁止相册选择并在直拍开票后显示成功反馈", () => {

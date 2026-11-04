@@ -516,8 +516,8 @@ const platePhotoUnloadConfirmationInput = z.object({
   projectId: z.number().int().positive(),
   unloadEvidenceId: z.number().int().positive(),
   idempotencyKey: z.string().trim().min(8).max(160),
-  latitude: z.number().min(-90).max(90),
-  longitude: z.number().min(-180).max(180),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
   occurredAt: isoDateTimeSchema,
 });
 
@@ -579,16 +579,16 @@ const transportSiteInput = z.object({
     .int()
     .min(1, "最短运输时间至少 1 分钟")
     .max(1440, "最短运输时间不能超过 24 小时")
-    .default(10),
-  minimumTransitEnabled: z.boolean().default(true),
+    .optional(),
+  minimumTransitEnabled: z.boolean().optional(),
   unloadGeofenceMeters: z
     .number()
     .int()
     .min(30, "卸土点定位容差至少 30 米")
     .max(5000, "卸土点定位容差不能超过 5000 米")
-    .default(300),
-  unloadGeofenceEnabled: z.boolean().default(true),
-  status: z.enum(["active", "disabled"]).default("active"),
+    .optional(),
+  unloadGeofenceEnabled: z.boolean().optional(),
+  status: z.enum(["active", "disabled"]).optional(),
 });
 
 /** 装卸点读卡设备须登记到具体地点；设备编号由现场终端稳定保存，用于双设备刷卡事件审计。 */
@@ -1509,6 +1509,13 @@ async function assertCanIssueMobileNfcCards(
   });
 }
 
+function getPhotoUnloadSafetyNotices(snapshot: unknown): string[] {
+  const notices = getRouteSnapshot(snapshot).unloadSafetyNotices;
+  return Array.isArray(notices)
+    ? notices.filter((notice): notice is string => typeof notice === "string")
+    : [];
+}
+
 async function recordTransportCardEvent(
   ctx: Parameters<typeof requireAuthenticatedUser>[0],
   input: z.infer<typeof transportCardEventInput>,
@@ -1838,10 +1845,21 @@ async function recordTransportCardEvent(
     return markNeedsReview("检测到卸土已确认后的装土刷卡，疑似乱序事件");
   if (eventType === "load" && trip.loadConfirmedAt)
     return markNeedsReview("该趟次已存在装土确认，疑似重复刷卡事件");
+  const snapshot = getRouteSnapshot(trip.routeSnapshot);
+  // No request field can grant the missing-load exception. Only a server-created,
+  // still-pending unload-only trip may retry via reader, signed link or mobile NFC.
+  const unloadOnlyClose =
+    eventType === "unload" &&
+    !trip.loadConfirmedAt &&
+    !trip.loadEventId &&
+    trip.invoiceMode === "nfc_card" &&
+    snapshot.source === "nfc_unload_only_reader" &&
+    snapshot.unloadOnlyCardClose === true &&
+    snapshot.loadCardRecorded === false;
   if (
     eventType === "unload" &&
     !trip.loadConfirmedAt &&
-    !options.unloadOnlyClose
+    !unloadOnlyClose
   )
     return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
   if (eventType === "unload" && trip.unloadConfirmedAt)
@@ -1877,7 +1895,46 @@ async function recordTransportCardEvent(
     const safetyNotices: string[] = options.initialSafetyNotice
       ? [options.initialSafetyNotice]
       : [];
-    if (!(options.unloadOnlyClose && !trip.loadConfirmedAt)) {
+    if (unloadOnlyClose) {
+      const [[loadSite], [rule], activeTrip] = await Promise.all([
+        db.select().from(transportSites).where(eq(transportSites.id, trip.loadSiteId!)).limit(1),
+        db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
+        findActiveVehicleTransportTrip(db, input.projectId, vehicle.id),
+      ]);
+      if (
+        !input.cardFingerprint ||
+        activeTrip?.id !== trip.id ||
+        trip.activeVehicleTransitKey !== createActiveVehicleTransitKey(input.projectId, vehicle.id) ||
+        route.status !== "active" ||
+        route.unloadOnlyCloseEnabled !== true ||
+        route.loadSiteId !== trip.loadSiteId ||
+        route.unloadSiteId !== trip.unloadSiteId ||
+        route.freightRuleId !== trip.freightRuleId ||
+        !loadSite || loadSite.projectId !== input.projectId ||
+        loadSite.siteType !== "load" || loadSite.status !== "active" ||
+        !rule || rule.projectId !== input.projectId || rule.status !== "active" ||
+        rule.settlementUnit === "ton" || rule.settlementUnit !== snapshot.settlementUnit
+      )
+        return markNeedsReview("卸土补刷卡的持久标识、车辆在途状态或启用路线配置已失效，请人工核验");
+      if (occurredAt.getTime() < new Date(trip.startAt).getTime())
+        return markNeedsReview("卸土补刷卡重试时间不得早于首次服务端记录");
+      // Re-evaluate with current site policy; a failed GPS attempt must not let a
+      // later retry bypass newly enabled minimum consecutive-trip intervals.
+      try {
+        await assertVehicleMinimumUnloadOnlyScanInterval(db, {
+          projectId: input.projectId,
+          vehicleId: vehicle.id,
+          plateNo: vehicle.plateNo,
+          occurredAt,
+          minimumTransitMinutes: safety.minimumTransitMinutes,
+        });
+      } catch (error) {
+        if (!(error instanceof TRPCError) || error.code !== "BAD_REQUEST") throw error;
+        if (safety.minimumTransitEnabled) return markNeedsReview(error.message);
+        const notice = "卸土点补刷卡的同车连续间隔未达到路线最短时间（时间硬拦截已关闭，已留待核验）";
+        if (!safetyNotices.includes(notice)) safetyNotices.push(notice);
+      }
+    } else {
       const transitStartAt = trip.loadConfirmedAt ?? trip.startAt;
       const elapsedMinutes = Math.max(
         0,
@@ -1978,6 +2035,11 @@ async function recordTransportCardEvent(
               ...getRouteSnapshot(trip.routeSnapshot),
               unloadConfirmationMode: "nfc_card",
               safetyPolicy,
+              ...(unloadOnlyClose ? {
+                unloadOnlyCardClosedAt: occurredAt.toISOString(),
+                endLatitude: input.latitude ?? null,
+                endLongitude: input.longitude ?? null,
+              } : {}),
             },
           })
           .where(
@@ -1986,8 +2048,12 @@ async function recordTransportCardEvent(
               eq(transportTrips.projectId, input.projectId),
               eq(transportTrips.vehicleId, vehicle.id),
               eq(transportTrips.status, trip.status),
-              options.unloadOnlyClose
-                ? undefined
+              unloadOnlyClose
+                ? and(
+                    isNull(transportTrips.loadConfirmedAt),
+                    isNull(transportTrips.loadEventId),
+                    eq(transportTrips.activeVehicleTransitKey, trip.activeVehicleTransitKey!)
+                  )
                 : isNotNull(transportTrips.loadConfirmedAt),
               isNull(transportTrips.unloadConfirmedAt),
               ne(transportTrips.status, "void"),
@@ -2037,10 +2103,10 @@ async function recordTransportCardEvent(
             eventCode: "transport_unload_completed",
             idempotencyKey: `inapp:transport-unload:${event.id}:${recipientUserId}`,
             recipientUserId,
-            title: options.unloadOnlyClose
+            title: unloadOnlyClose
               ? "卸土点补刷卡闭环完成"
               : "运输卸土成功",
-            content: options.unloadOnlyClose
+            content: unloadOnlyClose
               ? `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功；未记录装土刷卡，已按路线补刷卡规则在卸土点完成运单 ${trip.tripNo} 的受控闭环，仍请进入系统核验。`
               : `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
             deepLink: "/mobile/transport",
@@ -2059,7 +2125,7 @@ async function recordTransportCardEvent(
       ? options.singleScanClose
         ? "本项目已启用刷卡发票即完成闭环，本次运输已直接进入待核验。"
         : "请按调度前往卸土点。"
-      : options.unloadOnlyClose
+      : unloadOnlyClose
         ? "运输闭环已按卸土点补刷卡规则记录，实际装土起点仍待核验。"
         : "运输闭环已记录，等待后续核验。";
   const driverNotificationQueued =
@@ -2113,6 +2179,7 @@ async function recordTransportCardEvent(
     vehiclePlateNo: vehicle.plateNo,
     dailyVehicleTripOrdinal,
     driverNotificationQueued,
+    unloadOnlyClosed: unloadOnlyClose,
   };
 }
 
@@ -2286,10 +2353,14 @@ async function recordTransportNfcReaderScan(
       duplicate: true,
       needsReview: replayedEvent.validationStatus === "needs_review",
       stage:
-        replayedEvent.eventType === "load" && !singleScanClosed
-          ? ("in_transit" as const)
-          : ("completed" as const),
+        replayedTrip.unloadConfirmedAt || singleScanClosed
+          ? ("completed" as const)
+          : ("in_transit" as const),
       singleScanClosed,
+      unloadOnlyClosed:
+        getRouteSnapshot(replayedTrip.routeSnapshot).unloadOnlyCardClose === true &&
+        Boolean(replayedTrip.unloadConfirmedAt) &&
+        replayedEvent.validationStatus === "accepted",
       tripId: replayedEvent.tripId,
       eventId: replayedEvent.id,
       reason: replayedEvent.validationReason ?? undefined,
@@ -2742,7 +2813,8 @@ async function recordTransportNfcReaderScan(
     }
     return {
       ...event,
-      stage: "completed" as const,
+      stage: event.success && !event.needsReview
+        ? ("completed" as const) : ("in_transit" as const),
       singleScanClosed: false,
       unloadOnlyClosed: event.success && !event.needsReview,
       tripId: createdTrip.id,
@@ -2814,7 +2886,8 @@ async function recordTransportNfcReaderScan(
   }
   return {
     ...event,
-    stage: "completed" as const,
+    stage: event.success && !event.needsReview
+      ? ("completed" as const) : ("in_transit" as const),
     singleScanClosed: false,
     tripId: activeTrip.id,
     tripNo: activeTrip.tripNo,
@@ -8619,9 +8692,9 @@ export const transportRouter = router({
         });
       const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
       const previousSafety = effectiveTransportSafety(existingSite, {});
-      const requestedSafety = effectiveTransportSafety(input, {});
+      // Omitted safety fields are edits, not a request to restore defaults.
+      const requestedSafety = effectiveTransportSafety(input, previousSafety);
       if (
-        input.siteType === "unload" &&
         !isSuperAdmin &&
         JSON.stringify(previousSafety) !== JSON.stringify(requestedSafety)
       )
@@ -8629,7 +8702,8 @@ export const transportRouter = router({
           code: "FORBIDDEN",
           message: "运输安全阈值仅超级管理员可在后台维护",
         });
-      const rawAddress = input.address?.trim() || null;
+      const rawAddress = input.address === undefined
+        ? (existingSite?.address ?? null) : input.address?.trim() || null;
       const addressResolution =
         rawAddress && rawAddress !== existingSite?.address
           ? await resolveTransportSiteAddress(rawAddress)
@@ -8657,15 +8731,8 @@ export const transportRouter = router({
           input.administratorUserId === undefined
             ? (existingSite?.administratorUserId ?? null)
             : input.administratorUserId,
-        minimumTransitMinutes:
-          input.siteType === "unload" ? input.minimumTransitMinutes : 10,
-        minimumTransitEnabled:
-          input.siteType === "unload" ? input.minimumTransitEnabled : true,
-        unloadGeofenceMeters:
-          input.siteType === "unload" ? input.unloadGeofenceMeters : 300,
-        unloadGeofenceEnabled:
-          input.siteType === "unload" ? input.unloadGeofenceEnabled : true,
-        status: input.status,
+        ...requestedSafety,
+        status: input.status ?? existingSite?.status ?? "active",
       };
       if (input.id) {
         const [existing] = await db
@@ -8689,7 +8756,7 @@ export const transportRouter = router({
       }
       const unloadSafetySummary =
         input.siteType === "unload"
-          ? `；最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "硬拦截" : "仅提示"}），定位容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}）`
+          ? `；最短 ${values.minimumTransitMinutes} 分钟（${values.minimumTransitEnabled ? "硬拦截" : "仅提示"}），定位容差 ${values.unloadGeofenceMeters} 米（${values.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}）`
           : "";
       await db.insert(auditLogs).values({
         userId: user.id,
@@ -9018,7 +9085,7 @@ export const transportRouter = router({
         targetId: String(
           input.id ?? `${input.loadSiteId}-${input.unloadSiteId}`
         ),
-        summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${input.minimumTransitMinutes} 分钟（${input.minimumTransitEnabled ? "拦截" : "提示"}），卸土容差 ${input.unloadGeofenceMeters} 米（${input.unloadGeofenceEnabled ? "拦截" : "提示"}），卸土补刷卡闭环${input.unloadOnlyCloseEnabled ? "开启" : "关闭"}`,
+        summary: `维护运输路线预设：${loadSite.name} → ${unloadSite.name}，${input.presetDistanceKm} km，最短 ${safety.minimumTransitMinutes} 分钟（${safety.minimumTransitEnabled ? "拦截" : "提示"}），卸土容差 ${safety.unloadGeofenceMeters} 米（${safety.unloadGeofenceEnabled ? "拦截" : "提示"}），卸土补刷卡闭环${values.unloadOnlyCloseEnabled ? "开启" : "关闭"}`,
       });
       return { success: true };
     }),
@@ -9854,8 +9921,8 @@ export const transportRouter = router({
             tripId: trip.id,
             projectId: input.projectId,
             unloadEvidenceId: input.unloadEvidenceId,
-            latitude: input.latitude,
-            longitude: input.longitude,
+            latitude: input.latitude ?? null,
+            longitude: input.longitude ?? null,
             occurredAt: occurredAt.toISOString(),
           })
         )
@@ -9884,14 +9951,26 @@ export const transportRouter = router({
             code: "CONFLICT",
             message: "卸土确认尚未完成，请刷新后核验",
           });
+        const safetyNotices = getPhotoUnloadSafetyNotices(trip.routeSnapshot);
         return {
           success: existing.validationStatus === "accepted",
           duplicate: true,
-          needsReview: existing.validationStatus === "needs_review",
+          needsReview:
+            existing.validationStatus === "needs_review" || safetyNotices.length > 0,
+          reason: safetyNotices.length ? safetyNotices.join("；") : null,
+          safetyNotices,
         };
       }
-      if (trip.unloadConfirmedAt)
-        return { success: true, duplicate: true, needsReview: false };
+      if (trip.unloadConfirmedAt) {
+        const safetyNotices = getPhotoUnloadSafetyNotices(trip.routeSnapshot);
+        return {
+          success: true,
+          duplicate: true,
+          needsReview: safetyNotices.length > 0,
+          reason: safetyNotices.length ? safetyNotices.join("；") : null,
+          safetyNotices,
+        };
+      }
       const routePresetId = Number(
         (trip.routeSnapshot as { routePresetId?: number } | null)
           ?.routePresetId || 0
@@ -9924,6 +10003,8 @@ export const transportRouter = router({
           code: "BAD_REQUEST",
           message: "卸土路线或地点配置无效，不能确认卸土",
         });
+      const safety = effectiveTransportSafety(unloadSite, route);
+      const safetyNotices: string[] = [];
       const elapsedMinutes = Math.max(
         0,
         Math.floor(
@@ -9931,35 +10012,37 @@ export const transportRouter = router({
             60_000
         )
       );
-      if (
-        elapsedMinutes < unloadSite.minimumTransitMinutes &&
-        unloadSite.minimumTransitEnabled
-      )
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `卸土异常：已运输 ${elapsedMinutes} 分钟，未达到最短运输时间 ${unloadSite.minimumTransitMinutes} 分钟`,
-        });
-      if (unloadSite.latitude === null || unloadSite.longitude === null)
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "卸土点中文详细地址尚未完成地图定位校验，不能直接确认卸土",
-        });
-      const distanceMeters = Math.round(
-        calculateCoordinateDistanceMeters(
-          input.latitude,
-          input.longitude,
-          Number(unloadSite.latitude),
-          Number(unloadSite.longitude)
-        )
-      );
-      if (
-        distanceMeters > unloadSite.unloadGeofenceMeters &&
-        unloadSite.unloadGeofenceEnabled
-      )
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `未达到卸土点：当前距卸土点约 ${distanceMeters} 米，允许偏差 ${unloadSite.unloadGeofenceMeters} 米`,
-        });
+      if (elapsedMinutes < safety.minimumTransitMinutes) {
+        const reason = `卸土异常：已运输 ${elapsedMinutes} 分钟，未达到最短运输时间 ${safety.minimumTransitMinutes} 分钟`;
+        if (safety.minimumTransitEnabled)
+          throw new TRPCError({ code: "BAD_REQUEST", message: reason });
+        safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
+      }
+      const hasMobileCoordinates = input.latitude != null && input.longitude != null;
+      const hasSiteCoordinates = unloadSite.latitude != null && unloadSite.longitude != null;
+      if (!hasMobileCoordinates || !hasSiteCoordinates) {
+        const reason = !hasMobileCoordinates
+          ? "卸土异常：未取得现场定位"
+          : "卸土点中文详细地址尚未完成地图定位校验";
+        if (safety.unloadGeofenceEnabled)
+          throw new TRPCError({ code: "BAD_REQUEST", message: `${reason}，不能直接确认卸土` });
+        safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
+      } else {
+        const distanceMeters = Math.round(
+          calculateCoordinateDistanceMeters(
+            Number(input.latitude),
+            Number(input.longitude),
+            Number(unloadSite.latitude),
+            Number(unloadSite.longitude)
+          )
+        );
+        if (distanceMeters > safety.unloadGeofenceMeters) {
+          const reason = `未达到卸土点：当前距卸土点约 ${distanceMeters} 米，允许偏差 ${safety.unloadGeofenceMeters} 米`;
+          if (safety.unloadGeofenceEnabled)
+            throw new TRPCError({ code: "BAD_REQUEST", message: reason });
+          safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
+        }
+      }
       try {
         await db.insert(transportCardEvents).values({
           tripId: trip.id,
@@ -9970,12 +10053,15 @@ export const transportRouter = router({
           operatorUserId: user.id,
           source: "manual_review",
           idempotencyKey: input.idempotencyKey,
-          latitude: String(input.latitude),
-          longitude: String(input.longitude),
+          latitude: input.latitude == null ? null : String(input.latitude),
+          longitude: input.longitude == null ? null : String(input.longitude),
           payloadFingerprint,
           occurredAt,
           validationStatus: "accepted",
-          validationReason: `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据拍照卸土现场确认`,
+          validationReason: [
+            `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据拍照卸土现场确认`,
+            ...safetyNotices,
+          ].join("；"),
         });
       } catch {
         throw new TRPCError({
@@ -9999,7 +10085,10 @@ export const transportRouter = router({
         unloadPhotoConfirmedAt: occurredAt.toISOString(),
         unloadPhotoConfirmedBy: user.id,
         unloadConfirmationMode: "photo",
-        safetyPolicy: effectiveTransportSafety(unloadSite, route),
+        safetyPolicy: safety,
+        unloadSafetyNotices: safetyNotices,
+        endLatitude: input.latitude ?? null,
+        endLongitude: input.longitude ?? null,
       };
       const result = await db
         .update(transportTrips)
@@ -10011,6 +10100,7 @@ export const transportRouter = router({
           activeVehicleTransitKey: null,
           nfcTransitKey: null,
           status: trip.status === "draft" ? "submitted" : trip.status,
+          ...(safetyNotices.length ? { exceptionStatus: "open" as const } : {}),
           routeSnapshot,
         })
         .where(
@@ -10052,7 +10142,7 @@ export const transportRouter = router({
         action: "confirm_photo_unload",
         targetType: "transport_trip",
         targetId: trip.tripNo,
-        summary: `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}`,
+        summary: `${trip.invoiceMode === "plate_photo" ? "车牌直拍" : "NFC 刷卡"}票据在卸土点完成现场拍照与确认：${unloadSite.name}，影像 #${input.unloadEvidenceId}${safetyNotices.length ? `；${safetyNotices.join("；")}` : ""}`,
       });
       const recipientUserIds = Array.from(
         new Set(
@@ -10098,7 +10188,9 @@ export const transportRouter = router({
       return {
         success: true,
         duplicate: false,
-        needsReview: false,
+        needsReview: safetyNotices.length > 0,
+        reason: safetyNotices.length ? safetyNotices.join("；") : null,
+        safetyNotices,
         vehiclePlateNo: vehicle.plateNo,
         dailyVehicleTripOrdinal,
       };

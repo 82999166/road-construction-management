@@ -1,5 +1,4 @@
 import {
-  discardTransportDraft,
   useTransportDirty,
   type TransportDirtyChange,
 } from "@/lib/transportDraft";
@@ -15,16 +14,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import {
+  transportSafetySummary,
+  validateTransportSafetyDraft,
+  type TransportSafetyDraft,
+} from "@/lib/transportSafetySettings";
 import { ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-type SafetyDraft = {
-  minimumTransitMinutes: string;
-  minimumTransitEnabled: boolean;
-  unloadGeofenceMeters: string;
-  unloadGeofenceEnabled: boolean;
-};
 export function TransportRouteSafetySettings({
   projectId,
   compact = false,
@@ -53,29 +51,35 @@ export function TransportRouteSafetySettings({
       { projectId: projectId ?? 0 },
       { enabled }
     );
-  const [drafts, setDrafts] = useState<Record<number, SafetyDraft>>({});
+  const [drafts, setDrafts] = useState<Record<number, TransportSafetyDraft>>(
+    {}
+  );
   const [dirty, setDirty] = useState<Record<number, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const draftDirty = Object.values(dirty).some(Boolean);
   useTransportDirty(draftDirty, onDirtyChange);
   const save = trpc.transport.saveSite.useMutation({
     onSuccess: async (_, variables) => {
-      toast.success("卸土点统一安全阈值已保存，所有驶向该点的路线使用同一规则");
-      setDirty(current => ({ ...current, [variables.id ?? 0]: false }));
+      // 保持草稿为dirty直到服务器回读完成，避免旧缓存将刚保存的阈值回滚到旧值。
       await Promise.all([
         utils.transport.listSites.invalidate(),
         utils.transport.listRoutePresets.invalidate(),
       ]);
+      setDirty(current => ({ ...current, [variables.id ?? 0]: false }));
+      toast.success("卸土点统一安全阈值已保存，所有驶向该点的路线使用同一规则");
     },
     onError: error =>
       toast.error(
-        getUserFacingErrorMessage(error, "运输安全规则保存未完成，请稍后重试")
+        getUserFacingErrorMessage(
+          error,
+          "运输安全规则保存未完成，输入已保留，请重试"
+        )
       ),
   });
   const saveRoute = trpc.transport.saveRoutePreset.useMutation({
     onSuccess: async () => {
-      toast.success("路线特殊闭环策略已保存");
       await utils.transport.listRoutePresets.invalidate();
+      toast.success("路线特殊闭环策略已保存");
     },
     onError: error =>
       toast.error(
@@ -85,18 +89,20 @@ export function TransportRouteSafetySettings({
   const saveSingleScanClose =
     trpc.transport.setNfcSingleScanCloseSetting.useMutation({
       onSuccess: async result => {
+        await utils.transport.getNfcSingleScanCloseSetting.invalidate();
         toast.success(
           result.enabled
             ? "已开启刷卡发票单次闭环模式"
             : "已恢复刷卡装土、卸土确认的双刷闭环模式"
         );
-        await utils.transport.getNfcSingleScanCloseSetting.invalidate();
       },
       onError: error =>
         toast.error(
           getUserFacingErrorMessage(error, "运输安全规则保存未完成，请稍后重试")
         ),
     });
+  const saving =
+    save.isPending || saveRoute.isPending || saveSingleScanClose.isPending;
   useEffect(() => {
     setDrafts(current => {
       const next = { ...current };
@@ -116,6 +122,7 @@ export function TransportRouteSafetySettings({
     routes.data?.filter(route => route.status === "active") ?? [];
   const singleScanCloseEnabled = Boolean(singleScanCloseSetting.data?.enabled);
   const changeSingleScanClose = (value: boolean) => {
+    if (saving || !active || singleScanCloseSetting.isError) return;
     if (
       value &&
       !window.confirm(
@@ -139,7 +146,7 @@ export function TransportRouteSafetySettings({
             <p className="mt-1 text-xs text-[#805d38]">
               {activeRoutes.length} 条启用路线 ·{" "}
               {singleScanCloseEnabled ? "单次刷卡闭环已开启" : "默认双刷闭环"} ·
-              阈值归属卸土点
+              阈值归属卸土点{draftDirty ? " · 有未保存修改" : ""}
             </p>
           </div>
           <Button
@@ -154,9 +161,13 @@ export function TransportRouteSafetySettings({
       <Dialog
         open={settingsOpen}
         onOpenChange={open => {
+          if (!open && saving) {
+            toast.info("正在保存并回读规则，请完成后再关闭。");
+            return;
+          }
           if (
             !open &&
-            Object.values(dirty).some(Boolean) &&
+            draftDirty &&
             !window.confirm(
               "安全阈值尚未保存，确认关闭？下次打开仍保留本页草稿。"
             )
@@ -172,6 +183,17 @@ export function TransportRouteSafetySettings({
               最短运输时间与定位范围统一使用卸土地点设置；路线仅关联地点和特殊闭环策略，历史运单不覆盖重算。
             </DialogDescription>
           </DialogHeader>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-blue-900">
+            <p className="font-semibold">
+              设置说明：时间单位为分钟，定位允许偏差单位为米（不是路线长度）。
+            </p>
+            <p>
+              勾选“硬拦截”后，未达到时间或超出卸土点范围不能完成卸土；不勾选为“仅提示”，异常会留待核验但不阻止闭环。两项可单独启用，也可同时启用。
+            </p>
+            <p>
+              时间与定位修改后须点击“保存地点统一阈值”。下方特殊闭环开关单独即时保存，不会替您保存上方阈值。
+            </p>
+          </div>
           <section className="rounded-xl border border-amber-200 bg-amber-50 p-3">
             <p className="text-sm font-semibold">
               刷卡发票即完成整车运输闭环（特殊场景）
@@ -179,24 +201,43 @@ export function TransportRouteSafetySettings({
             <p className="mt-1 text-xs leading-5">
               开启后形成单次刷卡闭环完成、待核验；不伪造卸土扫码，不称为卸土成功。系统仍以卸土点最短时间硬性拦截同车连续开票，即使平时关闭时间拦截此项仍生效。
             </p>
+            {singleScanCloseSetting.isError ? (
+              <p role="alert" className="mt-2 text-xs text-red-700">
+                特殊闭环设置读取失败，请重新读取后再修改。
+              </p>
+            ) : null}
             <label className="mt-2 flex items-center gap-2 text-xs">
               <input
                 type="checkbox"
+                aria-label="刷卡发票单次闭环"
                 checked={singleScanCloseEnabled}
                 disabled={
                   !active ||
                   singleScanCloseSetting.isLoading ||
-                  saveSingleScanClose.isPending
+                  singleScanCloseSetting.isError ||
+                  saving
                 }
                 onChange={event => changeSingleScanClose(event.target.checked)}
               />
-              {singleScanCloseEnabled ? "已开启" : "默认关闭"}
+              {singleScanCloseEnabled ? "已开启" : "默认关闭"} · 即时保存
             </label>
           </section>
           {sites.isError || routes.isError ? (
-            <p role="alert" className="text-sm text-red-700">
+            <div role="alert" className="text-sm text-red-700">
               安全规则读取失败，请重试。
-            </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-2"
+                onClick={() => {
+                  void sites.refetch();
+                  void routes.refetch();
+                  void singleScanCloseSetting.refetch();
+                }}
+              >
+                重新读取
+              </Button>
+            </div>
           ) : sites.isLoading ? (
             <p>正在读取地点安全阈值…</p>
           ) : (
@@ -205,7 +246,9 @@ export function TransportRouteSafetySettings({
               .map(site => {
                 const draft = drafts[site.id];
                 if (!draft) return null;
-                const patch = (value: Partial<SafetyDraft>) => {
+                const validation = validateTransportSafetyDraft(draft);
+                const patch = (value: Partial<TransportSafetyDraft>) => {
+                  if (!active || saving) return;
                   setDirty(current => ({ ...current, [site.id]: true }));
                   setDrafts(current => ({
                     ...current,
@@ -213,20 +256,11 @@ export function TransportRouteSafetySettings({
                   }));
                 };
                 const persist = () => {
-                  const minimumTransitMinutes = Number(
-                      draft.minimumTransitMinutes
-                    ),
-                    unloadGeofenceMeters = Number(draft.unloadGeofenceMeters);
-                  if (
-                    !Number.isInteger(minimumTransitMinutes) ||
-                    minimumTransitMinutes < 1 ||
-                    minimumTransitMinutes > 1440 ||
-                    !Number.isInteger(unloadGeofenceMeters) ||
-                    unloadGeofenceMeters < 30 ||
-                    unloadGeofenceMeters > 5000
-                  )
+                  if (!active || saving || !dirty[site.id]) return;
+                  if (!validation.valid)
                     return toast.error(
-                      "最短时间须为1–1440分钟，定位容差须为30–5000米"
+                      validation.minimumTransitError ??
+                        validation.unloadGeofenceError
                     );
                   save.mutate({
                     id: site.id,
@@ -235,15 +269,19 @@ export function TransportRouteSafetySettings({
                     name: site.name,
                     address: site.address,
                     administratorUserId: site.administratorUserId,
-                    minimumTransitMinutes,
+                    minimumTransitMinutes: validation.minutes,
                     minimumTransitEnabled: draft.minimumTransitEnabled,
-                    unloadGeofenceMeters,
+                    unloadGeofenceMeters: validation.meters,
                     unloadGeofenceEnabled: draft.unloadGeofenceEnabled,
                     status: site.status,
                   });
                 };
                 return (
-                  <section key={site.id} className="rounded-xl border p-3">
+                  <section
+                    key={site.id}
+                    className="rounded-xl border p-3"
+                    aria-label={`卸土点安全设置：${site.name}`}
+                  >
                     <p className="text-sm font-semibold">
                       卸土点 · {site.name} ·{" "}
                       {site.status === "active" ? "启用" : "停用"}
@@ -257,12 +295,25 @@ export function TransportRouteSafetySettings({
                       }{" "}
                       条
                     </p>
+                    <p
+                      className="mt-2 rounded-md bg-slate-50 p-2 text-xs leading-5 text-slate-700"
+                      aria-label={`已保存规则：${site.name}`}
+                    >
+                      已保存规则：{transportSafetySummary(site)}
+                    </p>
+                    {!site.addressResolved ? (
+                      <p className="mt-1 text-xs text-amber-800">
+                        卸土点尚无有效地图坐标；开启定位硬拦截后将无法直接确认卸土，请先在地点档案补齐定位。
+                      </p>
+                    ) : null}
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <label className="text-xs">
-                        <span className="flex items-center gap-2">
+                      <div className="text-xs">
+                        <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
+                            aria-label={`${site.name}最短时间硬拦截`}
                             checked={draft.minimumTransitEnabled}
+                            disabled={!active || saving}
                             onChange={event =>
                               patch({
                                 minimumTransitEnabled: event.target.checked,
@@ -270,24 +321,48 @@ export function TransportRouteSafetySettings({
                             }
                           />
                           最短时间 ·{" "}
-                          {draft.minimumTransitEnabled ? "硬拦截" : "仅提示"}
-                        </span>
+                          {draft.minimumTransitEnabled
+                            ? "硬拦截"
+                            : "仅提示、不拦截"}
+                        </label>
+                        <label
+                          htmlFor={`site-${site.id}-minutes`}
+                          className="mt-2 block"
+                        >
+                          最短运输时间（分钟） · 1～1440
+                        </label>
                         <Input
-                          className="mt-2"
+                          id={`site-${site.id}-minutes`}
+                          aria-label={`${site.name}最短运输时间（分钟）`}
+                          aria-invalid={Boolean(validation.minimumTransitError)}
+                          aria-describedby={`site-${site.id}-minutes-help`}
+                          className="mt-1"
                           type="number"
+                          inputMode="numeric"
                           min="1"
                           max="1440"
+                          step="1"
+                          disabled={!active || saving}
                           value={draft.minimumTransitMinutes}
                           onChange={event =>
                             patch({ minimumTransitMinutes: event.target.value })
                           }
                         />
-                      </label>
-                      <label className="text-xs">
-                        <span className="flex items-center gap-2">
+                        <p
+                          id={`site-${site.id}-minutes-help`}
+                          className={`mt-1 leading-5 ${validation.minimumTransitError ? "text-red-700" : "text-slate-500"}`}
+                        >
+                          {validation.minimumTransitError ??
+                            "从实际装土确认起计算；关闭硬拦截时仍保留异常提示。"}
+                        </p>
+                      </div>
+                      <div className="text-xs">
+                        <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
+                            aria-label={`${site.name}定位范围硬拦截`}
                             checked={draft.unloadGeofenceEnabled}
+                            disabled={!active || saving}
                             onChange={event =>
                               patch({
                                 unloadGeofenceEnabled: event.target.checked,
@@ -295,34 +370,74 @@ export function TransportRouteSafetySettings({
                             }
                           />
                           定位范围 ·{" "}
-                          {draft.unloadGeofenceEnabled ? "硬拦截" : "仅提示"}
-                        </span>
+                          {draft.unloadGeofenceEnabled
+                            ? "硬拦截"
+                            : "仅提示、不拦截"}
+                        </label>
+                        <label
+                          htmlFor={`site-${site.id}-meters`}
+                          className="mt-2 block"
+                        >
+                          卸土点定位允许偏差（米） · 30～5000
+                        </label>
                         <Input
-                          className="mt-2"
+                          id={`site-${site.id}-meters`}
+                          aria-label={`${site.name}定位允许偏差（米）`}
+                          aria-invalid={Boolean(validation.unloadGeofenceError)}
+                          aria-describedby={`site-${site.id}-meters-help`}
+                          className="mt-1"
                           type="number"
+                          inputMode="numeric"
                           min="30"
                           max="5000"
+                          step="1"
+                          disabled={!active || saving}
                           value={draft.unloadGeofenceMeters}
                           onChange={event =>
                             patch({ unloadGeofenceMeters: event.target.value })
                           }
                         />
-                      </label>
+                        <p
+                          id={`site-${site.id}-meters-help`}
+                          className={`mt-1 leading-5 ${validation.unloadGeofenceError ? "text-red-700" : "text-slate-500"}`}
+                        >
+                          {validation.unloadGeofenceError ??
+                            "以卸土点坐标为中心的允许偏差；500米是0.5公里，5000米是5公里。"}
+                        </p>
+                      </div>
                     </div>
-                    <Button
-                      className="mt-3"
-                      size="sm"
-                      disabled={!active || !dirty[site.id] || save.isPending}
-                      onClick={persist}
-                    >
-                      保存地点统一阈值
-                    </Button>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        disabled={
+                          !active ||
+                          !dirty[site.id] ||
+                          saving ||
+                          !validation.valid
+                        }
+                        onClick={persist}
+                      >
+                        {save.isPending && save.variables?.id === site.id
+                          ? "正在保存并回读…"
+                          : "保存地点统一阈值"}
+                      </Button>
+                      <span
+                        role="status"
+                        className={`text-xs ${dirty[site.id] ? "text-amber-800" : "text-green-700"}`}
+                      >
+                        {dirty[site.id]
+                          ? validation.valid
+                            ? "尚未保存：保存后才使用新规则"
+                            : "输入不符合范围，未提交；已保存规则保持不变"
+                          : "当前显示已保存规则"}
+                      </span>
+                    </div>
                   </section>
                 );
               })
           )}
           <section className="space-y-2">
-            <p className="text-sm font-semibold">路线特殊闭环策略</p>
+            <p className="text-sm font-semibold">路线特殊闭环策略 · 即时保存</p>
             {activeRoutes.map(route => (
               <div key={route.id} className="rounded-lg border p-3">
                 <p className="text-xs">
@@ -332,9 +447,11 @@ export function TransportRouteSafetySettings({
                 <label className="mt-2 flex items-start gap-2 text-xs leading-5">
                   <input
                     type="checkbox"
+                    aria-label={`路线${route.id}卸土点补刷卡闭环`}
                     checked={route.unloadOnlyCloseEnabled}
-                    disabled={!active || saveRoute.isPending}
+                    disabled={!active || saving || routes.isError}
                     onChange={event => {
+                      if (saving || !active) return;
                       const value = event.target.checked;
                       if (
                         value &&
@@ -351,7 +468,8 @@ export function TransportRouteSafetySettings({
                     }}
                   />
                   <span>
-                    卸土点补刷卡完成闭环。未记录装土刷卡，不伪造实际装土时间；连续间隔和定位仍由卸土点统一校验。
+                    卸土点补刷卡完成闭环。未记录装土刷卡，不伪造实际装土时间；连续间隔和定位仍由卸土点统一校验。当前已保存：
+                    {route.unloadOnlyCloseEnabled ? "开启" : "关闭"}。
                   </span>
                 </label>
               </div>

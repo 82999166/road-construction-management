@@ -76,3 +76,13 @@ describe("手机刷 NFC 卡发票", () => {
     expect(source).toContain('expectedUnloadTripId ? "刷卡卸土"');
   });
 });
+
+describe("卸土定位开关统一", () => {
+  it("手工和自动卸土都将GPS失败交由服务端当前规则判断，不无条件提前拦截", () => {
+    const source = readFileSync(new URL("./MobileNfcTransportInvoice.tsx", import.meta.url), "utf8");
+    expect(source.match(/collectUnloadLocation\(navigator.geolocation, 0\)/g)).toHaveLength(2);
+    expect(source).toContain("定位硬拦截开启时不会自动确认卸土");
+    expect(source).not.toContain("if (!navigator.geolocation) return toast.error");
+    expect(source).toContain("expectedUnloadTripId");
+  });
+});
