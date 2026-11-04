@@ -25,7 +25,7 @@ const cleanDefault = value =>
         .toLowerCase()
         .replace(/^'|'$/g, "")
         .replace(
-          /^\(now\(\)\)$|^current_timestamp(?:\(\))?$/,
+          /^(?:\(now\(\)\)|now\(\)|current_timestamp(?:\(\))?)$/,
           "current_timestamp"
         )
         .replace(/^false$/, "0")
@@ -34,7 +34,7 @@ let db,
   locked = false;
 async function columns(table) {
   const [rows] = await db.query(
-    "SELECT column_name AS name,column_type AS type,is_nullable AS nullable,column_default AS defaultValue,extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? ORDER BY ordinal_position",
+    "SELECT column_name AS name,column_type AS type,is_nullable AS nullable,column_default AS defaultValue,extra AS extraValue FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? ORDER BY ordinal_position",
     [table]
   );
   return rows;
@@ -55,7 +55,7 @@ function assertColumns(actual, expected) {
       cleanType(r.type) !== cleanType(e.type) ||
       r.nullable !== e.nullable ||
       cleanDefault(r.defaultValue) !== cleanDefault(e.defaultValue) ||
-      Boolean(/auto_increment/i.test(r.extra)) !== e.autoIncrement
+      Boolean(/auto_increment/i.test(r.extraValue)) !== e.autoIncrement
     )
       throw Error("EXISTING_SHAPE_MISMATCH");
   }
