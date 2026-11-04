@@ -22,10 +22,20 @@ import {
 import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import { DisplayPreferencesPanel } from "@/components/DisplayPreferencesPanel";
-import { LayoutDashboard, LogOut, PanelLeft, Users, type LucideIcon } from "lucide-react";
+import {
+  isDashboardMenuActive,
+  requestDashboardNavigation,
+} from "@/lib/dashboardNavigation";
+import {
+  LayoutDashboard,
+  LogOut,
+  PanelLeft,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
+import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
 
 const defaultMenuItems = [
@@ -51,10 +61,16 @@ export default function DashboardLayout({
   children,
   title = "管理工作台",
   menuItems = defaultMenuItems,
+  accessLabel = "PC 超级治理 · 已授权",
+  fallbackSectionLabel = "系统治理",
+  onBeforeNavigate,
 }: {
   children: React.ReactNode;
   title?: string;
   menuItems?: DashboardMenuItem[];
+  accessLabel?: string;
+  fallbackSectionLabel?: string;
+  onBeforeNavigate?: (path: string) => boolean;
 }) {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -67,7 +83,7 @@ export default function DashboardLayout({
   }, [sidebarWidth]);
 
   if (loading) {
-    return <DashboardLayoutSkeleton />
+    return <DashboardLayoutSkeleton />;
   }
 
   if (!user) {
@@ -102,7 +118,14 @@ export default function DashboardLayout({
         } as CSSProperties
       }
     >
-      <DashboardLayoutContent setSidebarWidth={setSidebarWidth} title={title} menuItems={menuItems}>
+      <DashboardLayoutContent
+        setSidebarWidth={setSidebarWidth}
+        title={title}
+        menuItems={menuItems}
+        accessLabel={accessLabel}
+        fallbackSectionLabel={fallbackSectionLabel}
+        onBeforeNavigate={onBeforeNavigate}
+      >
         {children}
       </DashboardLayoutContent>
     </SidebarProvider>
@@ -114,6 +137,9 @@ type DashboardLayoutContentProps = {
   setSidebarWidth: (width: number) => void;
   title: string;
   menuItems: DashboardMenuItem[];
+  accessLabel: string;
+  fallbackSectionLabel: string;
+  onBeforeNavigate?: (path: string) => boolean;
 };
 
 function DashboardLayoutContent({
@@ -121,6 +147,9 @@ function DashboardLayoutContent({
   setSidebarWidth,
   title,
   menuItems,
+  accessLabel,
+  fallbackSectionLabel,
+  onBeforeNavigate,
 }: DashboardLayoutContentProps) {
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
@@ -128,9 +157,13 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`)));
+  const activeMenuItem = menuItems.find(item =>
+    isDashboardMenuActive(location, item.path)
+  );
   const isMobile = useIsMobile();
-  const menuGroups = menuItems.reduce<Array<{ label: string; items: DashboardMenuItem[] }>>((groups, item) => {
+  const menuGroups = menuItems.reduce<
+    Array<{ label: string; items: DashboardMenuItem[] }>
+  >((groups, item) => {
     const label = item.section ?? "工作台";
     const existing = groups.find(group => group.label === label);
     if (existing) existing.items.push(item);
@@ -193,8 +226,12 @@ function DashboardLayoutContent({
               </button>
               {!isCollapsed ? (
                 <div className="min-w-0">
-                    <span className="block truncate text-sm font-semibold tracking-wide text-white">{title}</span>
-                    <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">悦信 · 智慧工程管理</span>
+                  <span className="block truncate text-sm font-semibold tracking-wide text-white">
+                    {title}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] font-medium tracking-[0.16em] text-[#9fb1ad]">
+                    悦信 · 智慧工程管理
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -203,19 +240,32 @@ function DashboardLayoutContent({
           <SidebarContent className="gap-0 py-3">
             {menuGroups.map(group => (
               <div className="mb-3 last:mb-0" key={group.label}>
-                {!isCollapsed ? <p className="px-5 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-[#829590]">{group.label}</p> : null}
+                {!isCollapsed ? (
+                  <p className="px-5 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-[#829590]">
+                    {group.label}
+                  </p>
+                ) : null}
                 <SidebarMenu className="px-2">
                   {group.items.map(item => {
-                    const isActive = location === item.path || (item.path !== "/" && location.startsWith(`${item.path}/`));
+                    const isActive = isDashboardMenuActive(location, item.path);
                     return (
                       <SidebarMenuItem key={item.path}>
                         <SidebarMenuButton
                           isActive={isActive}
-                          onClick={() => setLocation(item.path)}
+                          onClick={() =>
+                            requestDashboardNavigation(
+                              location,
+                              item.path,
+                              setLocation,
+                              onBeforeNavigate
+                            )
+                          }
                           tooltip={item.label}
                           className="relative h-10 rounded-md px-3 text-slate-300 transition-colors hover:bg-white/10 hover:text-white data-[active=true]:bg-[#263a43] data-[active=true]:font-medium data-[active=true]:text-white data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-full data-[active=true]:before:bg-[#f3c64e]"
                         >
-                          <item.icon className={`h-4 w-4 ${isActive ? "text-[#f3c64e]" : "text-[#a8b8b4]"}`} />
+                          <item.icon
+                            className={`h-4 w-4 ${isActive ? "text-[#f3c64e]" : "text-[#a8b8b4]"}`}
+                          />
                           <span>{item.label}</span>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
@@ -270,8 +320,20 @@ function DashboardLayoutContent({
       <SidebarInset className="bg-[#f5f5f0]">
         {!isMobile && (
           <div className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-[#dce3de] bg-[#f8f8f4]/95 px-6 backdrop-blur md:flex lg:px-8">
-            <div className="flex min-w-0 items-center gap-3"><span className="text-xs font-semibold tracking-[0.14em] text-[#70827b]">项目指挥台</span><span className="text-[#c5cfca]">/</span><span className="truncate text-sm font-medium text-[#1b2d34]">{activeMenuItem?.label ?? "系统治理"}</span></div>
-            <div className="flex items-center gap-2 text-xs text-[#60736c]"><DisplayPreferencesPanel className="h-9 border-[#cbd7d5] bg-white text-[#284651] hover:bg-[#eff6f4]" /><span className="ml-1 h-2 w-2 rounded-full bg-[#f3c64e]" />PC 超级治理 · 已授权</div>
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="text-xs font-semibold tracking-[0.14em] text-[#70827b]">
+                项目指挥台
+              </span>
+              <span className="text-[#c5cfca]">/</span>
+              <span className="truncate text-sm font-medium text-[#1b2d34]">
+                {activeMenuItem?.label ?? fallbackSectionLabel}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-[#60736c]">
+              <DisplayPreferencesPanel className="h-9 border-[#cbd7d5] bg-white text-[#284651] hover:bg-[#eff6f4]" />
+              <span className="ml-1 h-2 w-2 rounded-full bg-[#f3c64e]" />
+              {accessLabel}
+            </div>
           </div>
         )}
         {isMobile && (
@@ -288,7 +350,9 @@ function DashboardLayoutContent({
             </div>
           </div>
         )}
-        <main className="admin-command-canvas flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+        <main className="admin-command-canvas flex-1 p-4 sm:p-6 lg:p-8">
+          {children}
+        </main>
       </SidebarInset>
     </>
   );

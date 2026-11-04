@@ -210,6 +210,9 @@ const TransportVehicleSettlementManager = lazy(
 const VehicleManagementWorkspace = lazy(
   () => import("@/components/VehicleManagementWorkspace")
 );
+const AdministratorManagement = lazy(
+  () => import("@/components/AdministratorManagement")
+);
 const MachineryWorkspace = lazy(
   () => import("@/components/MachineryWorkspace")
 );
@@ -370,6 +373,12 @@ const ADMIN_MENU: DashboardMenuItem[] = [
     label: "范围通知",
     path: "/admin/broadcast",
     section: "风险与通知",
+  },
+  {
+    icon: UsersRound,
+    label: "管理员管理",
+    path: "/admin/administrators",
+    section: "平台治理",
   },
   {
     icon: UsersRound,
@@ -2311,13 +2320,17 @@ function LedgerTable({
 
 export default function AdminPage({
   scopedSection,
-}: { scopedSection?: ScopedPcAdminSection } = {}) {
+  authorizedMenuItems,
+}: {
+  scopedSection?: ScopedPcAdminSection;
+  authorizedMenuItems?: DashboardMenuItem[];
+} = {}) {
   const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
   const activeSection = scopedSection ?? (location.split("/")[2] || "overview");
   const scopedMenuItems: DashboardMenuItem[] = scopedSection
-    ? [
+    ? (authorizedMenuItems ?? [
         {
           icon: LayoutDashboard,
           label: "业务工作台",
@@ -2327,7 +2340,7 @@ export default function AdminPage({
         ...ADMIN_MENU.filter(
           item => item.path === `/admin/${activeSection}`
         ).map(item => ({ ...item, section: "当前业务" })),
-      ]
+      ])
     : ADMIN_MENU;
   const [dieselReceiptPreview, setDieselReceiptPreview] = useState<
     string | null
@@ -2524,6 +2537,10 @@ export default function AdminPage({
   }, []);
   const onVehicleManagementDirtyChange = useCallback(
     (dirty: boolean) => recordWorkspaceDirty("vehicle-management", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onAdministratorManagementDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("administrator-management", dirty),
     [recordWorkspaceDirty]
   );
   const onPurchasingDirtyChange = useCallback(
@@ -21129,6 +21146,14 @@ export default function AdminPage({
       />
     ) : activeSection === "permission" ? (
       renderPermissions()
+    ) : activeSection === "administrators" && !scopedSection ? (
+      <Suspense fallback={<EmptyState text="正在读取管理员管理…" />}>
+        <AdministratorManagement
+          currentUserId={user?.id ?? 0}
+          canChangeOwnPassword={user?.loginMethod === "local_manager"}
+          onDirtyChange={onAdministratorManagementDirtyChange}
+        />
+      </Suspense>
     ) : activeSection === "risk" ? (
       renderRisk()
     ) : activeSection === "finance" || activeSection === "diesel" ? (
@@ -21153,6 +21178,16 @@ export default function AdminPage({
         scopedSection ? "悦信云智管 · 统一业务工作区" : "悦信云智管 · 管理后台"
       }
       menuItems={scopedMenuItems}
+      accessLabel={
+        scopedSection ? "PC 业务管理 · 已授权" : "PC 超级治理 · 已授权"
+      }
+      fallbackSectionLabel={scopedSection ? "业务工作台" : "系统治理"}
+      onBeforeNavigate={() =>
+        !hasWorkspaceDraft ||
+        window.confirm(
+          "有尚未保存的业务资料，离开当前模块将放弃未保存内容。确认离开吗？"
+        )
+      }
     >
       <div className="mx-auto max-w-7xl space-y-6 py-3">
         {!scopedSection ? (

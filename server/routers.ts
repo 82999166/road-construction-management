@@ -3,12 +3,21 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import type { TrpcContext } from "./_core/context";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { changeLocalManagerPassword, loginLocalManager, loginPermanentAdmin, loginTemporaryAdmin } from "./localAuth";
+import {
+  changeLocalManagerPassword,
+  loginLocalManager,
+  loginPermanentAdmin,
+  loginTemporaryAdmin,
+} from "./localAuth";
 import { adminRouter } from "./routers/admin";
 import { constructionRouter } from "./routers/construction";
 import { evidenceRouter } from "./routers/evidence";
 import { dieselRouter } from "./routers/diesel";
-import { financeRouter, measurementRouter, purchasingRouter } from "./routers/finance";
+import {
+  financeRouter,
+  measurementRouter,
+  purchasingRouter,
+} from "./routers/finance";
 import { subcontractRouter } from "./routers/subcontract";
 import { contractRouter } from "./routers/contracts";
 import { laborRouter } from "./routers/labor";
@@ -23,6 +32,7 @@ import { locationRouter } from "./routers/location";
 import { settlementPaymentRouter } from "./routers/settlementPayments";
 import { vehicleManagementRouter } from "./routers/vehicleManagement";
 import { personnelRouter } from "./routers/personnel";
+import { administratorManagementRouter } from "./routers/administratorManagement";
 import { z } from "zod";
 
 /**
@@ -57,28 +67,36 @@ export const appRouter = router({
       return { success: true } as const;
     }),
     localAdminLogin: publicProcedure
-      .input(z.object({
-        username: z.string().trim().min(1).max(64),
-        password: z.string().min(1).max(256),
-      }))
+      .input(
+        z.object({
+          username: z.string().trim().min(1).max(64),
+          password: z.string().min(1).max(256),
+        })
+      )
       .mutation(({ ctx, input }) => loginTemporaryAdmin(ctx, input)),
     permanentAdminLogin: publicProcedure
-      .input(z.object({
-        username: z.string().trim().min(1).max(64),
-        password: z.string().min(1).max(256),
-      }))
+      .input(
+        z.object({
+          username: z.string().trim().min(1).max(64),
+          password: z.string().min(1).max(256),
+        })
+      )
       .mutation(({ ctx, input }) => loginPermanentAdmin(ctx, input)),
     localManagerLogin: publicProcedure
-      .input(z.object({
-        username: z.string().trim().min(1).max(64),
-        password: z.string().min(1).max(256),
-      }))
+      .input(
+        z.object({
+          username: z.string().trim().min(1).max(64),
+          password: z.string().min(1).max(256),
+        })
+      )
       .mutation(({ ctx, input }) => loginLocalManager(ctx, input)),
     changeLocalPassword: protectedProcedure
-      .input(z.object({
-        currentPassword: z.string().min(1).max(256),
-        newPassword: z.string().min(6, "新密码至少 6 位").max(128),
-      }))
+      .input(
+        z.object({
+          currentPassword: z.string().min(1).max(256),
+          newPassword: z.string().min(6, "新密码至少 6 位").max(128),
+        })
+      )
       .mutation(({ ctx, input }) => changeLocalManagerPassword(ctx, input)),
   }),
   admin: adminRouter,
@@ -103,6 +121,7 @@ export const appRouter = router({
   settlementPayment: settlementPaymentRouter,
   personnel: personnelRouter,
   vehicleManagement: vehicleManagementRouter,
+  administratorManagement: administratorManagementRouter,
 });
 
 export type AppRouter = typeof appRouter;
