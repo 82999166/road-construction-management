@@ -1,0 +1,10 @@
+/* 应用保持 NoNewPrivileges=yes；只有 PID 1 能创建独立的 yxbackup 服务进程。 */
+polkit.addRule(function(action, subject) {
+  if (action.id === "org.freedesktop.systemd1.manage-units" &&
+      subject.user === "yxapp" &&
+      action.lookup("unit") === "yx-db-backup.service" &&
+      action.lookup("verb") === "start") {
+    return polkit.Result.YES;
+  }
+  // 其他用户、单元、动作不新增授权，不采用会话缓存式授权。
+});

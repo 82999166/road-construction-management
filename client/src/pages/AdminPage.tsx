@@ -4,6 +4,7 @@ import {
 } from "@/components/DieselSupportingReports";
 import { DieselReceiptLedger } from "@/components/DieselReceiptLedger";
 import RfidBridgeReadinessPanel from "@/components/RfidBridgeReadinessPanel";
+import FullDatabaseBackupHistory from "@/components/FullDatabaseBackupHistory";
 import {
   readRfidBridgeReadiness,
   RFID_FIRST_INSTALL_PACKAGE_URL,
@@ -2924,6 +2925,9 @@ export default function AdminPage({
     enabled: canQuery && isBusiness,
   });
   const fullDatabaseBackup = trpc.admin.backup.fullStatus.useQuery(undefined, {
+    enabled: canQuery && isBusiness,
+  });
+  const fullDatabaseBackupHistory = trpc.admin.backup.fullHistory.useQuery(undefined, {
     enabled: canQuery && isBusiness,
   });
   const workspaceProjectState = getBusinessWorkspaceProjectState(
@@ -6206,9 +6210,11 @@ export default function AdminPage({
       toast.success(
         `完整数据库备份已完成：${backup.tableCount} 张表已逐表校验`
       );
-      await Promise.all([fullDatabaseBackup.refetch(), audits.refetch()]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
+    onSettled: async () => {
+      await Promise.all([fullDatabaseBackup.refetch(), fullDatabaseBackupHistory.refetch(), audits.refetch()]);
+    },
   });
   const confirmFullDatabaseBackupDownload = async () => {
     if (!fullBackupDownloadTarget) return;
@@ -16507,8 +16513,8 @@ export default function AdminPage({
                         .gzipIntegrity === "passed" &&
                       fullDatabaseBackup.data.latestSuccess.verification
                         .allTableDefinitionsPresent
-                        ? "最近完整备份校验通过"
-                        : "最近完整备份需重新核验"}
+                        ? "最近可用完整备份（校验通过）"
+                        : "最近可用完整备份需重新核验"}
                     </p>
                     <Badge
                       className={
@@ -16609,6 +16615,15 @@ export default function AdminPage({
                   </p>
                 </div>
               ) : null}
+              <FullDatabaseBackupHistory
+                entries={fullDatabaseBackupHistory.data}
+                loading={fullDatabaseBackupHistory.isFetching}
+                error={fullDatabaseBackupHistory.isError}
+                onRefresh={() => {
+                  void fullDatabaseBackupHistory.refetch();
+                  void fullDatabaseBackup.refetch();
+                }}
+              />
               <p className="text-xs text-slate-500">
                 完整备份仅用于灾难恢复。下载前会再次校验超级管理员会话、文件清单、SHA-256
                 和大小，并记录审计；系统始终不提供在线恢复，恢复必须在非生产演练库中由服务器管理员执行。

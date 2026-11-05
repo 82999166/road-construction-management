@@ -8525,13 +8525,40 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       return getSelfHostDatabaseBackupStatus();
     }),
+    fullHistory: protectedProcedure.query(async ({ ctx }) => {
+      await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) return [];
+      const rows = await db.select({
+        id: auditLogs.id, createdAt: auditLogs.createdAt, action: auditLogs.action,
+        operatorName: users.name,
+      }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(
+        eq(auditLogs.module, "backup"), eq(auditLogs.targetType, "full_database_backup"),
+        inArray(auditLogs.action, ["create_requested", "create", "create_failed"]),
+      )).orderBy(desc(auditLogs.id)).limit(20);
+      return rows.map(row => ({
+        id: row.id, createdAt: row.createdAt,
+        operatorName: row.operatorName || "超级管理员",
+        status: row.action === "create" ? "success" : row.action === "create_failed" ? "failed" : "requested",
+        description: row.action === "create"
+          ? "已生成并逐表校验新的完整备份"
+          : row.action === "create_failed"
+            ? "启动或结果校验未完成；上次成功备份仍保留，请结合时间查看受控服务日志"
+            : "已提交完整备份请求，结果以完成记录和新的可用备份为准",
+      }));
+    }),
     createFull: protectedProcedure.mutation(async ({ ctx }) => {
       const admin = await assertSuperAdmin(ctx);
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "暂时无法记录备份操作，请稍后重试" });
+      await db.insert(auditLogs).values({
+        userId: admin.id, module: "backup", action: "create_requested",
+        targetType: "full_database_backup", targetId: null,
+        summary: "超级管理员提交完整数据库备份请求；尚未宣布完成",
+      });
       try {
         const backup = await createSelfHostDatabaseBackup();
-        const db = await getDb();
-        if (db)
-          await db.insert(auditLogs).values({
+        await db.insert(auditLogs).values({
             userId: admin.id,
             module: "backup",
             action: "create",
@@ -8543,15 +8570,13 @@ export const adminRouter = router({
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "完整数据库备份失败";
-        const db = await getDb();
-        if (db)
-          await db.insert(auditLogs).values({
+        await db.insert(auditLogs).values({
             userId: admin.id,
             module: "backup",
             action: "create_failed",
             targetType: "full_database_backup",
             targetId: null,
-            summary: "完整数据库备份未成功；服务器端已保留诊断状态",
+            summary: "完整备份请求启动或结果校验未完成；请结合操作时间核对应用服务和备份服务日志",
           });
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
       }

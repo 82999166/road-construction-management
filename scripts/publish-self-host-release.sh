@@ -117,6 +117,12 @@ if [[ -f "$new_release/dist/deploy/yx-db-backup.service" && -f "$new_release/dis
   systemctl daemon-reload
   systemctl enable yx-db-backup.timer
 fi
+if [[ -f "$new_release/dist/deploy/50-yx-db-backup.rules" ]]; then
+  [[ -x /usr/bin/pkaction ]] || { printf '完整备份启动授权组件尚未安装\n' >&2; exit 1; }
+  install -d -o root -g root -m 0755 /etc/polkit-1/rules.d
+  install -o root -g root -m 0644 "$new_release/dist/deploy/50-yx-db-backup.rules" /etc/polkit-1/rules.d/50-yx-db-backup.rules
+  systemctl start polkit.service
+fi
 ln -sfn "$new_release" "$APP_ROOT/current.next"
 mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"
 activated=1
