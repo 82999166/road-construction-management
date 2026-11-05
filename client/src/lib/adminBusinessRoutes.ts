@@ -1,7 +1,14 @@
-/** 超级管理员从业务治理页进入时，优先落在 PC 端受控台账；其他模块仍使用已部署的既有工作台。 */
-export const ADMIN_BUSINESS_ROUTE_BY_MODULE: Record<string, string> = {
-  CONSTRUCTION: "/admin/construction",
-  LABOR: "/admin/labor",
-  MACHINERY: "/admin/machinery",
-  TRANSPORT: "/admin/transport",
-};
+import { PC_MANAGEMENT_MODULE_PATH_BY_CODE } from "./managementPortal";
+
+/** 超级后台与分权PC工作台共用固定业务白名单，不使用统计接口的移动端 route。 */
+export const ADMIN_BUSINESS_ROUTE_BY_MODULE = PC_MANAGEMENT_MODULE_PATH_BY_CODE;
+
+/** 未登记的模块关闭维护入口，不能通过接口路径或原型属性绕过PC白名单。 */
+export function getAdminBusinessRoute(code: string): string | null {
+  return Object.prototype.hasOwnProperty.call(
+    ADMIN_BUSINESS_ROUTE_BY_MODULE,
+    code
+  )
+    ? ADMIN_BUSINESS_ROUTE_BY_MODULE[code]
+    : null;
+}

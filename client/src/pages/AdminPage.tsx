@@ -115,7 +115,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
-import { ADMIN_BUSINESS_ROUTE_BY_MODULE } from "@/lib/adminBusinessRoutes";
+import { getAdminBusinessRoute } from "@/lib/adminBusinessRoutes";
+import { requestDashboardNavigation } from "@/lib/dashboardNavigation";
 import { getAssignmentScopeSaveInput } from "@/lib/assignmentScope";
 import {
   summarizeLaborPayrollCategories,
@@ -176,6 +177,11 @@ import { useLocation } from "wouter";
 /** 仅在相应后台菜单进入时加载独立工作区，避免财税、结算和工具模块膨胀管理端首屏包。 */
 const AdminMeasurementToolsPanel = lazy(
   () => import("@/components/AdminMeasurementToolsPanel")
+);
+const EvidenceWorkspace = lazy(() =>
+  import("@/pages/MobileEvidencePage").then(module => ({
+    default: module.EvidenceWorkspace,
+  }))
 );
 const NotificationChannelSettings = lazy(
   () => import("@/components/NotificationChannelSettings")
@@ -330,6 +336,12 @@ const ADMIN_MENU: DashboardMenuItem[] = [
     icon: Fuel,
     label: "柴油管理",
     path: "/admin/diesel",
+    section: "资源与现场",
+  },
+  {
+    icon: Camera,
+    label: "现场取证",
+    path: "/admin/evidence",
     section: "资源与现场",
   },
   {
@@ -2545,6 +2557,10 @@ export default function AdminPage({
   );
   const onPurchasingDirtyChange = useCallback(
     (dirty: boolean) => recordWorkspaceDirty("purchasing", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onEvidenceDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("evidence", dirty),
     [recordWorkspaceDirty]
   );
   const onTransportSettlementDirtyChange = useCallback(
@@ -16311,7 +16327,8 @@ export default function AdminPage({
         <CardHeader>
           <CardTitle className="text-base">全业务管理入口</CardTitle>
           <CardDescription>
-            每个入口均跳转至已部署的真实业务工作台；超级管理员可维护记录，普通人员仍会受到角色、部门与项目范围限制。
+            从此处进入对应的 PC
+            业务工作区，保留后台导航与电脑宽版布局；超级管理员可维护记录，普通人员仍会受到角色、部门与项目范围限制。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -16323,38 +16340,50 @@ export default function AdminPage({
             <EmptyState text="暂无法读取全业务统计，请确认当前账号具有超级管理员权限。" />
           ) : businessStatistics.data?.length ? (
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {businessStatistics.data.map(module => (
-                <div
-                  key={module.code}
-                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-slate-900">
-                        {module.name}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        当前真实记录
-                      </p>
-                    </div>
-                    <Badge variant="secondary">{module.recordCount} 条</Badge>
-                  </div>
-                  <Button
-                    className="mt-4 w-full print:hidden"
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setLocation(
-                        ADMIN_BUSINESS_ROUTE_BY_MODULE[module.code] ??
-                          module.route
-                      )
-                    }
+              {businessStatistics.data.map(module => {
+                const pcRoute = getAdminBusinessRoute(module.code);
+                return (
+                  <div
+                    key={module.code}
+                    className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
                   >
-                    <ExternalLink className="mr-1.5 h-4 w-4" />
-                    进入维护
-                  </Button>
-                </div>
-              ))}
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-slate-900">
+                          {module.name}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          当前真实记录
+                        </p>
+                      </div>
+                      <Badge variant="secondary">{module.recordCount} 条</Badge>
+                    </div>
+                    <Button
+                      className="mt-4 w-full print:hidden"
+                      size="sm"
+                      variant="outline"
+                      disabled={!pcRoute}
+                      aria-label={`进入${module.name}PC维护`}
+                      onClick={() => {
+                        if (!pcRoute) return;
+                        requestDashboardNavigation(
+                          location,
+                          pcRoute,
+                          setLocation,
+                          () =>
+                            !hasWorkspaceDraft ||
+                            window.confirm(
+                              "有尚未保存的业务资料，离开当前模块将放弃未保存内容。确认离开吗？"
+                            )
+                        );
+                      }}
+                    >
+                      <ExternalLink className="mr-1.5 h-4 w-4" />
+                      {pcRoute ? "进入维护" : "暂无 PC 维护入口"}
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <EmptyState text="暂无业务模块统计结果。" />
@@ -21133,6 +21162,8 @@ export default function AdminPage({
       renderTransport()
     ) : activeSection === "purchasing" ? (
       renderPurchasing()
+    ) : activeSection === "evidence" ? (
+      <EvidenceWorkspace mode="pc" onDirtyChange={onEvidenceDirtyChange} />
     ) : activeSection === "measurement-tools" ? (
       <AdminMeasurementToolsPanel />
     ) : activeSection === "subcontract" ? (

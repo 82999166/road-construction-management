@@ -16,7 +16,11 @@ import { useLocation } from "wouter";
 // 只在服务端工作台授权通过后渲染 lazy 组件，拒绝/未知模块不发起业务 API。
 const MobileFinancePage = lazy(() => import("./MobileFinancePage"));
 const MobileDieselPage = lazy(() => import("./MobileDieselPage"));
-const MobileEvidencePage = lazy(() => import("./MobileEvidencePage"));
+const EvidenceWorkspace = lazy(() =>
+  import("./MobileEvidencePage").then(module => ({
+    default: module.EvidenceWorkspace,
+  }))
+);
 const AdminPage = lazy(() => import("./AdminPage"));
 
 const PC_SCOPED_MODULES = {
@@ -186,7 +190,7 @@ export default function ScopedManagementModulePage({
       ? MobileFinancePage
       : module.code === "DIESEL"
         ? MobileDieselPage
-        : MobileEvidencePage;
+        : EvidenceWorkspace;
   return shell(
     <>
       <section>
@@ -207,7 +211,11 @@ export default function ScopedManagementModulePage({
             </p>
           }
         >
-          <Page />
+          {module.code === "EVIDENCE" ? (
+            <EvidenceWorkspace mode="pc" />
+          ) : (
+            <Page />
+          )}
         </Suspense>
       </div>
     </>

@@ -2,10 +2,16 @@
  * 统一管理入口的前端路由投影。
  * 此处仅决定已由服务端下发的菜单如何展示；任何数据读取和业务写入仍由服务端二次校验。
  */
-export type ManagementAccessMode = "login" | "checking" | "super-admin" | "scoped-manager" | "unavailable";
+export type ManagementAccessMode =
+  | "login"
+  | "checking"
+  | "super-admin"
+  | "scoped-manager"
+  | "unavailable";
 
-const MANAGEMENT_MODULE_PATH_BY_CODE: Record<string, string> = {
-  TOOL_KNOWLEDGE: "/tools",
+export const PC_MANAGEMENT_MODULE_PATH_BY_CODE: Readonly<
+  Record<string, string>
+> = Object.freeze({
   CONSTRUCTION: "/admin/construction",
   LABOR: "/admin/labor",
   MACHINERY: "/admin/machinery",
@@ -16,7 +22,7 @@ const MANAGEMENT_MODULE_PATH_BY_CODE: Record<string, string> = {
   FINANCE: "/admin/finance",
   DIESEL: "/admin/diesel",
   EVIDENCE: "/admin/evidence",
-};
+});
 
 export function resolveManagementAccessMode(input: {
   isAuthenticated: boolean;
@@ -25,7 +31,8 @@ export function resolveManagementAccessMode(input: {
   accessError: boolean;
   isSuperAdmin: boolean;
 }): ManagementAccessMode {
-  if (input.authLoading || (input.isAuthenticated && input.accessLoading)) return "checking";
+  if (input.authLoading || (input.isAuthenticated && input.accessLoading))
+    return "checking";
   if (!input.isAuthenticated) return "login";
   if (input.accessError) return "unavailable";
   return input.isSuperAdmin ? "super-admin" : "scoped-manager";
@@ -35,10 +42,23 @@ export function resolveManagementAccessMode(input: {
 export function getManagementModulePath(code: string) {
   if (code === "WORKBENCH") return "/admin";
   if (code === "MESSAGES") return "/mobile/messages";
-  return MANAGEMENT_MODULE_PATH_BY_CODE[code] ?? null;
+  if (code === "TOOL_KNOWLEDGE") return "/tools";
+  return Object.prototype.hasOwnProperty.call(
+    PC_MANAGEMENT_MODULE_PATH_BY_CODE,
+    code
+  )
+    ? PC_MANAGEMENT_MODULE_PATH_BY_CODE[code]
+    : null;
 }
 
 /** 工作台与消息中心不重复呈现为“业务管理版块”。 */
-export function getAuthorizedManagementModules<T extends { code: string }>(menus: readonly T[]) {
-  return menus.filter(menu => menu.code !== "WORKBENCH" && menu.code !== "MESSAGES" && getManagementModulePath(menu.code));
+export function getAuthorizedManagementModules<T extends { code: string }>(
+  menus: readonly T[]
+) {
+  return menus.filter(
+    menu =>
+      menu.code !== "WORKBENCH" &&
+      menu.code !== "MESSAGES" &&
+      getManagementModulePath(menu.code)
+  );
 }

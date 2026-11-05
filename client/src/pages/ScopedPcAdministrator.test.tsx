@@ -85,9 +85,13 @@ vi.mock("./MobileDieselPage", () => ({
   },
 }));
 vi.mock("./MobileEvidencePage", () => ({
-  default: () => {
+  EvidenceWorkspace: ({ mode }: { mode: string }) => {
     state.evidenceBusinessApi();
-    return <EmbeddedBusiness name="取证" />;
+    return (
+      <div data-pc-management-module={mode === "pc" ? "EVIDENCE" : undefined}>
+        <button>取证授权业务操作</button>
+      </div>
+    );
   },
 }));
 function EmbeddedBusiness({ name }: { name: string }) {
