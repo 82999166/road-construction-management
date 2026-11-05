@@ -4,6 +4,7 @@ import type { AppRouter } from "../../../server/routers";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { requiresVehicleCargoBox } from "@shared/vehicleCargo";
 import {
   Dialog,
   DialogContent,
@@ -225,9 +226,7 @@ export function VehicleRegistryForm({
   const utils = trpc.useUtils();
   const put = (key: keyof typeof form, value: string) =>
     setForm(previous => ({ ...previous, [key]: value }));
-  const boxRequired = ["dump_truck", "flatbed", "trailer"].includes(
-    form.vehicleType
-  );
+  const boxRequired = requiresVehicleCargoBox(form.vehicleType);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -262,11 +261,23 @@ export function VehicleRegistryForm({
         ...(form.driverPhone.trim()
           ? { driverPhone: form.driverPhone.trim() }
           : {}),
-        boxLengthMeters: optionalNumber(form.boxLengthMeters) ?? 0,
-        boxWidthMeters: optionalNumber(form.boxWidthMeters) ?? 0,
-        boxHeightMeters: optionalNumber(form.boxHeightMeters) ?? 0,
-        loadFactor: requiredNumber(form.loadFactor, "装载系数"),
-        payloadTons: optionalNumber(form.payloadTons),
+        boxLengthMeters: boxRequired
+          ? requiredNumber(form.boxLengthMeters, "货厢长")
+          : Number(vehicle?.boxLengthMeters ?? 0),
+        boxWidthMeters: boxRequired
+          ? requiredNumber(form.boxWidthMeters, "货厢宽")
+          : Number(vehicle?.boxWidthMeters ?? 0),
+        boxHeightMeters: boxRequired
+          ? requiredNumber(form.boxHeightMeters, "货厢高")
+          : Number(vehicle?.boxHeightMeters ?? 0),
+        loadFactor: boxRequired
+          ? requiredNumber(form.loadFactor, "装载系数")
+          : Number(vehicle?.loadFactor ?? 1),
+        payloadTons: boxRequired
+          ? optionalNumber(form.payloadTons)
+          : vehicle?.payloadTons
+            ? Number(vehicle.payloadTons)
+            : null,
         fuelTankCapacityLiters: optionalNumber(form.fuelTankCapacityLiters),
         status: requireVehicleChoice(
           form.status,
@@ -401,19 +412,23 @@ export function VehicleRegistryForm({
             />
           )
         )}
-      <VehicleField
-        label="装载系数"
-        type="number"
-        value={form.loadFactor}
-        onChange={value => put("loadFactor", value)}
-        required
-      />
-      <VehicleField
-        label="核定载重（吨）"
-        type="number"
-        value={form.payloadTons}
-        onChange={value => put("payloadTons", value)}
-      />
+      {boxRequired && (
+        <>
+          <VehicleField
+            label="装载系数"
+            type="number"
+            value={form.loadFactor}
+            onChange={value => put("loadFactor", value)}
+            required
+          />
+          <VehicleField
+            label="核定载重（吨）"
+            type="number"
+            value={form.payloadTons}
+            onChange={value => put("payloadTons", value)}
+          />
+        </>
+      )}
       <VehicleField
         label="油箱容量（升）"
         type="number"
@@ -471,7 +486,7 @@ export function VehicleRegistryForm({
       )}
       {!boxRequired && (
         <p className="text-xs text-muted-foreground sm:col-span-2">
-          该车型不强制虚填货厢尺寸；搅拌罐体有效容量、VIN、品牌型号及挂车组合在“基础资料
+          该车型无需填写货厢尺寸、装载系数和核定载重，可直接保存；搅拌罐体有效容量、VIN、品牌型号及挂车组合在“基础资料
           → 完善分类与档案”维护。
         </p>
       )}

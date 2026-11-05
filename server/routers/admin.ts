@@ -63,8 +63,8 @@ import {
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
 import {
   assertCertificateFileSignature,
-  calculateTheoreticalVolume,
 } from "../../shared/domain";
+import { calculateVehicleRegistryVolume, requiresVehicleCargoBox } from "../../shared/vehicleCargo";
 import { COOKIE_NAME } from "../../shared/const";
 import {
   normalizeEvidenceWatermarkTemplate,
@@ -229,9 +229,9 @@ const vehicleManagementInput = z
       .regex(/^[+0-9()\-\s]{6,32}$/, "请填写有效司机手机号")
       .nullable()
       .optional(),
-    boxLengthMeters: z.number().min(0).max(100),
-    boxWidthMeters: z.number().min(0).max(20),
-    boxHeightMeters: z.number().min(0).max(20),
+    boxLengthMeters: z.number().min(0).max(100).default(0),
+    boxWidthMeters: z.number().min(0).max(20).default(0),
+    boxHeightMeters: z.number().min(0).max(20).default(0),
     loadFactor: z.number().gt(0).max(1.5).default(1),
     payloadTons: z.number().gt(0).max(9999).nullable().optional(),
     fuelTankCapacityLiters: z.number().gt(0).max(99999).nullable().optional(),
@@ -255,7 +255,7 @@ const vehicleManagementInput = z
       .optional(),
   })
   .superRefine((value, ctx) => {
-    if (["dump_truck", "flatbed"].includes(value.vehicleType) && [value.boxLengthMeters,value.boxWidthMeters,value.boxHeightMeters].some(n=>n<=0)) ctx.addIssue({code:"custom",path:["boxLengthMeters"],message:"货运车辆须填写真实正数货厢尺寸"});
+    if (requiresVehicleCargoBox(value.vehicleType) && [value.boxLengthMeters,value.boxWidthMeters,value.boxHeightMeters].some(n=>n<=0)) ctx.addIssue({code:"custom",path:["boxLengthMeters"],message:"货运车辆须填写真实正数货厢尺寸"});
     if (value.ownership !== "leased") return;
     if (!value.ownerName?.trim())
       ctx.addIssue({
@@ -4236,7 +4236,8 @@ export const adminRouter = router({
           return {
             ...vehicle,
             profile: classificationsByVehicle.get(vehicle.id) ?? null,
-            theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
+            theoreticalVolumeCubicMeters: calculateVehicleRegistryVolume(
+              vehicle.vehicleType,
               Number(vehicle.boxLengthMeters),
               Number(vehicle.boxWidthMeters),
               Number(vehicle.boxHeightMeters),
@@ -4499,7 +4500,8 @@ export const adminRouter = router({
           return {
             success: true,
             vehicleId,
-            theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
+            theoreticalVolumeCubicMeters: calculateVehicleRegistryVolume(
+              input.vehicleType,
               input.boxLengthMeters,
               input.boxWidthMeters,
               input.boxHeightMeters,

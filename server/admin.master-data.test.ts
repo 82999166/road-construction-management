@@ -37,7 +37,7 @@ function createAdminContext(): TrpcContext {
 /** 按查询顺序返回单条记录，覆盖组织、项目与授权过程的逐层主数据验证。 */
 function createSequentialLimitDb(...responses: unknown[][]) {
   let queryIndex = 0;
-  const values = vi.fn(async () => undefined);
+  const values = vi.fn(async (_values?: unknown) => undefined);
   const nextResponse = async () => responses[queryIndex++] ?? [];
   const writeWhere = vi.fn(async () => undefined);
   const db = {
@@ -69,6 +69,10 @@ function createVehicleSaveDb(options:{duplicate?:unknown;existing?:Record<string
   const db=createSequentialLimitDb();let vehicleReads=0;
   const base={...vehicleInput,id:options.savedId??88,driverPersonId:null,createdAt:new Date(),updatedAt:new Date(),driverPhoneEncrypted:null,driverPhoneMasked:null};
   db.values.mockImplementation(async()=>[{insertId:base.id}] as never);
+  db.insert.mockImplementation((table:Parameters<typeof getTableName>[0])=>({values:(values:Record<string,unknown>)=>{
+    if(getTableName(table)==='transport_vehicles') Object.assign(base,values);
+    return db.values(values);
+  }}) as never);
   db.select.mockImplementation(()=>({from:vi.fn((table:Parameters<typeof getTableName>[0])=>{
     const name=getTableName(table);let rows:unknown[]=[];
     if(name==='projects') rows=[{id:20,status:'active'}];
@@ -477,6 +481,68 @@ describe("超级管理主数据约束", () => {
     await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(vehicleInput)).resolves.toMatchObject({ success: true, theoreticalVolumeCubicMeters: 19.964 });
     expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ plateNo: "粤A12345", vehicleType: "dump_truck", ownership: "owned", projectId: 20 }));
     expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
+  });
+
+  it.each(["suv", "tractor", "mixer", "pickup", "other"] as const)("%s 不填货厢尺寸和载重也可保存，档案方量为零", async vehicleType => {
+    for (const payloadTons of [null, undefined]) {
+      const db=createVehicleSaveDb({savedId:91});
+      vi.mocked(getDb).mockResolvedValue(db as never);
+      const input = { ...vehicleInput, vehicleType, boxLengthMeters: 0, boxWidthMeters: 0, boxHeightMeters: 0, payloadTons };
+      if (payloadTons === undefined) delete input.payloadTons;
+
+      await expect(adminRouter.createCaller(createAdminContext()).vehicle.save(input)).resolves.toMatchObject({ success: true, vehicleId: 91, theoreticalVolumeCubicMeters: 0 });
+      expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ vehicleType, boxLengthMeters: "0", boxWidthMeters: "0", boxHeightMeters: "0", payloadTons: null }));
+      expect(db.values).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: 91, projectId: 20, settlementMode: "none", projectStatus: "pending", dispatchStatus: "paused" }));
+      expect(db.values).toHaveBeenLastCalledWith(expect.objectContaining({ module: "transport", action: "admin_create_vehicle", targetType: "transport_vehicle" }));
+    }
+  });
+
+  it.each(["dump_truck", "flatbed"] as const)("%s 仍拒绝零货厢尺寸且不写入车辆档案", async vehicleType => {
+    for (const dimensions of [
+      { boxLengthMeters: 0, boxWidthMeters: 0, boxHeightMeters: 0 },
+      { boxLengthMeters: 0 },
+      { boxWidthMeters: 0 },
+      { boxHeightMeters: 0 },
+    ]) {
+      const db=createVehicleSaveDb();
+      vi.mocked(getDb).mockResolvedValue(db as never);
+
+      await expect(adminRouter.createCaller(createAdminContext()).vehicle.save({ ...vehicleInput, vehicleType, ...dimensions })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("货厢尺寸") });
+      expect(db.values).not.toHaveBeenCalled();
+    }
+  });
+
+  it("车辆列表混合货车与零尺寸越野车时正常返回各自档案方量", async () => {
+    const base = { ...vehicleInput, boxLengthMeters: "6.2", boxWidthMeters: "2.3", boxHeightMeters: "1.4", loadFactor: "1", payloadTons: "20", createdAt: new Date(), updatedAt: new Date() };
+    const rowsByTable: Record<string, unknown[]> = {
+      transport_vehicles: [
+        { ...base, id: 88 },
+        { ...base, id: 89, vehicleType: "flatbed" },
+        { ...base, id: 90, vehicleType: "suv", boxLengthMeters: "0", boxWidthMeters: "0", boxHeightMeters: "0", payloadTons: null },
+        { ...base, id: 91, vehicleType: undefined },
+      ],
+      official_account_driver_bindings: [],
+      vehicle_fleet_profiles: [],
+      transport_vehicle_lease_rules: [],
+    };
+    vi.mocked(getDb).mockResolvedValue({
+      select: vi.fn(() => ({ from: vi.fn((table:Parameters<typeof getTableName>[0]) => {
+        const name=getTableName(table);
+        if (!(name in rowsByTable)) throw new Error(`Unexpected vehicle list table: ${name}`);
+        const q={where:vi.fn(()=>q),orderBy:vi.fn(()=>q),then:(resolve:(rows:unknown[])=>unknown,reject:(e:unknown)=>unknown)=>Promise.resolve(rowsByTable[name]).then(resolve,reject)};
+        return q;
+      }) })),
+    } as never);
+
+    const vehicles = await adminRouter.createCaller(createAdminContext()).vehicle.list();
+
+    expect(vehicles).toHaveLength(4);
+    expect(vehicles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 88, vehicleType: "dump_truck", theoreticalVolumeCubicMeters: 19.964 }),
+      expect.objectContaining({ id: 89, vehicleType: "flatbed", theoreticalVolumeCubicMeters: 19.964 }),
+      expect.objectContaining({ id: 90, vehicleType: "suv", theoreticalVolumeCubicMeters: 0, payloadTons: null }),
+      expect.objectContaining({ id: 91, theoreticalVolumeCubicMeters: 19.964 }),
+    ]));
   });
 
   it("允许皮卡车与越野车写入受控车辆台账", async () => {

@@ -144,7 +144,7 @@ describe("渣土车按趟结算车辆档案", () => {
     );
   });
 
-  it.each(["pickup", "suv"])(
+  it.each(["pickup", "suv", "tractor", "mixer", "other"])(
     "真实新表单可保存%s且不强制虚填货厢，按趟不会提交租赁资料",
     async type => {
       const onSaved = vi.fn();
@@ -172,6 +172,12 @@ describe("渣土车按趟结算车辆档案", () => {
         tree.root.findAllByProps({ "aria-label": "货厢长（米）" })
       ).toHaveLength(0);
       expect(
+        tree.root.findAllByProps({ "aria-label": "装载系数" })
+      ).toHaveLength(0);
+      expect(
+        tree.root.findAllByProps({ "aria-label": "核定载重（吨）" })
+      ).toHaveLength(0);
+      expect(
         tree.root.findAllByProps({ "aria-label": "租金单价（元）" })
       ).toHaveLength(0);
       expect(
@@ -191,11 +197,37 @@ describe("渣土车按趟结算车辆档案", () => {
         boxLengthMeters: 0,
         boxWidthMeters: 0,
         boxHeightMeters: 0,
+        loadFactor: 1,
+        payloadTons: null,
       });
       expect(mock.invalidate).toHaveBeenCalledTimes(1);
       expect(onSaved).toHaveBeenCalledWith(7);
     }
   );
+
+  it("货运切换无货厢车型不提交隐藏的旧输入，切回货运仍需要真实尺寸", async () => {
+    await act(async () => {
+      tree = create(
+        <VehicleRegistryForm projectId={2} projects={projects} organizations={[]}
+          onClose={vi.fn()} onSaved={vi.fn()} />
+      );
+    });
+    await change("车牌号", "湘A12345");
+    await change("货厢长（米）", "6");
+    await change("货厢宽（米）", "2");
+    await change("货厢高（米）", "1.5");
+    await change("装载系数", "0.9");
+    await change("核定载重（吨）", "20");
+    await change("车型", "suv");
+    await act(async () => { await tree.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() }); });
+    expect(mock.save.mock.calls[0][0]).toMatchObject({ vehicleType: "suv", boxLengthMeters: 0, boxWidthMeters: 0, boxHeightMeters: 0, loadFactor: 1, payloadTons: null });
+    await change("车型", "dump_truck");
+    expect(tree.root.findAllByProps({ "aria-label": "装载系数" }).filter((node: any) => node.type === "input")).toHaveLength(1);
+    await change("货厢长（米）", "");
+    await act(async () => { await tree.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() }); });
+    expect(mock.save).toHaveBeenCalledTimes(1);
+    expect(mock.error).toHaveBeenCalled();
+  });
 
   it("切换租入后保留合同单价与起止日期，切回按趟不泄漏租赁金额", async () => {
     await act(async () => {

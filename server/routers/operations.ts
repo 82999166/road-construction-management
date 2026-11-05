@@ -63,6 +63,7 @@ import {
   getCardValidationStatusLabel,
   getSafeCardValidationReason,
 } from "../../shared/domain";
+import { calculateVehicleRegistryVolume } from "../../shared/vehicleCargo";
 import {
   assertDepartmentBusinessAccess,
   assertProjectInCurrentScope,
@@ -6693,7 +6694,8 @@ export const transportRouter = router({
             canViewDriverPhone && driverPhoneEncrypted
               ? decryptSecret(driverPhoneEncrypted)
               : null,
-          theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
+          theoreticalVolumeCubicMeters: calculateVehicleRegistryVolume(
+            vehicle.vehicleType,
             Number(vehicle.boxLengthMeters),
             Number(vehicle.boxWidthMeters),
             Number(vehicle.boxHeightMeters),
