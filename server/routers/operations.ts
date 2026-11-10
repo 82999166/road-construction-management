@@ -10292,6 +10292,7 @@ export const transportRouter = router({
         projectId: z.number().int().positive(),
         nextStatus: z.enum(["submitted", "verified", "settled", "void"]),
         reviewRemarks: z.string().trim().min(4).max(500).optional(),
+        reviewConfirmed: z.boolean().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -10423,12 +10424,13 @@ export const transportRouter = router({
         if (
           (eligibility.requiresExceptionReview ||
             eligibility.closureKind !== "normal") &&
-          !input.reviewRemarks
+          !input.reviewRemarks &&
+          input.reviewConfirmed !== true
         )
           throw new TRPCError({
             code: "BAD_REQUEST",
             message:
-              "特殊闭环或异常须填写现场核对依据后核验；系统不会补造装卸事实",
+              "特殊闭环或异常须勾选确认已核对现场资料，或填写现场核对依据后核验；系统不会补造装卸事实",
           });
       }
       try {
@@ -10523,7 +10525,7 @@ export const transportRouter = router({
         action: "transition_trip",
         targetType: "transport_trip",
         targetId: String(input.id),
-        summary: `运输趟次状态变更为：${transportStatusLabel}${input.reviewRemarks ? `；核验依据：${input.reviewRemarks}` : ""}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}`,
+        summary: `运输趟次状态变更为：${transportStatusLabel}${input.nextStatus === "verified" && input.reviewConfirmed === true ? "；核验依据：管理员勾选确认已核对现场装卸资料及异常/特殊闭环情况；未补造装卸事实" : ""}${input.reviewRemarks ? `；核验依据：${input.reviewRemarks}` : ""}${input.nextStatus === "settled" ? `；总运费¥${grossAmount.toFixed(2)}，油款扣减¥${fuelDeductionAmount.toFixed(2)}，净结算¥${(grossAmount - fuelDeductionAmount).toFixed(2)}` : ""}`,
       });
       void notifyOfficialAccountBusinessEventSafely({
         userId: user.id,

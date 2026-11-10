@@ -41,4 +41,4 @@ export const PRINT_PREVIEW_TABLE_FRAME_CLASS =
   "mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white";
 
 export const PRINT_PREVIEW_TABLE_FIT_CLASS =
-  "min-w-0 w-full table-fixed border-collapse [overflow-wrap:anywhere] print:min-w-0";
+  "print-preview-table-fit min-w-0 w-full table-fixed border-collapse [overflow-wrap:anywhere] print:min-w-0";

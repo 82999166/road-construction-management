@@ -1,0 +1,81 @@
+/* 同一份规则用于标准打印预览和独立 A4 文档；不作用于普通业务台账或凭证网格。 */
+:is(.print-preview-table-fit, .a4-print-document table) {
+  display: table !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > colgroup {
+  display: table-column-group !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > colgroup > col {
+  display: table-column !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > thead {
+  display: table-header-group !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > tbody {
+  display: table-row-group !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > tfoot {
+  display: table-footer-group !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > :is(thead, tbody, tfoot) > tr {
+  display: table-row !important;
+  break-inside: avoid;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) > :is(thead, tbody, tfoot) > tr > :is(th, td) {
+  display: table-cell !important;
+  box-sizing: border-box;
+  min-width: 0 !important;
+  border: 1px solid #334155 !important;
+  padding: 4px !important;
+  vertical-align: middle !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  line-height: 1.5;
+}
+
+/* 清除单元格内文字的 nowrap / truncate，不改图片、凭证网格或嵌套表格的 display。 */
+:is(.print-preview-table-fit, .a4-print-document table) :is(th, td) :is(p, span, a, small) {
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-height: none !important;
+  -webkit-line-clamp: unset !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) th {
+  text-align: center !important;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) :is(td.right, td.text-right) {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.print-preview-table-fit, .a4-print-document table) :is(td.center, td.text-center) {
+  text-align: center !important;
+}
+
+@media print {
+  :is(.print-preview-table-fit, .a4-print-document table) {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

@@ -372,7 +372,7 @@ describe("运输真实路由资格与授权", () => {
       });
       await expect(
         caller().transitionTrip({ id: 1, projectId: 1, nextStatus: "verified" })
-      ).rejects.toThrow("须填写现场核对依据");
+      ).rejects.toThrow("须勾选确认已核对现场资料");
       await caller().transitionTrip({
         id: 1,
         projectId: 1,
@@ -433,7 +433,7 @@ describe("运输真实路由资格与授权", () => {
     seedTrip(1, { status: "submitted", exceptionStatus: "open" });
     await expect(
       caller().transitionTrip({ id: 1, projectId: 1, nextStatus: "verified" })
-    ).rejects.toThrow("须填写现场核对依据");
+    ).rejects.toThrow("须勾选确认已核对现场资料");
     mock.db.rows.transport_vehicle_settlement_items = [
       { id: 1, tripId: 1, settlementId: 1 },
     ];
@@ -445,6 +445,146 @@ describe("运输真实路由资格与授权", () => {
         reviewRemarks: "现场核对异常说明",
       })
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+describe("勾选核验确认不再要求文字意见", () => {
+  it("异常闭环勾选即可核验，留存真实操作者确认审计且不生成付款或伪造事件", async () => {
+    seedTrip(1, { status: "submitted", exceptionStatus: "open" });
+    const original = structuredClone(mock.db.rows.transport_trips[0]);
+    const events = structuredClone(mock.db.rows.transport_card_events);
+    await caller().transitionTrip({
+      id: 1,
+      projectId: 1,
+      nextStatus: "verified",
+      reviewConfirmed: true,
+    });
+    expect(mock.db.rows.transport_trips[0]).toEqual({
+      ...original,
+      status: "verified",
+      exceptionStatus: "resolved",
+    });
+    expect(mock.db.rows.transport_card_events).toEqual(events);
+    expect(mock.db.rows.audit_logs[0]).toMatchObject({
+      userId: 1,
+      module: "transport",
+      targetId: "1",
+      summary: expect.stringContaining("管理员勾选确认已核对现场装卸资料"),
+    });
+    expect(mock.db.rows.payment_records ?? []).toHaveLength(0);
+    expect(mock.db.rows.transport_vehicle_settlements ?? []).toHaveLength(0);
+  });
+  it.each(["single_scan", "unload_only"])(
+    "%s勾选后放行但不补造缺失装卸事实",
+    async kind => {
+      const single = kind === "single_scan";
+      seedTrip(1, {
+        status: "submitted",
+        routeSnapshot: single
+          ? {
+              nfcSingleScanClosed: true,
+              nfcSingleScanClosedAt: time.toISOString(),
+              nfcSingleScanClosedBy: 2,
+            }
+          : {
+              unloadOnlyCardClose: true,
+              unloadOnlyCardClosedAt: time.toISOString(),
+              loadCardRecorded: false,
+            },
+        ...(single
+          ? {
+              unloadEventId: null,
+              unloadConfirmedAt: null,
+              unloadConfirmedBy: null,
+            }
+          : {
+              loadEventId: null,
+              loadConfirmedAt: null,
+              loadConfirmedBy: null,
+            }),
+      });
+      const original = structuredClone(mock.db.rows.transport_trips[0]);
+      await caller().transitionTrip({
+        id: 1,
+        projectId: 1,
+        nextStatus: "verified",
+        reviewConfirmed: true,
+      });
+      expect(mock.db.rows.transport_trips[0]).toEqual({
+        ...original,
+        status: "verified",
+      });
+    }
+  );
+  it("未勾选异常仍拒绝，字符串true不能伪装成布尔确认", async () => {
+    seedTrip(1, { status: "submitted", exceptionStatus: "open" });
+    await expect(
+      caller().transitionTrip({
+        id: 1,
+        projectId: 1,
+        nextStatus: "verified",
+        reviewConfirmed: false,
+      })
+    ).rejects.toThrow("须勾选确认");
+    await expect(
+      caller().transitionTrip({
+        id: 1,
+        projectId: 1,
+        nextStatus: "verified",
+        reviewConfirmed: "true",
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mock.db.rows.transport_trips[0].status).toBe("submitted");
+  });
+  it("勾选不能代替有效卸土闭环", async () => {
+    seedTrip(1, { status: "submitted" });
+    mock.db.rows.transport_card_events[1].validationStatus = "needs_review";
+    await expect(
+      caller().transitionTrip({
+        id: 1,
+        projectId: 1,
+        nextStatus: "verified",
+        reviewConfirmed: true,
+      })
+    ).rejects.toThrow("尚未完成有效卸土");
+    expect(mock.db.rows.transport_trips[0].status).toBe("submitted");
+    expect(mock.db.rows.audit_logs ?? []).toHaveLength(0);
+  });
+  it("勾选不能绕过岗位、项目或真实结算占用", async () => {
+    seedTrip(1, { status: "submitted" });
+    const request = {
+      id: 1,
+      projectId: 1,
+      nextStatus: "verified" as const,
+      reviewConfirmed: true,
+    };
+    mock.roles = ["DRIVER"];
+    await expect(caller().transitionTrip(request)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    mock.roles = ["ALL"];
+    await expect(
+      caller().transitionTrip({ ...request, projectId: 2 })
+    ).rejects.toThrow("未授权项目");
+    mock.db.rows.transport_vehicle_settlement_items = [
+      { id: 1, tripId: 1, settlementId: 1 },
+    ];
+    await expect(caller().transitionTrip(request)).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    expect(mock.db.rows.transport_trips[0].status).toBe("submitted");
+  });
+  it("勾选确认条件写入冲突不假报成功或写成功审计", async () => {
+    seedTrip(1, { status: "submitted" });
+    mock.db.zeroWriteTable = "transport_trips";
+    await expect(
+      caller().transitionTrip({
+        id: 1,
+        projectId: 1,
+        nextStatus: "verified",
+        reviewConfirmed: true,
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(mock.db.rows.audit_logs ?? []).toHaveLength(0);
   });
 });
 describe("真实结算生成与并发来源占用", () => {

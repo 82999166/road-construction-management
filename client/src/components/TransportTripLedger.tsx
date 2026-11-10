@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -35,6 +36,11 @@ import {
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { PRINT_PREVIEW_TABLE_FIT_CLASS } from "@/components/PrintPreviewDialogLayout";
+import {
+  TRANSPORT_FREIGHT_PRINT_COLUMN_WIDTHS,
+  printColumnGroup,
+} from "@/lib/reportPrintLayout";
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
@@ -82,7 +88,8 @@ type Props = {
   onTransition: (
     id: number,
     nextStatus: "submitted" | "verified" | "settled" | "void",
-    reviewRemarks?: string
+    reviewRemarks?: string,
+    reviewConfirmed?: boolean
   ) => void;
   active?: boolean;
   canReview?: boolean;
@@ -182,7 +189,7 @@ export default function TransportTripLedger({
   onReviewViewChange,
 }: Props) {
   const [selectedTrip, setSelectedTrip] = useState<any | null>(null);
-  const [reviewRemarks, setReviewRemarks] = useState("");
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
   const trips = useMemo(
     () => transportVisibleTrips(sourceTrips, filter.status),
     [sourceTrips, filter.status]
@@ -193,7 +200,7 @@ export default function TransportTripLedger({
   );
   const selectTrip = (trip: any) => {
     setSelectedTrip(trip);
-    setReviewRemarks("");
+    setReviewConfirmed(false);
   };
   const [freightPrintOpen, setFreightPrintOpen] = useState(false);
   useEffect(() => {
@@ -354,7 +361,7 @@ export default function TransportTripLedger({
     try {
       openA4LandscapePrintDocument({
         title: "运输运费明细表",
-        bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　期间：${escapePrintHtml(periodDescription)}　|　车牌：${escapePrintHtml(selectedVehicleLabel)}</p><p class="sub">路线：${escapePrintHtml(selectedRouteLabel)}　|　状态：${escapePrintHtml(selectedStatusLabel)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr><th style="width:3%">序号</th><th style="width:10%">业务时间</th><th style="width:7%">车牌</th><th style="width:10%">运单号</th><th style="width:18%">运输路线</th><th style="width:6%">方量</th><th style="width:6%">里程</th><th style="width:8%">运价</th><th style="width:8%">应付运费</th><th style="width:8%">柴油扣款</th><th style="width:8%">净额</th><th style="width:8%">状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${printableTrips.length} 趟，去重车辆数 ${printOverview.vehicleIds.size} 辆</td><td class="right">${escapePrintHtml(decimal(printOverview.volume))}</td><td>—</td><td>—</td><td class="right">¥${escapePrintHtml(money(printOverview.gross))}</td><td class="right">¥${escapePrintHtml(money(printOverview.fuel))}</td><td class="right">¥${escapePrintHtml(money(printOverview.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>运输运费明细表</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　期间：${escapePrintHtml(periodDescription)}　|　车牌：${escapePrintHtml(selectedVehicleLabel)}</p><p class="sub">路线：${escapePrintHtml(selectedRouteLabel)}　|　状态：${escapePrintHtml(selectedStatusLabel)}　|　生成时间：${escapePrintHtml(formatChinaDateTime(new Date()))}</p><hr class="rule"><table>${printColumnGroup(TRANSPORT_FREIGHT_PRINT_COLUMN_WIDTHS)}<thead><tr><th>序号</th><th>业务时间</th><th>车牌</th><th>运单号</th><th>运输路线</th><th>方量</th><th>里程</th><th>运价</th><th>应付运费</th><th>柴油扣款</th><th>净额</th><th>状态</th></tr></thead><tbody>${rows}<tr class="summary"><td colspan="5">合计：运单趟数 ${printableTrips.length} 趟，去重车辆数 ${printOverview.vehicleIds.size} 辆</td><td class="right">${escapePrintHtml(decimal(printOverview.volume))}</td><td>—</td><td>—</td><td class="right">¥${escapePrintHtml(money(printOverview.gross))}</td><td class="right">¥${escapePrintHtml(money(printOverview.fuel))}</td><td class="right">¥${escapePrintHtml(money(printOverview.net))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
     } catch (error) {
       alert(getUserFacingErrorMessage(error, "无法打开运输打印页，请稍后重试"));
@@ -945,21 +952,28 @@ export default function TransportTripLedger({
                 　|　生成时间：{formatChinaDateTime(new Date())}
               </p>
             </header>
-            <table className="ledger-freight-print-table mt-3 w-full table-fixed border-collapse text-[10px]">
+            <table
+              className={`ledger-freight-print-table ${PRINT_PREVIEW_TABLE_FIT_CLASS} mt-3 text-[10px]`}
+            >
+              <colgroup>
+                {TRANSPORT_FREIGHT_PRINT_COLUMN_WIDTHS.map((width, index) => (
+                  <col key={index} style={{ width: `${width}%` }} />
+                ))}
+              </colgroup>
               <thead className="bg-[#e8efed]">
                 <tr>
-                  <th className="w-[3%]">序号</th>
-                  <th className="w-[10%]">业务时间</th>
-                  <th className="w-[7%]">车牌</th>
-                  <th className="w-[10%]">运单号</th>
-                  <th className="w-[18%]">运输路线</th>
-                  <th className="w-[6%]">方量</th>
-                  <th className="w-[6%]">里程</th>
-                  <th className="w-[8%]">运价</th>
-                  <th className="w-[8%]">应付运费</th>
-                  <th className="w-[8%]">柴油扣款</th>
-                  <th className="w-[8%]">净额</th>
-                  <th className="w-[8%]">状态</th>
+                  <th>序号</th>
+                  <th>业务时间</th>
+                  <th>车牌</th>
+                  <th>运单号</th>
+                  <th>运输路线</th>
+                  <th>方量</th>
+                  <th>里程</th>
+                  <th>运价</th>
+                  <th>应付运费</th>
+                  <th>柴油扣款</th>
+                  <th>净额</th>
+                  <th>状态</th>
                 </tr>
               </thead>
               <tbody>
@@ -1242,34 +1256,50 @@ export default function TransportTripLedger({
                       : selectedTrip.reviewEligibility?.reasons?.join("；") ||
                         "资格由服务端校验，未完成闭环不能放行。"}
                   </p>
-                  <Label className="mt-2 block">
-                    现场核对依据（特殊闭环 / 异常必填）
-                  </Label>
-                  <Input
-                    className="mt-1"
-                    value={reviewRemarks}
-                    onChange={event => setReviewRemarks(event.target.value)}
-                    placeholder="装卸资料、特殊场景依据或异常处理结论，不补造装卸时间"
-                  />
+                  <div className="mt-3 flex items-start gap-2">
+                    <Checkbox
+                      id="transport-trip-review-confirmed"
+                      className="mt-0.5"
+                      checked={reviewConfirmed}
+                      disabled={transitionPending || !active}
+                      onCheckedChange={checked =>
+                        setReviewConfirmed(checked === true)
+                      }
+                    />
+                    <Label
+                      htmlFor="transport-trip-review-confirmed"
+                      className="cursor-pointer text-sm leading-5"
+                    >
+                      我已核对现场装卸资料及异常 /
+                      特殊闭环情况，确认本运单可以核验放行。
+                    </Label>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-600">
+                    勾选后可直接确认，无需填写意见；系统仍校验真实闭环，不补造装卸时间，也不代表已结算或已付款。
+                  </p>
                   <Button
                     className="mt-3"
                     disabled={
                       transitionPending ||
                       !active ||
                       selectedTrip.reviewEligibility?.eligible === false ||
-                      ((selectedTrip.reviewEligibility
-                        ?.requiresExceptionReview ||
-                        isNfcSingleScanClosed(selectedTrip) ||
-                        isNfcUnloadOnlyClosed(selectedTrip)) &&
-                        reviewRemarks.trim().length < 4)
+                      !reviewConfirmed
                     }
-                    onClick={() =>
+                    onClick={() => {
+                      if (
+                        !reviewConfirmed ||
+                        transitionPending ||
+                        !active ||
+                        selectedTrip.reviewEligibility?.eligible === false
+                      )
+                        return;
                       onTransition(
                         selectedTrip.id,
                         "verified",
-                        reviewRemarks.trim() || undefined
-                      )
-                    }
+                        undefined,
+                        true
+                      );
+                    }}
                   >
                     确认核验放行
                   </Button>

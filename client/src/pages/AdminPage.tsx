@@ -15179,12 +15179,13 @@ export default function AdminPage({
                     canCreateSettlement={rights?.canCreateSettlement ?? false}
                     canDirectSettle={rights?.canSettle ?? false}
                     onCreateSettlement={openTripSettlement}
-                    onTransition={(id, nextStatus, reviewRemarks) =>
+                    onTransition={(id, nextStatus, reviewRemarks, reviewConfirmed) =>
                       transitionTransportTrip.mutate({
                         id,
                         projectId: workspaceProjectId,
                         nextStatus,
                         reviewRemarks,
+                        reviewConfirmed,
                       })
                     }
                     transitionPending={transitionTransportTrip.isPending}

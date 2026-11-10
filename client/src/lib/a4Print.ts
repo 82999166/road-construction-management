@@ -1,3 +1,5 @@
+import reportPrintTableCss from "./reportPrintTable.css?raw";
+
 /** 将真实业务明细写入独立浏览器文档，避免组件弹窗与全局样式干扰 PDF 输出。 */
 export function escapePrintHtml(value: unknown) {
   return String(value ?? "—").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
@@ -29,7 +31,8 @@ export function openA4PrintDocument({ title, bodyHtml, orientation = "landscape"
     h1 { margin:0; font-size:20px; text-align:center; } .sub { margin:6px 0 0; text-align:center; font-size:10px; color:#433b35; } .rule { margin:10px 0; border:0; border-top:2px solid #3a2117; }
     table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:9px; } th, td { border:1px solid #222; padding:4px; vertical-align:middle; word-break:break-word; } th { background:#eee2d2; } thead { display:table-header-group; } tr { break-inside:avoid; } .right { text-align:right; } .center { text-align:center; } .summary { background:#f3e7d7; font-weight:700; } .footer { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:14px; font-size:10px; }
     .voucher-page { break-after:page; min-height:274mm; display:flex; flex-direction:column; } .voucher-page:last-child { break-after:auto; } .voucher-grid { display:grid; grid-template-columns:110px 1fr; border-top:1px solid #222; border-left:1px solid #222; margin-top:10px; } .voucher-grid > div { border-right:1px solid #222; border-bottom:1px solid #222; padding:7px; min-height:28px; } .voucher-label { background:#f5f0e8; font-weight:700; } .signature-line { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-top:auto; padding-top:18px; font-size:11px; }
-  </style></head><body>${bodyHtml}<script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`);
+    ${reportPrintTableCss}
+  </style></head><body class="a4-print-document">${bodyHtml}<script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`);
   printWindow.document.close();
 }
 
