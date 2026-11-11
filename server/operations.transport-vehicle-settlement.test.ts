@@ -21,7 +21,7 @@ describe("渣土车按趟结算与付款闭环", () => {
       "utf8"
     );
     expect(source).toContain("createVehicleSettlement");
-    expect(source).toContain(
+    expect(source.replace(/\s+/g, "")).toContain(
       "canUseVehicleTripSettlement(vehicle,classification)"
     );
     const classification = readFileSync(

@@ -14,6 +14,7 @@ vi.mock("@/lib/trpc", () => ({ trpc: { settlementPayment: { board: { useQuery: h
 vi.mock("@/components/SettlementPaymentVoucherBatchDialog", () => ({ SettlementPaymentVoucherBatchDialog: (props: unknown) => { hooks.voucher(props); return null; } }));
 
 const source = readFileSync(new URL("./SettlementPaymentFinancialBoard.tsx", import.meta.url), "utf8");
+const compact = (value: string) => value.replace(/\s+/g, "").replace(/,\]/g, "]");
 const helpers = readFileSync(new URL("./SettlementPaymentFinancialBoard.helpers.ts", import.meta.url), "utf8");
 const boardRows = Array.from({ length: 45 }, (_, index) => ({ sourceType: "machine", sourceLabel: "机械结算", settlementId: index + 1, settlementNo: `BOARD-${index + 1}`, direction: "expense", lifecycle: "ready", businessStatus: "approved", originalAmount: 100, paidOrRecoveredAmount: 20, offsetAmount: 0, remainingAmount: 80, counterpartyDisplay: "机械收款人", periodLabel: "2026-09", canRegisterSettlementPayment: index !== 1, legacyFinalized: false }));
 const monthlyData: SettlementPaymentMonthlyData = {
@@ -123,8 +124,8 @@ describe("分页不截断后端摘要、Excel与有效凭证", () => {
     expect(helpers).not.toMatch(/pageRows|payeeAccount|paymentReference|storageKey|signedUrl/);
   });
   it("只在表格map使用共用pageRows；筛选、项目及月份进入重置key", () => {
-    expect(source).toContain("useFinancePagination(boardRows, JSON.stringify(boardInput))");
-    expect(source).toContain("useFinancePagination(paymentRecords, JSON.stringify(reconciliationInput))");
+    expect(compact(source)).toContain(compact("useFinancePagination(boardRows, JSON.stringify(boardInput))"));
+    expect(compact(source)).toContain(compact("useFinancePagination(paymentRecords, JSON.stringify(reconciliationInput))"));
     expect(source.match(/pageRows\.map/g)).toHaveLength(2);
     expect(source).toContain("buildSettlementPaymentWorkbook(monthlyData, projectText)");
     expect(source).toContain("records={voucherRecords}");
@@ -141,7 +142,7 @@ describe("分页不截断后端摘要、Excel与有效凭证", () => {
     expect(failed).not.toContain("SPV-8-1");
     expect(hooks.voucher.mock.lastCall?.[0].records).toHaveLength(0);
     expect(source).toContain("setVoucherOpen(false)");
-    expect(source).toContain("[projectId, period, sourceType, direction, keyword, paymentStatus, paymentMethod, view, enabled]");
+    expect(compact(source)).toContain(compact("[projectId, period, sourceType, direction, keyword, paymentStatus, paymentMethod, view, enabled]"));
   });
 });
 
@@ -165,8 +166,8 @@ describe("原DTO、原权限及结算只导航", () => {
     const withNavigation = render({ view: "board", onNavigateToSettlement: vi.fn() });
     expect(withNavigation.match(/<button[^>]*>进入结算台账/g)).toHaveLength(19);
     expect(withNavigation.match(/<button[^>]*>只读查看结算/g)).toHaveLength(1);
-    expect(source).toContain("row.canRegisterSettlementPayment ?");
-    expect(source).toContain("onNavigateToSettlement(paymentRecordNavigationRow(projectId, record))");
+    expect(compact(source)).toContain(compact("row.canRegisterSettlementPayment ?"));
+    expect(compact(source)).toContain(compact("onNavigateToSettlement(paymentRecordNavigationRow(projectId, record))"));
     expect(source).not.toMatch(/useMutation|\.mutate\(|window\.location|location\.href/);
   });
   it("共享筛选在各view可见且query使用同一state，金额直接使用后端summary", () => {

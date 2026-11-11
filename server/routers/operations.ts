@@ -74,7 +74,12 @@ import {
   hasUserSpecificOperationPermission,
   requireAuthenticatedUser,
 } from "../access";
-import { canUseVehicleTripSettlement, projectVehicleFinance, vehicleFinanceDate, vehicleFinanceHasProject } from "../services/vehicleFinance";
+import {
+  canUseVehicleTripSettlement,
+  projectVehicleFinance,
+  vehicleFinanceDate,
+  vehicleFinanceHasProject,
+} from "../services/vehicleFinance";
 import { assertFleetDayWritable } from "../services/vehicleManagementPolicy";
 import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { assertVehicleDispatchable } from "../services/vehicleManagementPolicy";
@@ -655,48 +660,85 @@ const vehicleSettlementSelectionFields = {
   selectionMode: z.enum(["day", "period", "trip_count"]).optional(),
   tripCount: z.number().int().min(1).max(1000).optional(),
 };
-const transportVehicleSettlementSelectionInput = z.object({
-  ...vehicleSettlementSelectionFields,
-  selectionMode: z.enum(["day", "period", "trip_count"]),
-}).superRefine((value, issue) => {
-  const reason = vehicleSettlementSelectionValidationReason(value);
-  if (reason) issue.addIssue({ code: "custom", message: reason });
-});
+const transportVehicleSettlementSelectionInput = z
+  .object({
+    ...vehicleSettlementSelectionFields,
+    selectionMode: z.enum(["day", "period", "trip_count"]),
+  })
+  .superRefine((value, issue) => {
+    const reason = vehicleSettlementSelectionValidationReason(value);
+    if (reason) issue.addIssue({ code: "custom", message: reason });
+  });
 
 /** Read persisted eligibility facts in batches; locking reads are only used by creation inside its original scope lock. */
 async function readVehicleSettlementSelection(
   db: SettlementQueryClient,
   input: VehicleSettlementSelectionInput,
-  locking = false,
+  locking = false
 ) {
   const { start } = getChinaBusinessDateRange(input.periodStart);
   const { end } = getChinaBusinessDateRange(input.periodEnd);
-  const tripQuery = db.select().from(transportTrips).where(and(
-    eq(transportTrips.projectId, input.projectId),
-    eq(transportTrips.vehicleId, input.vehicleId),
-    eq(transportTrips.status, "verified"),
-    gte(transportTrips.startAt, start),
-    lt(transportTrips.startAt, end),
-  ));
+  const tripQuery = db
+    .select()
+    .from(transportTrips)
+    .where(
+      and(
+        eq(transportTrips.projectId, input.projectId),
+        eq(transportTrips.vehicleId, input.vehicleId),
+        eq(transportTrips.status, "verified"),
+        gte(transportTrips.startAt, start),
+        lt(transportTrips.startAt, end)
+      )
+    );
   const trips = await (locking ? tripQuery.for("update") : tripQuery);
-  if (!trips.length) return selectVehicleSettlementTrips(input, trips, { occupiedTripIds: [], events: [], evidence: [] });
+  if (!trips.length)
+    return selectVehicleSettlementTrips(input, trips, {
+      occupiedTripIds: [],
+      events: [],
+      evidence: [],
+    });
   const tripIds = trips.map(trip => trip.id);
   const evidenceIds = vehicleSettlementEvidenceIds(trips);
-  const occupiedQuery = db.select({ tripId: transportVehicleSettlementItems.tripId }).from(transportVehicleSettlementItems)
+  const occupiedQuery = db
+    .select({ tripId: transportVehicleSettlementItems.tripId })
+    .from(transportVehicleSettlementItems)
     .where(inArray(transportVehicleSettlementItems.tripId, tripIds));
-  const eventQuery = db.select().from(transportCardEvents).where(and(
-    eq(transportCardEvents.projectId, input.projectId), inArray(transportCardEvents.tripId, tripIds),
-  ));
-  const evidenceQuery = evidenceIds.length ? db.select().from(evidenceRecords).where(and(
-    eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.sourceType, "transport"),
-    eq(evidenceRecords.status, "active"), inArray(evidenceRecords.id, evidenceIds),
-  )) : null;
+  const eventQuery = db
+    .select()
+    .from(transportCardEvents)
+    .where(
+      and(
+        eq(transportCardEvents.projectId, input.projectId),
+        inArray(transportCardEvents.tripId, tripIds)
+      )
+    );
+  const evidenceQuery = evidenceIds.length
+    ? db
+        .select()
+        .from(evidenceRecords)
+        .where(
+          and(
+            eq(evidenceRecords.projectId, input.projectId),
+            eq(evidenceRecords.sourceType, "transport"),
+            eq(evidenceRecords.status, "active"),
+            inArray(evidenceRecords.id, evidenceIds)
+          )
+        )
+    : null;
   const [occupied, events, evidence] = await Promise.all([
     locking ? occupiedQuery.for("update") : occupiedQuery,
     locking ? eventQuery.for("update") : eventQuery,
-    evidenceQuery ? (locking ? evidenceQuery.for("update") : evidenceQuery) : [],
+    evidenceQuery
+      ? locking
+        ? evidenceQuery.for("update")
+        : evidenceQuery
+      : [],
   ]);
-  return selectVehicleSettlementTrips(input, trips, { occupiedTripIds: occupied.map(item => item.tripId), events, evidence });
+  return selectVehicleSettlementTrips(input, trips, {
+    occupiedTripIds: occupied.map(item => item.tripId),
+    events,
+    evidence,
+  });
 }
 
 /** 合并已核验渣土车运单，金额只能由服务端快照汇总，浏览器不能传入金额。 */
@@ -714,13 +756,26 @@ const transportVehicleSettlementDraftInput = z
   })
   .superRefine((value, issue) => {
     const selectionReason = vehicleSettlementSelectionValidationReason(value);
-    if (selectionReason) issue.addIssue({ code: "custom", message: selectionReason });
+    if (selectionReason)
+      issue.addIssue({ code: "custom", message: selectionReason });
     if (value.tripIds && new Set(value.tripIds).size !== value.tripIds.length)
-      issue.addIssue({ code: "custom", path: ["tripIds"], message: "运单 ID 不得重复" });
+      issue.addIssue({
+        code: "custom",
+        path: ["tripIds"],
+        message: "运单 ID 不得重复",
+      });
     if (new Set(value.legacyTripIds).size !== value.legacyTripIds.length)
-      issue.addIssue({ code: "custom", path: ["legacyTripIds"], message: "历史运单 ID 不得重复" });
+      issue.addIssue({
+        code: "custom",
+        path: ["legacyTripIds"],
+        message: "历史运单 ID 不得重复",
+      });
     if (value.selectionMode && value.legacyTripIds.length)
-      issue.addIssue({ code: "custom", path: ["legacyTripIds"], message: "合并选择模式不纳入历史已结算运单，请使用财务逐单历史核对流程" });
+      issue.addIssue({
+        code: "custom",
+        path: ["legacyTripIds"],
+        message: "合并选择模式不纳入历史已结算运单，请使用财务逐单历史核对流程",
+      });
     if (value.legacyTripIds.length && !value.legacyConfirmation)
       issue.addIssue({
         code: "custom",
@@ -1921,11 +1976,7 @@ async function recordTransportCardEvent(
     snapshot.source === "nfc_unload_only_reader" &&
     snapshot.unloadOnlyCardClose === true &&
     snapshot.loadCardRecorded === false;
-  if (
-    eventType === "unload" &&
-    !trip.loadConfirmedAt &&
-    !unloadOnlyClose
-  )
+  if (eventType === "unload" && !trip.loadConfirmedAt && !unloadOnlyClose)
     return markNeedsReview("卸土刷卡早于装土确认，疑似乱序事件");
   if (eventType === "unload" && trip.unloadConfirmedAt)
     return markNeedsReview("该趟次已存在卸土确认，疑似重复刷卡事件");
@@ -1962,25 +2013,41 @@ async function recordTransportCardEvent(
       : [];
     if (unloadOnlyClose) {
       const [[loadSite], [rule], activeTrip] = await Promise.all([
-        db.select().from(transportSites).where(eq(transportSites.id, trip.loadSiteId!)).limit(1),
-        db.select().from(freightRateRules).where(eq(freightRateRules.id, route.freightRuleId)).limit(1),
+        db
+          .select()
+          .from(transportSites)
+          .where(eq(transportSites.id, trip.loadSiteId!))
+          .limit(1),
+        db
+          .select()
+          .from(freightRateRules)
+          .where(eq(freightRateRules.id, route.freightRuleId))
+          .limit(1),
         findActiveVehicleTransportTrip(db, input.projectId, vehicle.id),
       ]);
       if (
         !input.cardFingerprint ||
         activeTrip?.id !== trip.id ||
-        trip.activeVehicleTransitKey !== createActiveVehicleTransitKey(input.projectId, vehicle.id) ||
+        trip.activeVehicleTransitKey !==
+          createActiveVehicleTransitKey(input.projectId, vehicle.id) ||
         route.status !== "active" ||
         route.unloadOnlyCloseEnabled !== true ||
         route.loadSiteId !== trip.loadSiteId ||
         route.unloadSiteId !== trip.unloadSiteId ||
         route.freightRuleId !== trip.freightRuleId ||
-        !loadSite || loadSite.projectId !== input.projectId ||
-        loadSite.siteType !== "load" || loadSite.status !== "active" ||
-        !rule || rule.projectId !== input.projectId || rule.status !== "active" ||
-        rule.settlementUnit === "ton" || rule.settlementUnit !== snapshot.settlementUnit
+        !loadSite ||
+        loadSite.projectId !== input.projectId ||
+        loadSite.siteType !== "load" ||
+        loadSite.status !== "active" ||
+        !rule ||
+        rule.projectId !== input.projectId ||
+        rule.status !== "active" ||
+        rule.settlementUnit === "ton" ||
+        rule.settlementUnit !== snapshot.settlementUnit
       )
-        return markNeedsReview("卸土补刷卡的持久标识、车辆在途状态或启用路线配置已失效，请人工核验");
+        return markNeedsReview(
+          "卸土补刷卡的持久标识、车辆在途状态或启用路线配置已失效，请人工核验"
+        );
       if (occurredAt.getTime() < new Date(trip.startAt).getTime())
         return markNeedsReview("卸土补刷卡重试时间不得早于首次服务端记录");
       // Re-evaluate with current site policy; a failed GPS attempt must not let a
@@ -1994,9 +2061,11 @@ async function recordTransportCardEvent(
           minimumTransitMinutes: safety.minimumTransitMinutes,
         });
       } catch (error) {
-        if (!(error instanceof TRPCError) || error.code !== "BAD_REQUEST") throw error;
+        if (!(error instanceof TRPCError) || error.code !== "BAD_REQUEST")
+          throw error;
         if (safety.minimumTransitEnabled) return markNeedsReview(error.message);
-        const notice = "卸土点补刷卡的同车连续间隔未达到路线最短时间（时间硬拦截已关闭，已留待核验）";
+        const notice =
+          "卸土点补刷卡的同车连续间隔未达到路线最短时间（时间硬拦截已关闭，已留待核验）";
         if (!safetyNotices.includes(notice)) safetyNotices.push(notice);
       }
     } else {
@@ -2100,11 +2169,13 @@ async function recordTransportCardEvent(
               ...getRouteSnapshot(trip.routeSnapshot),
               unloadConfirmationMode: "nfc_card",
               safetyPolicy,
-              ...(unloadOnlyClose ? {
-                unloadOnlyCardClosedAt: occurredAt.toISOString(),
-                endLatitude: input.latitude ?? null,
-                endLongitude: input.longitude ?? null,
-              } : {}),
+              ...(unloadOnlyClose
+                ? {
+                    unloadOnlyCardClosedAt: occurredAt.toISOString(),
+                    endLatitude: input.latitude ?? null,
+                    endLongitude: input.longitude ?? null,
+                  }
+                : {}),
             },
           })
           .where(
@@ -2117,7 +2188,10 @@ async function recordTransportCardEvent(
                 ? and(
                     isNull(transportTrips.loadConfirmedAt),
                     isNull(transportTrips.loadEventId),
-                    eq(transportTrips.activeVehicleTransitKey, trip.activeVehicleTransitKey!)
+                    eq(
+                      transportTrips.activeVehicleTransitKey,
+                      trip.activeVehicleTransitKey!
+                    )
                   )
                 : isNotNull(transportTrips.loadConfirmedAt),
               isNull(transportTrips.unloadConfirmedAt),
@@ -2168,9 +2242,7 @@ async function recordTransportCardEvent(
             eventCode: "transport_unload_completed",
             idempotencyKey: `inapp:transport-unload:${event.id}:${recipientUserId}`,
             recipientUserId,
-            title: unloadOnlyClose
-              ? "卸土点补刷卡闭环完成"
-              : "运输卸土成功",
+            title: unloadOnlyClose ? "卸土点补刷卡闭环完成" : "运输卸土成功",
             content: unloadOnlyClose
               ? `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功；未记录装土刷卡，已按路线补刷卡规则在卸土点完成运单 ${trip.tripNo} 的受控闭环，仍请进入系统核验。`
               : `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车卸土成功，运单 ${trip.tripNo} 已形成运输闭环，请进入系统查看受控详情。`,
@@ -2423,7 +2495,8 @@ async function recordTransportNfcReaderScan(
           : ("in_transit" as const),
       singleScanClosed,
       unloadOnlyClosed:
-        getRouteSnapshot(replayedTrip.routeSnapshot).unloadOnlyCardClose === true &&
+        getRouteSnapshot(replayedTrip.routeSnapshot).unloadOnlyCardClose ===
+          true &&
         Boolean(replayedTrip.unloadConfirmedAt) &&
         replayedEvent.validationStatus === "accepted",
       tripId: replayedEvent.tripId,
@@ -2444,12 +2517,7 @@ async function recordTransportNfcReaderScan(
         code: "CONFLICT",
         message: `车辆 ${vehicle.plateNo} 已有在途票据 ${activeTrip.tripNo}，请在对应卸土点完成第二次刷卡后再发车`,
       });
-    await assertNewFleetTrip(
-      db,
-      input.projectId,
-      vehicle.id,
-      vehicle.plateNo
-    );
+    await assertNewFleetTrip(db, input.projectId, vehicle.id, vehicle.plateNo);
     const [route] = await db
       .select()
       .from(transportRoutePresets)
@@ -2738,12 +2806,7 @@ async function recordTransportNfcReaderScan(
         code: "BAD_REQUEST",
         message: "按吨结算路线须录入实际过磅重量，不能通过卸土补刷卡自动完成",
       });
-    await assertNewFleetTrip(
-      db,
-      input.projectId,
-      vehicle.id,
-      vehicle.plateNo
-    );
+    await assertNewFleetTrip(db, input.projectId, vehicle.id, vehicle.plateNo);
     let initialSafetyNotice: string | undefined;
     try {
       await assertVehicleMinimumUnloadOnlyScanInterval(db, {
@@ -2878,8 +2941,10 @@ async function recordTransportNfcReaderScan(
     }
     return {
       ...event,
-      stage: event.success && !event.needsReview
-        ? ("completed" as const) : ("in_transit" as const),
+      stage:
+        event.success && !event.needsReview
+          ? ("completed" as const)
+          : ("in_transit" as const),
       singleScanClosed: false,
       unloadOnlyClosed: event.success && !event.needsReview,
       tripId: createdTrip.id,
@@ -2951,8 +3016,10 @@ async function recordTransportNfcReaderScan(
   }
   return {
     ...event,
-    stage: event.success && !event.needsReview
-      ? ("completed" as const) : ("in_transit" as const),
+    stage:
+      event.success && !event.needsReview
+        ? ("completed" as const)
+        : ("in_transit" as const),
     singleScanClosed: false,
     tripId: activeTrip.id,
     tripNo: activeTrip.tripNo,
@@ -3370,12 +3437,7 @@ async function confirmMobileNfcInvoice(
       code: "BAD_REQUEST",
       message: "车辆、路线地点或运价已变更，请重新刷卡后开票",
     });
-  await assertNewFleetTrip(
-    db,
-    resolved.projectId,
-    vehicle.id,
-    vehicle.plateNo
-  );
+  await assertNewFleetTrip(db, resolved.projectId, vehicle.id, vehicle.plateNo);
   if (rule.settlementUnit === "ton")
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -4019,32 +4081,56 @@ export const machineryRouter = router({
     const result = await Promise.all(
       ownedMachines.map(async machine => {
         const projectId = machine.projectId ?? -1;
-        const [costRows, activeRules] = await Promise.all([
-          db
-            .select()
-            .from(machineCostRecords)
-            .where(
-              and(
-                eq(machineCostRecords.machineId, machine.id),
-                eq(machineCostRecords.projectId, projectId),
-                ne(machineCostRecords.status, "void")
+        const [costRows, activeRules, statementRows, paymentRows] =
+          await Promise.all([
+            db
+              .select()
+              .from(machineCostRecords)
+              .where(
+                and(
+                  eq(machineCostRecords.machineId, machine.id),
+                  eq(machineCostRecords.projectId, projectId),
+                  ne(machineCostRecords.status, "void")
+                )
               )
-            )
-            .orderBy(desc(machineCostRecords.occurredAt))
-            .limit(100),
-          db
-            .select()
-            .from(machineLeaseRules)
-            .where(
-              and(
-                eq(machineLeaseRules.machineId, machine.id),
-                eq(machineLeaseRules.projectId, projectId),
-                eq(machineLeaseRules.status, "active")
+              .orderBy(desc(machineCostRecords.occurredAt))
+              .limit(100),
+            db
+              .select()
+              .from(machineLeaseRules)
+              .where(
+                and(
+                  eq(machineLeaseRules.machineId, machine.id),
+                  eq(machineLeaseRules.projectId, projectId),
+                  eq(machineLeaseRules.status, "active")
+                )
               )
-            )
-            .orderBy(desc(machineLeaseRules.effectiveFrom))
-            .limit(1),
-        ]);
+              .orderBy(desc(machineLeaseRules.effectiveFrom))
+              .limit(1),
+            db
+              .select()
+              .from(machineMonthlyStatements)
+              .where(
+                and(
+                  eq(machineMonthlyStatements.machineId, machine.id),
+                  eq(machineMonthlyStatements.projectId, projectId)
+                )
+              )
+              .orderBy(desc(machineMonthlyStatements.period))
+              .limit(24),
+            db
+              .select()
+              .from(machinePaymentSettlements)
+              .where(
+                and(
+                  eq(machinePaymentSettlements.machineId, machine.id),
+                  eq(machinePaymentSettlements.projectId, projectId),
+                  ne(machinePaymentSettlements.status, "void")
+                )
+              )
+              .orderBy(desc(machinePaymentSettlements.period))
+              .limit(24),
+          ]);
         const expenses = costRows.map(row => ({
           id: row.id,
           costType: row.costType,
@@ -4057,6 +4143,65 @@ export const machineryRouter = router({
           status: row.status,
         }));
         const activeRule = activeRules[0] ?? null;
+        const settlementIds = paymentRows.map(row => row.id);
+        const paymentRecordRows = settlementIds.length
+          ? await db
+              .select()
+              .from(settlementPaymentRecords)
+              .where(
+                and(
+                  eq(settlementPaymentRecords.projectId, projectId),
+                  eq(settlementPaymentRecords.settlementType, "machine"),
+                  eq(settlementPaymentRecords.direction, "expense"),
+                  eq(settlementPaymentRecords.status, "active"),
+                  inArray(settlementPaymentRecords.settlementId, settlementIds)
+                )
+              )
+              .orderBy(desc(settlementPaymentRecords.paymentDate))
+          : [];
+        const paidBySettlementId = new Map<number, number>();
+        for (const row of paymentRecordRows) {
+          paidBySettlementId.set(
+            row.settlementId,
+            Math.round(
+              ((paidBySettlementId.get(row.settlementId) ?? 0) +
+                Number(row.amount)) *
+                100
+            ) / 100
+          );
+        }
+        const monthlyStatements = statementRows.map(row => ({
+          id: row.id,
+          period: row.period,
+          totalOutput: Number(row.totalOutput),
+          repairAmount: Number(row.repairAmount),
+          fuelAmount: Number(row.fuelAmount),
+          machineShareAmount: Number(row.machineShareAmount),
+          status: row.status,
+        }));
+        const settlements = paymentRows.map(row => {
+          const paidAmount = paidBySettlementId.get(row.id) ?? 0;
+          return {
+            id: row.id,
+            settlementNo: row.settlementNo,
+            period: row.period,
+            grossPayableAmount: Number(row.grossPayableAmount),
+            fuelCostAmount: Number(row.fuelCostAmount),
+            repairCostAmount: Number(row.repairCostAmount),
+            manualDeductionAmount: Number(row.manualDeductionAmount),
+            netPayableAmount: Number(row.netPayableAmount),
+            paidAmount,
+            outstandingAmount: Math.max(
+              0,
+              Math.round((Number(row.netPayableAmount) - paidAmount) * 100) /
+                100
+            ),
+            paymentMethod: row.paymentMethod,
+            paymentDate: row.paymentDate,
+            paymentReference: row.paymentReference,
+            status: row.status,
+          };
+        });
         const sumByType = (
           costType: typeof machineCostRecords.$inferSelect.costType
         ) =>
@@ -4096,8 +4241,31 @@ export const machineryRouter = router({
             fuelExpense: sumByType("fuel"),
             repairExpense: sumByType("repair"),
             overtimeExpense: sumByType("overtime"),
+            statementCount: monthlyStatements.length,
+            settlementCount: settlements.length,
+            settlementAmount:
+              Math.round(
+                settlements.reduce(
+                  (sum, item) => sum + item.netPayableAmount,
+                  0
+                ) * 100
+              ) / 100,
+            paidAmount:
+              Math.round(
+                settlements.reduce((sum, item) => sum + item.paidAmount, 0) *
+                  100
+              ) / 100,
+            outstandingAmount:
+              Math.round(
+                settlements.reduce(
+                  (sum, item) => sum + item.outstandingAmount,
+                  0
+                ) * 100
+              ) / 100,
           },
           expenses,
+          monthlyStatements,
+          settlements,
         };
       })
     );
@@ -6617,32 +6785,219 @@ async function assertVerifiedTransportEvidence(
 /** 运输车辆、运价规则、趟次记录与日报结算。 */
 /** 通用管理财务分析不向司机/车主身份开放整车历史；专属账单由独立授权路由处理。 */
 function assertVehicleFinanceReader(roleCodes: readonly string[]) {
-  if (roleCodes.length && roleCodes.every(role => ["DRIVER", "VEHICLE_OWNER"].includes(role)))
-    throw new TRPCError({ code: "FORBIDDEN", message: "司机或车主请通过专属授权账单查看，不开放整车管理财务分析" });
+  if (
+    roleCodes.length &&
+    roleCodes.every(role => ["DRIVER", "VEHICLE_OWNER"].includes(role))
+  )
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "司机或车主请通过专属授权账单查看，不开放整车管理财务分析",
+    });
 }
 /** 仅在已授权项目内查询；维修/配件明确 vehicle，所有历史合同包含 disabled。 */
-async function readVehicleFinanceSources(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectIds: number[], vehicleId?: number) {
-  const [trips, refuels, maintenance, leaseRules, purchases, usage, settlements, payments, offsets] = await Promise.all([
-    db.select().from(transportTrips).where(and(inArray(transportTrips.projectId, projectIds), ...(vehicleId ? [eq(transportTrips.vehicleId, vehicleId)] : []))),
-    db.select().from(dieselRefuelRecords).where(and(inArray(dieselRefuelRecords.projectId, projectIds), eq(dieselRefuelRecords.assetType, "vehicle"), ...(vehicleId ? [eq(dieselRefuelRecords.vehicleId, vehicleId)] : []))),
-    db.select().from(assetMaintenanceRecords).where(and(inArray(assetMaintenanceRecords.projectId, projectIds), eq(assetMaintenanceRecords.assetType, "vehicle"), ...(vehicleId ? [eq(assetMaintenanceRecords.assetId, vehicleId)] : []))),
-    db.select().from(transportVehicleLeaseRules).where(and(inArray(transportVehicleLeaseRules.projectId, projectIds), ...(vehicleId ? [eq(transportVehicleLeaseRules.vehicleId, vehicleId)] : []))),
-    db.select().from(purchaseOrders).where(and(inArray(purchaseOrders.projectId, projectIds), eq(purchaseOrders.assetType, "vehicle"), ...(vehicleId ? [eq(purchaseOrders.assetId, vehicleId)] : []))),
-    db.select().from(transportVehicleUsageRecords).where(and(inArray(transportVehicleUsageRecords.projectId, projectIds), ...(vehicleId ? [eq(transportVehicleUsageRecords.vehicleId, vehicleId)] : []))),
-    db.select().from(transportVehicleSettlements).where(and(inArray(transportVehicleSettlements.projectId, projectIds), ...(vehicleId ? [eq(transportVehicleSettlements.vehicleId, vehicleId)] : []))),
-    db.select().from(settlementPaymentRecords).where(and(inArray(settlementPaymentRecords.projectId, projectIds), eq(settlementPaymentRecords.settlementType, "transport_vehicle"))),
-    db.select().from(transportVehicleCarryForwardOffsets).where(and(inArray(transportVehicleCarryForwardOffsets.projectId, projectIds), ...(vehicleId ? [eq(transportVehicleCarryForwardOffsets.vehicleId, vehicleId)] : []))),
+async function readVehicleFinanceSources(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  projectIds: number[],
+  vehicleId?: number
+) {
+  const [
+    trips,
+    refuels,
+    maintenance,
+    leaseRules,
+    purchases,
+    usage,
+    settlements,
+    payments,
+    offsets,
+  ] = await Promise.all([
+    db
+      .select()
+      .from(transportTrips)
+      .where(
+        and(
+          inArray(transportTrips.projectId, projectIds),
+          ...(vehicleId ? [eq(transportTrips.vehicleId, vehicleId)] : [])
+        )
+      ),
+    db
+      .select()
+      .from(dieselRefuelRecords)
+      .where(
+        and(
+          inArray(dieselRefuelRecords.projectId, projectIds),
+          eq(dieselRefuelRecords.assetType, "vehicle"),
+          ...(vehicleId ? [eq(dieselRefuelRecords.vehicleId, vehicleId)] : [])
+        )
+      ),
+    db
+      .select()
+      .from(assetMaintenanceRecords)
+      .where(
+        and(
+          inArray(assetMaintenanceRecords.projectId, projectIds),
+          eq(assetMaintenanceRecords.assetType, "vehicle"),
+          ...(vehicleId ? [eq(assetMaintenanceRecords.assetId, vehicleId)] : [])
+        )
+      ),
+    db
+      .select()
+      .from(transportVehicleLeaseRules)
+      .where(
+        and(
+          inArray(transportVehicleLeaseRules.projectId, projectIds),
+          ...(vehicleId
+            ? [eq(transportVehicleLeaseRules.vehicleId, vehicleId)]
+            : [])
+        )
+      ),
+    db
+      .select()
+      .from(purchaseOrders)
+      .where(
+        and(
+          inArray(purchaseOrders.projectId, projectIds),
+          eq(purchaseOrders.assetType, "vehicle"),
+          ...(vehicleId ? [eq(purchaseOrders.assetId, vehicleId)] : [])
+        )
+      ),
+    db
+      .select()
+      .from(transportVehicleUsageRecords)
+      .where(
+        and(
+          inArray(transportVehicleUsageRecords.projectId, projectIds),
+          ...(vehicleId
+            ? [eq(transportVehicleUsageRecords.vehicleId, vehicleId)]
+            : [])
+        )
+      ),
+    db
+      .select()
+      .from(transportVehicleSettlements)
+      .where(
+        and(
+          inArray(transportVehicleSettlements.projectId, projectIds),
+          ...(vehicleId
+            ? [eq(transportVehicleSettlements.vehicleId, vehicleId)]
+            : [])
+        )
+      ),
+    db
+      .select()
+      .from(settlementPaymentRecords)
+      .where(
+        and(
+          inArray(settlementPaymentRecords.projectId, projectIds),
+          eq(settlementPaymentRecords.settlementType, "transport_vehicle")
+        )
+      ),
+    db
+      .select()
+      .from(transportVehicleCarryForwardOffsets)
+      .where(
+        and(
+          inArray(transportVehicleCarryForwardOffsets.projectId, projectIds),
+          ...(vehicleId
+            ? [eq(transportVehicleCarryForwardOffsets.vehicleId, vehicleId)]
+            : [])
+        )
+      ),
   ]);
-  const verified=trips.filter(t=>t.status==="verified");
-  const evidenceIds=Array.from(new Set(verified.flatMap(t=>[t.evidenceId,Number(getRouteSnapshot(t.routeSnapshot).unloadPhotoEvidenceId)]).filter((v):v is number=>typeof v==="number"&&Number.isSafeInteger(v)&&v>0)));
-  const events=verified.length?await db.select().from(transportCardEvents).where(and(inArray(transportCardEvents.projectId,projectIds),inArray(transportCardEvents.tripId,verified.map(t=>t.id)))):[];
-  const evidence=evidenceIds.length?await db.select({id:evidenceRecords.id,projectId:evidenceRecords.projectId,mimeType:evidenceRecords.mimeType}).from(evidenceRecords).where(and(inArray(evidenceRecords.projectId,projectIds),eq(evidenceRecords.sourceType,"transport"),eq(evidenceRecords.status,"active"),inArray(evidenceRecords.id,evidenceIds))):[];
-  const checkedTrips=trips.map(t=>{if(t.status!=="verified")return {...t,reviewEligible:t.status==="settled"};const snap=getRouteSnapshot(t.routeSnapshot);const result=getTransportReviewEligibility(t,events.filter(e=>e.tripId===t.id&&e.projectId===t.projectId),{load:evidence.some(e=>e.id===t.evidenceId&&e.projectId===t.projectId&&e.mimeType?.startsWith("image/")),unload:evidence.some(e=>e.id===Number(snap.unloadPhotoEvidenceId)&&e.projectId===t.projectId&&e.mimeType?.startsWith("image/"))});return {...t,reviewEligible:result.eligible&&!result.requiresExceptionReview};});
-  return { trips:checkedTrips, refuels, maintenance, leaseRules, purchases, usage, settlements, payments, offsets };
+  const verified = trips.filter(t => t.status === "verified");
+  const evidenceIds = Array.from(
+    new Set(
+      verified
+        .flatMap(t => [
+          t.evidenceId,
+          Number(getRouteSnapshot(t.routeSnapshot).unloadPhotoEvidenceId),
+        ])
+        .filter(
+          (v): v is number =>
+            typeof v === "number" && Number.isSafeInteger(v) && v > 0
+        )
+    )
+  );
+  const events = verified.length
+    ? await db
+        .select()
+        .from(transportCardEvents)
+        .where(
+          and(
+            inArray(transportCardEvents.projectId, projectIds),
+            inArray(
+              transportCardEvents.tripId,
+              verified.map(t => t.id)
+            )
+          )
+        )
+    : [];
+  const evidence = evidenceIds.length
+    ? await db
+        .select({
+          id: evidenceRecords.id,
+          projectId: evidenceRecords.projectId,
+          mimeType: evidenceRecords.mimeType,
+        })
+        .from(evidenceRecords)
+        .where(
+          and(
+            inArray(evidenceRecords.projectId, projectIds),
+            eq(evidenceRecords.sourceType, "transport"),
+            eq(evidenceRecords.status, "active"),
+            inArray(evidenceRecords.id, evidenceIds)
+          )
+        )
+    : [];
+  const checkedTrips = trips.map(t => {
+    if (t.status !== "verified")
+      return { ...t, reviewEligible: t.status === "settled" };
+    const snap = getRouteSnapshot(t.routeSnapshot);
+    const result = getTransportReviewEligibility(
+      t,
+      events.filter(e => e.tripId === t.id && e.projectId === t.projectId),
+      {
+        load: evidence.some(
+          e =>
+            e.id === t.evidenceId &&
+            e.projectId === t.projectId &&
+            e.mimeType?.startsWith("image/")
+        ),
+        unload: evidence.some(
+          e =>
+            e.id === Number(snap.unloadPhotoEvidenceId) &&
+            e.projectId === t.projectId &&
+            e.mimeType?.startsWith("image/")
+        ),
+      }
+    );
+    return {
+      ...t,
+      reviewEligible: result.eligible && !result.requiresExceptionReview,
+    };
+  });
+  return {
+    trips: checkedTrips,
+    refuels,
+    maintenance,
+    leaseRules,
+    purchases,
+    usage,
+    settlements,
+    payments,
+    offsets,
+  };
 }
 
-
-async function assertNewFleetTrip(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, projectId:number, vehicleId:number, plateNo:string) { await assertVehicleDispatchable(db,vehicleId,projectId); await assertNoOpenTransportTrip(db,projectId,vehicleId,plateNo); }
+async function assertNewFleetTrip(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  projectId: number,
+  vehicleId: number,
+  plateNo: string
+) {
+  await assertVehicleDispatchable(db, vehicleId, projectId);
+  await assertNoOpenTransportTrip(db, projectId, vehicleId, plateNo);
+}
 export const transportRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertTransportAccess(ctx);
@@ -6991,63 +7346,167 @@ export const transportRouter = router({
     }),
   /** 本期与截至月末累计共用统一财务投影；历史项目按真实凭证关联读取。 */
   listVehicleSummaries: protectedProcedure
-    .input(z.object({ projectId: z.number().int().positive().optional(), period: settlementPeriodSchema }))
+    .input(
+      z.object({
+        projectId: z.number().int().positive().optional(),
+        period: settlementPeriodSchema,
+      })
+    )
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       assertVehicleFinanceReader(roleCodes);
       const projectIds = input.projectId
-        ? (await assertProjectInCurrentScope(ctx, input.projectId), [input.projectId])
+        ? (await assertProjectInCurrentScope(ctx, input.projectId),
+          [input.projectId])
         : (await listScopedProjects(ctx)).map(project => project.id);
       if (!projectIds.length) return [];
-      const db = await getDb(); if (!db) return [];
+      const db = await getDb();
+      if (!db) return [];
       const sources = await readVehicleFinanceSources(db, projectIds);
-      const vehicleIds = Array.from(new Set([
-        ...sources.trips.map(row => row.vehicleId),
-        ...sources.refuels.map(row => row.vehicleId),
-        ...sources.maintenance.map(row => row.assetId),
-        ...sources.purchases.map(row => row.assetId),
-        ...sources.leaseRules.map(row => row.vehicleId),
-        ...sources.usage.map(row => row.vehicleId),
-        ...sources.settlements.map(row => row.vehicleId),
-      ].filter((id): id is number => id !== null)));
-      const vehicles = await db.select().from(transportVehicles).where(or(
-        inArray(transportVehicles.projectId, projectIds),
-        ...(vehicleIds.length ? [inArray(transportVehicles.id, vehicleIds)] : [])
-      ));
-      const profiles = vehicles.length ? await db.select().from(vehicleFleetProfiles).where(inArray(vehicleFleetProfiles.vehicleId, vehicles.map(v => v.id))) : [];
-      return vehicles.flatMap(vehicle => projectIds.filter(projectId => vehicleFinanceHasProject(vehicle, projectId, sources)).map(projectId => {
-        const analysis = projectVehicleFinance(vehicle, projectId, input.period, sources, profiles.find(p => p.vehicleId === vehicle.id));
-        return { vehicleId: vehicle.id, projectId, currentProjectId: vehicle.projectId, period: input.period,
-          ...analysis.summary, summary: analysis.summary, cumulative: analysis.cumulative,
-          leaseBillingType: analysis.leaseRule?.billingType ?? null, leaseRate: analysis.leaseRule?.rate ?? null };
-      }));
+      const vehicleIds = Array.from(
+        new Set(
+          [
+            ...sources.trips.map(row => row.vehicleId),
+            ...sources.refuels.map(row => row.vehicleId),
+            ...sources.maintenance.map(row => row.assetId),
+            ...sources.purchases.map(row => row.assetId),
+            ...sources.leaseRules.map(row => row.vehicleId),
+            ...sources.usage.map(row => row.vehicleId),
+            ...sources.settlements.map(row => row.vehicleId),
+          ].filter((id): id is number => id !== null)
+        )
+      );
+      const vehicles = await db
+        .select()
+        .from(transportVehicles)
+        .where(
+          or(
+            inArray(transportVehicles.projectId, projectIds),
+            ...(vehicleIds.length
+              ? [inArray(transportVehicles.id, vehicleIds)]
+              : [])
+          )
+        );
+      const profiles = vehicles.length
+        ? await db
+            .select()
+            .from(vehicleFleetProfiles)
+            .where(
+              inArray(
+                vehicleFleetProfiles.vehicleId,
+                vehicles.map(v => v.id)
+              )
+            )
+        : [];
+      return vehicles.flatMap(vehicle =>
+        projectIds
+          .filter(projectId =>
+            vehicleFinanceHasProject(vehicle, projectId, sources)
+          )
+          .map(projectId => {
+            const analysis = projectVehicleFinance(
+              vehicle,
+              projectId,
+              input.period,
+              sources,
+              profiles.find(p => p.vehicleId === vehicle.id)
+            );
+            return {
+              vehicleId: vehicle.id,
+              projectId,
+              currentProjectId: vehicle.projectId,
+              period: input.period,
+              ...analysis.summary,
+              summary: analysis.summary,
+              cumulative: analysis.cumulative,
+              leaseBillingType: analysis.leaseRule?.billingType ?? null,
+              leaseRate: analysis.leaseRule?.rate ?? null,
+            };
+          })
+      );
     }),
 
   /** 所有金额由真实台账在服务器计算；仅授权管理角色读取，司机账单走独立授权服务。 */
   getVehicleAnalysis: protectedProcedure
-    .input(z.object({ vehicleId: z.number().int().positive(), projectId: z.number().int().positive(), period: settlementPeriodSchema }))
+    .input(
+      z.object({
+        vehicleId: z.number().int().positive(),
+        projectId: z.number().int().positive(),
+        period: settlementPeriodSchema,
+      })
+    )
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       assertVehicleFinanceReader(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-      const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
-      if (!vehicle) throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或不属于当前项目" });
-      const sources = await readVehicleFinanceSources(db, [input.projectId], input.vehicleId);
-      if (!vehicleFinanceHasProject(vehicle, input.projectId, sources)) throw new TRPCError({ code: "NOT_FOUND", message: "车辆在该项目没有档案或历史业务依据" });
-      const [profile] = await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId, vehicle.id)).limit(1);
-      const analysis = projectVehicleFinance(vehicle, input.projectId, input.period, sources, profile);
-      return { vehicle: { id: vehicle.id, plateNo: vehicle.plateNo, vehicleType: vehicle.vehicleType, ownership: vehicle.ownership,
-          ownerName: vehicle.ownerName, status: vehicle.status, projectId: input.projectId, currentProjectId: vehicle.projectId },
-        period: input.period, ...analysis,
-        partsPurchases: sources.purchases.filter(item => ["confirmed", "received", "closed"].includes(item.status) && vehicleFinanceDate(item.orderedAt).startsWith(`${input.period}-`)).map(item => ({
-          id: item.id, orderNo: item.orderNo, itemDescription: item.itemDescription || "未填写配件说明", amount: Number(item.amount), orderedAt: item.orderedAt, hasInvoice: item.hasInvoice, status: item.status,
-        })),
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "数据库连接暂不可用",
+        });
+      const [vehicle] = await db
+        .select()
+        .from(transportVehicles)
+        .where(eq(transportVehicles.id, input.vehicleId))
+        .limit(1);
+      if (!vehicle)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "车辆不存在或不属于当前项目",
+        });
+      const sources = await readVehicleFinanceSources(
+        db,
+        [input.projectId],
+        input.vehicleId
+      );
+      if (!vehicleFinanceHasProject(vehicle, input.projectId, sources))
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "车辆在该项目没有档案或历史业务依据",
+        });
+      const [profile] = await db
+        .select()
+        .from(vehicleFleetProfiles)
+        .where(eq(vehicleFleetProfiles.vehicleId, vehicle.id))
+        .limit(1);
+      const analysis = projectVehicleFinance(
+        vehicle,
+        input.projectId,
+        input.period,
+        sources,
+        profile
+      );
+      return {
+        vehicle: {
+          id: vehicle.id,
+          plateNo: vehicle.plateNo,
+          vehicleType: vehicle.vehicleType,
+          ownership: vehicle.ownership,
+          ownerName: vehicle.ownerName,
+          status: vehicle.status,
+          projectId: input.projectId,
+          currentProjectId: vehicle.projectId,
+        },
+        period: input.period,
+        ...analysis,
+        partsPurchases: sources.purchases
+          .filter(
+            item =>
+              ["confirmed", "received", "closed"].includes(item.status) &&
+              vehicleFinanceDate(item.orderedAt).startsWith(`${input.period}-`)
+          )
+          .map(item => ({
+            id: item.id,
+            orderNo: item.orderNo,
+            itemDescription: item.itemDescription || "未填写配件说明",
+            amount: Number(item.amount),
+            orderedAt: item.orderedAt,
+            hasInvoice: item.hasInvoice,
+            status: item.status,
+          })),
       };
     }),
-
-
 
   /** 新建或维护运输车辆档案；司机角色不得修改车辆主数据。 */
   saveVehicle: protectedProcedure
@@ -7085,7 +7544,7 @@ export const transportRouter = router({
         input.id ? "edit" : "create"
       );
       return db.transaction(async db => {
-        await assertFleetDayWritable(db,input.projectId,new Date());
+        await assertFleetDayWritable(db, input.projectId, new Date());
         const existing = input.id
           ? (
               await db
@@ -7096,8 +7555,39 @@ export const transportRouter = router({
                 .for("update")
             )[0]
           : null;
-        if(existing && (input.projectId!==existing.projectId||input.ownership!==existing.ownership||(input.driverPersonId!==undefined&&input.driverPersonId!==existing.driverPersonId)||(input.driverUserId!==undefined&&input.driverUserId!==existing.driverUserId))) throw new TRPCError({code:"CONFLICT",message:"车辆历史项目、产权与司机责任不得覆盖，请在车辆管理办理版本与交接"});
-        if(existing && input.status!=="active" && existing.status==="active") { const trips=await db.select({status:transportTrips.status}).from(transportTrips).where(eq(transportTrips.vehicleId,existing.id)); if(trips.some(t=>["draft","submitted","verified"].includes(t.status))) throw new TRPCError({code:"CONFLICT",message:"车辆仍有在途票据，请先卸土或作废"}); }
+        if (
+          existing &&
+          (input.projectId !== existing.projectId ||
+            input.ownership !== existing.ownership ||
+            (input.driverPersonId !== undefined &&
+              input.driverPersonId !== existing.driverPersonId) ||
+            (input.driverUserId !== undefined &&
+              input.driverUserId !== existing.driverUserId))
+        )
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "车辆历史项目、产权与司机责任不得覆盖，请在车辆管理办理版本与交接",
+          });
+        if (
+          existing &&
+          input.status !== "active" &&
+          existing.status === "active"
+        ) {
+          const trips = await db
+            .select({ status: transportTrips.status })
+            .from(transportTrips)
+            .where(eq(transportTrips.vehicleId, existing.id));
+          if (
+            trips.some(t =>
+              ["draft", "submitted", "verified"].includes(t.status)
+            )
+          )
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "车辆仍有在途票据，请先卸土或作废",
+            });
+        }
         const targetPersonId =
           input.driverPersonId === undefined
             ? (existing?.driverPersonId ?? null)
@@ -7165,7 +7655,20 @@ export const transportRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "车辆保存未返回记录",
           });
-        if(!existing) { const [newVehicle]=await db.select().from(transportVehicles).where(eq(transportVehicles.id,saved.id)).limit(1); await db.insert(vehicleFleetProfiles).values({...initialFleetProfile(newVehicle,user.id),projectStatus:"pending",dispatchStatus:"paused"}); }
+        if (!existing) {
+          const [newVehicle] = await db
+            .select()
+            .from(transportVehicles)
+            .where(eq(transportVehicles.id, saved.id))
+            .limit(1);
+          await db
+            .insert(vehicleFleetProfiles)
+            .values({
+              ...initialFleetProfile(newVehicle, user.id),
+              projectStatus: "pending",
+              dispatchStatus: "paused",
+            });
+        }
         if (targetPersonId !== null || existing?.driverPersonId)
           await saveResourceBinding(db, {
             personId: targetPersonId,
@@ -7185,7 +7688,7 @@ export const transportRouter = router({
         });
         return {
           success: true,
-          vehicleId:saved.id,
+          vehicleId: saved.id,
           theoreticalVolumeCubicMeters: calculateTheoreticalVolume(
             input.boxLengthMeters,
             input.boxWidthMeters,
@@ -8768,8 +9271,10 @@ export const transportRouter = router({
           code: "FORBIDDEN",
           message: "运输安全阈值仅超级管理员可在后台维护",
         });
-      const rawAddress = input.address === undefined
-        ? (existingSite?.address ?? null) : input.address?.trim() || null;
+      const rawAddress =
+        input.address === undefined
+          ? (existingSite?.address ?? null)
+          : input.address?.trim() || null;
       const addressResolution =
         rawAddress && rawAddress !== existingSite?.address
           ? await resolveTransportSiteAddress(rawAddress)
@@ -10022,7 +10527,8 @@ export const transportRouter = router({
           success: existing.validationStatus === "accepted",
           duplicate: true,
           needsReview:
-            existing.validationStatus === "needs_review" || safetyNotices.length > 0,
+            existing.validationStatus === "needs_review" ||
+            safetyNotices.length > 0,
           reason: safetyNotices.length ? safetyNotices.join("；") : null,
           safetyNotices,
         };
@@ -10084,14 +10590,19 @@ export const transportRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: reason });
         safetyNotices.push(`${reason}（最短运输时间拦截已关闭，已留待核验）`);
       }
-      const hasMobileCoordinates = input.latitude != null && input.longitude != null;
-      const hasSiteCoordinates = unloadSite.latitude != null && unloadSite.longitude != null;
+      const hasMobileCoordinates =
+        input.latitude != null && input.longitude != null;
+      const hasSiteCoordinates =
+        unloadSite.latitude != null && unloadSite.longitude != null;
       if (!hasMobileCoordinates || !hasSiteCoordinates) {
         const reason = !hasMobileCoordinates
           ? "卸土异常：未取得现场定位"
           : "卸土点中文详细地址尚未完成地图定位校验";
         if (safety.unloadGeofenceEnabled)
-          throw new TRPCError({ code: "BAD_REQUEST", message: `${reason}，不能直接确认卸土` });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `${reason}，不能直接确认卸土`,
+          });
         safetyNotices.push(`${reason}（定位范围拦截已关闭，已留待核验）`);
       } else {
         const distanceMeters = Math.round(
@@ -11180,16 +11691,37 @@ export const transportRouter = router({
       requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
       if (!canManageSettlement(roleCodes))
-        throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权预览渣土车费用结算候选" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无权预览渣土车费用结算候选",
+        });
       await assertProjectInCurrentScope(ctx, input.projectId);
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
-      const [vehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1);
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "数据库连接暂不可用",
+        });
+      const [vehicle] = await db
+        .select()
+        .from(transportVehicles)
+        .where(eq(transportVehicles.id, input.vehicleId))
+        .limit(1);
       if (!vehicle || vehicle.projectId !== input.projectId)
-        throw new TRPCError({ code: "NOT_FOUND", message: "车辆不存在或不属于当前项目" });
-      const [classification] = await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId, vehicle.id)).limit(1);
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "车辆不存在或不属于当前项目",
+        });
+      const [classification] = await db
+        .select()
+        .from(vehicleFleetProfiles)
+        .where(eq(vehicleFleetProfiles.vehicleId, vehicle.id))
+        .limit(1);
       if (!canUseVehicleTripSettlement(vehicle, classification))
-        throw new TRPCError({ code: "BAD_REQUEST", message: "仅渣土车按趟/吨/方结算分类可使用运单合并结算" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "仅渣土车按趟/吨/方结算分类可使用运单合并结算",
+        });
       return (await readVehicleSettlementSelection(db, input)).preview;
     }),
 
@@ -11221,8 +11753,12 @@ export const transportRouter = router({
           code: "NOT_FOUND",
           message: "车辆不存在或不属于当前项目",
         });
-      const [classification]=await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId,vehicle.id)).limit(1);
-      if (!canUseVehicleTripSettlement(vehicle,classification))
+      const [classification] = await db
+        .select()
+        .from(vehicleFleetProfiles)
+        .where(eq(vehicleFleetProfiles.vehicleId, vehicle.id))
+        .limit(1);
+      if (!canUseVehicleTripSettlement(vehicle, classification))
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
@@ -11238,32 +11774,48 @@ export const transportRouter = router({
       const modeSelection = input.selectionMode
         ? await readVehicleSettlementSelection(db, input)
         : null;
-      if (modeSelection && input.tripIds && !vehicleSettlementTripIdsMatch(modeSelection.preview.tripIds, input.tripIds))
-        throw new TRPCError({ code: "CONFLICT", message: "所选运单与当前结算模式候选不一致，候选可能已新增、占用或变更，请刷新预览；不能静默忽略" });
+      if (
+        modeSelection &&
+        input.tripIds &&
+        !vehicleSettlementTripIdsMatch(
+          modeSelection.preview.tripIds,
+          input.tripIds
+        )
+      )
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "所选运单与当前结算模式候选不一致，候选可能已新增、占用或变更，请刷新预览；不能静默忽略",
+        });
       if (modeSelection && !modeSelection.preview.eligible)
-        throw new TRPCError({ code: "BAD_REQUEST", message: modeSelection.preview.reason! });
-      const verifiedTrips = modeSelection ? modeSelection.selectedTrips : await db
-        .select()
-        .from(transportTrips)
-        .where(
-          and(
-            eq(transportTrips.projectId, input.projectId),
-            eq(transportTrips.vehicleId, input.vehicleId),
-            or(
-              eq(transportTrips.status, "verified"),
-              ...(input.legacyTripIds.length
-                ? [
-                    and(
-                      eq(transportTrips.status, "settled"),
-                      inArray(transportTrips.id, input.legacyTripIds)
-                    ),
-                  ]
-                : [])
-            ),
-            gte(transportTrips.startAt, start),
-            lt(transportTrips.startAt, endExclusive)
-          )
-        );
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: modeSelection.preview.reason!,
+        });
+      const verifiedTrips = modeSelection
+        ? modeSelection.selectedTrips
+        : await db
+            .select()
+            .from(transportTrips)
+            .where(
+              and(
+                eq(transportTrips.projectId, input.projectId),
+                eq(transportTrips.vehicleId, input.vehicleId),
+                or(
+                  eq(transportTrips.status, "verified"),
+                  ...(input.legacyTripIds.length
+                    ? [
+                        and(
+                          eq(transportTrips.status, "settled"),
+                          inArray(transportTrips.id, input.legacyTripIds)
+                        ),
+                      ]
+                    : [])
+                ),
+                gte(transportTrips.startAt, start),
+                lt(transportTrips.startAt, endExclusive)
+              )
+            );
       if (!verifiedTrips.length)
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -11441,11 +11993,22 @@ export const transportRouter = router({
             input.vehicleId
           );
           if (input.selectionMode) {
-            const currentSelection = await readVehicleSettlementSelection(tx, input, true);
-            if (!currentSelection.preview.eligible || !vehicleSettlementTripIdsMatch(
-              currentSelection.preview.tripIds, candidates.map(trip => trip.id),
-            ))
-              throw new TRPCError({ code: "CONFLICT", message: "结算候选已新增、占用或变更，请刷新预览后重新生成" });
+            const currentSelection = await readVehicleSettlementSelection(
+              tx,
+              input,
+              true
+            );
+            if (
+              !currentSelection.preview.eligible ||
+              !vehicleSettlementTripIdsMatch(
+                currentSelection.preview.tripIds,
+                candidates.map(trip => trip.id)
+              )
+            )
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "结算候选已新增、占用或变更，请刷新预览后重新生成",
+              });
           }
           const locked = await tx
             .select()
@@ -11472,7 +12035,8 @@ export const transportRouter = router({
                 row.calculatedUnitPrice !== candidate?.calculatedUnitPrice ||
                 row.volumeCubicMeters !== candidate?.volumeCubicMeters ||
                 row.weightTons !== candidate?.weightTons ||
-                JSON.stringify(row.routeSnapshot) !== JSON.stringify(candidate?.routeSnapshot) ||
+                JSON.stringify(row.routeSnapshot) !==
+                  JSON.stringify(candidate?.routeSnapshot) ||
                 row.calculatedAmount !== candidate?.calculatedAmount ||
                 row.fuelDeductionAmount !== candidate?.fuelDeductionAmount ||
                 row.netSettlementAmount !== candidate?.netSettlementAmount
@@ -11753,8 +12317,15 @@ export const transportRouter = router({
       let basisDescription = input.basisDescription.trim();
       let usedUsageRows: typeof usageRows = [];
       if (input.settlementKind === "lease") {
-        const [classification]=await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId,vehicle.id)).limit(1);
-        if (vehicle.ownership !== "leased" && classification?.propertyType!=="rented")
+        const [classification] = await db
+          .select()
+          .from(vehicleFleetProfiles)
+          .where(eq(vehicleFleetProfiles.vehicleId, vehicle.id))
+          .limit(1);
+        if (
+          vehicle.ownership !== "leased" &&
+          classification?.propertyType !== "rented"
+        )
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "租赁结算仅适用于外租车辆；其他车辆请使用有依据的调整结算",

@@ -2927,9 +2927,12 @@ export default function AdminPage({
   const fullDatabaseBackup = trpc.admin.backup.fullStatus.useQuery(undefined, {
     enabled: canQuery && isBusiness,
   });
-  const fullDatabaseBackupHistory = trpc.admin.backup.fullHistory.useQuery(undefined, {
-    enabled: canQuery && isBusiness,
-  });
+  const fullDatabaseBackupHistory = trpc.admin.backup.fullHistory.useQuery(
+    undefined,
+    {
+      enabled: canQuery && isBusiness,
+    }
+  );
   const workspaceProjectState = getBusinessWorkspaceProjectState(
     businessWorkspaceProjectId
   );
@@ -3927,6 +3930,8 @@ export default function AdminPage({
   const [machineForm, setMachineForm] =
     useState<MachineForm>(EMPTY_MACHINE_FORM);
   const [machineDialogOpen, setMachineDialogOpen] = useState(false);
+  const [machineOwnerAccountDialogOpen, setMachineOwnerAccountDialogOpen] =
+    useState(false);
   const [machineryPaymentFormOpen, setMachineryPaymentFormOpen] =
     useState(false);
   const confirmMachineryFormClose = () =>
@@ -5570,7 +5575,11 @@ export default function AdminPage({
   });
   const createLocalUser = trpc.admin.personnel.createLocalUser.useMutation({
     onSuccess: async () => {
-      toast.success("普通管理人员账号已创建，请继续配置角色、部门和项目范围");
+      toast.success(
+        machineOwnerAccountDialogOpen
+          ? "机械老板账号已创建，请在机械档案中选择并绑定该账号"
+          : "普通管理人员账号已创建，请继续配置角色、部门和项目范围"
+      );
       setLocalAccountForm({
         username: "",
         displayName: "",
@@ -5578,6 +5587,7 @@ export default function AdminPage({
         status: "active",
         loginMode: "both",
       });
+      setMachineOwnerAccountDialogOpen(false);
       await Promise.all([
         users.refetch(),
         audits.refetch(),
@@ -6213,7 +6223,11 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
     onSettled: async () => {
-      await Promise.all([fullDatabaseBackup.refetch(), fullDatabaseBackupHistory.refetch(), audits.refetch()]);
+      await Promise.all([
+        fullDatabaseBackup.refetch(),
+        fullDatabaseBackupHistory.refetch(),
+        audits.refetch(),
+      ]);
     },
   });
   const confirmFullDatabaseBackupDownload = async () => {
@@ -15179,7 +15193,12 @@ export default function AdminPage({
                     canCreateSettlement={rights?.canCreateSettlement ?? false}
                     canDirectSettle={rights?.canSettle ?? false}
                     onCreateSettlement={openTripSettlement}
-                    onTransition={(id, nextStatus, reviewRemarks, reviewConfirmed) =>
+                    onTransition={(
+                      id,
+                      nextStatus,
+                      reviewRemarks,
+                      reviewConfirmed
+                    ) =>
                       transitionTransportTrip.mutate({
                         id,
                         projectId: workspaceProjectId,
@@ -21786,8 +21805,25 @@ export default function AdminPage({
                         ))}
                     </SelectContent>
                   </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-2 w-full"
+                    onClick={() => {
+                      setLocalAccountForm({
+                        username: "",
+                        displayName: "",
+                        initialPassword: "",
+                        status: "active",
+                        loginMode: "mobile",
+                      });
+                      setMachineOwnerAccountDialogOpen(true);
+                    }}
+                  >
+                    新增机械老板账号
+                  </Button>
                   <p className="mt-1 text-xs leading-5 text-slate-500">
-                    老板登录后只查看名下全部机械费用，不能录入、审核或管理设备。
+                    老板登录后只查看绑定设备的汇总、费用明细、月结和付款账单，不能录入、审核或管理设备。
                   </p>
                 </Field>
               </div>
@@ -21931,6 +21967,104 @@ export default function AdminPage({
                     : machineForm.id
                       ? "保存机械档案"
                       : "建立机械档案"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={machineOwnerAccountDialogOpen}
+          onOpenChange={open => {
+            setMachineOwnerAccountDialogOpen(open);
+            if (!open) {
+              setLocalAccountForm({
+                username: "",
+                displayName: "",
+                initialPassword: "",
+                status: "active",
+                loginMode: "both",
+              });
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>新增机械老板账号</DialogTitle>
+              <DialogDescription>
+                创建后返回机械档案，在“机械老板”下拉框中选择并保存。该账号仅用于查看已绑定设备的汇总、费用明细、月结和付款账单，不自动获得任何管理权限。
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              className="space-y-4"
+              onSubmit={event => {
+                event.preventDefault();
+                createLocalUser.mutate(localAccountForm);
+              }}
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="老板手机号">
+                  <Input
+                    type="tel"
+                    inputMode="numeric"
+                    autoComplete="tel"
+                    value={localAccountForm.username}
+                    onChange={event =>
+                      setLocalAccountForm(current => ({
+                        ...current,
+                        username: event.target.value,
+                      }))
+                    }
+                    placeholder="11位大陆手机号"
+                  />
+                </Field>
+                <Field label="老板姓名">
+                  <Input
+                    value={localAccountForm.displayName}
+                    onChange={event =>
+                      setLocalAccountForm(current => ({
+                        ...current,
+                        displayName: event.target.value,
+                      }))
+                    }
+                    placeholder="请输入真实姓名或公司称呼"
+                  />
+                </Field>
+              </div>
+              <Field label="初始登录密码">
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={localAccountForm.initialPassword}
+                  onChange={event =>
+                    setLocalAccountForm(current => ({
+                      ...current,
+                      initialPassword: event.target.value,
+                    }))
+                  }
+                  placeholder="至少6位"
+                />
+              </Field>
+              <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                账号创建成功后，还必须回到机械档案选择该账号并保存；未绑定设备前，老板登录只会看到“暂无名下机械”。
+              </p>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setMachineOwnerAccountDialogOpen(false)}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={
+                    createLocalUser.isPending ||
+                    !localAccountForm.username.trim() ||
+                    !localAccountForm.displayName.trim() ||
+                    localAccountForm.initialPassword.length < 6
+                  }
+                >
+                  {createLocalUser.isPending ? "正在创建…" : "创建老板账号"}
                 </Button>
               </DialogFooter>
             </form>

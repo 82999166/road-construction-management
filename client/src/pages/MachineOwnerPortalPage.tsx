@@ -229,6 +229,18 @@ export default function MachineOwnerPortalPage() {
                         icon: Wrench,
                         accent: "text-[#754b3e]",
                       },
+                      {
+                        label: "结算应付",
+                        value: money(item.summary.settlementAmount),
+                        icon: FileText,
+                        accent: "text-[#35604e]",
+                      },
+                      {
+                        label: "已付款 / 待付款",
+                        value: `${money(item.summary.paidAmount)} / ${money(item.summary.outstandingAmount)}`,
+                        icon: Banknote,
+                        accent: "text-[#9a5128]",
+                      },
                     ].map(metric => (
                       <div key={metric.label} className="bg-white p-3">
                         <metric.icon className="h-4 w-4 text-[#87a898]" />
@@ -260,6 +272,70 @@ export default function MachineOwnerPortalPage() {
                       <FileText className="mr-1.5 h-4 w-4" />
                       查看费用明细 <ChevronRight className="ml-1 h-4 w-4" />
                     </Button>
+                    <div className="grid gap-3 pt-2 sm:grid-cols-2">
+                      <div className="rounded-xl border border-[#e0ebe4] p-3">
+                        <p className="text-xs font-semibold text-[#547367]">
+                          月结账单（最近 {item.monthlyStatements.length} 期）
+                        </p>
+                        <div className="mt-2 space-y-1.5 text-xs">
+                          {item.monthlyStatements.length ? (
+                            item.monthlyStatements
+                              .slice(0, 6)
+                              .map(statement => (
+                                <div
+                                  key={String(statement.id)}
+                                  className="flex items-center justify-between gap-2"
+                                >
+                                  <span>
+                                    {statement.period} ·{" "}
+                                    {statement.status === "void"
+                                      ? "已作废"
+                                      : "有效"}
+                                  </span>
+                                  <span className="font-semibold">
+                                    {money(statement.machineShareAmount)}
+                                  </span>
+                                </div>
+                              ))
+                          ) : (
+                            <span className="text-[#7a9086]">暂无月结记录</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-[#e0ebe4] p-3">
+                        <p className="text-xs font-semibold text-[#547367]">
+                          付款账单（最近 {item.settlements.length} 笔）
+                        </p>
+                        <div className="mt-2 space-y-1.5 text-xs">
+                          {item.settlements.length ? (
+                            item.settlements.slice(0, 6).map(settlement => (
+                              <div
+                                key={String(settlement.id)}
+                                className="flex items-center justify-between gap-2"
+                              >
+                                <span>
+                                  {settlement.period} ·{" "}
+                                  {settlement.status === "paid"
+                                    ? "已付款"
+                                    : settlement.status === "partial"
+                                      ? "部分付款"
+                                      : "待付款"}
+                                </span>
+                                <span className="font-semibold">
+                                  {money(
+                                    settlement.outstandingAmount > 0
+                                      ? settlement.outstandingAmount
+                                      : settlement.netPayableAmount
+                                  )}
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <span className="text-[#7a9086]">暂无付款账单</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </section>
               ))

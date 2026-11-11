@@ -31,6 +31,17 @@ import { storageGetSignedUrl, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { laborRouter } from "./labor";
+import { machineryRouter, transportRouter } from "./operations";
+import { subcontractRouter } from "./subcontract";
+import {
+  assertFinanceApprovalRead,
+  financeApprovalDb,
+  financeApprovalQueueInput,
+  financeApproveInput,
+  readFinanceApprovalRows,
+  readFinanceApprovalSummary,
+} from "../services/financeApproval";
 import {
   assertSettlementPaymentStatusWrite,
   buildValidVehicleCarryForwardTotals,
@@ -575,7 +586,52 @@ function safeBoardRow(row: Record<string, unknown>) {
   };
 }
 
+/** 保留原根路径以运行原 protectedProcedure 的角色/operation中间件，不能用短路径 caller 绕过守卫。 */
+const financeApprovalOriginalRouter = router({
+  labor: laborRouter,
+  machinery: machineryRouter,
+  transport: transportRouter,
+  subcontract: subcontractRouter,
+});
 export const settlementPaymentRouter = router({
+  /** 财务独立项目范围上的真实待审数；缺省项目仅返回全授权范围计数，不返回业务内容。 */
+  approvalSummary: protectedProcedure
+    .input(z.object({ projectId: z.number().int().positive().optional() }))
+    .query(({ ctx, input }) => readFinanceApprovalSummary(ctx, input.projectId)),
+  /** 只读最小审核DTO：工资/日结 reviewing，其余 submitted，草稿与已审单不入队。 */
+  approvalQueue: protectedProcedure
+    .input(financeApprovalQueueInput)
+    .query(async ({ ctx, input }) => {
+      await assertFinanceApprovalRead(ctx, input.projectId);
+      const db = await financeApprovalDb();
+      const rows = await readFinanceApprovalRows(ctx, db, input.projectId, input.sourceTypes);
+      const keyword = input.keyword.toLocaleLowerCase();
+      return {
+        projectId: input.projectId,
+        rows: rows.filter(row => !keyword || [row.settlementNo, row.sourceLabel, row.counterpartyDisplay, row.periodLabel, row.itemsSummary].some(value => value.toLocaleLowerCase().includes(keyword))),
+      };
+    }),
+  /** 仅财务入口适配：不写状态、不自动提交、不登记付款，原业务权限/状态机/闭环/CAS完整运行。 */
+  approve: protectedProcedure
+    .input(financeApproveInput)
+    .mutation(async ({ ctx, input }) => {
+      await assertFinanceApprovalRead(ctx, input.projectId);
+      const db = await financeApprovalDb();
+      const rows = await readFinanceApprovalRows(ctx, db, input.projectId, [input.settlementType]);
+      const row = rows.find(item => item.settlementId === input.settlementId);
+      if (!row) throw new TRPCError({ code: "CONFLICT", message: "结算单不是当前项目已提交的待审单，请刷新审核队列" });
+      if (!row.canApprove) throw new TRPCError({ code: "FORBIDDEN", message: row.approvalUnavailableReason || "当前账号无权审核该结算单" });
+      if (row.fingerprint !== input.expectedFingerprint) throw new TRPCError({ code: "CONFLICT", message: "结算状态、金额或依据已变更，请刷新核对后再审核" });
+      // 不透传 FINANCE departmentModule，原路由必须自行建立其部门和项目范围。
+      const caller = financeApprovalOriginalRouter.createCaller({ user: ctx.user, req: ctx.req, res: ctx.res });
+      const originalInput = { id: input.settlementId, projectId: input.projectId };
+      if (input.settlementType === "transport_vehicle") await caller.transport.transitionVehicleSettlement({ ...originalInput, action: "approve" });
+      else if (input.settlementType === "machine") await caller.machinery.transitionPaymentSettlement({ ...originalInput, action: "approve" });
+      else if (input.settlementType === "payroll") await caller.labor.payroll.approve({ id: input.settlementId, decision: "approved" });
+      else if (input.settlementType === "daily_wage") await caller.labor.dailyWage.review({ id: input.settlementId, decision: "approved" });
+      else await caller.subcontract.transitionPaymentSettlement({ ...originalInput, targetStatus: "approved" });
+      return { success: true as const };
+    }),
   /** 新付款凭证先入受控证据库；仅能被同一项目、同一结算单实际付款动作引用。 */
   uploadProof: protectedProcedure
     .input(paymentProofUploadInput)

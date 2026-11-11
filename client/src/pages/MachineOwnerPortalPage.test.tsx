@@ -24,5 +24,20 @@ describe("机械老板费用门户", () => {
     expect(source).toContain("油料费用");
     expect(source).toContain("维修 / 加班");
     expect(source).toContain("机械费用明细");
+    expect(source).toContain("月结账单");
+    expect(source).toContain("付款账单");
+    expect(source).toContain("待付款");
+  });
+});
+
+describe("机械档案老板账号入口", () => {
+  it("在机械档案中提供创建并绑定老板账号的明确入口", () => {
+    const source = readFileSync(
+      new URL("../pages/AdminPage.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain("新增机械老板账号");
+    expect(source).toContain("请在机械档案中选择并绑定该账号");
+    expect(source).toContain("ownerUserId: machineForm.ownerUserId");
   });
 });
