@@ -50,6 +50,7 @@ import {
   transportVehicleUsageRecords,
   transportVehicles,
   vehicleFleetProfiles,
+  userProfiles,
   users,
 } from "../../drizzle/schema";
 import {
@@ -6205,7 +6206,7 @@ export const machineryRouter = router({
       const user = requireAuthenticatedUser(ctx);
       await assertMachineryAccess(ctx);
       await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
-      const { db } = await getScopedMachine(
+      const { db, machine } = await getScopedMachine(
         ctx,
         input.machineId,
         input.projectId
@@ -6287,6 +6288,43 @@ export const machineryRouter = router({
         targetId: String(costId || `${input.machineId}:${input.occurredAt}`),
         summary: `录入机械${input.costType}成本：${input.costName.trim()}，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}`,
       });
+      const [ownerProfile] = machine.ownerUserId
+        ? await db
+            .select({ phoneEncrypted: userProfiles.phoneEncrypted })
+            .from(userProfiles)
+            .where(eq(userProfiles.userId, machine.ownerUserId))
+            .limit(1)
+        : [];
+      const recipientPhoneEncrypted =
+        ownerProfile?.phoneEncrypted ?? machine.driverPhoneEncrypted;
+      void notifyOfficialAccountBusinessEventSafely({
+        userId: user.id,
+        projectId: input.projectId,
+        module: "machinery",
+        eventCode: "machine_cost_submitted",
+        targetType: "machine_cost",
+        targetId: String(costId || `${input.machineId}:${input.occurredAt}`),
+        title: "机械费用已录入",
+        content: `${machine.name}${machine.code ? `（${machine.code}）` : ""}新增一笔${input.costName.trim()}费用，金额 ¥${amount.toFixed(2)}，请进入系统核对。`,
+        deepLink: "/mobile/machinery",
+      }).catch(() => undefined);
+      void notifyAliyunSmsSafely({
+        actorUserId: user.id,
+        projectId: input.projectId,
+        module: "machinery",
+        eventCode: "machine_expense_recorded",
+        recipientPhone: recipientPhoneEncrypted
+          ? decryptSecret(recipientPhoneEncrypted)
+          : null,
+        targetType: "machine_cost",
+        targetId: String(costId || `${input.machineId}:${input.occurredAt}`),
+        templateParams: {
+          vehicle: `${machine.name}${machine.code ? `（${machine.code}）` : ""}`,
+          category: input.costName.trim(),
+          amount: amount.toFixed(2),
+          time: formatChinaSmsTime(occurredAt),
+        },
+      }).catch(() => undefined);
       return {
         success: true,
         id: costId || null,
@@ -7661,13 +7699,11 @@ export const transportRouter = router({
             .from(transportVehicles)
             .where(eq(transportVehicles.id, saved.id))
             .limit(1);
-          await db
-            .insert(vehicleFleetProfiles)
-            .values({
-              ...initialFleetProfile(newVehicle, user.id),
-              projectStatus: "pending",
-              dispatchStatus: "paused",
-            });
+          await db.insert(vehicleFleetProfiles).values({
+            ...initialFleetProfile(newVehicle, user.id),
+            projectStatus: "pending",
+            dispatchStatus: "paused",
+          });
         }
         if (targetPersonId !== null || existing?.driverPersonId)
           await saveResourceBinding(db, {

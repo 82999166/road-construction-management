@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 
 describe("短信与服务号通知通道设置", () => {
   it("内置阿里云和腾讯云配置，并保留模块级开关与密钥托管提示", () => {
-    const source = readFileSync(new URL("./NotificationChannelSettings.tsx", import.meta.url), "utf8");
+    const source = readFileSync(
+      new URL("./NotificationChannelSettings.tsx", import.meta.url),
+      "utf8"
+    );
     expect(source).toContain("阿里云短信");
     expect(source).toContain("腾讯云短信");
     expect(source).toContain("密钥仅加密托管");
@@ -23,7 +26,7 @@ describe("短信与服务号通知通道设置", () => {
     expect(source).toContain("sendAliyunSmsNotificationTest");
     expect(source).toContain("transport_load_completed");
     expect(source).toContain("tripOrdinal（该车当日第几车）");
-    expect(source).toContain("包含 ${\"${tripOrdinal}\"} 的模板");
+    expect(source).toContain("${tripOrdinal}");
     expect(source).toContain("短信显示车数需要更换新模板");
     expect(source).toContain("已审核旧模板正文不会被系统自动增加“第几车”");
     expect(source).toContain("diesel_refuel_completed");

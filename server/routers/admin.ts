@@ -61,10 +61,11 @@ import {
   users,
 } from "../../drizzle/schema";
 import { DEPARTMENT_BUSINESS_MODULES } from "../../shared/department";
+import { assertCertificateFileSignature } from "../../shared/domain";
 import {
-  assertCertificateFileSignature,
-} from "../../shared/domain";
-import { calculateVehicleRegistryVolume, requiresVehicleCargoBox } from "../../shared/vehicleCargo";
+  calculateVehicleRegistryVolume,
+  requiresVehicleCargoBox,
+} from "../../shared/vehicleCargo";
 import { COOKIE_NAME } from "../../shared/const";
 import {
   normalizeEvidenceWatermarkTemplate,
@@ -79,7 +80,11 @@ import {
   listLoginUsers,
   requireAuthenticatedUser,
 } from "../access";
-import { assertFleetDayWritable, assertMaintenanceImmutable, vehicleDependencies } from "../services/vehicleManagementPolicy";
+import {
+  assertFleetDayWritable,
+  assertMaintenanceImmutable,
+  vehicleDependencies,
+} from "../services/vehicleManagementPolicy";
 import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { getDb } from "../db";
 import {
@@ -200,7 +205,7 @@ const organizationInput = z.object({
 const vehicleManagementInput = z
   .object({
     id: z.number().int().positive().optional(),
-  fleetVersion:z.number().int().min(0).optional(),
+    fleetVersion: z.number().int().min(0).optional(),
     projectId: z.number().int().positive(),
     organizationId: z.number().int().positive().nullable().optional(),
     plateNo: z
@@ -255,7 +260,17 @@ const vehicleManagementInput = z
       .optional(),
   })
   .superRefine((value, ctx) => {
-    if (requiresVehicleCargoBox(value.vehicleType) && [value.boxLengthMeters,value.boxWidthMeters,value.boxHeightMeters].some(n=>n<=0)) ctx.addIssue({code:"custom",path:["boxLengthMeters"],message:"货运车辆须填写真实正数货厢尺寸"});
+    if (
+      requiresVehicleCargoBox(value.vehicleType) &&
+      [value.boxLengthMeters, value.boxWidthMeters, value.boxHeightMeters].some(
+        n => n <= 0
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["boxLengthMeters"],
+        message: "货运车辆须填写真实正数货厢尺寸",
+      });
     if (value.ownership !== "leased") return;
     if (!value.ownerName?.trim())
       ctx.addIssue({
@@ -724,6 +739,9 @@ const smsEventCode = z.enum([
   "transport_unload_completed",
   "transport_scan_exception",
   "diesel_refuel_completed",
+  "machine_refuel_completed",
+  "vehicle_expense_recorded",
+  "machine_expense_recorded",
 ]);
 const smsEventTemplateInput = z.object({
   eventCode: smsEventCode,
@@ -747,7 +765,7 @@ const notificationChannelConfigurationInput = z.object({
   aliyunAccessKeySecret: z.string().max(2048),
   aliyunSignName: z.string().trim().max(128),
   aliyunTemplateCode: z.string().trim().max(128),
-  smsEventTemplates: z.array(smsEventTemplateInput).max(4),
+  smsEventTemplates: z.array(smsEventTemplateInput).max(7),
   tencentSecretId: z.string().max(256),
   tencentSecretKey: z.string().max(2048),
   tencentSdkAppId: z.string().trim().max(64),
@@ -2597,25 +2615,21 @@ export const adminRouter = router({
             .set(values)
             .where(eq(payrollGenerationSchedules.id, existing.id));
         else
-          await db
-            .insert(payrollGenerationSchedules)
-            .values({
-              scopeKey: PAYROLL_GENERATION_SCOPE_KEY,
-              ...values,
-              createdBy: admin.id,
-            });
-        await db
-          .insert(auditLogs)
-          .values({
-            userId: admin.id,
-            module: "labor",
-            action: "save_payroll_generation_schedule",
-            targetType: "payroll_generation_schedule",
-            targetId: PAYROLL_GENERATION_SCOPE_KEY,
-            summary: input.enabled
-              ? `启用每月 ${input.generationDay} 日 ${String(input.generationHour).padStart(2, "0")}:${String(input.generationMinute).padStart(2, "0")} 自动生成上月工资草稿`
-              : "停用每月自动工资草稿生成",
+          await db.insert(payrollGenerationSchedules).values({
+            scopeKey: PAYROLL_GENERATION_SCOPE_KEY,
+            ...values,
+            createdBy: admin.id,
           });
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "labor",
+          action: "save_payroll_generation_schedule",
+          targetType: "payroll_generation_schedule",
+          targetId: PAYROLL_GENERATION_SCOPE_KEY,
+          summary: input.enabled
+            ? `启用每月 ${input.generationDay} 日 ${String(input.generationHour).padStart(2, "0")}:${String(input.generationMinute).padStart(2, "0")} 自动生成上月工资草稿`
+            : "停用每月自动工资草稿生成",
+        });
         return { success: true, taskUid };
       }),
     saveAdvance: protectedProcedure
@@ -2639,28 +2653,24 @@ export const adminRouter = router({
           .limit(1);
         if (!profile)
           throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
-        const [created] = await db
-          .insert(employeePayrollAdvances)
-          .values({
-            employeeProfileId: profile.id,
-            laborWorkerId: profile.laborWorkerId,
-            projectId: profile.projectId,
-            advanceDate: new Date(`${input.advanceDate}T00:00:00Z`),
-            amount: String(input.amount),
-            status: input.status,
-            remarks: input.remarks ?? null,
-            createdBy: admin.id,
-          });
-        await db
-          .insert(auditLogs)
-          .values({
-            userId: admin.id,
-            module: "personnel",
-            action: "create_payroll_advance",
-            targetType: "employee_profile",
-            targetId: String(profile.id),
-            summary: "新增员工工资预支记录",
-          });
+        const [created] = await db.insert(employeePayrollAdvances).values({
+          employeeProfileId: profile.id,
+          laborWorkerId: profile.laborWorkerId,
+          projectId: profile.projectId,
+          advanceDate: new Date(`${input.advanceDate}T00:00:00Z`),
+          amount: String(input.amount),
+          status: input.status,
+          remarks: input.remarks ?? null,
+          createdBy: admin.id,
+        });
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "personnel",
+          action: "create_payroll_advance",
+          targetType: "employee_profile",
+          targetId: String(profile.id),
+          summary: "新增员工工资预支记录",
+        });
         return { success: true, id: created.insertId };
       }),
     saveProfile: protectedProcedure
@@ -2997,16 +3007,14 @@ export const adminRouter = router({
             uploadedBy: admin.id,
           })
           .$returningId();
-        await db
-          .insert(auditLogs)
-          .values({
-            userId: admin.id,
-            module: "personnel",
-            action: "upload_employee_insurance_policy",
-            targetType: "employee_insurance_policy",
-            targetId: String(profile.id),
-            summary: "上传员工保单受控附件",
-          });
+        await db.insert(auditLogs).values({
+          userId: admin.id,
+          module: "personnel",
+          action: "upload_employee_insurance_policy",
+          targetType: "employee_insurance_policy",
+          targetId: String(profile.id),
+          summary: "上传员工保单受控附件",
+        });
         return {
           success: true,
           evidenceId: created?.id ?? 0,
@@ -3234,68 +3242,184 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
-        return db.transaction(async db=>{
-        await assertFleetDayWritable(db,input.projectId,new Date(input.occurredAt));
-        const [existingRecord]=input.id ? await db.select().from(assetMaintenanceRecords).where(eq(assetMaintenanceRecords.id,input.id)).limit(1).for("update") : [];
-        if(input.id && !existingRecord) throw new TRPCError({code:"NOT_FOUND",message:"维修保养记录不存在"});
-        if(existingRecord) assertMaintenanceImmutable(existingRecord,input);
-        else if(input.status === "settled") throw new TRPCError({code:"CONFLICT",message:"新增维修不能直接标记已结算"});
-        const [asset] =
-          input.assetType === "vehicle"
+        const result = await db.transaction(async db => {
+          await assertFleetDayWritable(
+            db,
+            input.projectId,
+            new Date(input.occurredAt)
+          );
+          const [existingRecord] = input.id
+            ? await db
+                .select()
+                .from(assetMaintenanceRecords)
+                .where(eq(assetMaintenanceRecords.id, input.id))
+                .limit(1)
+                .for("update")
+            : [];
+          if (input.id && !existingRecord)
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "维修保养记录不存在",
+            });
+          if (existingRecord) assertMaintenanceImmutable(existingRecord, input);
+          else if (input.status === "settled")
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "新增维修不能直接标记已结算",
+            });
+          const [asset] =
+            input.assetType === "vehicle"
+              ? await db
+                  .select({
+                    id: transportVehicles.id,
+                    projectId: transportVehicles.projectId,
+                  })
+                  .from(transportVehicles)
+                  .where(eq(transportVehicles.id, input.assetId))
+                  .limit(1)
+              : await db
+                  .select({ id: machines.id, projectId: machines.projectId })
+                  .from(machines)
+                  .where(eq(machines.id, input.assetId))
+                  .limit(1);
+          if (!asset || asset.projectId !== input.projectId)
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "维修保养资源必须属于所选项目",
+            });
+          const values = {
+            assetType: input.assetType,
+            assetId: input.assetId,
+            projectId: input.projectId,
+            costCategory: input.costCategory,
+            amount: String(input.amount),
+            occurredAt: new Date(input.occurredAt),
+            serviceProvider: input.serviceProvider ?? null,
+            meterReading:
+              input.meterReading === null || input.meterReading === undefined
+                ? null
+                : String(input.meterReading),
+            nextDueAt: input.nextDueAt
+              ? new Date(`${input.nextDueAt}T00:00:00Z`)
+              : null,
+            remarks: input.remarks ?? null,
+            status: input.status,
+          };
+          let recordId = input.id ?? 0;
+          if (input.id)
+            await db
+              .update(assetMaintenanceRecords)
+              .set(values)
+              .where(eq(assetMaintenanceRecords.id, input.id));
+          else {
+            const inserted = await db
+              .insert(assetMaintenanceRecords)
+              .values(values);
+            recordId = Number(
+              (inserted[0] as { insertId?: number } | undefined)?.insertId ?? 0
+            );
+          }
+          await db.insert(auditLogs).values({
+            userId: admin.id,
+            module: input.assetType === "vehicle" ? "transport" : "machinery",
+            action: input.id
+              ? "update_asset_maintenance"
+              : "create_asset_maintenance",
+            targetType: `${input.assetType}_maintenance`,
+            targetId: String(recordId || input.assetId),
+            summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.costCategory === "maintenance" ? "保养" : "维修"}费用：¥${input.amount}`,
+          });
+          return {
+            success: true,
+            recordId,
+            assetId: input.assetId,
+            projectId: input.projectId,
+            assetType: input.assetType,
+            costCategory: input.costCategory,
+            amount: input.amount,
+            occurredAt: input.occurredAt,
+          };
+        });
+        const [vehicleAsset] =
+          result.assetType === "vehicle"
             ? await db
                 .select({
-                  id: transportVehicles.id,
-                  projectId: transportVehicles.projectId,
+                  label: transportVehicles.plateNo,
+                  phoneEncrypted: transportVehicles.driverPhoneEncrypted,
                 })
                 .from(transportVehicles)
-                .where(eq(transportVehicles.id, input.assetId))
+                .where(eq(transportVehicles.id, result.assetId))
                 .limit(1)
-            : await db
-                .select({ id: machines.id, projectId: machines.projectId })
+            : [];
+        const [machineAsset] =
+          result.assetType === "machine"
+            ? await db
+                .select({
+                  label: machines.name,
+                  code: machines.code,
+                  ownerUserId: machines.ownerUserId,
+                  driverPhoneEncrypted: machines.driverPhoneEncrypted,
+                })
                 .from(machines)
-                .where(eq(machines.id, input.assetId))
-                .limit(1);
-        if (!asset || asset.projectId !== input.projectId)
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "维修保养资源必须属于所选项目",
-          });
-        const values = {
-          assetType: input.assetType,
-          assetId: input.assetId,
-          projectId: input.projectId,
-          costCategory: input.costCategory,
-          amount: String(input.amount),
-          occurredAt: new Date(input.occurredAt),
-          serviceProvider: input.serviceProvider ?? null,
-          meterReading:
-            input.meterReading === null || input.meterReading === undefined
-              ? null
-              : String(input.meterReading),
-          nextDueAt: input.nextDueAt
-            ? new Date(`${input.nextDueAt}T00:00:00Z`)
-            : null,
-          remarks: input.remarks ?? null,
-          status: input.status,
-        };
-        if (input.id)
-          await db
-            .update(assetMaintenanceRecords)
-            .set(values)
-            .where(eq(assetMaintenanceRecords.id, input.id));
-        else await db.insert(assetMaintenanceRecords).values(values);
-        await db.insert(auditLogs).values({
+                .where(eq(machines.id, result.assetId))
+                .limit(1)
+            : [];
+        let recipientPhoneEncrypted =
+          result.assetType === "vehicle"
+            ? (vehicleAsset?.phoneEncrypted ?? null)
+            : (machineAsset?.driverPhoneEncrypted ?? null);
+        if (result.assetType === "machine" && machineAsset?.ownerUserId) {
+          const [ownerProfile] = await db
+            .select({ phoneEncrypted: userProfiles.phoneEncrypted })
+            .from(userProfiles)
+            .where(eq(userProfiles.userId, machineAsset.ownerUserId))
+            .limit(1);
+          recipientPhoneEncrypted =
+            ownerProfile?.phoneEncrypted ?? recipientPhoneEncrypted;
+        }
+        const label =
+          result.assetType === "machine"
+            ? `${machineAsset?.label ?? "机械"}${machineAsset?.code ? `（${machineAsset.code}）` : ""}`
+            : (vehicleAsset?.label ?? "车辆");
+        const eventCode =
+          result.assetType === "vehicle"
+            ? "vehicle_expense_recorded"
+            : "machine_expense_recorded";
+        void notifyOfficialAccountBusinessEventSafely({
           userId: admin.id,
-          module: input.assetType === "vehicle" ? "transport" : "machinery",
-          action: input.id
-            ? "update_asset_maintenance"
-            : "create_asset_maintenance",
-          targetType: `${input.assetType}_maintenance`,
-          targetId: String(input.id ?? input.assetId),
-          summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.costCategory === "maintenance" ? "保养" : "维修"}费用：¥${input.amount}`,
-        });
-        return { success: true };
-        });
+          projectId: result.projectId,
+          module: result.assetType === "vehicle" ? "transport" : "machinery",
+          eventCode:
+            result.assetType === "vehicle"
+              ? "transport_vehicle_expense_recorded"
+              : "machine_cost_submitted",
+          targetType: `${result.assetType}_maintenance`,
+          targetId: String(result.recordId || result.assetId),
+          title: `${result.assetType === "vehicle" ? "车辆" : "机械"}费用已登记`,
+          content: `${label}新增${result.costCategory === "maintenance" ? "保养" : "维修"}费用 ¥${Number(result.amount).toFixed(2)}，请进入系统核对。`,
+          deepLink:
+            result.assetType === "vehicle"
+              ? "/admin/transport"
+              : "/mobile/machinery",
+        }).catch(() => undefined);
+        void notifyAliyunSmsSafely({
+          actorUserId: admin.id,
+          projectId: result.projectId,
+          module: result.assetType === "vehicle" ? "transport" : "machinery",
+          eventCode,
+          recipientPhone: recipientPhoneEncrypted
+            ? decryptSecret(recipientPhoneEncrypted)
+            : null,
+          targetType: `${result.assetType}_maintenance`,
+          targetId: String(result.recordId || result.assetId),
+          templateParams: {
+            vehicle: label,
+            category: result.costCategory === "maintenance" ? "保养" : "维修",
+            amount: Number(result.amount).toFixed(2),
+            time: formatChinaSmsTime(new Date(result.occurredAt)),
+          },
+        }).catch(() => undefined);
+        return result;
       }),
   }),
 
@@ -4129,29 +4253,63 @@ export const adminRouter = router({
         if (
           !input.id &&
           effectiveStatus === "approved" &&
-          input.assetType === "vehicle" &&
-          input.vehicleId
+          (input.vehicleId || input.machineId)
         ) {
-          const [vehicle] = await db
-            .select({
-              plateNo: transportVehicles.plateNo,
-              driverPhoneEncrypted: transportVehicles.driverPhoneEncrypted,
-            })
-            .from(transportVehicles)
-            .where(eq(transportVehicles.id, input.vehicleId))
-            .limit(1);
+          const [vehicle] =
+            input.assetType === "vehicle"
+              ? await db
+                  .select({
+                    label: transportVehicles.plateNo,
+                    recipientPhoneEncrypted:
+                      transportVehicles.driverPhoneEncrypted,
+                  })
+                  .from(transportVehicles)
+                  .where(eq(transportVehicles.id, input.vehicleId!))
+                  .limit(1)
+              : [];
+          const [machine] =
+            input.assetType === "machine"
+              ? await db
+                  .select({
+                    label: machines.name,
+                    code: machines.code,
+                    ownerUserId: machines.ownerUserId,
+                    driverPhoneEncrypted: machines.driverPhoneEncrypted,
+                  })
+                  .from(machines)
+                  .where(eq(machines.id, input.machineId!))
+                  .limit(1)
+              : [];
+          let recipientPhoneEncrypted =
+            vehicle?.recipientPhoneEncrypted ??
+            machine?.driverPhoneEncrypted ??
+            null;
+          if (input.assetType === "machine" && machine?.ownerUserId) {
+            const [ownerProfile] = await db
+              .select({ phoneEncrypted: userProfiles.phoneEncrypted })
+              .from(userProfiles)
+              .where(eq(userProfiles.userId, machine.ownerUserId))
+              .limit(1);
+            recipientPhoneEncrypted =
+              ownerProfile?.phoneEncrypted ?? recipientPhoneEncrypted;
+          }
           void notifyAliyunSmsSafely({
             actorUserId: admin.id,
             projectId: input.projectId,
-            module: "diesel",
-            eventCode: "diesel_refuel_completed",
-            recipientPhone: vehicle?.driverPhoneEncrypted
-              ? decryptSecret(vehicle.driverPhoneEncrypted)
+            module: input.assetType === "machine" ? "machinery" : "diesel",
+            eventCode:
+              input.assetType === "machine"
+                ? "machine_refuel_completed"
+                : "diesel_refuel_completed",
+            recipientPhone: recipientPhoneEncrypted
+              ? decryptSecret(recipientPhoneEncrypted)
               : null,
             targetType: "diesel_refuel",
             targetId: String(recordId),
             templateParams: {
-              vehicle: vehicle?.plateNo ?? "车辆",
+              vehicle: machine
+                ? `${machine.label}${machine.code ? `（${machine.code}）` : ""}`
+                : (vehicle?.label ?? "车辆"),
               quantity: Number(input.liters).toFixed(3),
               amount: amount.toFixed(2),
               time: formatChinaSmsTime(new Date(input.refueledAt)),
@@ -4214,8 +4372,19 @@ export const adminRouter = router({
             .from(officialAccountDriverBindings)
             .where(eq(officialAccountDriverBindings.status, "active"))
         : [];
-      const classifications = rows.length ? await db.select({ vehicleId: vehicleFleetProfiles.vehicleId, settlementMode: vehicleFleetProfiles.settlementMode, propertyType: vehicleFleetProfiles.propertyType, purpose: vehicleFleetProfiles.purpose }).from(vehicleFleetProfiles) : [];
-      const classificationsByVehicle = new Map(classifications.map(row => [row.vehicleId, row]));
+      const classifications = rows.length
+        ? await db
+            .select({
+              vehicleId: vehicleFleetProfiles.vehicleId,
+              settlementMode: vehicleFleetProfiles.settlementMode,
+              propertyType: vehicleFleetProfiles.propertyType,
+              purpose: vehicleFleetProfiles.purpose,
+            })
+            .from(vehicleFleetProfiles)
+        : [];
+      const classificationsByVehicle = new Map(
+        classifications.map(row => [row.vehicleId, row])
+      );
       const driverBindingByVehicle = new Map(
         driverBindings.map(binding => [binding.vehicleId, binding])
       );
@@ -4268,7 +4437,7 @@ export const adminRouter = router({
           });
 
         return db.transaction(async db => {
-          await assertFleetDayWritable(db,input.projectId,new Date());
+          await assertFleetDayWritable(db, input.projectId, new Date());
           const [project] = await db
             .select({ id: projects.id, status: projects.status })
             .from(projects)
@@ -4329,11 +4498,43 @@ export const adminRouter = router({
                 code: "NOT_FOUND",
                 message: "运输车辆不存在",
               });
-            const [profile]=await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId,existing.id)).limit(1).for("update");
-            if(profile?.archived) throw new TRPCError({code:"CONFLICT",message:"车辆已归档，请保留原档案，不可重新覆盖"});
-            if(input.fleetVersion!==undefined&&input.fleetVersion!==(profile?.version??0)) throw new TRPCError({code:"CONFLICT",message:"车辆资料已被其他人员更新，请刷新后重新维护"});
-            if(profile) await db.update(vehicleFleetProfiles).set({version:profile.version+1,updatedBy:admin.id}).where(eq(vehicleFleetProfiles.vehicleId,existing.id));
-            if (input.projectId !== existing.projectId || input.ownership !== existing.ownership || (input.driverPersonId !== undefined && input.driverPersonId !== existing.driverPersonId) || (input.driverUserId !== undefined && input.driverUserId !== existing.driverUserId)) throw new TRPCError({code:"CONFLICT",message:"历史车辆项目、产权或司机责任不能覆盖；请在行业档案维护产权，在司机交接办理责任变更"});
+            const [profile] = await db
+              .select()
+              .from(vehicleFleetProfiles)
+              .where(eq(vehicleFleetProfiles.vehicleId, existing.id))
+              .limit(1)
+              .for("update");
+            if (profile?.archived)
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "车辆已归档，请保留原档案，不可重新覆盖",
+              });
+            if (
+              input.fleetVersion !== undefined &&
+              input.fleetVersion !== (profile?.version ?? 0)
+            )
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "车辆资料已被其他人员更新，请刷新后重新维护",
+              });
+            if (profile)
+              await db
+                .update(vehicleFleetProfiles)
+                .set({ version: profile.version + 1, updatedBy: admin.id })
+                .where(eq(vehicleFleetProfiles.vehicleId, existing.id));
+            if (
+              input.projectId !== existing.projectId ||
+              input.ownership !== existing.ownership ||
+              (input.driverPersonId !== undefined &&
+                input.driverPersonId !== existing.driverPersonId) ||
+              (input.driverUserId !== undefined &&
+                input.driverUserId !== existing.driverUserId)
+            )
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "历史车辆项目、产权或司机责任不能覆盖；请在行业档案维护产权，在司机交接办理责任变更",
+              });
             if (input.status === "disabled" && existing.status !== "disabled") {
               const openTrips = await db
                 .select({
@@ -4431,8 +4632,18 @@ export const adminRouter = router({
                 message: "车辆台账保存后未找到记录",
               });
             vehicleId = created.id;
-            const [newVehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id,vehicleId)).limit(1);
-            await db.insert(vehicleFleetProfiles).values({...initialFleetProfile(newVehicle,admin.id),projectStatus:"pending",dispatchStatus:"paused"});
+            const [newVehicle] = await db
+              .select()
+              .from(transportVehicles)
+              .where(eq(transportVehicles.id, vehicleId))
+              .limit(1);
+            await db
+              .insert(vehicleFleetProfiles)
+              .values({
+                ...initialFleetProfile(newVehicle, admin.id),
+                projectStatus: "pending",
+                dispatchStatus: "paused",
+              });
           }
           if (!vehicleId)
             throw new TRPCError({
@@ -4459,35 +4670,48 @@ export const adminRouter = router({
               rule.projectId === input.projectId && rule.status === "active"
           );
           if (existing) {
-            if (input.leaseTerms && (!activeRule || input.leaseTerms.billingType !== activeRule.billingType || Number(input.leaseTerms.rate) !== Number(activeRule.rate) || input.leaseTerms.effectiveFrom !== activeRule.effectiveFrom.toISOString().slice(0,10) || (input.leaseTerms.effectiveTo ?? null) !== (activeRule.effectiveTo?.toISOString().slice(0,10) ?? null))) throw new TRPCError({code:"CONFLICT",message:"历史租赁条款不能直接覆盖，请新增不重叠生效版本"});
+            if (
+              input.leaseTerms &&
+              (!activeRule ||
+                input.leaseTerms.billingType !== activeRule.billingType ||
+                Number(input.leaseTerms.rate) !== Number(activeRule.rate) ||
+                input.leaseTerms.effectiveFrom !==
+                  activeRule.effectiveFrom.toISOString().slice(0, 10) ||
+                (input.leaseTerms.effectiveTo ?? null) !==
+                  (activeRule.effectiveTo?.toISOString().slice(0, 10) ?? null))
+            )
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "历史租赁条款不能直接覆盖，请新增不重叠生效版本",
+              });
           } else {
-          if (input.ownership === "leased" && input.leaseTerms) {
-            const leaseValues = {
-              vehicleId,
-              projectId: input.projectId,
-              billingType: input.leaseTerms.billingType,
-              rate: String(input.leaseTerms.rate),
-              effectiveFrom: new Date(
-                `${input.leaseTerms.effectiveFrom}T00:00:00Z`
-              ),
-              effectiveTo: input.leaseTerms.effectiveTo
-                ? new Date(`${input.leaseTerms.effectiveTo}T00:00:00Z`)
-                : null,
-              status: "active" as const,
-            };
-            if (activeRule)
+            if (input.ownership === "leased" && input.leaseTerms) {
+              const leaseValues = {
+                vehicleId,
+                projectId: input.projectId,
+                billingType: input.leaseTerms.billingType,
+                rate: String(input.leaseTerms.rate),
+                effectiveFrom: new Date(
+                  `${input.leaseTerms.effectiveFrom}T00:00:00Z`
+                ),
+                effectiveTo: input.leaseTerms.effectiveTo
+                  ? new Date(`${input.leaseTerms.effectiveTo}T00:00:00Z`)
+                  : null,
+                status: "active" as const,
+              };
+              if (activeRule)
+                await db
+                  .update(transportVehicleLeaseRules)
+                  .set(leaseValues)
+                  .where(eq(transportVehicleLeaseRules.id, activeRule.id));
+              else
+                await db.insert(transportVehicleLeaseRules).values(leaseValues);
+            } else if (activeRule) {
               await db
                 .update(transportVehicleLeaseRules)
-                .set(leaseValues)
+                .set({ status: "disabled" })
                 .where(eq(transportVehicleLeaseRules.id, activeRule.id));
-            else
-              await db.insert(transportVehicleLeaseRules).values(leaseValues);
-          } else if (activeRule) {
-            await db
-              .update(transportVehicleLeaseRules)
-              .set({ status: "disabled" })
-              .where(eq(transportVehicleLeaseRules.id, activeRule.id));
-          }
+            }
           }
           await db.insert(auditLogs).values({
             userId: admin.id,
@@ -4916,8 +5140,13 @@ export const adminRouter = router({
               code: "NOT_FOUND",
               message: "车辆不存在或已删除",
             });
-          const dependencies=await vehicleDependencies(db,input.id);
-          if(Object.values(dependencies).some(n=>n>0)) throw new TRPCError({code:"CONFLICT",message:"车辆存在业务、证照或责任历史，不能直接删除；请办理退场归档"});
+          const dependencies = await vehicleDependencies(db, input.id);
+          if (Object.values(dependencies).some(n => n > 0))
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "车辆存在业务、证照或责任历史，不能直接删除；请办理退场归档",
+            });
           const trips = await db
             .select({ id: transportTrips.id })
             .from(transportTrips)
@@ -8529,55 +8758,85 @@ export const adminRouter = router({
       await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
-      const rows = await db.select({
-        id: auditLogs.id, createdAt: auditLogs.createdAt, action: auditLogs.action,
-        operatorName: users.name,
-      }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).where(and(
-        eq(auditLogs.module, "backup"), eq(auditLogs.targetType, "full_database_backup"),
-        inArray(auditLogs.action, ["create_requested", "create", "create_failed"]),
-      )).orderBy(desc(auditLogs.id)).limit(20);
+      const rows = await db
+        .select({
+          id: auditLogs.id,
+          createdAt: auditLogs.createdAt,
+          action: auditLogs.action,
+          operatorName: users.name,
+        })
+        .from(auditLogs)
+        .leftJoin(users, eq(auditLogs.userId, users.id))
+        .where(
+          and(
+            eq(auditLogs.module, "backup"),
+            eq(auditLogs.targetType, "full_database_backup"),
+            inArray(auditLogs.action, [
+              "create_requested",
+              "create",
+              "create_failed",
+            ])
+          )
+        )
+        .orderBy(desc(auditLogs.id))
+        .limit(20);
       return rows.map(row => ({
-        id: row.id, createdAt: row.createdAt,
+        id: row.id,
+        createdAt: row.createdAt,
         operatorName: row.operatorName || "超级管理员",
-        status: row.action === "create" ? "success" : row.action === "create_failed" ? "failed" : "requested",
-        description: row.action === "create"
-          ? "已生成并逐表校验新的完整备份"
-          : row.action === "create_failed"
-            ? "启动或结果校验未完成；上次成功备份仍保留，请结合时间查看受控服务日志"
-            : "已提交完整备份请求，结果以完成记录和新的可用备份为准",
+        status:
+          row.action === "create"
+            ? "success"
+            : row.action === "create_failed"
+              ? "failed"
+              : "requested",
+        description:
+          row.action === "create"
+            ? "已生成并逐表校验新的完整备份"
+            : row.action === "create_failed"
+              ? "启动或结果校验未完成；上次成功备份仍保留，请结合时间查看受控服务日志"
+              : "已提交完整备份请求，结果以完成记录和新的可用备份为准",
       }));
     }),
     createFull: protectedProcedure.mutation(async ({ ctx }) => {
       const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "暂时无法记录备份操作，请稍后重试" });
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "暂时无法记录备份操作，请稍后重试",
+        });
       await db.insert(auditLogs).values({
-        userId: admin.id, module: "backup", action: "create_requested",
-        targetType: "full_database_backup", targetId: null,
+        userId: admin.id,
+        module: "backup",
+        action: "create_requested",
+        targetType: "full_database_backup",
+        targetId: null,
         summary: "超级管理员提交完整数据库备份请求；尚未宣布完成",
       });
       try {
         const backup = await createSelfHostDatabaseBackup();
         await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "backup",
-            action: "create",
-            targetType: "full_database_backup",
-            targetId: backup.sha256.slice(0, 16),
-            summary: `创建完整数据库备份：${backup.tableCount} 张表，gzip 校验与逐表定义校验通过`,
-          });
+          userId: admin.id,
+          module: "backup",
+          action: "create",
+          targetType: "full_database_backup",
+          targetId: backup.sha256.slice(0, 16),
+          summary: `创建完整数据库备份：${backup.tableCount} 张表，gzip 校验与逐表定义校验通过`,
+        });
         return backup;
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "完整数据库备份失败";
         await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "backup",
-            action: "create_failed",
-            targetType: "full_database_backup",
-            targetId: null,
-            summary: "完整备份请求启动或结果校验未完成；请结合操作时间核对应用服务和备份服务日志",
-          });
+          userId: admin.id,
+          module: "backup",
+          action: "create_failed",
+          targetType: "full_database_backup",
+          targetId: null,
+          summary:
+            "完整备份请求启动或结果校验未完成；请结合操作时间核对应用服务和备份服务日志",
+        });
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
       }
     }),
