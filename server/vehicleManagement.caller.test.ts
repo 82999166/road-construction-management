@@ -79,6 +79,8 @@ vi.mock("./services/smsNotifier", () => ({
 import { vehicleManagementRouter } from "./routers/vehicleManagement";
 import { transportRouter } from "./routers/operations";
 import { decryptSecret } from "./services/secretVault";
+import { saveResourceBinding } from "./services/personnelLegacyBridge";
+import { buildDriverReadRanges, driverRangeCovers } from "./services/driverPortalAccess";
 
 const time = new Date("2026-11-04T02:00:00Z");
 const earlier = new Date("2026-11-03T02:00:00Z");
@@ -1243,6 +1245,63 @@ describe("车辆 caller：交接换人不得转授旧绑定", () => {
         driverUserId: 11,
       })
     ).rejects.toThrow("注入写入故障");
+    expect(db().rows).toEqual(saved);
+  });
+});
+
+
+describe("人员车辆交接：精确SQL/串行事务共享原护栏", () => {
+  const resourceInput = { personId: 101, assetType: "vehicle" as const, assetId: 1, projectId: 1, actorUserId: 1, effectiveFrom: "2026-11-04" };
+  const save = (extra = {}) => db().transaction(tx => saveResourceBinding(tx as any, { ...resourceInput, ...extra }));
+  it("关闭原开放assignment与旧微信绑定，不给新人登录账号；旧司机历史保留、新记录拒绝", async () => {
+    seedDriver();
+    const users = structuredClone(db().rows.users);
+    await save();
+    expect(db().rows.transport_vehicles[0]).toMatchObject({ driverPersonId: 101, driverUserId: null });
+    expect(db().rows.vehicle_assignments[0].effectiveTo).toEqual(time);
+    expect(db().rows.vehicle_assignments[1]).toMatchObject({ driverPersonId: 101, driverUserId: null, driverBindingId: null });
+    expect(db().rows.official_account_driver_bindings[0].status).toBe("revoked");
+    expect(profile().version).toBe(1);
+    expect(db().locks.slice(0, 4)).toEqual(["projects", "daily_accounting_closures", "transport_vehicles", "vehicle_fleet_profiles"]);
+    const own = buildDriverReadRanges({ subject: { userId: 10, bindingId: 50 }, assignments: db().rows.vehicle_assignments, grants: [], now: time.getTime() });
+    expect(driverRangeCovers(own, 1, 1, earlier.getTime())).toBe(true);
+    expect(driverRangeCovers(own, 1, 1, time.getTime())).toBe(false);
+    expect(buildDriverReadRanges({ subject: { userId: 11 }, assignments: db().rows.vehicle_assignments, grants: [] })).toEqual([]);
+    expect(db().rows.users).toEqual(users);
+    expect(db().rows.vehicle_access_grants ?? []).toEqual([]);
+    for (const table of ["payroll_statements", "transport_trips", "settlement_payment_records"]) expect(db().rows[table] ?? []).toEqual([]);
+  });
+  it.each(["closed", "archived", "inTransit", "staleVersion", "projectChanged", "casFailure", "auditFailure"])("%s拒绝且全事务无残留", async guard => {
+    seedDriver();
+    if (guard === "closed") db().rows.daily_accounting_closures = [{ id: 1, projectId: 1, closingDate: new Date("2026-11-04T00:00:00Z"), status: "closed" }];
+    if (guard === "archived") profile().archived = true;
+    if (guard === "inTransit") db().rows.transport_trips = [{ id: 1, vehicleId: 1, projectId: 1, status: "submitted" }];
+    if (guard === "projectChanged") db().rows.transport_vehicles[0].projectId = 2;
+    if (guard === "casFailure") db().zeroVersionWrite = true;
+    if (guard === "auditFailure") db().failInsertTable = "audit_logs";
+    const saved = structuredClone(db().rows);
+    await expect(save(guard === "staleVersion" ? { vehicleVersion: 4 } : {})).rejects.toThrow();
+    expect(db().rows).toEqual(saved);
+  });
+  it("并发人员换人/原车辆交接共享版本，仅一条旧版本写入成功", async () => {
+    seedDriver();
+    const results = await Promise.allSettled([save({ vehicleVersion: 0 }), caller().assign({ ...assignment("handover"), driverPersonId: 100, driverUserId: 10 })]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(profile().version).toBe(1);
+    expect(db().rows.vehicle_assignments.filter(r => r.effectiveTo === null)).toHaveLength(1);
+  });
+  it("旧账号sourceLinks解析旧人且双边历史闭合，不按名字猜；冲突回滚", async () => {
+    seedDriver();
+    db().rows.transport_vehicles[0].driverPersonId = null;
+    db().rows.personnel_source_links = [{ id: 1, sourceType: "user", sourceId: 10, personId: 100 }];
+    await save();
+    expect(db().rows.personnel_resource_bindings[0]).toMatchObject({ personId: 100, effectiveFrom: "2026-11-04", effectiveTo: "2026-11-04" });
+    const changes = db().rows.personnel_changes;
+    expect(changes.map(r => r.personId)).toEqual([100, 101]);
+    expect(changes[0].changes.resourceBinding.before).toMatchObject({ userId: 10, baselineUnknown: true });
+    seedDriver(); db().rows.personnel_source_links[0].personId = 101;
+    const saved = structuredClone(db().rows);
+    await expect(save()).rejects.toThrow("来源冲突");
     expect(db().rows).toEqual(saved);
   });
 });

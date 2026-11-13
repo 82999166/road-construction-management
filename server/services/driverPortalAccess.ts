@@ -124,39 +124,39 @@ export function buildDriverReadRanges(input: {
           const resource = object(event.changes.resourceBinding),
             after = object(resource?.after),
             before = object(resource?.before);
-          return [{ at: timestamp(event.createdAt), after, before }];
-        });
+          return [{ id: event.id, at: timestamp(event.createdAt), after, before }];
+        })
+        .filter(event => Number.isFinite(event.at))
+        .sort((a, b) => a.at - b.at || a.id - b.id)
+        .filter((event, index, all) => !all.slice(0, index).some(previous => previous.at === event.at && JSON.stringify(previous.before) === JSON.stringify(event.before) && JSON.stringify(previous.after) === JSON.stringify(event.after)));
       const matchesResource = (row: Record<string, unknown> | null) =>
         row?.assetType === "vehicle" &&
         row.assetId === binding.assetId &&
         row.projectId === binding.projectId &&
         row.personId === binding.personId;
-      const start = events
-        .filter(
-          event =>
-            matchesResource(event.after) &&
-            event.after?.userId === input.subject.userId &&
-            driverBusinessDate(new Date(event.at)) === binding.effectiveFrom
-        )
-        .map(event => event.at)
-        .sort((a, b) => a - b)[0];
-      if (!Number.isFinite(start) || start > now) continue;
-      const changedIdentity = events
-        .filter(
-          event =>
-            event.at > start &&
-            matchesResource(event.before) &&
-            event.before?.userId === input.subject.userId &&
-            (!matchesResource(event.after) ||
-              event.after?.userId !== input.subject.userId)
-        )
-        .map(event => event.at);
-      let to = Math.min(
-        binding.effectiveTo
-          ? driverBusinessDayStart(binding.effectiveTo)
-          : Infinity,
-        ...changedIdentity
+      // A synthesized zero-length observation is explicitly not an employment start.
+      if (binding.effectiveTo === binding.effectiveFrom && events.some(event => matchesResource(event.before) && event.before?.baselineUnknown === true && Math.abs(event.at - timestamp(binding.createdAt)) < 1000)) continue;
+      const starts = events.filter(event =>
+        matchesResource(event.after) && event.after?.userId === input.subject.userId &&
+        driverBusinessDate(new Date(event.at)) === binding.effectiveFrom &&
+        (!matchesResource(event.before) || event.before?.userId !== input.subject.userId)
       );
+      // New rows and events share createdAt; select this occurrence, not the first A of A->B->A.
+      const observedAt = timestamp(binding.createdAt);
+      const startEvent = starts.sort((a, b) => Math.abs(a.at - observedAt) - Math.abs(b.at - observedAt) || a.id - b.id)[0];
+      const start = startEvent?.at;
+      if (!Number.isFinite(start) || start > now) continue;
+      const changedIdentity = events.filter(event =>
+        (event.at > start || event.at === start && event.id > startEvent.id) &&
+        matchesResource(event.before) && event.before?.userId === input.subject.userId &&
+        (!matchesResource(event.after) || event.after?.userId !== input.subject.userId)
+      );
+      const closeEvent = changedIdentity[0];
+      const dateEnd = binding.effectiveTo ? driverBusinessDayStart(binding.effectiveTo) : Infinity;
+      // A trusted event on the recorded closing date wins over its midnight truncation.
+      // Events outside that historical date never widen a recorded closed relation.
+      const to = closeEvent && (!binding.effectiveTo || driverBusinessDate(new Date(closeEvent.at)) === binding.effectiveTo)
+        ? closeEvent.at : Math.min(dateEnd, closeEvent?.at ?? Infinity);
       if (!(to > start)) continue;
       let fragments = [{ from: start, to }];
       for (const assignment of input.assignments.filter(

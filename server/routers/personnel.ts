@@ -35,11 +35,10 @@ export const personnelRouter = router({
   previewDocument: personnelProcedure.input(z.object({ personId: id, documentId: id })).query(({ ctx, input }) => previewPersonnelDocument(input.personId, input.documentId, ctx.user.id)),
   previewInsuranceDocument: personnelProcedure.input(z.object({ personId: id, policyId: id })).query(({ ctx, input }) => previewInsuranceDocument(input.personId, input.policyId, ctx.user.id)),
   saveInsurance: personnelProcedure.input(personnelInsuranceInput).mutation(({ ctx, input }) => savePersonnelInsurance(input, ctx.user.id)),
-  saveAdvance: personnelProcedure.input(z.object({ personId: id, advanceDate: personnelDateSchema, amount: z.number().finite().positive().max(999999999999), remarks: z.string().trim().max(500).optional() })).mutation(async ({ ctx, input }) => {
-    const person = await findPersonnel(await requirePersonnelDb(), input.personId);
-    if (!person.payrollEnabled || person.affiliation === "external") throw new TRPCError({ code: "BAD_REQUEST", message: "该人员未启用工资，外部费用不能作为工资预支" });
-    if (!person.legacyProfileId) throw new TRPCError({ code: "BAD_REQUEST", message: "缺少真实工资主体，请先完成人员计薪设置" });
-    return adminRouter.createCaller(ctx).employee.saveAdvance({ employeeProfileId: person.legacyProfileId, advanceDate: input.advanceDate, amount: input.amount, remarks: input.remarks, status: "draft" });
+  saveAdvance: personnelProcedure.input(z.object({ personId: id, employeeProfileId: id.optional(), advanceDate: personnelDateSchema, amount: z.number().finite().positive().max(999999999999), remarks: z.string().trim().max(500).optional() })).mutation(async ({ ctx, input }) => {
+    const employeeProfileId = await resolvePersonnelPayrollProfile({ personId: input.personId, period: input.advanceDate.slice(0, 7), advanceDate: input.advanceDate, employeeProfileId: input.employeeProfileId });
+    // 原预支接口还会在事务内按具体日期校验真实任职和公司发薪资格。
+    return adminRouter.createCaller(ctx).employee.saveAdvance({ employeeProfileId, advanceDate: input.advanceDate, amount: input.amount, remarks: input.remarks, status: "draft" });
   }),
   generatePayrollDraft: personnelProcedure.input(z.object({ personId: id, period: personnelPeriodSchema, employeeProfileId: id.optional(), projectId: id.optional() })).mutation(async ({ ctx, input }) => {
     const employeeProfileId = await resolvePersonnelPayrollProfile(input);

@@ -56,8 +56,15 @@ import {
   personnelCsv,
   salaryChanged,
   sensitiveClearLabels,
+  personnelDraftError,
+  personnelDraftDirty,
+  salaryPayerLabels,
+  salaryPayerTypeOf,
+  salaryPayerDescription,
   type PersonnelDraft,
 } from "./UnifiedPersonnelDirectory.helpers";
+
+import { referenceLabel, beijingTimestamp, subjectEligibility, changeEntries, changeDetailText } from "./UnifiedPersonnelDirectory.ledger-helpers";
 
 type Outputs = inferRouterOutputs<AppRouter>["personnel"];
 type PersonDetail = Outputs["detail"];
@@ -66,6 +73,7 @@ type Person = PersonDetail["person"];
 export type UnifiedPersonnelDirectoryProps = {
   displayDate?: (value: Date | string) => string;
   onSaved?: () => void | Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
   initialCreateKey?: number;
   openCreateSignal?: number;
   initialProjectId?: number;
@@ -87,6 +95,8 @@ const EMPTY_FILTERS = {
   projectId: "",
   teamId: "",
   status: "",
+  primaryTypeId: "",
+  salaryPayerType: "",
 };
 const DETAIL_TABS = [
   ["basic", "基础资料"],
@@ -111,12 +121,14 @@ function Picker({
   label,
   children,
   disabled,
+  required,
 }: {
   value: string;
   onChange: (value: string) => void;
   label: string;
   children: ReactNode;
   disabled?: boolean;
+  required?: boolean;
 }) {
   return (
     <select
@@ -124,6 +136,7 @@ function Picker({
       className={optionClass}
       value={value}
       disabled={disabled}
+      required={required}
       onChange={event => onChange(event.target.value)}
     >
       {children}
@@ -271,6 +284,193 @@ function Ledger({
   );
 }
 
+function PositionOptions({ positions }: { positions: Options["positions"] }) {
+  return PERSONNEL_POSITION_CATEGORIES.map(category => {
+    const items = positions.filter(
+      item => (item.category ?? "other") === category
+    );
+    return items.length ? (
+      <optgroup key={category} label={positionCategoryLabels[category]}>
+        {items.map(item => (
+          <option key={item.id} value={item.id}>
+            {item.name}
+            {item.status === "disabled" ? "（已停用）" : ""}
+          </option>
+        ))}
+      </optgroup>
+    ) : null;
+  });
+}
+
+function SecondaryPositionPicker({
+  positions,
+  draft,
+  onChange,
+}: {
+  positions: Options["positions"];
+  draft: PersonnelDraft;
+  onChange: (ids: number[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const selected = draft.secondaryPositionIds.filter(
+    id => id !== Number(draft.primaryPositionId)
+  );
+  const available = positions.filter(
+    item =>
+      item.id !== Number(draft.primaryPositionId) &&
+      (item.status !== "disabled" || selected.includes(item.id))
+  );
+  const matching = available.filter(item =>
+    item.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
+  );
+  return (
+    <div className="relative space-y-2 sm:col-span-2">
+      <p className="text-xs font-medium text-slate-600">
+        兼任岗位（可搜索多选，可不选）
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-auto min-h-9 w-full justify-between whitespace-normal text-left text-xs"
+        aria-label="选择兼任岗位"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(value => !value)}
+      >
+        {selected.length
+          ? `已选 ${selected.length} 项 · ${selected.map(id => positions.find(item => item.id === id)?.name ?? `岗位 #${id}（字典不可用）`).join("、")}`
+          : "选择兼任岗位（可不选）"}
+        <span aria-hidden>▾</span>
+      </Button>
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-1.5" aria-label="已选兼任岗位">
+          {selected.map(id => (
+            <Button
+              key={id}
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="h-7 text-[11px]"
+              aria-label={`移除兼任${positions.find(item => item.id === id)?.name ?? `岗位 #${id}`}`}
+              onClick={() => onChange(selected.filter(value => value !== id))}
+            >
+              {positions.find(item => item.id === id)?.name ?? `岗位 #${id}`} ×
+            </Button>
+          ))}
+        </div>
+      )}
+      {open && (
+        <div className="rounded-lg border border-slate-200 bg-white p-2 shadow-md">
+          <Input
+            aria-label="搜索兼任岗位"
+            placeholder="输入岗位名称搜索"
+            className="mb-2 h-8 text-xs"
+            value={search}
+            onChange={event => setSearch(event.target.value)}
+          />
+          <div
+            role="listbox"
+            aria-label="兼任岗位选项"
+            aria-multiselectable="true"
+            className="max-h-52 overflow-y-auto"
+          >
+            {PERSONNEL_POSITION_CATEGORIES.map(category => {
+              const items = matching.filter(
+                item => (item.category ?? "other") === category
+              );
+              return items.length ? (
+                <div key={category}>
+                  <p className="px-2 py-1 text-[10px] font-semibold text-slate-500">
+                    {positionCategoryLabels[category]}
+                  </p>
+                  {items.map(item => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      aria-selected={selected.includes(item.id)}
+                      className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs hover:bg-emerald-50 ${selected.includes(item.id) ? "bg-emerald-50 text-emerald-800" : "text-slate-700"}`}
+                      onClick={() =>
+                        onChange(
+                          selected.includes(item.id)
+                            ? selected.filter(id => id !== item.id)
+                            : [...selected, item.id]
+                        )
+                      }
+                    >
+                      {item.name}
+                      {item.status === "disabled" ? "（已停用）" : ""}
+                      <span>
+                        {selected.includes(item.id) ? "已选" : "选择"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })}
+            {!matching.length && (
+              <p className="p-3 text-xs text-slate-500">
+                {available.length
+                  ? "没有匹配岗位，请调整搜索。"
+                  : positions.length
+                    ? "暂无可选兼任岗位（主岗位不会重复列出）。"
+                    : "岗位字典为空，请先维护真实岗位或重试。"}
+              </p>
+            )}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="mt-1 h-7 text-xs"
+            onClick={() => setOpen(false)}
+          >
+            完成选择
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function usePersonnelExitGuard(
+  dirty: boolean,
+  onDirtyChange?: (dirty: boolean) => void
+) {
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+  useEffect(() => {
+    if (!dirty || typeof window === "undefined" || !window.addEventListener)
+      return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const beforeNavigate = (event: MouseEvent) => {
+      if (event.defaultPrevented || !(event.target instanceof Element)) return;
+      const link = event.target.closest("a[href]");
+      if (!link || link.getAttribute("href")?.startsWith("#")) return;
+      if (
+        !window.confirm("人员档案有未保存修改，离开将放弃草稿，确认离开吗？")
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    if (typeof document !== "undefined")
+      document.addEventListener("click", beforeNavigate, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      if (typeof document !== "undefined")
+        document.removeEventListener("click", beforeNavigate, true);
+    };
+  }, [dirty]);
+}
+
 function draftFromPerson(person: Person): PersonnelDraft {
   return {
     ...newPersonnelDraft(person.affiliation),
@@ -289,9 +489,13 @@ function draftFromPerson(person: Person): PersonnelDraft {
     birthDate: dateInput(person.birthDate),
     address: person.address ?? "",
     emergencyContactName: person.emergencyContactName ?? "",
-    emergencyContactPhone: "",
+    emergencyContactPhone: person.emergencyContactPhoneMasked ?? "",
+    clearEmergencyContactPhone: false,
     remarks: person.remarks ?? "",
-    payrollEnabled: person.payrollEnabled,
+    payrollEnabled:
+      salaryPayerTypeOf(person) === "company" && person.payrollEnabled,
+    salaryPayerType: salaryPayerTypeOf(person),
+    salaryPayerName: person.salaryPayerName ?? "",
     bankName: person.bankName ?? "",
     salaryBasis: person.salaryBasis ?? "monthly",
     baseSalary: person.baseSalary == null ? "" : String(person.baseSalary),
@@ -308,6 +512,7 @@ function draftFromPerson(person: Person): PersonnelDraft {
 export default function UnifiedPersonnelDirectory({
   displayDate = defaultDisplayDate,
   onSaved,
+  onDirtyChange,
   initialCreateKey,
   openCreateSignal,
   initialProjectId,
@@ -337,20 +542,47 @@ export default function UnifiedPersonnelDirectory({
   const [draft, setDraft] = useState(() =>
     newPersonnelDraft(defaultAffiliation)
   );
+  const [createBaseline, setCreateBaseline] = useState(draft);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const createDirty = createOpen && personnelDraftDirty(draft, createBaseline);
+  usePersonnelExitGuard(createDirty || detailDirty, onDirtyChange);
+  const closeCreate = () => {
+    if (
+      create.isPending ||
+      (createDirty && !window.confirm("新增人员尚未保存，确认放弃草稿并关闭？"))
+    )
+      return;
+    setCreateOpen(false);
+  };
   const [createError, setCreateError] = useState("");
   const createSignal = openCreateSignal ?? initialCreateKey;
   const previousCreateKey = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (createSignal && previousCreateKey.current !== createSignal) {
-      setDraft({
+      if (
+        createDirty &&
+        !window.confirm("人员草稿尚未保存，确认放弃并重新新增？")
+      ) {
+        previousCreateKey.current = createSignal;
+        return;
+      }
+      const value = {
         ...newPersonnelDraft(initialAffiliation ?? defaultAffiliation),
         projectId: initialProjectId ? String(initialProjectId) : "",
-      });
+      };
+      setDraft(value);
+      setCreateBaseline(value);
       setCreateError("");
       setCreateOpen(true);
     }
     previousCreateKey.current = createSignal;
-  }, [createSignal, defaultAffiliation, initialAffiliation, initialProjectId]);
+  }, [
+    createSignal,
+    defaultAffiliation,
+    initialAffiliation,
+    initialProjectId,
+    createDirty,
+  ]);
   const filterInput = useMemo(
     () => ({
       search: filters.search.trim() || undefined,
@@ -390,21 +622,28 @@ export default function UnifiedPersonnelDirectory({
   const rows = useMemo(
     () =>
       list.data?.filter(
-        row => !insuranceFilter || row.insuranceStatus === insuranceFilter
+        row =>
+          (!insuranceFilter || row.insuranceStatus === insuranceFilter) &&
+          (!filters.primaryTypeId ||
+            String(row.primaryPositionId) === filters.primaryTypeId) &&
+          (!filters.salaryPayerType ||
+            salaryPayerTypeOf(row) === filters.salaryPayerType)
       ),
-    [list.data, insuranceFilter]
+    [list.data, insuranceFilter, filters.primaryTypeId, filters.salaryPayerType]
   );
   const exportHeaders = [
     "人员编号",
     "姓名",
     "用工归属",
-    "主要岗位",
+    "人员类型 / 主要岗位",
     "兼任岗位",
     "项目",
     "施工队",
     "状态",
     "入职日期",
-    "公司发薪",
+    "工资发放方",
+    "老板 / 车队名称",
+    "公司计薪启用",
     "计薪口径",
     "保险状态",
     "历史重复员工档案数",
@@ -420,6 +659,8 @@ export default function UnifiedPersonnelDirectory({
       row.teamName || "未分配",
       employmentStatusLabels[row.employmentStatus],
       row.entryDate ? displayDate(row.entryDate) : "",
+      salaryPayerLabels[salaryPayerTypeOf(row)],
+      row.salaryPayerName || "",
       row.payrollEnabled ? "是" : "否",
       row.salaryBasis ? salaryBasisLabels[row.salaryBasis] : "未设置",
       insuranceLabels[row.insuranceStatus],
@@ -499,9 +740,10 @@ export default function UnifiedPersonnelDirectory({
               <Button
                 size="sm"
                 className="h-8 bg-emerald-700 text-xs hover:bg-emerald-800"
-                disabled={!options.data}
                 onClick={() => {
-                  setDraft(newPersonnelDraft(defaultAffiliation));
+                  const value = newPersonnelDraft(defaultAffiliation);
+                  setDraft(value);
+                  setCreateBaseline(value);
                   setCreateError("");
                   setCreateOpen(true);
                 }}
@@ -511,7 +753,7 @@ export default function UnifiedPersonnelDirectory({
               </Button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-[minmax(180px,1.5fr)_repeat(5,minmax(110px,1fr))]">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
             <div className="relative col-span-2 sm:col-span-3 xl:col-span-1">
               <Search className="absolute left-2.5 top-2.5 size-4 text-slate-400" />
               <Input
@@ -582,6 +824,23 @@ export default function UnifiedPersonnelDirectory({
                 </option>
               ))}
             </Picker>
+            <Picker
+              label="筛选人员分类"
+              value={filters.primaryTypeId}
+              onChange={value => setFilter("primaryTypeId", value)}
+            >
+              <option value="">全部人员类型 / 主要岗位</option>
+              <PositionOptions positions={options.data?.positions ?? []} />
+            </Picker>
+            <Picker
+              label="筛选工资发放方"
+              value={filters.salaryPayerType}
+              onChange={value => setFilter("salaryPayerType", value)}
+            >
+              <option value="">全部工资发放方</option>
+              <option value="company">公司发放</option>
+              <option value="owner">车队或机械老板自行发放</option>
+            </Picker>
           </div>
         </header>
         <div className="space-y-3 p-3 sm:p-4">
@@ -650,10 +909,24 @@ export default function UnifiedPersonnelDirectory({
             </div>
           </div>
           {options.error && (
-            <Failure
-              error={options.error}
-              onRetry={() => void options.refetch()}
-            />
+            <div className="space-y-2">
+              <Failure
+                error={options.error}
+                onRetry={() => void options.refetch()}
+              />
+              <p className="text-xs text-slate-500">
+                岗位字典读取失败，不能猜测人员类型。
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="ml-2 h-7 text-xs"
+                  onClick={() => setDictionaryOpen(true)}
+                >
+                  岗位维护
+                </Button>
+              </p>
+            </div>
           )}
           {list.isLoading ? (
             <Loading />
@@ -672,11 +945,11 @@ export default function UnifiedPersonnelDirectory({
                     {[
                       "姓名 / 编号",
                       "用工归属",
-                      "岗位 / 兼任",
+                      "人员类型 / 兼任",
                       "项目 / 施工队",
                       "联系方式",
                       "入职 / 状态",
-                      "工资主体",
+                      "工资发放方",
                       "操作",
                     ].map(head => (
                       <th key={head} className="px-3 py-2.5 font-medium">
@@ -736,13 +1009,13 @@ export default function UnifiedPersonnelDirectory({
                         </Badge>
                       </td>
                       <td className="px-3 py-2.5">
-                        <p>
-                          {row.payrollEnabled ? "公司发薪" : "不由公司发薪"}
-                        </p>
+                        <p>{salaryPayerDescription(row)}</p>
                         <p className="mt-0.5 text-[10px] text-slate-500">
-                          {row.payrollEnabled && row.salaryBasis
-                            ? salaryBasisLabels[row.salaryBasis]
-                            : "独立业务结算"}{" "}
+                          {salaryPayerTypeOf(row) === "owner"
+                            ? "不生成公司工资表"
+                            : row.payrollEnabled && row.salaryBasis
+                              ? salaryBasisLabels[row.salaryBasis]
+                              : "公司计薪未启用"}{" "}
                           · {insuranceLabels[row.insuranceStatus]}
                           {row.historicalDuplicateProfileCount > 0
                             ? ` · 历史重复档案 ${row.historicalDuplicateProfileCount} 份`
@@ -771,7 +1044,7 @@ export default function UnifiedPersonnelDirectory({
       <Dialog
         open={createOpen}
         onOpenChange={open => {
-          if (!create.isPending) setCreateOpen(open);
+          if (!open) closeCreate();
         }}
       >
         <DialogContent className="sm:max-w-4xl">
@@ -781,13 +1054,47 @@ export default function UnifiedPersonnelDirectory({
               可新增任意人员。账号可选；关联已有账号只链接身份，不创建账号、不授予权限。
             </DialogDescription>
           </DialogHeader>
-          {options.isLoading ? (
-            <Loading />
-          ) : options.error ? (
-            <Failure
-              error={options.error}
-              onRetry={() => void options.refetch()}
-            />
+          {options.isLoading || !options.data || options.error ? (
+            <div className="space-y-3">
+              {options.isLoading ? (
+                <Loading label="正在读取真实岗位字典…" />
+              ) : (
+                <p role="alert" className="text-xs text-rose-700">
+                  岗位字典尚未加载
+                  {options.error ? `：${options.error.message}` : ""}
+                  ，无法选择人员分类。请重试或进入岗位维护，不会伪造选项。
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void options.refetch()}
+                >
+                  重试岗位字典
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDictionaryOpen(true)}
+                >
+                  岗位维护
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={closeCreate}
+                >
+                  取消
+                </Button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                维护人员分类字典不改变账号权限；当前草稿仍保留。
+              </p>
+            </div>
           ) : (
             options.data && (
               <PersonnelForm
@@ -796,15 +1103,16 @@ export default function UnifiedPersonnelDirectory({
                 options={options.data}
                 error={createError}
                 pending={create.isPending}
-                onCancel={() => setCreateOpen(false)}
+                onManagePositions={() => setDictionaryOpen(true)}
+                onRetryPositions={() => void options.refetch()}
+                onCancel={closeCreate}
                 onSubmit={() => {
-                  setCreateError("");
-                  if (draft.payrollEnabled && !draft.baseSalary) {
-                    setCreateError(
-                      "请填写公司发薪人员的基础工资 / 单价；暂不发薪可取消公司发薪。"
-                    );
-                    return;
-                  }
+                  const error = personnelDraftError(
+                    draft,
+                    options.data?.positions
+                  );
+                  setCreateError(error);
+                  if (error) return;
                   create.mutate(buildPersonnelSave(draft));
                 }}
               />
@@ -818,6 +1126,9 @@ export default function UnifiedPersonnelDirectory({
           displayDate={displayDate}
           options={options.data}
           onClose={() => setPersonId(null)}
+          onDirtyChange={setDetailDirty}
+          onManagePositions={() => setDictionaryOpen(true)}
+          onRetryPositions={() => void options.refetch()}
           onSaved={refresh}
         />
       )}
@@ -853,6 +1164,8 @@ function PersonnelForm({
   onSubmit,
   onCancel,
   onReload,
+  onManagePositions,
+  onRetryPositions,
 }: {
   draft: PersonnelDraft;
   setDraft: (draft: PersonnelDraft) => void;
@@ -863,6 +1176,8 @@ function PersonnelForm({
   onSubmit: () => void;
   onCancel: () => void;
   onReload?: () => void;
+  onManagePositions: () => void;
+  onRetryPositions: () => void;
 }) {
   const update = <K extends keyof PersonnelDraft>(
     key: K,
@@ -877,12 +1192,54 @@ function PersonnelForm({
     <Field label={label}>
       <Input
         className="h-9 text-xs"
+        aria-label={label}
         type={type}
-        value={String(draft[key])}
+        value={key === "emergencyContactPhone" && draft.clearEmergencyContactPhone ? "" : String(draft[key])}
+        disabled={key === "emergencyContactPhone" && draft.clearEmergencyContactPhone}
         placeholder={placeholder}
         onChange={event => setDraft({ ...draft, [key]: event.target.value })}
       />
     </Field>
+  );
+  const sensitive = (
+    key: "phoneNumber" | "identityNo" | "bankAccount",
+    clear: "clearPhoneNumber" | "clearIdentityNo" | "clearBankAccount",
+    label: string
+  ) => (
+    <div className="min-w-0" key={key}>
+      <Field label={label}>
+        <Input
+          className="h-9 text-xs"
+          aria-label={label}
+          aria-describedby="personnel-sensitive-help"
+          autoComplete="off"
+          type={key === "phoneNumber" ? "tel" : "text"}
+          spellCheck={false}
+          disabled={draft[clear]}
+          value={draft[clear] ? "" : draft[key]}
+          placeholder={original ? "留空保留已登记值" : "可暂不登记"}
+          onChange={event => update(key, event.target.value)}
+        />
+      </Field>
+      {original && (
+        <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-rose-700">
+          <input
+            type="checkbox"
+            aria-label={`明确清空${label.split("（")[0]}`}
+            checked={draft[clear]}
+            onChange={event => update(clear, event.target.checked)}
+          />
+          明确清空已登记资料
+        </label>
+      )}
+    </div>
+  );
+  const selectablePositions = options.positions.filter(
+    item =>
+      item.status !== "disabled" || String(item.id) === draft.primaryPositionId
+  );
+  const dictionaryEmpty = !options.positions.some(
+    item => item.status !== "disabled"
   );
   return (
     <form
@@ -901,7 +1258,7 @@ function PersonnelForm({
       }}
     >
       <Note>
-        录入人员不等于开通账号，手机号不强制开账号。外部人员默认不由公司发薪；外部运费不是人员工资，机械租金不是操作员工资。
+        所有人员均使用同一档案。人员分类不等于任命系统管理员；录入手机号、选择公司管理员岗位或老板发薪，都不会开账号、授予管理权限、开通老板门户或自动关联车辆机械。运费和机械租金不是人员工资。
       </Note>
       <div className="grid gap-4 lg:grid-cols-2">
         <Section title="基础资料">
@@ -909,6 +1266,7 @@ function PersonnelForm({
             <Field label="姓名 *">
               <Input
                 className="h-9 text-xs"
+                aria-label="姓名"
                 required
                 maxLength={128}
                 value={draft.name}
@@ -933,6 +1291,11 @@ function PersonnelForm({
                 ))}
               </Picker>
             </Field>
+            {sensitive(
+              "phoneNumber",
+              "clearPhoneNumber",
+              "手机号（新增或替换）"
+            )}
             {text("entryDate", "入职 / 进场日期", "date")}
             {text("exitDate", "离职 / 退场日期", "date")}
             <Field label="性别">
@@ -951,7 +1314,13 @@ function PersonnelForm({
             {text("birthDate", "出生日期", "date")}
             {text("address", "联系地址")}
             {text("emergencyContactName", "紧急联系人")}
-            {text("emergencyContactPhone", "紧急联系电话（留空保留）", "tel")}
+            <div className="min-w-0">
+              {text("emergencyContactPhone", "紧急联系电话（留空保留）", "tel")}
+              {original && <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-rose-700">
+                <input type="checkbox" aria-label="明确清空紧急联系电话" checked={draft.clearEmergencyContactPhone} onChange={event => update("clearEmergencyContactPhone", event.target.checked)} />
+                明确清空已登记紧急联系电话
+              </label>}
+            </div>
             {text("remarks", "档案备注")}
           </div>
         </Section>
@@ -966,8 +1335,6 @@ function PersonnelForm({
                   setDraft({
                     ...draft,
                     affiliation,
-                    payrollEnabled:
-                      affiliation === "external" ? false : draft.payrollEnabled,
                     salaryBasis:
                       affiliation === "temporary" &&
                       draft.salaryBasis === "monthly"
@@ -983,10 +1350,11 @@ function PersonnelForm({
                 ))}
               </Picker>
             </Field>
-            <Field label="主要岗位">
+            <Field label={`人员类型 / 主要岗位${original ? "" : " *"}`}>
               <Picker
-                label="主要岗位"
+                label="人员类型 / 主要岗位"
                 value={draft.primaryPositionId}
+                required={!original}
                 onChange={value =>
                   setDraft({
                     ...draft,
@@ -997,21 +1365,65 @@ function PersonnelForm({
                   })
                 }
               >
-                <option value="">暂不设置</option>
-                {options.positions
-                  .filter(
-                    item =>
-                      item.status !== "disabled" ||
-                      String(item.id) === draft.primaryPositionId
-                  )
-                  .map(item => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                      {item.status === "disabled" ? "（已停用）" : ""}
-                    </option>
-                  ))}
+                <option
+                  value=""
+                  disabled={!original || Boolean(original.primaryPositionId)}
+                >
+                  {original && !original.primaryPositionId
+                    ? "暂不设置（保留旧档案未分类）"
+                    : "请选择人员类型 / 主要岗位"}
+                </option>
+                <PositionOptions positions={selectablePositions} />
               </Picker>
             </Field>
+            <div className="space-y-2 sm:col-span-2">
+              <p className="text-[11px] leading-5 text-slate-500">
+                按岗位字典选择碴土车驾驶员、推土机 /
+                小车驾驶员、公司管理员、劳务、临时工及各种机械驾驶员等实际分类；不会根据空岗位把司机变成管理员。
+              </p>
+              {draft.primaryPositionId &&
+                !options.positions.some(
+                  item => String(item.id) === draft.primaryPositionId
+                ) && (
+                  <p role="alert" className="text-xs text-amber-800">
+                    原岗位 #{draft.primaryPositionId}{" "}
+                    不在当前字典中，未修改时保留原分类；请重试字典或在岗位维护核对，不会自动改为其他岗位。
+                  </p>
+                )}
+              {dictionaryEmpty && (
+                <p
+                  role="alert"
+                  className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"
+                >
+                  {options.positions.length
+                    ? "岗位字典暂无启用岗位，新增人员须先维护真实岗位。旧档案的未分类或已停用岗位可保留。"
+                    : "岗位字典真实为空，无法选择人员类型。请维护真实岗位后重试，不会自动创建或伪造选项。"}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={onManagePositions}
+                >
+                  岗位维护
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={onRetryPositions}
+                >
+                  重试岗位字典
+                </Button>
+                <span className="text-[10px] text-slate-500">
+                  仅维护字典，不改变账号权限
+                </span>
+              </div>
+            </div>
             <Field label="所属项目">
               <Picker
                 label="所属项目"
@@ -1054,42 +1466,11 @@ function PersonnelForm({
                   ))}
               </Picker>
             </Field>
-            <div className="sm:col-span-2">
-              <p className="mb-2 text-xs font-medium text-slate-600">
-                兼任岗位（可多选）
-              </p>
-              <div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto rounded-md border bg-slate-50 p-2">
-                {options.positions
-                  .filter(
-                    item =>
-                      item.id !== Number(draft.primaryPositionId) &&
-                      (item.status !== "disabled" ||
-                        draft.secondaryPositionIds.includes(item.id))
-                  )
-                  .map(item => (
-                    <label
-                      key={item.id}
-                      className="flex items-center gap-1.5 rounded bg-white px-2 py-1 text-[11px]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={draft.secondaryPositionIds.includes(item.id)}
-                        onChange={event =>
-                          update(
-                            "secondaryPositionIds",
-                            event.target.checked
-                              ? [...draft.secondaryPositionIds, item.id]
-                              : draft.secondaryPositionIds.filter(
-                                  id => id !== item.id
-                                )
-                          )
-                        }
-                      />
-                      {item.name}
-                    </label>
-                  ))}
-              </div>
-            </div>
+            <SecondaryPositionPicker
+              positions={options.positions}
+              draft={draft}
+              onChange={ids => update("secondaryPositionIds", ids)}
+            />
             <Field wide label="关联已有账号（可选，不改变账号权限）">
               <Picker
                 label="关联已有账号"
@@ -1107,51 +1488,106 @@ function PersonnelForm({
           </div>
         </Section>
         <Section title="薪资设置 · 生效版本">
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={draft.payrollEnabled}
-              disabled={draft.affiliation === "external"}
-              onChange={event => update("payrollEnabled", event.target.checked)}
-            />
-            由公司发薪（仅控制工资主体，不授予权限）
-          </label>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Field label="计薪口径">
-              <Picker
-                label="计薪口径"
-                value={draft.salaryBasis}
-                onChange={value =>
-                  update("salaryBasis", value as PersonnelDraft["salaryBasis"])
+          <Field label="工资发放方 *">
+            <Picker
+              label="工资发放方"
+              value={draft.salaryPayerType}
+              onChange={value => {
+                if (value !== "company" && value !== "owner") return;
+                setDraft({
+                  ...draft,
+                  salaryPayerType: value,
+                  payrollEnabled:
+                    value === "owner" ? false : draft.payrollEnabled,
+                });
+              }}
+            >
+              <option value="company">公司发放</option>
+              <option value="owner">车队或机械老板自行发放</option>
+            </Picker>
+          </Field>
+          {draft.salaryPayerType === "owner" ? (
+            <div className="mt-3 space-y-3">
+              <Field label="老板 / 车队名称（可选）">
+                <Input
+                  aria-label="老板 / 车队名称"
+                  className="h-9 text-xs"
+                  type="text"
+                  maxLength={128}
+                  value={draft.salaryPayerName}
+                  onChange={event =>
+                    update("salaryPayerName", event.target.value)
+                  }
+                  placeholder="可登记车队或机械老板名称"
+                />
+              </Field>
+              <Note>
+                由车队或机械老板自行发放工资，不生成公司工资表，不要求填写公司基础工资。仅记录发薪口径，不自动关联本人外部设备或开通任何账号权限。
+              </Note>
+            </div>
+          ) : (
+            <label className="mt-3 flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                aria-label="启用公司计薪"
+                checked={draft.payrollEnabled}
+                onChange={event =>
+                  update("payrollEnabled", event.target.checked)
                 }
-              >
-                {PERSONNEL_SALARY_BASES.map(value => (
-                  <option
-                    key={value}
-                    value={value}
-                    disabled={
-                      draft.affiliation === "temporary" && value === "monthly"
+              />
+              启用公司计薪（关闭不代表改为老板发放）
+            </label>
+          )}
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {draft.salaryPayerType === "company" && (
+              <>
+                <Field label="计薪口径">
+                  <Picker
+                    label="计薪口径"
+                    value={draft.salaryBasis}
+                    onChange={value =>
+                      update(
+                        "salaryBasis",
+                        value as PersonnelDraft["salaryBasis"]
+                      )
                     }
                   >
-                    {salaryBasisLabels[value]}
-                  </option>
-                ))}
-              </Picker>
-            </Field>
-            <Field label="基础工资 / 单价（元）">
-              <Input
-                className="h-9 text-xs"
-                type="number"
-                min="0"
-                max="999999999999"
-                step="0.01"
-                value={draft.baseSalary}
-                onChange={event => update("baseSalary", event.target.value)}
-              />
-            </Field>
+                    {PERSONNEL_SALARY_BASES.map(value => (
+                      <option
+                        key={value}
+                        value={value}
+                        disabled={
+                          draft.affiliation === "temporary" &&
+                          value === "monthly"
+                        }
+                      >
+                        {salaryBasisLabels[value]}
+                      </option>
+                    ))}
+                  </Picker>
+                </Field>
+                <Field label="基础工资 / 单价（元）">
+                  <Input
+                    className="h-9 text-xs"
+                    type="number"
+                    min="0"
+                    max="999999999999"
+                    step="0.01"
+                    aria-label="基础工资 / 单价（元）"
+                    required={
+                      draft.payrollEnabled &&
+                      (!original || salaryChanged(draft, original))
+                    }
+                    value={draft.baseSalary}
+                    onChange={event => update("baseSalary", event.target.value)}
+                  />
+                </Field>
+              </>
+            )}
             <Field wide label="工资生效日期（变更薪资时必填）">
               <Input
                 className="h-9 text-xs"
+                aria-label="工资生效日期"
                 type="date"
                 required={salaryChanged(draft, original)}
                 value={draft.salaryEffectiveFrom}
@@ -1165,43 +1601,14 @@ function PersonnelForm({
             工资变更新增生效版本，不覆盖历史。已核定、已付款金额不能直接修改；临时工通过现有日结流程，不能重复生成月薪。
           </p>
         </Section>
-        <Section title="联系与收款 · 安全维护">
+        <Section title="证件与收款 · 安全维护">
           <div className="grid gap-3 sm:grid-cols-2">
-            {(
-              [
-                ["phoneNumber", "clearPhoneNumber", "手机号（新增或替换）"],
-                ["identityNo", "clearIdentityNo", "证件号（新增或替换）"],
-                ["bankAccount", "clearBankAccount", "银行卡（新增或替换）"],
-              ] as const
-            ).map(([key, clear, label]) => (
-              <div key={key} className="min-w-0">
-                <Field label={label}>
-                  <Input
-                    className="h-9 text-xs"
-                    aria-label={label}
-                    aria-describedby="personnel-sensitive-help"
-                    autoComplete="off"
-                    type={key === "phoneNumber" ? "tel" : "text"}
-                    spellCheck={false}
-                    disabled={draft[clear]}
-                    value={draft[clear] ? "" : draft[key]}
-                    placeholder={original ? "留空保留已登记值" : "可暂不登记"}
-                    onChange={event => update(key, event.target.value)}
-                  />
-                </Field>
-                {original && (
-                  <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-rose-700">
-                    <input
-                      type="checkbox"
-                      aria-label={`明确清空${label.split("（")[0]}`}
-                      checked={draft[clear]}
-                      onChange={event => update(clear, event.target.checked)}
-                    />
-                    明确清空已登记资料
-                  </label>
-                )}
-              </div>
-            ))}
+            {sensitive("identityNo", "clearIdentityNo", "证件号（新增或替换）")}
+            {sensitive(
+              "bankAccount",
+              "clearBankAccount",
+              "银行卡（新增或替换）"
+            )}
             {text("bankName", "开户行")}
           </div>
           <p
@@ -1245,7 +1652,9 @@ function PersonnelForm({
           type="submit"
           size="sm"
           className="bg-emerald-700 hover:bg-emerald-800"
-          disabled={pending || !draft.name.trim()}
+          disabled={
+            pending || !draft.name.trim() || (!original && dictionaryEmpty)
+          }
         >
           {pending ? "正在保存…" : original ? "保存人员变更" : "保存人员档案"}
         </Button>
@@ -1260,12 +1669,18 @@ function PersonnelDetail({
   options,
   onClose,
   onSaved,
+  onDirtyChange,
+  onManagePositions,
+  onRetryPositions,
 }: {
   personId: number;
   displayDate: (value: Date | string) => string;
   options?: Options;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+  onManagePositions: () => void;
+  onRetryPositions: () => void;
 }) {
   const [period, setPeriod] = useState(() => chinaToday().slice(0, 7));
   const [tab, setTab] = useState("basic");
@@ -1279,6 +1694,22 @@ function PersonnelDetail({
   const [editVersion, setEditVersion] = useState<number>();
   const [saveError, setSaveError] = useState("");
   const [legacyOpen, setLegacyOpen] = useState(false);
+  const [ledgerDirty, setLedgerDirty] = useState(false);
+  const dirty =
+    ledgerDirty || editing && Boolean(original && personnelDraftDirty(draft, original));
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  const canDiscard = () =>
+    !save.isPending &&
+    (!dirty || window.confirm("人员档案有未保存修改，确认放弃草稿？"));
+  const closeEdit = () => {
+    if (canDiscard()) setEditing(false);
+  };
+  const closeDetail = () => {
+    if (canDiscard()) onClose();
+  };
   const saved = async () => {
     await query.refetch();
     await onSaved();
@@ -1317,7 +1748,7 @@ function PersonnelDetail({
       className="h-7 text-xs"
       size="sm"
       variant="outline"
-      disabled={!options || !person}
+      disabled={!person}
       onClick={() => person && beginEdit(person)}
     >
       修改资料
@@ -1328,7 +1759,7 @@ function PersonnelDetail({
       <Dialog
         open
         onOpenChange={open => {
-          if (!open) onClose();
+          if (!open) closeDetail();
         }}
       >
         <DialogContent className="flex max-h-[94dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl sm:p-0 xl:max-w-7xl">
@@ -1371,7 +1802,10 @@ function PersonnelDetail({
               ) : detail && person ? (
                 <Tabs
                   value={tab}
-                  onValueChange={setTab}
+                  onValueChange={value => {
+                    if (ledgerDirty && !window.confirm("考勤维护有未保存修改，切换栏目会放弃草稿，确认继续？")) return;
+                    setTab(value);
+                  }}
                   className="min-w-0 gap-3"
                 >
                   <TabsList className="grid h-auto w-full grid-cols-4 gap-1 rounded-xl bg-slate-100 p-1 lg:grid-cols-8">
@@ -1421,6 +1855,11 @@ function PersonnelDetail({
                           ["手机号", person.phoneMasked],
                           ["证件号", person.identityMasked],
                           [
+                            "人员类型 / 主要岗位",
+                            person.positionName || "未分类（旧档案）",
+                          ],
+                          ["工资发放方", salaryPayerDescription(person)],
+                          [
                             "性别",
                             person.gender === "male"
                               ? "男"
@@ -1468,13 +1907,13 @@ function PersonnelDetail({
                       <Facts
                         items={[
                           ["用工归属", affiliationLabels[person.affiliation]],
-                          ["主要岗位", person.positionName],
+                          ["人员类型 / 主要岗位", referenceLabel("岗位", person.primaryPositionId, person.positionName)],
                           [
                             "兼任岗位",
-                            person.secondaryPositionNames.join("、") || "无",
+                            person.secondaryPositionIds.map(id => referenceLabel("岗位", id, options?.positions.find(p => p.id === id)?.name)).join("、") || "无",
                           ],
-                          ["所属项目", person.projectName],
-                          ["施工队", person.teamName],
+                          ["所属项目", referenceLabel("项目", person.projectId, person.projectName)],
+                          ["施工队", referenceLabel("施工队", person.teamId, person.teamName)],
                           [
                             "状态",
                             employmentStatusLabels[person.employmentStatus],
@@ -1488,7 +1927,7 @@ function PersonnelDetail({
                           "生效日期",
                           "版本",
                           "用工归属",
-                          "岗位",
+                          "主岗 / 兼任岗位（当前字典名称）",
                           "项目 / 施工队",
                           "状态",
                         ]}
@@ -1496,13 +1935,8 @@ function PersonnelDetail({
                           displayDate(item.effectiveFrom),
                           `v${item.version}`,
                           affiliationLabels[item.affiliation],
-                          options?.positions.find(
-                            position => position.id === item.primaryPositionId
-                          )?.name ??
-                            (item.primaryPositionId
-                              ? `岗位 ID ${item.primaryPositionId}`
-                              : "未设置"),
-                          `${options?.projects.find(project => project.id === item.projectId)?.name ?? "未分配项目"} / ${options?.teams.find(team => team.id === item.teamId)?.name ?? "未分配施工队"}`,
+                          `主岗：${referenceLabel("岗位", item.primaryPositionId, options?.positions.find(p => p.id === item.primaryPositionId)?.name)}；兼任：${(item.secondaryPositionIds ?? []).map(id => referenceLabel("岗位", id, options?.positions.find(p => p.id === id)?.name)).join("、") || "无"}`,
+                          `${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)} / ${referenceLabel("施工队", item.teamId, options?.teams.find(t => t.id === item.teamId)?.name)}`,
                           employmentStatusLabels[item.employmentStatus],
                         ])}
                       />
@@ -1542,19 +1976,29 @@ function PersonnelDetail({
                     <Section title="当前生效薪资" action={editButton}>
                       <Facts
                         items={[
+                          ["工资发放方", salaryPayerDescription(person)],
                           [
-                            "公司发薪",
-                            person.payrollEnabled
-                              ? "是"
-                              : "否 · 业务费用单独结算",
+                            "公司计薪",
+                            salaryPayerTypeOf(person) === "owner"
+                              ? "不生成公司工资表"
+                              : person.payrollEnabled
+                                ? "已启用"
+                                : "未启用（仍为公司发放）",
                           ],
                           [
                             "计薪口径",
-                            person.salaryBasis
-                              ? salaryBasisLabels[person.salaryBasis]
-                              : "未维护",
+                            salaryPayerTypeOf(person) === "owner"
+                              ? "老板 / 车队自行结算"
+                              : person.salaryBasis
+                                ? salaryBasisLabels[person.salaryBasis]
+                                : "未维护",
                           ],
-                          ["基础工资 / 单价", money(person.baseSalary)],
+                          [
+                            "公司基础工资 / 单价",
+                            salaryPayerTypeOf(person) === "owner"
+                              ? "不适用"
+                              : money(person.baseSalary),
+                          ],
                           [
                             "工资主体",
                             person.legacyProfileId
@@ -1572,13 +2016,17 @@ function PersonnelDetail({
                         headers={[
                           "生效日期",
                           "归属",
-                          "公司发薪",
+                          "原工资发放方",
+                          "原老板 / 车队名称",
+                          "公司计薪启用",
                           "计薪口径",
                           "基础工资 / 单价",
                         ]}
                         rows={detail.salaryHistory.map(item => [
                           displayDate(item.effectiveFrom),
                           affiliationLabels[item.affiliation],
+                          salaryPayerLabels[salaryPayerTypeOf(item)],
+                          item.salaryPayerName || "—",
                           item.payrollEnabled ? "是" : "否",
                           salaryBasisLabels[item.salaryBasis],
                           money(item.baseSalary),
@@ -1593,7 +2041,7 @@ function PersonnelDetail({
                       </p>
                       <PeriodInput period={period} onChange={setPeriod} />
                     </div>
-                    <Section title="考勤汇总">
+                    <Section title="已确认考勤汇总（含锁定；草稿仅列明细）">
                       <Facts
                         items={[
                           ["出勤天数", `${detail.attendance.days} 天`],
@@ -1616,6 +2064,9 @@ function PersonnelDetail({
                       <AttendanceRecords
                         rows={detail.attendance.rows}
                         displayDate={displayDate}
+                        options={options}
+                        onSaved={saved}
+                        onDirtyChange={setLedgerDirty}
                       />
                     </Section>
                   </TabsContent>
@@ -1626,6 +2077,7 @@ function PersonnelDetail({
                       period={period}
                       onPeriodChange={setPeriod}
                       displayDate={displayDate}
+                      options={options}
                       onSaved={saved}
                     />
                   </TabsContent>
@@ -1660,14 +2112,12 @@ function PersonnelDetail({
                     </Section>
                     <Section title="人员变更记录">
                       <Ledger
-                        headers={["时间", "版本", "操作", "变更字段", "操作人"]}
+                        headers={["时间 / 记录 ID", "版本", "操作", "字段：变更前 → 变更后", "操作人"]}
                         rows={detail.changes.map(item => [
-                          displayDate(item.createdAt),
+                          `${beijingTimestamp(item.createdAt)} · 记录 #${item.id}`,
                           `v${item.version}`,
                           changeActionLabel(item.action),
-                          Object.keys(item.changes ?? {})
-                            .map(changeFieldLabel)
-                            .join("、") || "无字段变更",
+                          <div className="space-y-1">{changeEntries(item.changes).map(([key, value]) => <p key={key}>{changeFieldLabel(key)}（{key}）：{changeDetailText(value)}</p>)}</div>,
                           `ID ${item.createdBy}`,
                         ])}
                       />
@@ -1692,7 +2142,7 @@ function PersonnelDetail({
               variant="outline"
               size="sm"
               className="h-7 text-xs"
-              onClick={onClose}
+              onClick={closeDetail}
             >
               关闭详情
             </Button>
@@ -1702,7 +2152,7 @@ function PersonnelDetail({
       <Dialog
         open={editing}
         onOpenChange={open => {
-          if (!save.isPending) setEditing(open);
+          if (!open) closeEdit();
         }}
       >
         <DialogContent className="sm:max-w-5xl">
@@ -1713,7 +2163,7 @@ function PersonnelDetail({
               。未修改字段保留；所有人员均通过同一表单维护基础、归属、薪资与收款。
             </DialogDescription>
           </DialogHeader>
-          {options && (
+          {options ? (
             <PersonnelForm
               draft={draft}
               setDraft={setDraft}
@@ -1721,17 +2171,19 @@ function PersonnelDetail({
               original={original}
               error={saveError}
               pending={save.isPending}
-              onCancel={() => setEditing(false)}
+              onManagePositions={onManagePositions}
+              onRetryPositions={onRetryPositions}
+              onCancel={closeEdit}
               onReload={() => void reloadEdit()}
               onSubmit={() => {
                 if (!editVersion) return;
-                if (
-                  salaryChanged(draft, original) &&
-                  !draft.salaryEffectiveFrom
-                ) {
-                  setSaveError("修改薪资必须选择生效日期");
-                  return;
-                }
+                const error = personnelDraftError(
+                  draft,
+                  options.positions,
+                  original
+                );
+                setSaveError(error);
+                if (error) return;
                 save.mutate(
                   buildPersonnelSave(draft, original, {
                     id: personId,
@@ -1740,6 +2192,28 @@ function PersonnelDetail({
                 );
               }}
             />
+          ) : (
+            <div role="alert" className="space-y-3 text-xs">
+              <p>
+                岗位字典尚未加载，无法安全编辑分类，请重试。当前草稿仍保留。
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onRetryPositions}
+              >
+                重试岗位字典
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onManagePositions}
+              >
+                岗位维护
+              </Button>
+            </div>
           )}
         </DialogContent>
       </Dialog>
@@ -1800,7 +2274,9 @@ function changeFieldLabel(key: string) {
     salaryBasis: "计薪口径",
     baseSalary: "基础工资",
     salaryEffectiveFrom: "工资生效日",
-    payrollEnabled: "公司发薪",
+    payrollEnabled: "公司计薪开关",
+    salaryPayerType: "工资发放方",
+    salaryPayerName: "老板 / 车队名称",
     address: "地址",
     gender: "性别",
     birthDate: "出生日期",
@@ -1825,22 +2301,71 @@ function changeActionLabel(action: string) {
 function AttendanceRecords({
   rows,
   displayDate,
+  options,
+  onSaved,
+  onDirtyChange,
 }: {
   rows: PersonDetail["attendance"]["rows"];
   displayDate: (value: Date | string) => string;
+  options?: Options;
+  onSaved: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
+  type Row = PersonDetail["attendance"]["rows"][number];
+  const [selected, setSelected] = useState<Row>();
+  const [draft, setDraft] = useState({ workHours: "", overtimeHours: "", note: "", status: "confirmed" as "draft" | "confirmed" });
+  const [error, setError] = useState("");
+  const baseline = selected ? { workHours: String(selected.workHours), overtimeHours: String(selected.overtimeHours), note: selected.note ?? "", status: selected.status === "draft" ? "draft" : "confirmed" } : undefined;
+  const dirty = Boolean(selected && selected.status !== "locked" && JSON.stringify(draft) !== JSON.stringify(baseline));
+  usePersonnelExitGuard(dirty, onDirtyChange);
+  const save = trpc.labor.attendance.save.useMutation({
+    onSuccess: async () => { setSelected(undefined); setError(""); toast.success("原考勤记录已保存，历史人员和项目保持不变"); await onSaved(); },
+    onError: error => setError(friendlyPersonnelError(error)),
+  });
+  const close = () => {
+    if (save.isPending || dirty && !window.confirm("考勤有未保存修改，确认放弃草稿？")) return;
+    setSelected(undefined);
+  };
+  const latest = selected && rows.find(row => row.id === selected.id);
+  const readOnly = selected?.status === "locked" || latest?.status === "locked";
   return (
+    <>
     <Ledger
-      headers={["日期", "状态", "工时", "加班", "备注"]}
+      headers={["日期", "原记录 / 历史项目 / 工人", "状态", "工时", "加班", "备注", "操作"]}
       rows={rows.map(item => [
         displayDate(item.attendanceDate),
+        `考勤 ID ${item.id} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)} · worker ID ${item.workerId}`,
         getBusinessStatusLabel(item.status),
         item.workHours,
         item.overtimeHours,
         item.note || "—",
+        <Button size="sm" variant="outline" onClick={() => { setSelected(item); setError(""); setDraft({ workHours: String(item.workHours), overtimeHours: String(item.overtimeHours), note: item.note ?? "", status: item.status === "draft" ? "draft" : "confirmed" }); }}>{item.status === "locked" ? "查看锁定记录" : "维护原考勤"}</Button>,
       ])}
       empty="所选月份暂无已关联考勤，不代表缺勤。请按实际人员来源核验。"
     />
+    <Dialog open={Boolean(selected)} onOpenChange={open => { if (!open) close(); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>原考勤记录维护 · #{selected?.id}</DialogTitle><DialogDescription>沿用原 labor.attendance.save；人员、项目及日期固定为选中历史记录，不选择默认工人。锁定记录仅查看。</DialogDescription></DialogHeader>
+        {selected && <form className="space-y-3" onSubmit={event => {
+          event.preventDefault();
+          if (readOnly || !latest) { setError("该记录已锁定或不在当前明细，请关闭并刷新；不能修改"); return; }
+          const workHours = Number(draft.workHours), overtimeHours = Number(draft.overtimeHours);
+          if (!draft.workHours.trim() || !draft.overtimeHours.trim() || !Number.isFinite(workHours) || !Number.isFinite(overtimeHours) || workHours < 0 || overtimeHours < 0 || workHours + overtimeHours > 24) { setError("工时必须为非负数且正常与加班合计不超过24小时"); return; }
+          setError("");
+          save.mutate({ id: selected.id, projectId: selected.projectId, workerId: selected.workerId, attendanceDate: dateInput(selected.attendanceDate), workHours, overtimeHours, status: draft.status, note: draft.note.trim() || null, source: selected.source });
+        }}>
+          <p className="text-xs">考勤 ID {selected.id} · 项目 ID {selected.projectId} · worker ID {selected.workerId} · 日期 {displayDate(selected.attendanceDate)}</p>
+          {readOnly && <p className="text-xs text-amber-800">已锁定，只读；不得修改已提交工资的考勤依据。</p>}
+          <Field label="原考勤正常工时"><Input aria-label="原考勤正常工时" type="number" min="0" max="24" step="0.01" value={draft.workHours} disabled={readOnly || save.isPending} onChange={e => setDraft({ ...draft, workHours: e.target.value })} /></Field>
+          <Field label="原考勤加班工时"><Input aria-label="原考勤加班工时" type="number" min="0" max="24" step="0.01" value={draft.overtimeHours} disabled={readOnly || save.isPending} onChange={e => setDraft({ ...draft, overtimeHours: e.target.value })} /></Field>
+          <Field label="原考勤状态"><Picker label="原考勤状态" value={draft.status} disabled={readOnly || save.isPending} onChange={status => setDraft({ ...draft, status: status as "draft" | "confirmed" })}><option value="draft">草稿</option><option value="confirmed">已确认</option></Picker></Field>
+          <Field label="原考勤备注"><Input aria-label="原考勤备注" value={draft.note} maxLength={500} disabled={readOnly || save.isPending} onChange={e => setDraft({ ...draft, note: e.target.value })} /></Field>
+          {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={close}>关闭考勤维护</Button>{!readOnly && <Button type="submit" disabled={save.isPending || !dirty}>保存原考勤</Button>}</div>
+        </form>}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 function PersonnelCompensation({
@@ -1850,6 +2375,7 @@ function PersonnelCompensation({
   onPeriodChange,
   displayDate,
   onSaved,
+  options,
 }: {
   detail: PersonDetail;
   personId: number;
@@ -1857,6 +2383,7 @@ function PersonnelCompensation({
   onPeriodChange: (value: string) => void;
   displayDate: (value: Date | string) => string;
   onSaved: () => Promise<void>;
+  options?: Options;
 }) {
   const [advance, setAdvance] = useState(() => ({
     advanceDate: chinaToday(),
@@ -1884,35 +2411,26 @@ function PersonnelCompensation({
     },
     onError: error => setError(friendlyPersonnelError(error)),
   });
-  const { person, compensation } = detail;
+  const { compensation } = detail;
+  const eligibleSubjects = detail.payrollSubjects.filter(item => subjectEligibility(item, period, detail.salaryHistory, "advance").length > 0);
+  useEffect(() => {
+    if (payrollProfileId && !eligibleSubjects.some(item => String(item.employeeProfileId) === payrollProfileId)) setPayrollProfileId("");
+  }, [period, detail.payrollSubjects, detail.salaryHistory, payrollProfileId]);
   const selectedSubject = payrollProfileId
-    ? detail.payrollSubjects.find(
+    ? eligibleSubjects.find(
         item => String(item.employeeProfileId) === payrollProfileId
       )
-    : detail.payrollSubjects.length === 1
-      ? detail.payrollSubjects[0]
+    : eligibleSubjects.length === 1
+      ? eligibleSubjects[0]
       : undefined;
-  const start = `${period}-01`;
-  const end = `${period}-31`;
-  const historicalEligible = detail.salaryHistory.some((item, index, rows) => {
-    const ordered = [...rows].sort((a, b) =>
-      a.effectiveFrom.localeCompare(b.effectiveFrom)
-    );
-    const next = ordered.find(
-      row => row.effectiveFrom > item.effectiveFrom
-    )?.effectiveFrom;
-    return (
-      item.payrollEnabled &&
-      item.affiliation !== "temporary" &&
-      item.affiliation !== "external" &&
-      item.effectiveFrom <= end &&
-      (!next || next > start)
-    );
-  });
+  const historicalEligible = Boolean(selectedSubject && subjectEligibility(selectedSubject, period, detail.salaryHistory).length);
+  const advanceRanges = selectedSubject ? subjectEligibility(selectedSubject, period, detail.salaryHistory, "advance") : [];
+  const advanceDateEligible = advanceRanges.some(range => range.start <= advance.advanceDate && range.end >= advance.advanceDate);
   const existing = compensation.payroll.some(
     item =>
       item.period === period &&
-      (!selectedSubject || item.projectId === selectedSubject.projectId)
+      item.status !== "void" &&
+      (!selectedSubject || item.projectId === selectedSubject.projectId && item.workerId === selectedSubject.workerId)
   );
   const canGenerate =
     historicalEligible && Boolean(selectedSubject?.workerId) && !existing;
@@ -1925,17 +2443,18 @@ function PersonnelCompensation({
           className="h-8 min-w-0 max-w-full rounded-md border bg-white px-2 text-xs"
           value={
             payrollProfileId ||
-            (detail.payrollSubjects.length === 1
-              ? String(detail.payrollSubjects[0].employeeProfileId)
+            (eligibleSubjects.length === 1
+              ? String(eligibleSubjects[0].employeeProfileId)
               : "")
           }
           onChange={event => setPayrollProfileId(event.target.value)}
         >
           <option value="">选择当期真实项目工资主体</option>
-          {detail.payrollSubjects.map(item => (
+          {eligibleSubjects.map(item => (
             <option key={item.employeeProfileId} value={item.employeeProfileId}>
-              {item.projectName || "未登记项目"} · 档案 #
+              {referenceLabel("项目", item.projectId, item.projectName)} · 档案 #
               {item.employeeProfileId}
+              {item.workerId ? ` · worker ID ${item.workerId}` : " · 无真实工人关联"}
               {item.joinedAt ? ` · ${displayDate(item.joinedAt)}` : ""}
               {item.leftAt ? ` 至 ${displayDate(item.leftAt)}` : ""}
             </option>
@@ -1978,7 +2497,7 @@ function PersonnelCompensation({
             href="/admin/labor?tab=operations"
             className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:underline"
           >
-            劳务工作区 · 切换考勤工资
+            原劳务工作区（不会回填本条记录）
             <ArrowUpRight className="size-3" />
           </a>
         }
@@ -1987,27 +2506,33 @@ function PersonnelCompensation({
           headers={[
             "期间 / 日期",
             "类型",
+            "原始记录 / 历史项目 / 工人",
             "应发",
             "核定实发（非实付）",
             "状态",
             "发放标记",
+            "维护边界",
           ]}
           rows={[
             ...compensation.payroll.map(item => [
               item.period,
               "工资条",
+              `工资 ID ${item.id} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)} · worker ID ${item.workerId} · 原发薪方未提供`,
               money(item.payableAmount),
               money(item.actualAmount),
               getBusinessStatusLabel(item.status),
               item.paidAt ? displayDate(item.paidAt) : "未标记",
+              item.status === "draft" ? "本页只读；必须在原劳务工资表单按上述 ID / 项目 / 工人 / 期间办理，不会自动回填" : "只读；已审核或已付金额不得直接修改",
             ]),
             ...compensation.dailyWage.map(item => [
               displayDate(item.settlementDate),
               "临时日结",
+              `日结 ID ${item.id} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)} · worker ID ${item.workerId} · 原发薪方未提供`,
               money(item.payableAmount),
               money(item.actualAmount),
               getBusinessStatusLabel(item.status),
               item.paidAt ? displayDate(item.paidAt) : "未标记",
+              "本页只读；必须在原劳务日结流程办理",
             ]),
           ]}
         />
@@ -2016,32 +2541,39 @@ function PersonnelCompensation({
         <PersonnelPaymentRecords
           rows={compensation.payments}
           displayDate={displayDate}
+          options={options}
         />
       </Section>
       <MonthlyPayrollSchedule />
       <Section title="工资预支 · 草稿登记">
         <Ledger
-          headers={["日期", "金额", "状态", "备注"]}
+          headers={["日期", "原始 ID / 工资主体 / 历史项目", "金额", "状态", "备注"]}
           rows={compensation.advances.map(item => [
             displayDate(item.advanceDate),
+            `预支 ID ${item.id} · 档案 ID ${item.employeeProfileId} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)}`,
             money(item.amount),
             getBusinessStatusLabel(item.status),
             item.remarks || "—",
           ])}
         />
-        {person.payrollEnabled && person.legacyProfileId ? (
+        {selectedSubject && advanceRanges.length ? (
           <form
             className="grid gap-2 sm:grid-cols-[140px_140px_minmax(0,1fr)_auto]"
             onSubmit={event => {
               event.preventDefault();
               setError("");
               const amount = Number(advance.amount);
+              if (!selectedSubject || !advanceDateEligible) {
+                setError("预支日期必须在所选主体当期公司发薪资格与真实入离场范围内");
+                return;
+              }
               if (!Number.isFinite(amount) || amount <= 0) {
                 setError("请输入大于零的有效预支金额");
                 return;
               }
               saveAdvance.mutate({
                 personId,
+                employeeProfileId: selectedSubject.employeeProfileId,
                 advanceDate: advance.advanceDate,
                 amount,
                 remarks: advance.remarks.trim() || undefined,
@@ -2053,6 +2585,8 @@ function PersonnelCompensation({
               type="date"
               required
               className="h-8 text-xs"
+              min={advanceRanges[0]?.start}
+              max={advanceRanges.at(-1)?.end}
               value={advance.advanceDate}
               onChange={event =>
                 setAdvance({ ...advance, advanceDate: event.target.value })
@@ -2084,18 +2618,18 @@ function PersonnelCompensation({
               type="submit"
               size="sm"
               className="h-8 text-xs"
-              disabled={saveAdvance.isPending || !advance.amount}
+              disabled={saveAdvance.isPending || !advance.amount || !advanceDateEligible}
             >
               {saveAdvance.isPending ? "保存中…" : "新增预支草稿"}
             </Button>
           </form>
         ) : (
           <p className="text-[11px] text-slate-500">
-            该人员当前未启用公司发薪或缺少工资主体，不能登记工资预支。
+            请先选择当期公司发薪资格与真实任职日期有交集的工资主体，不能按当前档案指针猜测预支归属。
           </p>
         )}
         <p className="text-[11px] leading-5 text-slate-500">
-          预支沿旧审核付款流程处理，不自动扣减工资，不将批准金额视作已付款。
+          当前仅支持预支草稿登记，尚无可用的预支审核、付款或转账入口，不构成审核付款闭环；不自动扣减工资，不将批准或已扣金额视作已付款。
         </p>
       </Section>
     </>
@@ -2104,22 +2638,25 @@ function PersonnelCompensation({
 function PersonnelPaymentRecords({
   rows,
   displayDate,
+  options,
 }: {
   rows: PersonDetail["compensation"]["payments"];
   displayDate: (value: Date | string) => string;
+  options?: Options;
 }) {
   return (
     <Ledger
-      headers={["实际付款日期", "付款金额", "关联类型", "流水 / 状态"]}
+      headers={["实际收付日期", "金额", "方向", "关联类型 / 结算 ID / 项目", "流水 / 状态"]}
       rows={rows.map(item => [
         displayDate(item.paymentDate),
         money(item.amount),
-        item.settlementType === "payroll"
+        item.direction === "income" ? "收入 / 回收（非工资付款）" : item.direction === "expense" ? "支出" : "方向未提供（不认定工资实付）",
+        `${item.settlementType === "payroll"
           ? "月度工资"
           : item.settlementType === "daily_wage"
             ? "临时日结"
-            : "其他结算",
-        `流水 #${item.id} · ${item.status === "reversed" ? "已冲销（不计实付）" : "有效付款"}`,
+            : "其他结算"} · 结算 ID ${item.settlementId ?? "未提供"} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)}`,
+        `流水 #${item.id} · ${item.status === "reversed" ? "已冲销（不计实付）" : item.status === "active" && item.direction === "expense" ? "有效工资付款（计实付）" : item.status === "active" && item.direction === "income" ? "有效收入 / 回收（不计工资实付）" : "不可认定实付"}`,
       ])}
       empty="暂无已关联的实际付款流水。工资条核定实发或已发放标记不替代付款流水。"
     />
@@ -2160,6 +2697,15 @@ function PersonnelResources({
           const item = options?.machines.find(item => item.id === id);
           return item ? `${item.code} · ${item.name}` : `机械 #${id}`;
         })();
+  const baselineUnknown = (row: PersonDetail["resources"]["history"][number]) => detail.changes.some(event =>
+    event.action === "resource_binding" && new Date(event.createdAt).getTime() === new Date(row.createdAt).getTime() &&
+    changeEntries(event.changes).some(([key, value]) => {
+      if (key !== "resourceBinding" || !value || typeof value !== "object" || !("before" in value)) return false;
+      const before = value.before;
+      if (!before || typeof before !== "object") return false;
+      return "assetId" in before && before.assetId === row.assetId && "assetType" in before && before.assetType === row.assetType && "personId" in before && before.personId === personId && (("baselineUnknown" in before && before.baselineUnknown === true) || ("effectiveFromKnown" in before && before.effectiveFromKnown === false));
+    })
+  );
   return (
     <>
       <Note>
@@ -2187,14 +2733,17 @@ function PersonnelResources({
       </Section>
       <Section title="车辆机械绑定历史">
         <Ledger
-          headers={["资源类型", "车辆 / 机械", "生效日期", "结束日期"]}
-          rows={detail.resources.history.map(item => [
+          headers={["资源类型", "车辆 / 机械", "历史项目", "生效日期", "结束日期", "登记事件 ID / 时间"]}
+          rows={[...detail.resources.history].sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || b.id - a.id).map(item => [
             item.assetType === "vehicle" ? "车辆" : "机械",
-            assetLabel(item.assetType, item.assetId),
-            displayDate(item.effectiveFrom),
+            `${assetLabel(item.assetType, item.assetId)} · 资源 ID ${item.assetId}`,
+            referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name),
+            baselineUnknown(item) ? "任职起点未核实（旧关系基线）" : displayDate(item.effectiveFrom),
             item.effectiveTo ? displayDate(item.effectiveTo) : "持续有效",
+            `事件 #${item.id} · ${beijingTimestamp(item.createdAt)}`,
           ])}
         />
+        <p className="text-[11px] text-slate-500">事件时间是登记时间，不证明实际首次上岗时刻；旧关系基线的生效起点须以原业务责任记录核验。</p>
       </Section>
       <Section title="资源换人 · 今日即时生效">
         <form

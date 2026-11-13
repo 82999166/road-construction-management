@@ -4673,6 +4673,8 @@ export const personnelPeople = mysqlTable(
     remarks: varchar("remarks", { length: 1000 }),
     avatarEvidenceId: bigint("avatarEvidenceId", { mode: "number" }),
     payrollEnabled: boolean("payrollEnabled").default(false).notNull(),
+    salaryPayerType: varchar("salaryPayerType", { length: 24 }),
+    salaryPayerName: varchar("salaryPayerName", { length: 128 }),
     phoneEncrypted: text("phoneEncrypted"),
     phoneFingerprint: varchar("phoneFingerprint", { length: 64 }),
     phoneMasked: varchar("phoneMasked", { length: 64 }),
@@ -4820,6 +4822,8 @@ export const personnelSalaryHistory = mysqlTable(
     ]).notNull(),
     baseSalary: decimal("baseSalary", { precision: 16, scale: 2 }),
     payrollEnabled: boolean("payrollEnabled").notNull(),
+    salaryPayerType: varchar("salaryPayerType", { length: 24 }),
+    salaryPayerName: varchar("salaryPayerName", { length: 128 }),
     affiliation: mysqlEnum("affiliation", [
       "company",
       "temporary",

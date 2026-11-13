@@ -3,7 +3,32 @@ import type {
   PersonnelEmploymentStatus,
   PersonnelSalaryBasis,
   PersonnelSaveInput,
+  PersonnelSalaryPayerType,
 } from "@shared/personnel";
+import { resolvePersonnelSalaryPayer } from "@shared/personnel";
+
+export type SalaryPayerType = PersonnelSalaryPayerType;
+export type SalaryPayerProjection = {
+  affiliation: PersonnelAffiliation;
+  salaryPayerType?: SalaryPayerType | null;
+  salaryPayerName?: string | null;
+};
+export const salaryPayerLabels = {
+  company: "公司发放",
+  owner: "车队或机械老板自行发放",
+} as const;
+/** Legacy defaults depend on affiliation, never on the old payroll-disabled flag. */
+export function salaryPayerTypeOf(
+  person: SalaryPayerProjection
+): SalaryPayerType {
+  return resolvePersonnelSalaryPayer(person).salaryPayerType;
+}
+export function salaryPayerDescription(person: SalaryPayerProjection) {
+  const label = salaryPayerLabels[salaryPayerTypeOf(person)];
+  return person.salaryPayerName
+    ? `${label} · ${person.salaryPayerName}`
+    : label;
+}
 
 export type PersonnelDraft = {
   name: string;
@@ -20,8 +45,11 @@ export type PersonnelDraft = {
   address: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  clearEmergencyContactPhone: boolean;
   remarks: string;
   payrollEnabled: boolean;
+  salaryPayerType: SalaryPayerType;
+  salaryPayerName: string;
   userId: string;
   phoneNumber: string;
   identityNo: string;
@@ -64,8 +92,11 @@ export function newPersonnelDraft(
     address: "",
     emergencyContactName: "",
     emergencyContactPhone: "",
+    clearEmergencyContactPhone: false,
     remarks: "",
     payrollEnabled: affiliation !== "external",
+    salaryPayerType: affiliation === "external" ? "owner" : "company",
+    salaryPayerName: "",
     userId: "",
     phoneNumber: "",
     identityNo: "",
@@ -84,11 +115,54 @@ export function salaryChanged(
   original?: PersonnelDraft
 ) {
   return !original
-    ? Boolean(draft.baseSalary)
+    ? true
     : draft.salaryBasis !== original.salaryBasis ||
         draft.baseSalary !== original.baseSalary ||
         draft.payrollEnabled !== original.payrollEnabled ||
+        draft.salaryPayerType !== original.salaryPayerType ||
+        draft.salaryPayerName.trim() !== original.salaryPayerName.trim() ||
         draft.affiliation !== original.affiliation;
+}
+export function personnelDraftError(
+  draft: PersonnelDraft,
+  positions: readonly { id: number; status: string }[] | undefined,
+  original?: PersonnelDraft
+) {
+  if (!draft.name.trim()) return "请输入姓名";
+  if (!original && !draft.primaryPositionId)
+    return "请选择人员类型 / 主要岗位，所有新增人员必须分类。";
+  if (original?.primaryPositionId && !draft.primaryPositionId)
+    return "已分类人员必须保留或选择人员类型 / 主要岗位；仅旧未分类档案可以保留未设置。";
+  if (
+    draft.primaryPositionId !== original?.primaryPositionId &&
+    draft.primaryPositionId &&
+    !positions?.some(
+      position =>
+        String(position.id) === draft.primaryPositionId &&
+        position.status !== "disabled"
+    )
+  )
+    return "所选岗位未加载、已停用或不存在，请重新读取岗位字典后选择。";
+  if (!original && !positions?.some(position => position.status !== "disabled"))
+    return "岗位字典尚未就绪，请重试或前往岗位维护添加真实岗位。";
+  if (draft.salaryPayerName.trim().length > 128)
+    return "老板 / 车队名称不能超过128个字符";
+  if (
+    draft.salaryPayerType === "company" &&
+    draft.payrollEnabled &&
+    (!original || salaryChanged(draft, original)) &&
+    !draft.baseSalary.trim()
+  )
+    return "请填写公司计薪人员的基础工资 / 单价；暂不计薪可关闭公司计薪。";
+  if (salaryChanged(draft, original) && !draft.salaryEffectiveFrom)
+    return "修改薪资必须选择生效日期";
+  return "";
+}
+export function personnelDraftDirty(
+  draft: PersonnelDraft,
+  baseline: PersonnelDraft
+) {
+  return JSON.stringify(draft) !== JSON.stringify(baseline);
 }
 /** Only edited optional fields are submitted. Blank sensitive inputs preserve saved values; clear flags explicitly remove them. */
 export function buildPersonnelSave(
@@ -104,10 +178,13 @@ export function buildPersonnelSave(
     primaryPositionId: draft.primaryPositionId
       ? Number(draft.primaryPositionId)
       : null,
-    payrollEnabled: draft.payrollEnabled,
+    payrollEnabled: draft.salaryPayerType === "company" && draft.payrollEnabled,
+    salaryPayerType: draft.salaryPayerType,
   };
   const changed = (key: keyof PersonnelDraft) =>
     !original || JSON.stringify(draft[key]) !== JSON.stringify(original[key]);
+  if (changed("salaryPayerName"))
+    result.salaryPayerName = draft.salaryPayerName.trim() || null;
   for (const key of ["projectId", "teamId", "userId"] as const)
     if (changed(key)) result[key] = draft[key] ? Number(draft[key]) : null;
   if (changed("secondaryPositionIds"))
@@ -125,7 +202,8 @@ export function buildPersonnelSave(
   ] as const)
     if (changed(key)) result[key] = draft[key].trim() || null;
   if (changed("gender")) result.gender = draft.gender;
-  if (draft.emergencyContactPhone.trim())
+  if (draft.clearEmergencyContactPhone) result.emergencyContactPhone = null;
+  else if (draft.emergencyContactPhone.trim() && changed("emergencyContactPhone"))
     result.emergencyContactPhone = draft.emergencyContactPhone.trim();
   for (const [key, clear] of [
     ["phoneNumber", "clearPhoneNumber"],
@@ -141,7 +219,10 @@ export function buildPersonnelSave(
   }
   if (salaryChanged(draft, original)) {
     result.salaryBasis = draft.salaryBasis;
-    result.baseSalary = draft.baseSalary.trim() || null;
+    result.baseSalary =
+      draft.salaryPayerType === "owner"
+        ? null
+        : draft.baseSalary.trim() || null;
     result.salaryEffectiveFrom = draft.salaryEffectiveFrom;
   }
   return result;
@@ -151,6 +232,7 @@ export function sensitiveClearLabels(draft: PersonnelDraft) {
     [draft.clearPhoneNumber, "手机号"],
     [draft.clearIdentityNo, "证件号"],
     [draft.clearBankAccount, "银行卡"],
+    [draft.clearEmergencyContactPhone, "紧急联系电话"],
   ]
     .filter(([clear]) => clear)
     .map(([, label]) => label)

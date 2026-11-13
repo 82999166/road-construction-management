@@ -4,12 +4,15 @@ import { randomUUID } from "node:crypto";
 import {
   employeeProfiles, employeePayrollAdvances, laborWorkers, users, userProfiles,
   personnelPeople, personnelSourceLinks, personnelSalaryHistory, personnelAssignments,
-  personnelResourceBindings, personnelChanges, personnelTeams, personnelPositions, payrollStatements,
-  temporaryDailyWageSettlements, settlementPaymentRecords, transportVehicles, machines,
+  personnelResourceBindings, personnelChanges, personnelTeams, personnelPositions, payrollStatements, attendanceRecords,
+  temporaryDailyWageSettlements, settlementPaymentRecords, transportVehicles, machines, vehicleFleetProfiles, vehicleAssignments, officialAccountDriverBindings, auditLogs,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { chinaBusinessDate } from "./chinaBusinessTime";
 import { decryptSecret, fingerprintSecret, revealBusinessSecret } from "./secretVault";
+import { resolvePersonnelSalaryPayer } from "../../shared/personnel";
+import { closeFleetResponsibility, endFleetResponsibility, mutateFleetTransaction } from "./vehicleManagementCore";
+import type { FleetTx } from "./vehicleManagementPolicy";
 
 export type BridgeDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select" | "insert" | "update">;
 export type LegacySourceType = "user" | "profile" | "worker";
@@ -90,7 +93,7 @@ export async function adoptLegacy(db: BridgeDb, input: { sourceType: LegacySourc
   ]);
   const nodes = resolveLegacyIdentityGraph({ ...input, profiles, userIds: accounts.map(u => u.id), workerIds: workers.map(w => w.id) });
   const nodeKeys = new Set(nodes.map(n => key(n.sourceType, n.sourceId)));
-  const relatedProfiles = profiles.filter(p => nodeKeys.has(key("profile", p.id))).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || b.id - a.id);
+  const relatedProfiles = profiles.filter(p => nodeKeys.has(key("profile", p.id)));
   const relatedWorkers = workers.filter(w => nodeKeys.has(key("worker", w.id)));
   if (input.hasAllProjects === false && [...relatedProfiles, ...relatedWorkers].some(r => r.projectId === null || !input.projectIds?.includes(r.projectId))) throw new TRPCError({ code: "FORBIDDEN", message: "关联历史来源包含未授权项目，请由人事管理员核对" });
   const personIds = new Set(links.filter(l => nodeKeys.has(key(l.sourceType, l.sourceId))).map(l => l.personId));
@@ -102,8 +105,17 @@ export async function adoptLegacy(db: BridgeDb, input: { sourceType: LegacySourc
   if (personIds.size > 1) conflict("真实ID来源已归属不同统一人员，需人工核对，不能自动合并");
   let id = Array.from(personIds)[0];
   if (!id) {
-    const profile = relatedProfiles[0];
-    const worker = relatedWorkers.find(w => w.id === profile?.laborWorkerId) ?? relatedWorkers[0];
+    const today = chinaBusinessDate(new Date());
+    const candidates = input.sourceType === "worker" ? relatedProfiles.filter(p => p.laborWorkerId === input.sourceId) : relatedProfiles;
+    const current = candidates.filter(p => p.employmentStatus !== "left" && !p.leftAt && legacyDate(p.joinedAt) !== null && legacyDate(p.joinedAt)! <= today);
+    const profile = input.sourceType === "profile" ? relatedProfiles.find(p => p.id === input.sourceId) : current.length === 1 ? current[0] : candidates.length === 1 ? candidates[0] : undefined;
+    if (relatedProfiles.length && !profile) conflict("历史任职阶段存在歧义，请选择真实员工profile编号核对，不能按最后编辑时间猜选当前阶段");
+    const worker = profile?.laborWorkerId ? relatedWorkers.find(w => w.id === profile.laborWorkerId) : input.sourceType === "worker" ? relatedWorkers.find(w => w.id === input.sourceId) : relatedWorkers.length === 1 ? relatedWorkers[0] : undefined;
+    if (relatedWorkers.length > 1 && !worker) conflict("历史实名任职阶段存在歧义，请选择真实profile编号");
+    for (const stage of [...relatedProfiles.map(p => ({ start: legacyDate(p.joinedAt), end: legacyDate(p.leftAt) })), ...relatedWorkers.map(w => ({ start: legacyDate(w.entryDate), end: legacyDate(w.exitDate) }))]) {
+      if (stage.start && stage.end && stage.start > stage.end) conflict("历史任职进退场日期倒置，请先核对真实来源");
+    }
+    if (profile && worker && (profile.projectId !== null && profile.projectId !== worker.projectId || profile.joinedAt && worker.entryDate && legacyDate(profile.joinedAt) !== legacyDate(worker.entryDate) || profile.leftAt && worker.exitDate && legacyDate(profile.leftAt) !== legacyDate(worker.exitDate))) conflict("所选profile与实名主体任职范围不一致，请先核对真实来源");
     const [userProfile] = userId ? await db.select().from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1) : [];
     const affiliation = worker ? worker.workerCategory === "temporary_daily" ? "temporary" : worker.workerCategory === "company_admin" ? "company" : "labor_team" : "company";
     const phoneEncrypted = worker?.phoneEncrypted ?? userProfile?.phoneEncrypted ?? null;
@@ -121,10 +133,16 @@ export async function adoptLegacy(db: BridgeDb, input: { sourceType: LegacySourc
       createdBy: input.actorUserId, updatedBy: input.actorUserId, version: 1,
     };
     id = insertId(await db.insert(personnelPeople).values(values));
-    const effectiveFrom = legacyDate(profile?.joinedAt ?? worker?.entryDate ?? profile?.createdAt ?? worker?.createdAt) ?? chinaBusinessDate(new Date());
-    await db.insert(personnelAssignments).values({ personId: id, affiliation, secondaryPositionIds: [], projectId: values.projectId, employmentStatus: values.employmentStatus!, effectiveFrom, version: 1, createdBy: input.actorUserId });
+    // 当前金额仅证明引入日的基线；旧期间无版本证据，必须阻断猜算，既有财务记录只读保留。
+    const effectiveFrom = values.entryDate && values.entryDate > today ? values.entryDate : today;
+    await db.insert(personnelAssignments).values({ personId: id, affiliation, secondaryPositionIds: [], projectId: values.projectId, employmentStatus: values.employmentStatus!, effectiveFrom: values.entryDate ?? today, version: 1, createdBy: input.actorUserId });
     if (profile) await db.insert(personnelSalaryHistory).values({ personId: id, affiliation, salaryBasis: profile.salaryBasis, baseSalary: profile.baseSalary, payrollEnabled: values.payrollEnabled!, effectiveFrom, createdBy: input.actorUserId });
-    await db.insert(personnelChanges).values({ personId: id, action: "adopt_legacy", version: 1, changes: { source: { before: null, after: { sourceType: input.sourceType, sourceId: input.sourceId } } }, createdBy: input.actorUserId });
+    const sourceScopes = {
+      profiles: relatedProfiles.map(p => ({ sourceId: p.id, workerId: p.laborWorkerId, projectId: p.projectId, joinedAt: legacyDate(p.joinedAt), leftAt: legacyDate(p.leftAt), employmentStatus: p.employmentStatus, teamName: p.teamName, tradeName: p.tradeName })),
+      workers: relatedWorkers.map(w => ({ sourceId: w.id, projectId: w.projectId, workerCategory: w.workerCategory, entryDate: legacyDate(w.entryDate), exitDate: legacyDate(w.exitDate), teamName: w.teamName })),
+      limitation: "旧来源任职范围与未映射文本保留；未知日期和历史薪资不推定，薪资基线仅自引入日或未来进场日起有效",
+    };
+    await db.insert(personnelChanges).values({ personId: id, action: "adopt_legacy", version: 1, changes: { source: { before: null, after: { sourceType: input.sourceType, sourceId: input.sourceId } }, sourceScopes: { before: null, after: sourceScopes } }, createdBy: input.actorUserId });
   }
   for (const n of nodes) await attachSource(db, id, n.sourceType, n.sourceId, input.actorUserId);
   return { success: true as const, id };
@@ -166,8 +184,10 @@ async function closeLegacyScope(db: BridgeDb, worker: Worker | undefined, profil
   const stageWorkerIds = stageWorkers.map(w => w.id);
   const stageProfiles = profiles.filter(p => p.id === profile?.id || p.projectId === (worker?.projectId ?? profile?.projectId) && (p.laborWorkerId !== null ? stageWorkerIds.includes(p.laborWorkerId) : p.userId !== null && p.userId === profile?.userId));
   if (profile && !stageProfiles.some(p => p.id === profile.id)) stageProfiles.push(profile);
-  for (const old of stageWorkers) if (!old.exitDate) await db.update(laborWorkers).set({ attendanceStatus: "left", exitDate: new Date(`${end}T00:00:00Z`) }).where(eq(laborWorkers.id, old.id));
-  for (const old of stageProfiles) if (!old.leftAt) await db.update(employeeProfiles).set({ employmentStatus: "left", leftAt: new Date(`${end}T00:00:00Z`) }).where(eq(employeeProfiles.id, old.id));
+  if (stageWorkers.some(w => !w.exitDate && legacyDate(w.entryDate) && legacyDate(w.entryDate)! > today) || stageProfiles.some(p => !p.leftAt && legacyDate(p.joinedAt) && legacyDate(p.joinedAt)! > today)) conflict("旧真实任职或未来主体不能被关闭到进场日之前，请核对真实阶段日期");
+  // 同日创建后停薪保留非倒置范围，实际公司计薪仍由当日资格历史阻断。
+  for (const old of stageWorkers) if (!old.exitDate) await db.update(laborWorkers).set({ attendanceStatus: "left", exitDate: new Date(`${legacyDate(old.entryDate) === today ? today : end}T00:00:00Z`) }).where(eq(laborWorkers.id, old.id));
+  for (const old of stageProfiles) if (!old.leftAt) await db.update(employeeProfiles).set({ employmentStatus: "left", leftAt: new Date(`${legacyDate(old.joinedAt) === today ? today : end}T00:00:00Z`) }).where(eq(employeeProfiles.id, old.id));
 }
 
 /** 必须在core CAS同一事务内调用。锁master后准备新兼容主体，原主体/源链接/财务记录不搬迁、不克隆。 */
@@ -182,21 +202,38 @@ export async function ensureLegacyPayrollSubjects(db: BridgeDb, person: Person, 
   if (profile && (profile.laborWorkerId !== null && profile.laborWorkerId !== workerId || profile.userId !== null && profile.userId !== person.userId)) conflict("历史员工档案身份与统一人员不一致，不能替换历史工资关联");
   if (workerId) await attachSource(db, person.id, "worker", workerId, actorUserId);
   if (profileId) await attachSource(db, person.id, "profile", profileId, actorUserId);
-  if (!person.payrollEnabled || person.affiliation === "external") {
-    if (person.payrollEnabled && person.affiliation === "external") throw new TRPCError({ code: "BAD_REQUEST", message: "外部人员的运费或租金不属于人员工资，不能创建计薪主体" });
+  const ownerPaid = resolvePersonnelSalaryPayer(person).salaryPayerType === "owner";
+  if (person.payrollEnabled && person.affiliation === "external") throw new TRPCError({ code: "BAD_REQUEST", message: "外部人员的运费或租金不属于人员工资，不能创建计薪主体" });
+  if (ownerPaid && person.payrollEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: "车队/机械老板自行发放工资不能创建公司计薪主体" });
+  if (!person.payrollEnabled || person.affiliation === "external" || ownerPaid) {
     const histories = await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, person.id));
     // 未来首次开启所准备的主体不会被当前false开关提前关闭；真实关闭保留旧主体作历史查询。
     const futureSubject = Boolean(legacyDate(worker?.entryDate) && legacyDate(worker?.entryDate)! > today || legacyDate(profile?.joinedAt) && legacyDate(profile?.joinedAt)! > today);
-    if (!futureSubject && (person.affiliation === "external" || histories.some(h => h.payrollEnabled && h.effectiveFrom <= today))) await closeLegacyScope(db, worker, profile, today, person.id);
+    if (!futureSubject && (person.affiliation === "external" || histories.some(h => h.payrollEnabled && resolvePersonnelSalaryPayer(h).salaryPayerType === "company" && h.effectiveFrom <= today))) await closeLegacyScope(db, worker, profile, today, person.id);
     return { legacyProfileId: profileId, legacyWorkerId: workerId };
   }
   if (!person.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "启用工资前必须指定归属项目" });
   const workerCategory = categoryFor(person);
-  const transition = Boolean(worker && (worker.projectId !== person.projectId || worker.workerCategory !== workerCategory || worker.exitDate) || profile && (profile.projectId !== null && profile.projectId !== person.projectId || profile.leftAt));
-  if (transition) { await closeLegacyScope(db, worker, profile, today, person.id); workerId = null; profileId = null; }
+  const scopeChanged = Boolean(worker && (worker.projectId !== person.projectId || worker.workerCategory !== workerCategory) || profile && profile.projectId !== null && profile.projectId !== person.projectId);
+  const closed = Boolean(worker?.exitDate || profile?.leftAt);
+  const reentry = closed && person.employmentStatus !== "left" && !person.exitDate;
+  const transition = scopeChanged || reentry;
+  if (person.entryDate && person.exitDate && person.exitDate < person.entryDate) throw new TRPCError({ code: "BAD_REQUEST", message: "离职日期不能早于入职日期" });
+  if (closed && !transition) {
+    if (worker && legacyDate(worker.entryDate) !== person.entryDate || profile && legacyDate(profile.joinedAt) !== person.entryDate) conflict("已关闭历史任职日期不能改写，请核对真实历史来源；资料维护保留原工资主体");
+    return { legacyProfileId: profileId, legacyWorkerId: workerId };
+  }
+  if (transition && (person.employmentStatus === "left" || person.exitDate)) conflict("新任职阶段必须明确重新进场并清除旧退场日期，不能为离场资料编辑创建工资主体");
   const salaryRows = !master.payrollEnabled ? await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, person.id)) : [];
-  const futureStart = salaryRows.filter(h => h.payrollEnabled && h.affiliation === person.affiliation && h.effectiveFrom > today).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))[0]?.effectiveFrom;
-  const joinedAt = futureStart ?? (transition ? today : person.entryDate ?? today);
+  const futureStart = salaryRows.filter(h => h.payrollEnabled && resolvePersonnelSalaryPayer(h).salaryPayerType === "company" && h.affiliation === person.affiliation && h.effectiveFrom > today).sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))[0]?.effectiveFrom;
+  const joinedAt = futureStart ?? (transition ? person.entryDate && person.entryDate > today ? person.entryDate : today : person.entryDate ?? today);
+  if (person.exitDate && person.exitDate < joinedAt) conflict("新任职进退场日期倒置，不能创建工资主体");
+  if (transition) {
+    const oldEnd = legacyDate(worker?.exitDate ?? profile?.leftAt);
+    if (oldEnd && oldEnd >= joinedAt) conflict("重新进场日期不能覆盖真实旧任职范围");
+    if (legacyDate(worker?.entryDate ?? profile?.joinedAt) && legacyDate(worker?.entryDate ?? profile?.joinedAt)! >= joinedAt) conflict("旧任职起日不能晚于或等于新阶段起日，请核对真实日期");
+    await closeLegacyScope(db, worker, profile, joinedAt, person.id); workerId = null; profileId = null;
+  }
   if (!workerId) {
     const phoneFingerprint = await compatiblePhoneFingerprint(db, person, null);
     workerId = insertId(await db.insert(laborWorkers).values({ projectId: person.projectId, workerCategory, realName: person.name, attendanceStatus: person.employmentStatus === "left" ? "left" : "active", entryDate: new Date(`${joinedAt}T00:00:00Z`), phoneEncrypted: person.phoneEncrypted, phoneFingerprint, identityNoEncrypted: person.identityNoEncrypted, bankAccountEncrypted: person.bankAccountEncrypted, bankName: person.bankName }));
@@ -210,28 +247,57 @@ export async function ensureLegacyPayrollSubjects(db: BridgeDb, person: Person, 
     await db.update(employeeProfiles).set({ laborWorkerId: workerId, projectId: person.projectId }).where(eq(employeeProfiles.id, profileId));
   }
   if (master.legacyProfileId !== profileId || master.legacyWorkerId !== workerId) {
-    const result = await db.update(personnelPeople).set({ legacyProfileId: profileId, legacyWorkerId: workerId }).where(and(eq(personnelPeople.id, person.id), eq(personnelPeople.version, person.version)));
+    const result = await db.update(personnelPeople).set({ legacyProfileId: profileId, legacyWorkerId: workerId, entryDate: joinedAt, ...(transition ? { exitDate: null } : {}) }).where(and(eq(personnelPeople.id, person.id), eq(personnelPeople.version, person.version)));
     if (!affectedRows(result)) conflict("人员版本冲突，工资主体创建必须同事务回滚");
   }
   return { legacyProfileId: profileId, legacyWorkerId: workerId };
 }
 
-export async function syncLegacyMirrors(db: BridgeDb, person: Person) {
+/** 更正当前任职日期不能覆盖锁定考勤/审核工资/付款；未锁定真实业务也不能落到新范围外。 */
+async function assertLegacyDateCorrection(db: BridgeDb, person: Person, worker: Worker | undefined, profile: Profile | undefined) {
+  const changed = Boolean(worker && legacyDate(worker.entryDate) !== person.entryDate || profile && legacyDate(profile.joinedAt) !== person.entryDate);
+  if (!changed) return;
+  if (worker?.exitDate || profile?.leftAt) conflict("已关闭历史任职日期不能改写");
+  const [attendance, payroll, daily, advances] = await Promise.all([
+    worker ? db.select().from(attendanceRecords).where(eq(attendanceRecords.workerId, worker.id)).for("update") : [],
+    worker ? db.select().from(payrollStatements).where(eq(payrollStatements.workerId, worker.id)).for("update") : [],
+    worker ? db.select().from(temporaryDailyWageSettlements).where(eq(temporaryDailyWageSettlements.workerId, worker.id)).for("update") : [],
+    profile ? db.select().from(employeePayrollAdvances).where(eq(employeePayrollAdvances.employeeProfileId, profile.id)).for("update") : [],
+  ]);
+  const filters = [payroll.length ? and(eq(settlementPaymentRecords.settlementType, "payroll"), inArray(settlementPaymentRecords.settlementId, payroll.map(p => p.id))) : undefined, daily.length ? and(eq(settlementPaymentRecords.settlementType, "daily_wage"), inArray(settlementPaymentRecords.settlementId, daily.map(p => p.id))) : undefined].filter(Boolean);
+  const payments = filters.length ? await db.select().from(settlementPaymentRecords).where(or(...filters)).for("update") : [];
+  if (attendance.some(a => a.status === "locked") || [...payroll, ...daily].some(p => !["draft", "void"].includes(p.status)) || advances.some(a => !["draft", "void"].includes(a.status)) || payments.length) conflict("当前任职存在锁定考勤、已核定工资或付款历史，不能更正入职日期");
+  const dated = [...attendance.map(a => legacyDate(a.attendanceDate)), ...daily.filter(d => d.status !== "void").map(d => legacyDate(d.settlementDate)), ...advances.filter(a => a.status !== "void").map(a => legacyDate(a.advanceDate)), ...payroll.filter(p => p.status !== "void").map(p => `${p.period}-01`)].filter((d): d is string => Boolean(d));
+  if (!person.entryDate && dated.length || person.entryDate && dated.some(d => d < person.entryDate! || person.exitDate && d > person.exitDate)) conflict("真实未锁定考勤或工资记录超出更正后的任职范围，不能移动入职日期");
+}
+
+export async function syncLegacyMirrors(db: BridgeDb, person: Person, input: { teamId?: number | null } = {}) {
+  const salaryHistory = await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, person.id));
+  const salary = salaryHistory.filter(h => h.effectiveFrom <= chinaBusinessDate(new Date())).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+  person = { ...person, ...resolvePersonnelSalaryPayer(person, salary) };
   const pointers = await ensureLegacyPayrollSubjects(db, person, person.updatedBy ?? person.createdBy);
-  person = { ...person, ...pointers };
-  if (person.legacyWorkerId && person.affiliation !== "external") {
+  const [master] = await db.select().from(personnelPeople).where(eq(personnelPeople.id, person.id)).limit(1);
+  person = { ...person, entryDate: master?.entryDate ?? person.entryDate, exitDate: master?.exitDate ?? person.exitDate, ...pointers };
+  const [worker] = person.legacyWorkerId ? await db.select().from(laborWorkers).where(eq(laborWorkers.id, person.legacyWorkerId)).limit(1) : [];
+  const [profile] = person.legacyProfileId ? await db.select().from(employeeProfiles).where(eq(employeeProfiles.id, person.legacyProfileId)).limit(1) : [];
+  const scopeMatches = Boolean(worker ? worker.projectId === person.projectId && worker.workerCategory === categoryFor(person) : profile?.projectId === person.projectId);
+  if (scopeMatches) await assertLegacyDateCorrection(db, person, worker, profile);
+  const assignments = await db.select().from(personnelAssignments).where(eq(personnelAssignments.personId, person.id));
+  const latestAssignment = assignments.find(a => a.version === person.version);
+  const previousAssignment = assignments.filter(a => a.version < person.version).sort((a, b) => b.version - a.version)[0];
+  const teamSubmitted = input.teamId !== undefined || Boolean(latestAssignment && previousAssignment && latestAssignment.teamId !== previousAssignment.teamId);
+  const [team] = person.teamId ? await db.select({ name: personnelTeams.name }).from(personnelTeams).where(eq(personnelTeams.id, person.teamId)).limit(1) : [];
+  const teamPatch = teamSubmitted ? { teamName: person.teamId ? team?.name ?? null : null } : {};
+  if (person.legacyWorkerId && person.affiliation !== "external" && person.salaryPayerType !== "owner") {
     const phoneFingerprint = await compatiblePhoneFingerprint(db, person, person.legacyWorkerId);
-    const [team] = person.teamId ? await db.select({ name: personnelTeams.name }).from(personnelTeams).where(eq(personnelTeams.id, person.teamId)).limit(1) : [];
-    const [worker] = await db.select().from(laborWorkers).where(eq(laborWorkers.id, person.legacyWorkerId)).limit(1);
     if (!worker) conflict("当前工资主体不存在");
-    if (!worker.exitDate && worker.projectId === person.projectId && worker.workerCategory === categoryFor(person)) await db.update(laborWorkers).set({ realName: person.name, teamName: team?.name ?? worker.teamName, phoneEncrypted: person.phoneEncrypted, phoneFingerprint, identityNoEncrypted: person.identityNoEncrypted, bankAccountEncrypted: person.bankAccountEncrypted, bankName: person.bankName, attendanceStatus: person.employmentStatus === "left" ? "left" : person.employmentStatus === "active" ? "active" : "pending", exitDate: person.exitDate ? new Date(`${person.exitDate}T00:00:00Z`) : null }).where(eq(laborWorkers.id, person.legacyWorkerId));
+    if (!worker.exitDate && scopeMatches) await db.update(laborWorkers).set({ realName: person.name, ...teamPatch, entryDate: person.entryDate ? new Date(`${person.entryDate}T00:00:00Z`) : null, phoneEncrypted: person.phoneEncrypted, phoneFingerprint, identityNoEncrypted: person.identityNoEncrypted, bankAccountEncrypted: person.bankAccountEncrypted, bankName: person.bankName, attendanceStatus: person.employmentStatus === "left" ? "left" : person.employmentStatus === "active" ? "active" : "pending", exitDate: person.exitDate ? new Date(`${person.exitDate}T00:00:00Z`) : null }).where(eq(laborWorkers.id, person.legacyWorkerId));
   }
-  if (person.legacyProfileId && person.affiliation !== "external") {
-    const [profile] = await db.select().from(employeeProfiles).where(eq(employeeProfiles.id, person.legacyProfileId)).limit(1);
+  if (person.legacyProfileId && person.affiliation !== "external" && person.salaryPayerType !== "owner") {
     if (!profile) conflict("当前员工兼容档案不存在");
     const histories = await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, person.id));
     const current = histories.filter(h => h.effectiveFrom <= chinaBusinessDate(new Date())).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-    if (!profile.leftAt && profile.projectId === person.projectId) await db.update(employeeProfiles).set({ employmentStatus: person.employmentStatus, leftAt: person.exitDate ? new Date(`${person.exitDate}T00:00:00Z`) : null, ...(current ? { salaryBasis: current.salaryBasis, baseSalary: current.baseSalary } : {}) }).where(eq(employeeProfiles.id, person.legacyProfileId));
+    if (!profile.leftAt && profile.projectId === person.projectId) await db.update(employeeProfiles).set({ employmentStatus: person.employmentStatus, ...teamPatch, joinedAt: person.entryDate ? new Date(`${person.entryDate}T00:00:00Z`) : null, leftAt: person.exitDate ? new Date(`${person.exitDate}T00:00:00Z`) : null, ...(current ? { salaryBasis: current.salaryBasis, baseSalary: current.baseSalary } : {}) }).where(eq(employeeProfiles.id, person.legacyProfileId));
   }
   // 当前资源展示mirror可更新，历史运单、作业姓名快照与登录授权绝不改写。
   const resourceContact = { driverName: person.name, driverPhoneEncrypted: person.phoneEncrypted, driverPhoneMasked: person.phoneMasked };
@@ -285,33 +351,77 @@ export async function resolveResourcePerson(db: BridgeDb, input: { personId: num
   return { personId: person.id, userId: resolveResourceLoginBinding(person.userId, input.previousUserId, input.requestedUserId), name: person.name, phoneEncrypted: person.phoneEncrypted, phoneMasked: person.phoneMasked };
 }
 
-/** asset行锁串行同日换班；append事件按createdAt/id排序，旧记录只关闭范围、不删除或覆盖人员。仅今日即时。 */
-export async function saveResourceBinding(db: BridgeDb, input: { personId: number | null; assetType: "vehicle" | "machine"; assetId: number; effectiveFrom: string; effectiveTo?: string | null; actorUserId: number; projectId: number; requestedUserId?: number | null }) {
-  const today = chinaBusinessDate(new Date());
+type ResourceBindingInput = { personId: number | null; assetType: "vehicle" | "machine"; assetId: number; effectiveFrom: string; effectiveTo?: string | null; actorUserId: number; projectId: number; requestedUserId?: number | null; vehicleVersion?: number };
+/** Caller owns the transaction and super-admin authorization; no TRANSPORT permission substitution. */
+export async function saveResourceBinding(db: BridgeDb, input: ResourceBindingInput) {
+  const at = new Date(), today = chinaBusinessDate(at);
+  if (input.effectiveFrom !== today || input.effectiveTo) throw new TRPCError({ code: "BAD_REQUEST", message: "当前资源换人仅支持今日即时生效，不会将未来或过去绑定误写为当前授权" });
+  if (input.assetType === "machine") return saveResourceBindingHistory(db, input, at);
+  // Snapshot before locking project; the shared core performs a current locking read + CAS.
+  const [snapshot] = await db.select().from(vehicleFleetProfiles).where(eq(vehicleFleetProfiles.vehicleId, input.assetId)).limit(1);
+  return mutateFleetTransaction(db as FleetTx, { vehicleId: input.assetId, projectId: input.projectId, version: input.vehicleVersion ?? snapshot?.version ?? 0 }, "assign", input.actorUserId, async (tx, vehicle, profile) => {
+    const histories = await closeFleetResponsibility(tx, vehicle, profile, at, "handover");
+    const resolved = await resolveResourcePerson(tx, { ...input, previousUserId: vehicle.driverUserId });
+    if (resolved.userId !== null && resolved.userId !== vehicle.driverUserId) throw new TRPCError({ code: "BAD_REQUEST", message: "人员资源交接不能新授登录账号权限" });
+    const identityChanged = resolved.personId !== vehicle.driverPersonId || resolved.userId !== vehicle.driverUserId;
+    if (identityChanged) {
+      const bindings = await tx.select().from(officialAccountDriverBindings).where(and(eq(officialAccountDriverBindings.vehicleId, vehicle.id), eq(officialAccountDriverBindings.status, "active"))).for("update");
+      for (const binding of bindings) await tx.update(officialAccountDriverBindings).set({ status: "revoked" }).where(eq(officialAccountDriverBindings.id, binding.id));
+      if (!histories.length) await tx.insert(vehicleAssignments).values({ vehicleId: vehicle.id, projectId: vehicle.projectId, action: "baseline", driverPersonId: vehicle.driverPersonId, driverUserId: vehicle.driverUserId, driverBindingId: bindings[0]?.id ?? null, effectiveFrom: at, effectiveTo: at, condition: "原当前绑定历史基线，任职起点未知，不作为授权依据", reason: "人员档案即时换人", createdBy: input.actorUserId });
+      await endFleetResponsibility(tx, vehicle.id, at);
+    }
+    await saveResourceBindingHistory(tx, input, at);
+    if (identityChanged) {
+      // Record responsibility without granting the successor a new account or WeChat binding.
+      await tx.insert(vehicleAssignments).values({ vehicleId: vehicle.id, projectId: vehicle.projectId, action: "handover", driverPersonId: resolved.personId, driverUserId: resolved.userId, driverBindingId: null, effectiveFrom: at, condition: "人员档案即时换人", reason: "仅交接责任，不新授权", createdBy: input.actorUserId });
+      await tx.update(vehicleFleetProfiles).set({ dispatchStatus: "paused" }).where(eq(vehicleFleetProfiles.vehicleId, vehicle.id));
+    }
+    return { action: "handover", personId: resolved.personId, userId: resolved.userId, occurredAt: at.getTime() };
+  }, at);
+}
+/** Internal history/mirror primitive, used only inside an already guarded fleet transaction. */
+export async function saveResourceBindingHistory(db: BridgeDb, input: ResourceBindingInput, at = new Date()) {
+  const today = chinaBusinessDate(at);
   if (input.effectiveFrom !== today || input.effectiveTo) throw new TRPCError({ code: "BAD_REQUEST", message: "当前资源换人仅支持今日即时生效，不会将未来或过去绑定误写为当前授权" });
   const asset = input.assetType === "vehicle" ? (await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.assetId)).limit(1).for("update"))[0] : (await db.select().from(machines).where(eq(machines.id, input.assetId)).limit(1).for("update"))[0];
-  if (!asset || asset.projectId !== input.projectId) throw new TRPCError({ code: "CONFLICT", message: "资源项目已变更，请刷新后重试" });
-  const oldPersonId = "driverPersonId" in asset ? asset.driverPersonId : asset.operatorPersonId;
-  const oldUserId = "driverUserId" in asset ? asset.driverUserId : asset.operatorUserId;
+  if (!asset || asset.projectId !== input.projectId) conflict("资源项目已变更，请刷新后重试");
+  const pointer = "driverPersonId" in asset ? asset.driverPersonId : asset.operatorPersonId;
+  const oldUserId = ("driverUserId" in asset ? asset.driverUserId : asset.operatorUserId) ?? null;
+  // Real IDs only. A source-link/master/pointer disagreement is a conflict, never a name/phone match.
+  const ids = new Set<number>(pointer ? [pointer] : []);
+  if (oldUserId) {
+    const links = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "user"), eq(personnelSourceLinks.sourceId, oldUserId)));
+    const people = await db.select().from(personnelPeople).where(eq(personnelPeople.userId, oldUserId));
+    for (const link of links) ids.add(link.personId);
+    for (const person of people) ids.add(person.id);
+  }
+  if (ids.size > 1) conflict("资源原账号与真实人员来源冲突，请人工核对，不能猜测归并");
+  const oldPersonId = Array.from(ids)[0] ?? null;
+  if (oldPersonId) {
+    const [old] = await db.select().from(personnelPeople).where(eq(personnelPeople.id, oldPersonId)).limit(1);
+    if (!old || oldUserId && old.userId !== null && old.userId !== oldUserId) conflict("资源原人员与账号身份冲突，不能丢失历史关联");
+  }
   const resolved = await resolveResourcePerson(db, { ...input, previousUserId: oldUserId });
+  let baselineUnknown = false;
   if (oldPersonId !== input.personId) {
     const histories = await db.select().from(personnelResourceBindings).where(and(eq(personnelResourceBindings.assetType, input.assetType), eq(personnelResourceBindings.assetId, input.assetId))).for("update");
     if (histories.some(h => h.effectiveFrom > today)) conflict("资源存在未来绑定历史，请人工核对；当前入口仅支持今日即时换班");
     if (oldPersonId && !histories.some(h => h.personId === oldPersonId && !h.effectiveTo)) {
-      const baseline = legacyDate(asset.createdAt) ?? today;
-      await db.insert(personnelResourceBindings).values({ personId: oldPersonId, assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, effectiveFrom: baseline, effectiveTo: today, createdAt: asset.createdAt ?? new Date(), createdBy: input.actorUserId });
+      baselineUnknown = true;
+      // Zero-length observation, not invented tenure. Explicit unknown marker is retained in both audits.
+      await db.insert(personnelResourceBindings).values({ personId: oldPersonId, assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, effectiveFrom: today, effectiveTo: today, createdAt: at, createdBy: input.actorUserId });
     }
     await db.update(personnelResourceBindings).set({ effectiveTo: today }).where(and(eq(personnelResourceBindings.assetType, input.assetType), eq(personnelResourceBindings.assetId, input.assetId), isNull(personnelResourceBindings.effectiveTo)));
-    if (input.personId) await db.insert(personnelResourceBindings).values({ personId: input.personId, assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, effectiveFrom: today, createdAt: new Date(), createdBy: input.actorUserId });
+    if (input.personId) await db.insert(personnelResourceBindings).values({ personId: input.personId, assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, effectiveFrom: today, createdAt: at, createdBy: input.actorUserId });
   }
   if (oldPersonId !== resolved.personId || oldUserId !== resolved.userId) {
-    // Resource history无账号字段，在既有变更日志保留真实旧登录关联；绝不改users/rolePermissions。
-    const ids = Array.from(new Set([oldPersonId, resolved.personId].filter((id): id is number => id !== null && id !== undefined)));
-    for (const personId of ids) {
+    const resourceBinding = { before: { assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, personId: oldPersonId, userId: oldUserId, baselineUnknown, effectiveFromKnown: !baselineUnknown }, after: { assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, personId: resolved.personId, userId: resolved.userId } };
+    for (const personId of Array.from(new Set([oldPersonId, resolved.personId].filter((id): id is number => id !== null)))) {
       const [subject] = await db.select().from(personnelPeople).where(eq(personnelPeople.id, personId)).limit(1);
       if (!subject) conflict("资源原绑定人员不存在，不能丢失其历史登录关联");
-      await db.insert(personnelChanges).values({ personId, action: "resource_binding", version: subject.version, changes: { resourceBinding: { before: { assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, personId: oldPersonId, userId: oldUserId }, after: { assetType: input.assetType, assetId: input.assetId, projectId: input.projectId, personId: resolved.personId, userId: resolved.userId } } }, createdBy: input.actorUserId, createdAt: new Date() });
+      await db.insert(personnelChanges).values({ personId, action: "resource_binding", version: subject.version, changes: { resourceBinding }, createdBy: input.actorUserId, createdAt: at });
     }
+    if (oldUserId && !oldPersonId) await db.insert(auditLogs).values({ userId: input.actorUserId, module: input.assetType === "vehicle" ? "transport" : "machinery", action: "resource_binding", targetType: input.assetType, targetId: String(input.assetId), summary: `旧账号#${oldUserId}无可确认人员来源，历史任职起点未知；新人员#${resolved.personId ?? "无"}` });
   }
   const contacts = { driverName: resolved.name, driverPhoneEncrypted: resolved.phoneEncrypted, driverPhoneMasked: resolved.phoneMasked };
   if (input.assetType === "vehicle") await db.update(transportVehicles).set({ ...contacts, driverPersonId: resolved.personId, driverUserId: resolved.userId }).where(and(eq(transportVehicles.id, input.assetId), eq(transportVehicles.projectId, input.projectId)));
@@ -327,11 +437,11 @@ export function payrollSubjectRange(profile: { joinedAt: Date | string | null; l
   const end = [new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10), legacyDate(profile.leftAt)].filter((d): d is string => Boolean(d)).sort()[0];
   return start <= end ? { start, end } : null;
 }
-export function historicalCompensationRanges(range: CompensationRange | null, history: { effectiveFrom: string; payrollEnabled: boolean; affiliation: string }[], channel: "monthly" | "daily") {
+export function historicalCompensationRanges(range: CompensationRange | null, history: { effectiveFrom: string; payrollEnabled: boolean; affiliation: string; salaryPayerType?: string | null }[], channel: "monthly" | "daily") {
   if (!range) return [];
   const versions = [...history].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
   return versions.flatMap((v, i) => {
-    if (!v.payrollEnabled || (channel === "daily" ? v.affiliation !== "temporary" : v.affiliation === "external" || v.affiliation === "temporary")) return [];
+    if (resolvePersonnelSalaryPayer(v).salaryPayerType !== "company" || !v.payrollEnabled || (channel === "daily" ? v.affiliation !== "temporary" : v.affiliation === "external" || v.affiliation === "temporary")) return [];
     const start = v.effectiveFrom > range.start ? v.effectiveFrom : range.start;
     const next = versions[i + 1]?.effectiveFrom;
     const end = next && next <= range.end ? priorDay(next) : range.end;
@@ -395,4 +505,30 @@ export async function assertCompensationChannel(db: BridgeDb, input: { workerId:
     if (daily.some(d => d.status !== "void" && d.workerId !== worker.id && legacyDate(d.settlementDate) === input.settlementDate)) conflict("同人员其他历史实名主体已有当日日结，不能重复制单");
   }
   return { worker, person, workerIds };
+}
+
+/** 旧员工预支入口也沿真实profile来源检查生效发薪版本；未纳入人员目录的旧主体保持原规则。 */
+export async function assertCompanyPayrollAdvance(db: BridgeDb, profile: { id: number; laborWorkerId: number | null; projectId: number | null }, advanceDate: string) {
+  const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, profile.id))).limit(1);
+  if (!link) return;
+  const [person] = await db.select().from(personnelPeople).where(eq(personnelPeople.id, link.personId)).limit(1).for("update");
+  if (!person) conflict("预支来源对应的统一人员不存在");
+  const history = await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, person.id)).for("update");
+  const salary = history.filter(h => h.effectiveFrom <= advanceDate).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+  const payer = resolvePersonnelSalaryPayer(person, salary);
+  if (payer.salaryPayerType === "owner" || (salary?.affiliation ?? person.affiliation) === "external" || !(salary?.payrollEnabled ?? person.payrollEnabled)) throw new TRPCError({ code: "BAD_REQUEST", message: "预支日期未启用公司发薪；车队/机械老板自行发放工资不能办理公司工资预支" });
+  const [subject] = await db.select().from(employeeProfiles).where(eq(employeeProfiles.id, profile.id)).limit(1).for("update");
+  if (!subject || subject.projectId !== profile.projectId || subject.laborWorkerId !== profile.laborWorkerId || legacyDate(subject.joinedAt) && legacyDate(subject.joinedAt)! > advanceDate || legacyDate(subject.leftAt) && legacyDate(subject.leftAt)! < advanceDate) throw new TRPCError({ code: "BAD_REQUEST", message: "预支日期不属于所选真实工资主体的任职范围" });
+}
+
+/** 仅办理新付款时检查所属工资期间，当前owner不取消已经形成的公司历史工资债务。 */
+export async function assertCompanyPayrollSettlement(db: Pick<BridgeDb, "select">, input: { workerId: number; projectId: number; period: string; channel: "monthly" | "daily"; settlementDate?: string }) {
+  const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "worker"), eq(personnelSourceLinks.sourceId, input.workerId))).limit(1);
+  if (!link) return;
+  const [person] = await db.select().from(personnelPeople).where(eq(personnelPeople.id, link.personId)).limit(1).for("update");
+  if (!person) conflict("结算来源对应的统一人员不存在");
+  const history = await db.select().from(personnelSalaryHistory).where(eq(personnelSalaryHistory.personId, link.personId)).for("update");
+  const range = payrollSubjectRange({ joinedAt: null, leftAt: null }, input.period);
+  const eligible = historicalCompensationRanges(range, history, input.channel).filter(r => !input.settlementDate || r.start <= input.settlementDate && r.end >= input.settlementDate);
+  if (!eligible.length) throw new TRPCError({ code: "BAD_REQUEST", message: "该工资期间由车队/机械老板自行发放或没有公司计薪资格，不能办理公司工资结算" });
 }

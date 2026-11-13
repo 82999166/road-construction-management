@@ -132,7 +132,7 @@ export function PersonnelInsuranceEditor({
               "保险公司",
               <Input
                 className="h-9"
-                maxLength={160}
+                maxLength={128}
                 value={form.providerName}
                 onChange={e => set("providerName", e.target.value)}
               />
@@ -143,7 +143,7 @@ export function PersonnelInsuranceEditor({
                 className="h-9"
                 type="password"
                 autoComplete="off"
-                maxLength={255}
+                maxLength={128}
                 value={form.policyReference}
                 onChange={e => set("policyReference", e.target.value)}
               />

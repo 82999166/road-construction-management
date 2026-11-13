@@ -595,6 +595,7 @@ describe("真实详情和只读投影", () => {
         attendanceDate: new Date("2026-11-01T00:00:00Z"),
         workHours: "8",
         overtimeHours: "1",
+        status: "confirmed",
       },
       {
         id: 2,
@@ -602,6 +603,7 @@ describe("真实详情和只读投影", () => {
         attendanceDate: new Date("2026-11-02T00:00:00Z"),
         workHours: "6",
         overtimeHours: "2",
+        status: "locked",
       },
       {
         id: 3,
@@ -609,6 +611,15 @@ describe("真实详情和只读投影", () => {
         attendanceDate: new Date("2026-11-02T00:00:00Z"),
         workHours: "10",
         overtimeHours: "0",
+        status: "confirmed",
+      },
+      {
+        id: 4, workerId: 3, attendanceDate: new Date("2026-11-03T00:00:00Z"),
+        workHours: "7.5", overtimeHours: "0.5", status: "draft",
+      },
+      {
+        id: 5, workerId: 4, attendanceDate: new Date("2026-12-01T00:00:00Z"),
+        workHours: "8", overtimeHours: "0", status: "confirmed",
       },
     ]);
     mocks.compensation.mockResolvedValue({
@@ -622,7 +633,10 @@ describe("真实详情和只读投影", () => {
       days: 2,
       workHours: 14,
       overtimeHours: 3,
+      summaryBasis: "confirmed_and_locked",
     });
+    expect(detail.attendance.rows.map(r => r.id)).toEqual([1, 2, 4]);
+    expect(detail.attendance.rows[2].status).toBe("draft");
     expect(mocks.compensation).toHaveBeenCalledWith(mocks.db, {
       workerIds: [3, 4],
       profileIds: [6, 5],
@@ -1318,5 +1332,34 @@ describe("手机号跨人员与历史源重复校验", () => {
       )
     ).toMatchObject({ id: 1, version: 2 });
     expect(mocks.db.state.personnel_people[0].phoneFingerprint).toBe(fp);
+  });
+});
+
+describe("保险台账聚合负边界", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-13T12:00:00Z")); });
+  it("普通insurance附件不构成保障", async () => {
+    mocks.db.seed(s.personnelPeople, [person({ legacyProfileId: 5 })]);
+    mocks.db.seed(s.personnelDocuments, [{ id: 20, personId: 1, documentType: "insurance", expiresAt: "2027-12-31" }]);
+    expect((await listDirectoryPeople({}))[0]).toMatchObject({ insuranceStatus: "none", expiringInsuranceCount: 0 });
+  });
+  it("重复附件不增加预警，未来购买/取消不提前保障", async () => {
+    mocks.db.seed(s.personnelPeople, [person({ legacyProfileId: 5 })]);
+    mocks.db.seed(s.personnelSourceLinks, [{ personId: 1, sourceType: "profile", sourceId: 5 }]);
+    mocks.db.seed(s.personnelDocuments, [{ id: 20, personId: 1, documentType: "insurance", expiresAt: "2026-12-13" }]);
+    mocks.db.seed(s.employeeInsurancePolicies, [
+      { id: 8, employeeProfileId: 5, purchasedAt: new Date("2026-01-01"), expiresAt: new Date("2026-12-13"), status: "active" },
+      { id: 9, employeeProfileId: 5, purchasedAt: new Date("2026-11-14"), expiresAt: new Date("2027-12-31"), status: "active" },
+      { id: 10, employeeProfileId: 5, purchasedAt: new Date("2026-01-01"), expiresAt: new Date("2027-12-31"), status: "cancelled" },
+    ]);
+    expect((await listDirectoryPeople({}))[0]).toMatchObject({ insuranceStatus: "expiring", expiringInsuranceCount: 1, expiredInsuranceCount: 0 });
+  });
+  it("未来购买唯一台账无当前保障，详情不删历史", async () => {
+    mocks.db.seed(s.personnelPeople, [person({ legacyProfileId: 5 })]);
+    mocks.db.seed(s.employeeInsurancePolicies, [{ id: 9, employeeProfileId: 5, purchasedAt: new Date("2026-11-14"), expiresAt: new Date("2027-12-31"), status: "active" }]);
+    expect((await listDirectoryPeople({}))[0].insuranceStatus).toBe("none");
+    expect((await directoryDetail(1)).insurance.map(x => x.id)).toContain(9);
+  });
+  it("今天到期及30天临界临期，31天有效，expired不能冒充保障", () => {
+    expect(summarizePersonnelInsurance([{ expiresAt: "2026-11-13", active: true }, { expiresAt: "2026-12-13", active: true }, { expiresAt: "2026-12-14", active: true }, { expiresAt: "2027-01-01", active: false }], "2026-11-13")).toMatchObject({ insuranceStatus: "active", expiringInsuranceCount: 2, expiredInsuranceCount: 1 });
   });
 });

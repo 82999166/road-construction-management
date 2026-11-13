@@ -17,6 +17,7 @@ import { getDb } from "../db";
 import { assertCompensationChannel, type BridgeDb } from "./personnelLegacyBridge";
 import { chinaBusinessDate, chinaBusinessMonth } from "./chinaBusinessTime";
 import { decryptSecret } from "./secretVault";
+import { resolvePersonnelSalaryPayer } from "../../shared/personnel";
 
 export const PAYROLL_GENERATION_SCOPE_KEY = "company-monthly-payroll-draft";
 
@@ -98,7 +99,7 @@ export function buildPayrollAccrualPreview(params: {
     if (row.status !== "confirmed" && row.status !== "locked") return false;
     const version = versions?.find(v => v.effectiveFrom <= dateKey(row.attendanceDate)!);
     // 无覆盖历史必须保留给核算函数明确阻断；已证明关停/外部/日结阶段不属于月薪。
-    return !version || version.payrollEnabled && version.affiliation !== "external" && version.affiliation !== "temporary";
+    return !version || resolvePersonnelSalaryPayer(version).salaryPayerType === "company" && version.payrollEnabled && version.affiliation !== "external" && version.affiliation !== "temporary";
   });
   const confirmedAttendanceDays = eligibleAttendance.length;
   const lockedAttendanceDays = eligibleAttendance.filter(row => row.status === "locked").length;
@@ -191,7 +192,7 @@ export function buildPayrollAccrualPreview(params: {
   };
 }
 
-export type SalaryVersion = { effectiveFrom: string; salaryBasis: "monthly" | "daily" | "hourly" | "piecework"; baseSalary: string | number | null; payrollEnabled: boolean; affiliation?: string };
+export type SalaryVersion = { effectiveFrom: string; salaryBasis: "monthly" | "daily" | "hourly" | "piecework"; baseSalary: string | number | null; payrollEnabled: boolean; affiliation?: string; salaryPayerType?: string | null; salaryPayerName?: string | null };
 
 /** 同月调薪逐考勤日匹配生效版本，不以今天mirror回写历史。月薪沿用现有30天折算。 */
 export function calculateEffectiveSalaryAccrual(attendance: AttendanceForAccrual[], history: SalaryVersion[]) {
@@ -201,6 +202,7 @@ export function calculateEffectiveSalaryAccrual(attendance: AttendanceForAccrual
     const date = dateKey(row.attendanceDate)!;
     const version = versions.find(v => v.effectiveFrom <= date);
     if (!version) return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "考勤日期缺少生效薪资历史，不能用今天薪资猜算过去工资" };
+    if (resolvePersonnelSalaryPayer(version).salaryPayerType === "owner") return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "考勤当日由车队/机械老板自行发放工资，不属于公司工资" };
     if (!version.payrollEnabled || version.affiliation === "external" || version.affiliation === "temporary") return { calculable: false, payableAmount: null, calculationLabel: "—", blockedReason: "考勤当日未启用月度工资或属于外部/临时日结人员" };
     // 避免每日四舍五入累积；先校验单日规则，再按未舍入金额汇总。
     const calculation = calculateEmployeePayrollAccrual({ salaryBasis: version.salaryBasis, baseSalary: version.baseSalary === null ? null : Number(version.baseSalary), confirmedAttendanceDays: 1, normalHours: Number(row.workHours), overtimeHours: Number(row.overtimeHours) });

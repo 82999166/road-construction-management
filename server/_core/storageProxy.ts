@@ -3,6 +3,18 @@ import fs from "fs/promises";
 import path from "path";
 import { ENV } from "./env";
 
+export function isPrivateInsuranceStorageKey(key: string) {
+  let decoded = key;
+  for (let i = 0; i < 5; i++) {
+    try { const next = decodeURIComponent(decoded); if (next === decoded) break; decoded = next; }
+    catch { return true; }
+  }
+  // OSS adds bucket/prefix segments; block the namespace anywhere, including
+  // dot/backslash aliases, before any local read or managed-storage request.
+  return /(?:^|\/)employee-insurance(?:-private)?(?:\/|$)/i.test(decoded.replace(/\\/g, "/"))
+    || /(?:^|\/)employee-insurance(?:-private)?(?:\/|$)/i.test(path.posix.normalize(decoded.replace(/\\/g, "/")));
+}
+
 function normalizeStorageKey(key: string) {
   return key.replace(/^\/+/, "").replace(/\\/g, "/");
 }
@@ -26,6 +38,12 @@ export function registerStorageProxy(app: Express) {
     const key = Array.isArray(capturedKey) ? capturedKey.join("/") : capturedKey;
     if (!key) {
       res.status(400).send("Missing storage key");
+      return;
+    }
+
+    if (isPrivateInsuranceStorageKey(key)) {
+      res.set("Cache-Control", "no-store");
+      res.status(403).send("Insurance originals require controlled preview");
       return;
     }
 

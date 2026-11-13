@@ -5,6 +5,8 @@ export const PERSONNEL_POSITION_CATEGORIES = ["management", "technical", "busine
 export const PERSONNEL_STATUSES = ["active", "suspended", "left"] as const;
 export const PERSONNEL_SALARY_BASES = ["monthly", "daily", "hourly", "piecework"] as const;
 export const PERSONNEL_DOCUMENT_TYPES = ["portrait", "identity", "driver_license", "operator_certificate", "contract", "insurance", "other"] as const;
+export const PERSONNEL_SALARY_PAYER_TYPES = ["company", "owner"] as const;
+export const salaryPayerTypeLabels = { company: "公司发放", owner: "车队/机械老板自行发放" };
 export const affiliationLabels = { company: "公司人员", temporary: "临时工", labor_team: "施工队人员", external: "外部人员" };
 export const positionCategoryLabels = { management: "管理", technical: "技术", business: "业务", driver: "司机", operator: "机械操作", construction: "施工", other: "其他" };
 export const employmentStatusLabels = { active: "在职", suspended: "暂停", left: "离职" };
@@ -17,7 +19,22 @@ export const PERSONNEL_DEFAULT_POSITIONS = [
   { name: "采购员", category: "business" }, { name: "材料员", category: "business" },
   { name: "运输司机", category: "driver" }, { name: "机械操作员", category: "operator" },
   { name: "施工工人", category: "construction" }, { name: "其他岗位", category: "other" },
+  { name: "碴土车驾驶员", category: "driver" }, { name: "推土机驾驶员", category: "operator" },
+  { name: "小车驾驶员", category: "driver" }, { name: "公司管理员", category: "management" },
+  { name: "劳务人员", category: "construction" }, { name: "临时工", category: "construction" },
+  { name: "挖掘机驾驶员", category: "operator" }, { name: "装载机驾驶员", category: "operator" },
+  { name: "压路机驾驶员", category: "operator" }, { name: "其他机械驾驶员", category: "operator" },
+  { name: "车队负责人", category: "management" },
 ] as const;
+
+export type PersonnelSalaryPayerType = typeof PERSONNEL_SALARY_PAYER_TYPES[number];
+type SalaryPayerSource = { affiliation?: string; salaryPayerType?: string | null; salaryPayerName?: string | null };
+/** 当前生效薪资版本优先；旧公司暂停计薪仍为公司发薪，名称仅登记而非身份/授权。 */
+export function resolvePersonnelSalaryPayer(person: SalaryPayerSource, currentSalary?: SalaryPayerSource | null) {
+  const source = currentSalary ?? person;
+  const salaryPayerType: PersonnelSalaryPayerType = source.salaryPayerType === "owner" ? "owner" : source.salaryPayerType === "company" ? "company" : source.affiliation === "external" ? "owner" : "company";
+  return { salaryPayerType, salaryPayerName: source.salaryPayerName ?? null };
+}
 
 const id = z.number().int().positive();
 export const personnelDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式应为 YYYY-MM-DD").refine(value => {
@@ -38,8 +55,10 @@ export const personnelSaveInput = z.object({
   identityNo: z.string().trim().min(6).max(64).optional(), clearIdentityNo: z.boolean().optional(),
   bankAccount: z.string().trim().min(6).max(64).optional(), clearBankAccount: z.boolean().optional(), bankName: optionalText(128),
   salaryBasis: z.enum(PERSONNEL_SALARY_BASES).optional(), baseSalary: z.union([z.number().finite().min(0).max(999999999999), z.string().regex(/^\d{1,12}(\.\d{1,2})?$/)]).nullable().optional(),
+  salaryPayerType: z.enum(PERSONNEL_SALARY_PAYER_TYPES).optional(), salaryPayerName: optionalText(128),
   salaryEffectiveFrom: personnelDateSchema.optional(),
 }).superRefine((v, ctx) => {
+  if (v.salaryPayerType === "owner" && v.payrollEnabled) ctx.addIssue({ code: "custom", path: ["payrollEnabled"], message: "车队/机械老板自行发放工资不能启用公司计薪" });
   if (v.id && !v.version) ctx.addIssue({ code: "custom", path: ["version"], message: "修改人员须提供版本号，请刷新后重试" });
   if (v.entryDate && v.exitDate && v.exitDate < v.entryDate) ctx.addIssue({ code: "custom", path: ["exitDate"], message: "离职日期不能早于入职日期" });
   for (const [value, clear] of [["phoneNumber", "clearPhoneNumber"], ["identityNo", "clearIdentityNo"], ["bankAccount", "clearBankAccount"]] as const) {

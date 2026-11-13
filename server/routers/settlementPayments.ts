@@ -1,11 +1,16 @@
 import { and, desc, eq, gte, inArray, lte, lt } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { ENV } from "../_core/env";
+import { isAliyunOssPhotoStorageKey } from "../services/aliyunOssPhotoStorage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   auditLogs,
   dailyAccountingClosures,
   employeeInsurancePolicies,
+  employeeProfiles,
   evidenceRecords,
   financialRecords,
   laborWorkers,
@@ -34,6 +39,7 @@ import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNo
 import { laborRouter } from "./labor";
 import { machineryRouter, transportRouter } from "./operations";
 import { subcontractRouter } from "./subcontract";
+import { assertCompanyPayrollSettlement } from "../services/personnelLegacyBridge";
 import {
   assertFinanceApprovalRead,
   financeApprovalDb,
@@ -304,6 +310,7 @@ async function getSettlementForPayment(
     const query = db
       .select({
         id: payrollStatements.id,
+        workerId: payrollStatements.workerId,
         projectId: payrollStatements.projectId,
         status: payrollStatements.status,
         actualAmount: payrollStatements.actualAmount,
@@ -314,6 +321,10 @@ async function getSettlementForPayment(
       .innerJoin(laborWorkers, eq(payrollStatements.workerId, laborWorkers.id))
       .where(eq(payrollStatements.id, input.settlementId))
       .limit(1);
+    if (lock) {
+      const [source] = await query;
+      if (source?.projectId === input.projectId) await assertCompanyPayrollSettlement(db, { workerId: source.workerId, projectId: source.projectId, period: source.period, channel: "monthly" });
+    }
     const [row] = await (lock ? query.for("update") : query);
     if (!row || row.projectId !== input.projectId)
       throw new TRPCError({
@@ -336,6 +347,7 @@ async function getSettlementForPayment(
     const query = db
       .select({
         id: temporaryDailyWageSettlements.id,
+        workerId: temporaryDailyWageSettlements.workerId,
         projectId: temporaryDailyWageSettlements.projectId,
         status: temporaryDailyWageSettlements.status,
         actualAmount: temporaryDailyWageSettlements.actualAmount,
@@ -349,6 +361,13 @@ async function getSettlementForPayment(
       )
       .where(eq(temporaryDailyWageSettlements.id, input.settlementId))
       .limit(1);
+    if (lock) {
+      const [source] = await query;
+      if (source?.projectId === input.projectId) {
+        const day = source.settlementDate.toISOString().slice(0, 10);
+        await assertCompanyPayrollSettlement(db, { workerId: source.workerId, projectId: source.projectId, period: day.slice(0, 7), channel: "daily", settlementDate: day });
+      }
+    }
     const [row] = await (lock ? query.for("update") : query);
     if (!row || row.projectId !== input.projectId)
       throw new TRPCError({
@@ -1855,7 +1874,7 @@ export const settlementPaymentRouter = router({
       };
     }),
 
-  /** 仅用于保险台账附件读取，仍复用同一受控证据库与短时签名 URL。 */
+  /** 保险附件仅经现有财务授权RPC读取，不下发存储签名或永久公开URL。 */
   getInsuranceEvidence: protectedProcedure
     .input(
       z.object({
@@ -1872,11 +1891,16 @@ export const settlementPaymentRouter = router({
         .select({
           id: employeeInsurancePolicies.id,
           evidenceId: employeeInsurancePolicies.evidenceId,
+          employeeProfileId: employeeInsurancePolicies.employeeProfileId,
         })
         .from(employeeInsurancePolicies)
         .where(eq(employeeInsurancePolicies.id, input.policyId))
         .limit(1);
-      if (!policy?.evidenceId) return null;
+      if (!policy) return null;
+      const [profile] = await db.select({ id: employeeProfiles.id, projectId: employeeProfiles.projectId }).from(employeeProfiles).where(eq(employeeProfiles.id, policy.employeeProfileId)).limit(1);
+      if (!profile || profile.projectId !== input.projectId) throw new TRPCError({ code: "FORBIDDEN", message: "保单真实员工项目不在当前授权项目" });
+      await assertProjectInCurrentScope(ctx, profile.projectId);
+      if (!policy.evidenceId) return null;
       const [evidence] = await db
         .select({
           id: evidenceRecords.id,
@@ -1884,16 +1908,41 @@ export const settlementPaymentRouter = router({
           fileName: evidenceRecords.fileName,
           mimeType: evidenceRecords.mimeType,
           status: evidenceRecords.status,
+          sourceType: evidenceRecords.sourceType,
+          sourceId: evidenceRecords.sourceId,
+          projectId: evidenceRecords.projectId,
+          contentBytes: evidenceRecords.contentBytes,
+          contentSha256: evidenceRecords.contentSha256,
         })
         .from(evidenceRecords)
         .where(eq(evidenceRecords.id, policy.evidenceId))
         .limit(1);
-      if (!evidence || evidence.status !== "active") return null;
+      if (!evidence || evidence.status !== "active" || evidence.sourceType !== "employee_insurance_policy" || evidence.sourceId !== String(profile.id) || evidence.projectId !== profile.projectId) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件来源、员工主体或项目不一致" });
+      if (!evidence.fileKey || !["image/jpeg", "image/png", "application/pdf"].includes(evidence.mimeType ?? "") || !evidence.contentBytes || evidence.contentBytes > MAX_PROOF_BYTES || !/^[a-f0-9]{64}$/.test(evidence.contentSha256 ?? "")) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件缺少完整性信息" });
+      let bytes: Buffer;
+      if (ENV.selfHostStorageDir && !isAliyunOssPhotoStorageKey(evidence.fileKey)) {
+        const root = path.resolve(ENV.selfHostStorageDir); const file = path.resolve(root, evidence.fileKey);
+        if (!file.startsWith(root + path.sep)) throw new TRPCError({ code: "FORBIDDEN", message: "无效保单存储键" });
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_PROOF_BYTES) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件过大" });
+        bytes = await fs.readFile(file);
+      } else {
+        const signed = await storageGetSignedUrl(evidence.fileKey);
+        if (!/^https:\/\//.test(signed)) throw new TRPCError({ code: "FORBIDDEN", message: "保单存储不可受控读取" });
+        const response = await fetch(signed, { signal: AbortSignal.timeout(20_000) });
+        if (!response.ok || !response.body) throw new TRPCError({ code: "NOT_FOUND", message: "保单附件不可读取" });
+        const reader = response.body.getReader(); const chunks: Buffer[] = []; let size = 0;
+        try { for (;;) { const { value, done } = await reader.read(); if (done) break; size += value.length; if (size > MAX_PROOF_BYTES) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件过大" }); chunks.push(Buffer.from(value)); } }
+        finally { await reader.cancel(); }
+        bytes = Buffer.concat(chunks, size);
+      }
+      if (bytes.length !== evidence.contentBytes || createHash("sha256").update(bytes).digest("hex") !== evidence.contentSha256) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件完整性校验失败" });
+      try { assertCertificateFileSignature(bytes, evidence.mimeType as "image/jpeg" | "image/png" | "application/pdf"); } catch { throw new TRPCError({ code: "FORBIDDEN", message: "保单附件格式无效" }); }
       return {
         id: evidence.id,
         fileName: evidence.fileName,
         mimeType: evidence.mimeType,
-        url: await storageGetSignedUrl(evidence.fileKey),
+        url: `data:${evidence.mimeType};base64,${bytes.toString("base64")}`,
       };
     }),
 });

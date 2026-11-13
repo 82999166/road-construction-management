@@ -4,6 +4,7 @@ import * as s from "../../drizzle/schema";
 import { adoptLegacy, assertCompensationChannel, assertLegacyCoreEditSafe, ensureLegacyPayrollSubjects, getLegacyCompensation, getPersonnelPayrollProfilesForPeriod, listLegacyCandidates, omitUnchangedLegacyFields, resolveLegacyIdentityGraph, resolveResourceLoginBinding, resolveResourcePerson, saveResourceBinding, syncLegacyMirrors } from "./personnelLegacyBridge";
 import { buildPayrollAccrualPreview, calculateEffectiveSalaryAccrual, generatePayrollDraftForEmployeeProfile } from "./payrollGeneration";
 import { getDb } from "../db";
+import { chinaBusinessDate } from "./chinaBusinessTime";
 vi.mock("../db", () => ({ getDb: vi.fn() }));
 vi.mock("./secretVault", () => ({ decryptSecret: (x: string) => x.replace(/^cipher:/, ""), encryptSecret: (x: string) => `cipher:${x}`, fingerprintSecret: (x: string) => `hash:${x}`, maskSecret: (x: string) => `****${x.slice(-4)}` }));
 
@@ -23,6 +24,8 @@ function predicate(condition: any): (row: any) => boolean {
 /** Stateful table-aware mock with row locks and atomic transaction rollback; no real database. */
 function mockDb(data: MockData = new Map()) {
   if (!data.has(s.personnelPeople)) data.set(s.personnelPeople, [person()]);
+  if (!data.has(s.projects)) data.set(s.projects, [{ id: 10, status: "active" }]);
+  if (data.has(s.transportVehicles) && !data.has(s.vehicleFleetProfiles)) data.set(s.vehicleFleetProfiles, data.get(s.transportVehicles)!.map(v => ({ vehicleId: v.id, projectId: v.projectId, version: 0, projectStatus: "on_site", archived: false })));
   let nextId = 100;
   const writes: { table: unknown; operation: string; values: any; ids?: number[] }[] = [];
   const locks: unknown[] = [];
@@ -71,12 +74,59 @@ describe("真实ID身份引入", () => {
     expect(main.identityNoFingerprint).toBe("hash:110101199001011234");
     expect(writes.filter(w => w.table === s.personnelSourceLinks).map(w => `${w.values.sourceType}:${w.values.sourceId}`).sort()).toEqual(["profile:4", "profile:5", "user:7", "worker:12"]);
     expect(writes.filter(w => [s.employeeProfiles, s.laborWorkers, s.users, s.payrollStatements].includes(w.table as any))).toEqual([]);
-    expect(writes.find(w => w.table === s.personnelSalaryHistory)!.values).toMatchObject({ effectiveFrom: "2026-01-01", affiliation: "company", baseSalary: "9000" });
+    expect(writes.find(w => w.table === s.personnelSalaryHistory)!.values).toMatchObject({ effectiveFrom: chinaBusinessDate(new Date()), affiliation: "company", baseSalary: "9000" });
   });
   it("来源已指向不同person原子阻断且不执行写入", async () => {
     const { db, writes } = mockDb(new Map([[s.employeeProfiles, [profile()]], [s.laborWorkers, [{ id: 12, projectId: 10 }]], [s.users, [{ id: 7 }]], [s.personnelSourceLinks, [{ personId: 1, sourceType: "profile", sourceId: 4 }, { personId: 2, sourceType: "worker", sourceId: 12 }]]]));
     await expect(adoptLegacy(db, { sourceType: "profile", sourceId: 4, actorUserId: 8 })).rejects.toThrow("不同统一人员");
     expect(writes).toEqual([]);
+  });
+});
+
+describe("任职镜像安全更正回归", () => {
+  function fixture(overrides: Record<string, any> = {}) {
+    const p = person({ userId: 7, legacyWorkerId: 12, legacyProfileId: 4, ...overrides });
+    const data: MockData = new Map([[s.personnelPeople, [p]], [s.employeeProfiles, [profile({ teamName: "旧文本" })]], [s.laborWorkers, [{ id: 12, projectId: 10, workerCategory: "company_admin", realName: "旧名字", teamName: "旧文本", entryDate: new Date("2026-01-01Z"), exitDate: null }]]]);
+    return { ...mockDb(data), p };
+  }
+  it("已离场连续改姓名电话保持pointer，不新建或改写关闭历史", async () => {
+    const { db, data, p, writes } = fixture({ employmentStatus: "left", exitDate: "2026-10-31" });
+    data.get(s.laborWorkers)![0].exitDate = new Date("2026-10-31Z");
+    data.get(s.employeeProfiles)![0].leftAt = new Date("2026-10-31Z");
+    for (const name of ["更正一", "更正二"]) await syncLegacyMirrors(db, { ...p, name });
+    expect(data.get(s.laborWorkers)).toHaveLength(1); expect(data.get(s.employeeProfiles)).toHaveLength(1);
+    expect(data.get(s.personnelPeople)![0]).toMatchObject({ legacyWorkerId: 12, legacyProfileId: 4 });
+    expect(writes.some(w => [s.laborWorkers, s.employeeProfiles, s.payrollStatements, s.settlementPaymentRecords].includes(w.table as any))).toBe(false);
+  });
+  it("无历史可同步当前日期与明确换队清空，未提交保留旧文本", async () => {
+    const { db, data, p } = fixture();
+    await syncLegacyMirrors(db, p);
+    expect(data.get(s.laborWorkers)![0].teamName).toBe("旧文本"); expect(data.get(s.employeeProfiles)![0].teamName).toBe("旧文本");
+    Object.assign(data.get(s.personnelPeople)![0], { entryDate: "2026-02-01", teamId: 9 });
+    data.set(s.personnelTeams, [{ id: 9, name: "真实新队" }]);
+    await syncLegacyMirrors(db, { ...p, entryDate: "2026-02-01", teamId: 9 }, { teamId: 9 });
+    expect(data.get(s.laborWorkers)![0]).toMatchObject({ entryDate: new Date("2026-02-01Z"), teamName: "真实新队" });
+    expect(data.get(s.employeeProfiles)![0]).toMatchObject({ joinedAt: new Date("2026-02-01Z"), teamName: "真实新队" });
+    Object.assign(data.get(s.personnelPeople)![0], { teamId: null });
+    await syncLegacyMirrors(db, { ...p, entryDate: "2026-02-01" }, { teamId: null });
+    expect(data.get(s.laborWorkers)![0].teamName).toBeNull(); expect(data.get(s.employeeProfiles)![0].teamName).toBeNull();
+  });
+  it.each(["locked", "approved", "draft"])("日期更正拒绝%s历史或超范围真实记录且事务回滚", async status => {
+    const { db, data, p } = fixture();
+    if (status === "locked") data.set(s.attendanceRecords, [{ workerId: 12, attendanceDate: new Date("2026-03-01Z"), status }]);
+    else data.set(s.payrollStatements, [{ id: 99, workerId: 12, period: "2026-01", status }]);
+    await expect(db.transaction(async (tx: any) => { data.get(s.personnelPeople)![0].entryDate = "2026-02-01"; await syncLegacyMirrors(tx, { ...p, entryDate: "2026-02-01" }); })).rejects.toThrow(/不能|超出/);
+    expect(data.get(s.personnelPeople)![0].entryDate).toBe("2026-01-01"); expect(data.get(s.employeeProfiles)![0].joinedAt).toEqual(new Date("2026-01-01Z"));
+  });
+  it("多来源不按updatedAt选当前，重叠歧义拒绝，明确profile保留全部真实范围", async () => {
+    const { db, data, writes } = mockDb(new Map([[s.personnelPeople, []], [s.users, [{ id: 7, name: "账号" }]], [s.employeeProfiles, [profile({ updatedAt: new Date("2099-01-01Z"), leftAt: new Date("2026-07-31Z"), employmentStatus: "left" }), profile({ id: 5, laborWorkerId: 13, projectId: 20, joinedAt: new Date("2026-08-01Z"), baseSalary: "12000" })]], [s.laborWorkers, [{ id: 12, projectId: 10, workerCategory: "company_admin", entryDate: new Date("2026-01-01Z"), exitDate: new Date("2026-07-31Z") }, { id: 13, projectId: 20, workerCategory: "temporary_daily", entryDate: new Date("2026-08-01Z") }]]]));
+    await adoptLegacy(db, { sourceType: "user", sourceId: 7, actorUserId: 8 });
+    expect(writes.find(w => w.table === s.personnelPeople)!.values).toMatchObject({ legacyProfileId: 5, projectId: 20 });
+    expect(writes.find(w => w.table === s.personnelSalaryHistory)!.values.effectiveFrom).toBe(chinaBusinessDate(new Date()));
+    expect(writes.find(w => w.table === s.personnelChanges)!.values.changes.sourceScopes.after.profiles).toHaveLength(2);
+    data.set(s.personnelPeople, []); data.set(s.personnelSourceLinks, []);
+    Object.assign(data.get(s.employeeProfiles)![0], { leftAt: null, employmentStatus: "active" });
+    await expect(adoptLegacy(db, { sourceType: "user", sourceId: 7, actorUserId: 8 })).rejects.toThrow("歧义");
   });
 });
 
@@ -271,7 +321,8 @@ describe("资源真实人员与门户授权", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-03T08:00:00Z"));
     const { db, writes, locks } = mockDb(new Map([[s.transportVehicles, [{ id: 30, projectId: 10, driverPersonId: 2, driverUserId: 7, createdAt: new Date("2026-01-01Z") }]], [s.personnelPeople, [person({ userId: 9 }), person({ id: 2, userId: 7 })]], [s.personnelPositions, [{ id: 3, category: "driver", status: "active" }]], [s.personnelResourceBindings, [{ id: 80, personId: 2, assetType: "vehicle", assetId: 30, effectiveFrom: "2026-01-01", effectiveTo: null }]]]));
     await saveResourceBinding(db, { personId: 1, assetType: "vehicle", assetId: 30, effectiveFrom: today, actorUserId: 8, projectId: 10 });
-    expect(locks.map(t => t === s.transportVehicles ? "asset" : "history")).toEqual(["asset", "history"]);
+    expect(locks[0]).toBe(s.projects);
+    expect(locks.indexOf(s.transportVehicles)).toBeLessThan(locks.indexOf(s.personnelResourceBindings));
     expect(writes.find(w => w.table === s.transportVehicles)!.values).toMatchObject({ driverPersonId: 1, driverUserId: null, driverName: "真实人员" });
     expect(writes.filter(w => w.table === s.personnelResourceBindings)).toEqual(expect.arrayContaining([expect.objectContaining({ operation: "update", values: { effectiveTo: today } }), expect.objectContaining({ operation: "insert", values: expect.objectContaining({ personId: 1, effectiveFrom: today }) })]));
     expect(writes.some(w => w.table === s.transportTrips || w.table === s.users)).toBe(false);
@@ -299,10 +350,14 @@ describe("资源真实人员与门户授权", () => {
       expect(rows.slice(1).every(h => h.createdAt.getTime() === new Date("2026-11-03T08:00:00Z").getTime())).toBe(true);
       expect(rows.map(h => h.id)).toEqual([...rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id).map(h => h.id));
       expect(data.get(table)![0]).toMatchObject({ [pointer]: 1, [userPointer]: null });
-      expect(locks.every((t, i) => t === (i % 2 ? s.personnelResourceBindings : table))).toBe(true);
+      expect(locks.filter(t => t === s.personnelResourceBindings)).toHaveLength(3);
       expect(data.get(s.personnelChanges)!.some(h => h.changes.resourceBinding.before.userId === 7)).toBe(true);
       expect(writes.filter(w => w.table === s.personnelResourceBindings && w.operation === "update").every(w => Object.keys(w.values).join() === "effectiveTo")).toBe(true);
       const count = rows.length;
+      if (assetType === "vehicle") {
+        await expect(saveResourceBinding(db, { personId: 1, assetType, assetId: 30, effectiveFrom: today, actorUserId: 8, projectId: 10, requestedUserId: 9 })).rejects.toThrow("不能新授");
+        continue;
+      }
       await saveResourceBinding(db, { personId: 1, assetType, assetId: 30, effectiveFrom: today, actorUserId: 8, projectId: 10, requestedUserId: 9 });
       expect(data.get(s.personnelResourceBindings)).toHaveLength(count); // 同人绑定登录账号不捏造换班。
       expect(data.get(s.personnelChanges)!.at(-1)!.changes.resourceBinding.after.userId).toBe(9);

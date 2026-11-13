@@ -2554,6 +2554,10 @@ export default function AdminPage({
     (dirty: boolean) => recordWorkspaceDirty("vehicle-management", dirty),
     [recordWorkspaceDirty]
   );
+  const onPersonnelDirectoryDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("personnel-directory", dirty),
+    [recordWorkspaceDirty]
+  );
   const onAdministratorManagementDirtyChange = useCallback(
     (dirty: boolean) => recordWorkspaceDirty("administrator-management", dirty),
     [recordWorkspaceDirty]
@@ -8069,6 +8073,7 @@ export default function AdminPage({
 
         <TabsContent value="accounts" className="mt-0 space-y-4">
           <UnifiedPersonnelDirectory
+            onDirtyChange={onPersonnelDirectoryDirtyChange}
             onSaved={async () => {
               await Promise.all([
                 companyPersonnelRoster.refetch(),
@@ -14230,7 +14235,10 @@ export default function AdminPage({
     return (
       <Tabs
         value={scopedSection ? "operations" : laborWorkspaceTab}
-        onValueChange={setLaborWorkspaceTab}
+        onValueChange={value => {
+          if (value !== laborWorkspaceTab && workspaceDrafts["personnel-directory"] && !window.confirm("人员档案有未保存修改，切换栏目将放弃草稿，确认切换吗？")) return;
+          setLaborWorkspaceTab(value);
+        }}
         className="space-y-4"
       >
         {!scopedSection ? (
@@ -14245,6 +14253,7 @@ export default function AdminPage({
             </TabsList>
             <TabsContent value="personnel" className="mt-0">
               <UnifiedPersonnelDirectory
+                onDirtyChange={onPersonnelDirectoryDirtyChange}
                 openLegacySource={personnelOpenSource}
                 openCreateSignal={personnelCreateSignal}
                 initialProjectId={

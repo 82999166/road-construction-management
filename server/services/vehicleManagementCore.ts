@@ -2,7 +2,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import * as s from "../../drizzle/schema";
 import type { TrpcContext } from "../_core/context";
 import { chinaBusinessDate } from "./chinaBusinessTime";
-import { saveResourceBinding } from "./personnelLegacyBridge";
+import { saveResourceBindingHistory } from "./personnelLegacyBridge";
 import {
   assertContractNoOverlap,
   assertFleetDayWritable,
@@ -75,6 +75,15 @@ export async function mutateFleet<T extends Record<string, unknown>>(
   if (targetProjectId) await fleetAccess(ctx, "edit", targetProjectId);
   const db = await requireFleetDb();
   return db.transaction(async tx => {
+    return mutateFleetTransaction(tx, input, action, actor.id, work, occurredAt, targetProjectId);
+  });
+}
+/** Shared transaction core; callers retain their own authorization. Project lock precedes asset/profile CAS. */
+export async function mutateFleetTransaction<T extends Record<string, unknown>>(
+  tx: FleetTx, input: FleetBase, action: string, actorId: number,
+  work: (tx: FleetTx, vehicle: typeof s.transportVehicles.$inferSelect, profile: typeof s.vehicleFleetProfiles.$inferSelect, actorId: number) => Promise<T>,
+  occurredAt = new Date(), targetProjectId?: number
+) {
     for (const projectId of Array.from(
       new Set([input.projectId, ...(targetProjectId ? [targetProjectId] : [])])
     ).sort((a, b) => a - b))
@@ -98,7 +107,7 @@ export async function mutateFleet<T extends Record<string, unknown>>(
     if (!profile) {
       await tx
         .insert(s.vehicleFleetProfiles)
-        .values(initialFleetProfile(vehicle, actor.id));
+        .values(initialFleetProfile(vehicle, actorId));
       [profile] = await tx
         .select()
         .from(s.vehicleFleetProfiles)
@@ -111,11 +120,11 @@ export async function mutateFleet<T extends Record<string, unknown>>(
       !["grantAccess", "revokeAccess", "retire", "remove"].includes(action)
     )
       fail("车辆已归档，只保留受控账务与历史读取", "CONFLICT");
-    const result = await work(tx, vehicle, profile, actor.id);
+    const result = await work(tx, vehicle, profile, actorId);
     const version = input.version + 1;
     const [versionWrite] = await tx
       .update(s.vehicleFleetProfiles)
-      .set({ version, updatedBy: actor.id })
+      .set({ version, updatedBy: actorId })
       .where(
         and(
           eq(s.vehicleFleetProfiles.vehicleId, vehicle.id),
@@ -132,12 +141,12 @@ export async function mutateFleet<T extends Record<string, unknown>>(
         version,
         action,
         changes: result,
-        createdBy: actor.id,
+        createdBy: actorId,
       });
     await tx
       .insert(s.auditLogs)
       .values({
-        userId: actor.id,
+        userId: actorId,
         module: "transport",
         action: `vehicle_${action}`,
         targetType: "transport_vehicle",
@@ -150,8 +159,8 @@ export async function mutateFleet<T extends Record<string, unknown>>(
       version,
       ...result,
     };
-  });
 }
+
 export async function listFleet(
   ctx: TrpcContext,
   input: {
@@ -392,6 +401,23 @@ export async function detailFleet(
     exitChecks: await fleetExitChecks(db, vehicle.id, requestedId),
   };
 }
+export async function closeFleetResponsibility(
+  tx: FleetTx, vehicle: typeof s.transportVehicles.$inferSelect,
+  profile: typeof s.vehicleFleetProfiles.$inferSelect, at: Date,
+  action: "enter" | "transfer" | "exit" | "handover"
+) {
+  if (action === "enter" && profile.projectStatus === "on_site") fail("车辆已在场", "CONFLICT");
+  if (["transfer", "exit", "handover"].includes(action) && profile.projectStatus !== "on_site") fail("仅在场车辆可调配、交接或退场", "CONFLICT");
+  const checks = await fleetExitChecks(tx, vehicle.id, vehicle.projectId);
+  if (["transfer", "exit", "handover"].includes(action) && checks.openTrips > 0) fail("车辆仍有在途票据，请先完成卸土或作废后再交接、调配或退场", "CONFLICT");
+  const histories = await tx.select().from(s.vehicleAssignments).where(eq(s.vehicleAssignments.vehicleId, vehicle.id)).for("update");
+  if (histories.some(h => h.effectiveFrom > at)) fail("交接时间早于已有责任历史", "CONFLICT");
+  return histories;
+}
+export async function endFleetResponsibility(tx: FleetTx, vehicleId: number, at: Date) {
+  await tx.update(s.vehicleAssignments).set({ effectiveTo: at }).where(and(eq(s.vehicleAssignments.vehicleId, vehicleId), isNull(s.vehicleAssignments.effectiveTo)));
+}
+
 export async function assignFleet(
   ctx: TrpcContext,
   input: FleetBase & {
@@ -425,36 +451,10 @@ export async function assignFleet(
     input,
     "assign",
     async (tx, vehicle, profile, actorId) => {
-      if (input.action === "enter" && profile.projectStatus === "on_site")
-        fail("车辆已在场", "CONFLICT");
-      if (
-        ["transfer", "exit", "handover"].includes(input.action) &&
-        profile.projectStatus !== "on_site"
-      )
-        fail("仅在场车辆可调配、交接或退场", "CONFLICT");
-      const beforeChecks = await fleetExitChecks(
-        tx,
-        vehicle.id,
-        input.projectId
-      );
-      if (
-        ["transfer", "exit", "handover"].includes(input.action) &&
-        beforeChecks.openTrips > 0
-      )
-        fail(
-          "车辆仍有在途票据，请先完成卸土或作废后再交接、调配或退场",
-          "CONFLICT"
-        );
+      const histories = await closeFleetResponsibility(tx, vehicle, profile, at, input.action);
       if (profile.trailerVehicleId && input.action === "transfer")
         fail("调配前请先解除挂车组合，分别调配并重新关联", "CONFLICT");
       const target = input.targetProjectId ?? input.projectId;
-      const histories = await tx
-        .select()
-        .from(s.vehicleAssignments)
-        .where(eq(s.vehicleAssignments.vehicleId, vehicle.id))
-        .for("update");
-      if (histories.some(h => h.effectiveFrom > at))
-        fail("交接时间早于已有责任历史", "CONFLICT");
       const personId =
         input.action === "exit"
           ? null
@@ -517,28 +517,20 @@ export async function assignFleet(
             driverPersonId: vehicle.driverPersonId,
             driverUserId: vehicle.driverUserId,
             driverBindingId: activeBindings[0]?.id ?? null,
-            effectiveFrom: vehicle.createdAt,
+            effectiveFrom: at,
             effectiveTo: at,
-            condition: "历史主档责任基线，未推定更早责任",
+            condition: "原当前绑定历史基线，任职起点未知，不作为授权依据",
             reason: input.reason,
             createdBy: actorId,
           });
-      await tx
-        .update(s.vehicleAssignments)
-        .set({ effectiveTo: at })
-        .where(
-          and(
-            eq(s.vehicleAssignments.vehicleId, vehicle.id),
-            isNull(s.vehicleAssignments.effectiveTo)
-          )
-        );
+      await endFleetResponsibility(tx, vehicle.id, at);
       if (
         target !== input.projectId ||
         input.action === "exit" ||
         identityChanged
       ) {
         // 先关闭原项目人员关系，避免相同人员调拨时旧范围保持开放。
-        await saveResourceBinding(tx, {
+        await saveResourceBindingHistory(tx, {
           personId: null,
           assetType: "vehicle",
           assetId: vehicle.id,
@@ -564,7 +556,7 @@ export async function assignFleet(
           .set({ projectId: target })
           .where(eq(s.transportVehicles.id, vehicle.id));
       if (personId || vehicle.driverPersonId || input.action === "exit")
-        await saveResourceBinding(tx, {
+        await saveResourceBindingHistory(tx, {
           personId,
           assetType: "vehicle",
           assetId: vehicle.id,

@@ -4,6 +4,7 @@ import {
   assertLegacyCoreEditSafe,
   omitUnchangedLegacyFields,
   getLegacyCompensation,
+  assertCompanyPayrollAdvance,
 } from "../services/personnelLegacyBridge";
 import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
@@ -39,6 +40,9 @@ import {
   organizations,
   outsourceContracts,
   positions,
+  personnelPeople,
+  personnelSourceLinks,
+  personnelDocuments,
   payrollStatements,
   payrollGenerationSchedules,
   purchaseOrders,
@@ -168,6 +172,7 @@ import {
   normalizeLocalManagerUsername,
 } from "../localAuth";
 import { storageGetSignedUrl, storagePut } from "../storage";
+import { previewInsuranceDocument, uploadPersonnelDocument } from "../services/personnelDirectory";
 import {
   createHeartbeatJob,
   listHeartbeatJobs,
@@ -1759,7 +1764,7 @@ export const adminRouter = router({
       return { users: accountRows, laborWorkers: workerRows };
     }),
     listProfiles: protectedProcedure.query(async ({ ctx }) => {
-      await assertSuperAdmin(ctx);
+      const admin = await assertSuperAdmin(ctx);
       const db = await getDb();
       if (!db) return [];
       const rows = await db
@@ -1838,26 +1843,13 @@ export const adminRouter = router({
             );
           const policyViews = await Promise.all(
             policies.map(async policy => {
-              const [evidence] = policy.evidenceId
-                ? await db
-                    .select({
-                      fileKey: evidenceRecords.fileKey,
-                      fileName: evidenceRecords.fileName,
-                      status: evidenceRecords.status,
-                    })
-                    .from(evidenceRecords)
-                    .where(eq(evidenceRecords.id, policy.evidenceId))
-                    .limit(1)
-                : [];
+              const [link] = policy.evidenceId ? await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, policy.employeeProfileId))).limit(1) : [];
+              const [person] = policy.evidenceId && !link ? await db.select({ id: personnelPeople.id }).from(personnelPeople).where(eq(personnelPeople.legacyProfileId, policy.employeeProfileId)).limit(1) : [];
+              const personId = link?.personId ?? person?.id;
+              const evidence = personId ? await previewInsuranceDocument(personId, policy.id, admin.id).catch(() => null) : null;
               return {
                 ...policy,
-                evidence:
-                  evidence?.status === "active"
-                    ? {
-                        fileName: evidence.fileName || "保单附件",
-                        url: await storageGetSignedUrl(evidence.fileKey),
-                      }
-                    : null,
+                evidence,
               };
             })
           );
@@ -2002,6 +1994,26 @@ export const adminRouter = router({
           })
           .from(transportVehicles),
       ]);
+      const [directoryRows, directoryLinks] = await Promise.all([
+        db.select({ id: personnelPeople.id, userId: personnelPeople.userId, legacyWorkerId: personnelPeople.legacyWorkerId, phoneEncrypted: personnelPeople.phoneEncrypted, bankAccountEncrypted: personnelPeople.bankAccountEncrypted, bankName: personnelPeople.bankName }).from(personnelPeople),
+        db.select({ personId: personnelSourceLinks.personId, sourceType: personnelSourceLinks.sourceType, sourceId: personnelSourceLinks.sourceId }).from(personnelSourceLinks),
+      ]);
+      const directoryById = new Map(directoryRows.map(person => [person.id, person]));
+      const directoryByUser = new Map<number, (typeof directoryRows)[number] | null>();
+      const directoryByWorker = new Map<number, (typeof directoryRows)[number] | null>();
+      const registerDirectorySource = (map: typeof directoryByUser, sourceId: number | null, person: (typeof directoryRows)[number] | null) => {
+        if (!sourceId) return;
+        if (map.has(sourceId) && map.get(sourceId)?.id !== person?.id) map.set(sourceId, null);
+        else map.set(sourceId, person);
+      };
+      for (const person of directoryRows) {
+        registerDirectorySource(directoryByUser, person.userId, person);
+        registerDirectorySource(directoryByWorker, person.legacyWorkerId, person);
+      }
+      for (const link of directoryLinks) {
+        if (link.sourceType === "user") registerDirectorySource(directoryByUser, link.sourceId, directoryById.get(link.personId) ?? null);
+        if (link.sourceType === "worker") registerDirectorySource(directoryByWorker, link.sourceId, directoryById.get(link.personId) ?? null);
+      }
       const accountById = new Map(
         accountRows.map(account => [account.id, account])
       );
@@ -2161,19 +2173,26 @@ export const adminRouter = router({
         )[0];
         const userProfile = userId ? userProfileById.get(userId) : undefined;
         const worker = workerId ? workerById.get(workerId) : undefined;
-        const phoneMasked = worker?.phoneEncrypted
+        const linkedWorker = workerId ? directoryByWorker.get(workerId) : undefined;
+        const linkedUser = userId ? directoryByUser.get(userId) : undefined;
+        const authority = linkedWorker !== undefined && linkedUser !== undefined && linkedWorker?.id !== linkedUser?.id ? null : linkedWorker !== undefined ? linkedWorker : linkedUser;
+        const phoneMasked = authority !== undefined
+          ? authority?.phoneEncrypted ? decryptSecret(authority.phoneEncrypted) : null
+          : worker?.phoneEncrypted
           ? decryptSecret(worker.phoneEncrypted)
           : userProfile?.phoneEncrypted
             ? decryptSecret(userProfile.phoneEncrypted)
             : userProfile?.phoneMasked ?? null;
         return {
           contactPhoneMasked: phoneMasked,
-          bankAccountMasked: worker?.bankAccountEncrypted
+          bankAccountMasked: authority !== undefined
+            ? authority?.bankAccountEncrypted ? decryptSecret(authority.bankAccountEncrypted) : null
+            : worker?.bankAccountEncrypted
             ? decryptSecret(worker.bankAccountEncrypted)
             : userProfile?.bankAccountEncrypted
               ? decryptSecret(userProfile.bankAccountEncrypted)
               : null,
-          bankName: worker?.bankName ?? userProfile?.bankName ?? null,
+          bankName: authority !== undefined ? authority?.bankName ?? null : worker?.bankName ?? userProfile?.bankName ?? null,
           tradeName:
             profileTradeName ||
             (userProfile?.positionId
@@ -2643,36 +2662,39 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
-        const [profile] = await db
-          .select({
-            id: employeeProfiles.id,
-            laborWorkerId: employeeProfiles.laborWorkerId,
-            projectId: employeeProfiles.projectId,
-          })
-          .from(employeeProfiles)
-          .where(eq(employeeProfiles.id, input.employeeProfileId))
-          .limit(1);
-        if (!profile)
-          throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
-        const [created] = await db.insert(employeePayrollAdvances).values({
-          employeeProfileId: profile.id,
-          laborWorkerId: profile.laborWorkerId,
-          projectId: profile.projectId,
-          advanceDate: new Date(`${input.advanceDate}T00:00:00Z`),
-          amount: String(input.amount),
-          status: input.status,
-          remarks: input.remarks ?? null,
-          createdBy: admin.id,
+        return db.transaction(async db => {
+          const [profile] = await db
+            .select({
+              id: employeeProfiles.id,
+              laborWorkerId: employeeProfiles.laborWorkerId,
+              projectId: employeeProfiles.projectId,
+            })
+            .from(employeeProfiles)
+            .where(eq(employeeProfiles.id, input.employeeProfileId))
+            .limit(1);
+          if (!profile)
+            throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+          await assertCompanyPayrollAdvance(db, profile, input.advanceDate);
+          const [created] = await db.insert(employeePayrollAdvances).values({
+            employeeProfileId: profile.id,
+            laborWorkerId: profile.laborWorkerId,
+            projectId: profile.projectId,
+            advanceDate: new Date(`${input.advanceDate}T00:00:00Z`),
+            amount: String(input.amount),
+            status: input.status,
+            remarks: input.remarks ?? null,
+            createdBy: admin.id,
+          });
+          await db.insert(auditLogs).values({
+            userId: admin.id,
+            module: "personnel",
+            action: "create_payroll_advance",
+            targetType: "employee_profile",
+            targetId: String(profile.id),
+            summary: "新增员工工资预支记录",
+          });
+          return { success: true, id: created.insertId };
         });
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "personnel",
-          action: "create_payroll_advance",
-          targetType: "employee_profile",
-          targetId: String(profile.id),
-          summary: "新增员工工资预支记录",
-        });
-        return { success: true, id: created.insertId };
       }),
     saveProfile: protectedProcedure
       .input(employeeProfileInput)
@@ -2959,6 +2981,9 @@ export const adminRouter = router({
             code: "NOT_FOUND",
             message: "员工档案不存在，不能上传保单",
           });
+        const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, profile.id))).limit(1);
+        const [person] = await db.select().from(personnelPeople).where(link ? eq(personnelPeople.id, link.personId) : eq(personnelPeople.legacyProfileId, profile.id)).limit(1);
+        if (!person || person.projectId !== profile.projectId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "请在统一人员证照保险中上传加密附件；未统一或历史项目档案不支持旧上传" });
         const encoded = input.base64Data.includes(",")
           ? input.base64Data.slice(input.base64Data.indexOf(",") + 1)
           : input.base64Data;
@@ -2985,27 +3010,8 @@ export const adminRouter = router({
           input.fileName
             .replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_")
             .slice(-160) || "insurance-policy";
-        const stored = await storagePut(
-          `employee-insurance/${profile.id}/${Date.now()}-${safeFileName}`,
-          bytes,
-          input.mimeType
-        );
-        const [created] = await db
-          .insert(evidenceRecords)
-          .values({
-            projectId: profile.projectId ?? null,
-            sourceType: "employee_insurance_policy",
-            sourceId: String(profile.id),
-            fileKey: stored.key,
-            fileName: safeFileName,
-            mimeType: input.mimeType,
-            contentSha256: createHash("sha256").update(bytes).digest("hex"),
-            contentBytes: bytes.length,
-            capturedAt: new Date(),
-            status: "active",
-            uploadedBy: admin.id,
-          })
-          .$returningId();
+        const uploaded = await uploadPersonnelDocument({ personId: person.id, name: "保单附件", documentType: "insurance", fileName: safeFileName, mimeType: input.mimeType, base64Data: bytes.toString("base64") }, admin.id);
+        const [created] = await db.select({ evidenceId: personnelDocuments.evidenceId }).from(personnelDocuments).where(eq(personnelDocuments.id, uploaded.id)).limit(1);
         await db.insert(auditLogs).values({
           userId: admin.id,
           module: "personnel",
@@ -3016,7 +3022,8 @@ export const adminRouter = router({
         });
         return {
           success: true,
-          evidenceId: created?.id ?? 0,
+          evidenceId: created?.evidenceId ?? 0,
+          documentId: uploaded.id,
           fileName: safeFileName,
         };
       }),
@@ -3030,6 +3037,14 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        return db.transaction(async tx => {
+        const db = tx;
+        const [existing] = input.id ? await db.select().from(employeeInsurancePolicies).where(eq(employeeInsurancePolicies.id, input.id)).limit(1).for("update") : [];
+        if (input.id && !existing) throw new TRPCError({ code: "NOT_FOUND", message: "保单不存在，不能覆盖" });
+        if (existing && existing.employeeProfileId !== input.employeeProfileId) throw new TRPCError({ code: "FORBIDDEN", message: "不能移动历史保单员工主体" });
+        const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, input.employeeProfileId))).limit(1);
+        const [unified] = await db.select({ id: personnelPeople.id }).from(personnelPeople).where(eq(personnelPeople.legacyProfileId, input.employeeProfileId)).limit(1);
+        if (link || unified) throw new TRPCError({ code: "FORBIDDEN", message: "已统一人员请使用personnel.saveInsurance版本化入口" });
         const [profile] = await db
           .select({
             id: employeeProfiles.id,
@@ -3043,7 +3058,9 @@ export const adminRouter = router({
             code: "BAD_REQUEST",
             message: "请先建立有效员工档案",
           });
-        if (input.evidenceId) {
+        const retained = <K extends "providerName" | "policyReference" | "evidenceId" | "premiumAmount" | "coverageAmount" | "remarks">(key: K) => input[key] === undefined ? existing?.[key] ?? null : input[key];
+        const evidenceId = retained("evidenceId");
+        if (evidenceId) {
           const [evidence] = await db
             .select({
               id: evidenceRecords.id,
@@ -3053,7 +3070,7 @@ export const adminRouter = router({
               status: evidenceRecords.status,
             })
             .from(evidenceRecords)
-            .where(eq(evidenceRecords.id, input.evidenceId))
+            .where(eq(evidenceRecords.id, evidenceId))
             .limit(1);
           if (
             !evidence ||
@@ -3071,21 +3088,21 @@ export const adminRouter = router({
         const values = {
           employeeProfileId: input.employeeProfileId,
           insuranceType: input.insuranceType,
-          providerName: input.providerName ?? null,
-          policyReference: input.policyReference ?? null,
-          evidenceId: input.evidenceId ?? null,
+          providerName: retained("providerName"),
+          policyReference: retained("policyReference"),
+          evidenceId,
           premiumAmount:
-            input.premiumAmount === null || input.premiumAmount === undefined
+            retained("premiumAmount") === null
               ? null
-              : String(input.premiumAmount),
+              : String(retained("premiumAmount")),
           coverageAmount:
-            input.coverageAmount === null || input.coverageAmount === undefined
+            retained("coverageAmount") === null
               ? null
-              : String(input.coverageAmount),
+              : String(retained("coverageAmount")),
           purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`),
           expiresAt: new Date(`${input.expiresAt}T00:00:00Z`),
           status: input.status,
-          remarks: input.remarks ?? null,
+          remarks: retained("remarks"),
         };
         if (input.id)
           await db
@@ -3104,6 +3121,7 @@ export const adminRouter = router({
           summary: `${input.id ? "维护" : "登记"}员工保险：${input.insuranceType}`,
         });
         return { success: true };
+        });
       }),
   }),
 

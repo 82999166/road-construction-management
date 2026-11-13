@@ -8,6 +8,8 @@ import {
   personnelCsv,
   salaryChanged,
   sensitiveClearLabels,
+  personnelDraftError,
+  salaryPayerTypeOf,
 } from "./UnifiedPersonnelDirectory.helpers";
 import { personnelSaveInput } from "@shared/personnel";
 const source = readFileSync(
@@ -53,6 +55,7 @@ describe("统一人员目录安全回归", () => {
       employmentStatus: "active",
       primaryPositionId: null,
       payrollEnabled: true,
+      salaryPayerType: "company",
     });
     expect(input.phoneNumber).toBeUndefined();
     expect(input.identityNo).toBeUndefined();
@@ -231,6 +234,77 @@ describe("统一人员目录安全回归", () => {
 });
 
 describe("人员计薪与实际API约束", () => {
+  it("旧external默认owner，旧公司停用计薪仍默认company，不根据disabled猜测老板", () => {
+    expect(salaryPayerTypeOf({ affiliation: "external" })).toBe("owner");
+    expect(salaryPayerTypeOf({ affiliation: "company" })).toBe("company");
+    expect(salaryPayerTypeOf({ affiliation: "labor_team" })).toBe("company");
+    expect(
+      salaryPayerTypeOf({ affiliation: "company", salaryPayerType: "owner" })
+    ).toBe("owner");
+  });
+  it("owner保存兜底强制关闭公司计薪，即使草稿非法也不生成公司基础工资", () => {
+    const original = {
+      ...newPersonnelDraft(),
+      name: "合成工资人员",
+      baseSalary: "5000",
+    };
+    const input = buildPersonnelSave(
+      {
+        ...original,
+        salaryPayerType: "owner",
+        salaryPayerName: " 合成车队 ",
+        payrollEnabled: true,
+      },
+      original,
+      { id: 1, version: 7 }
+    );
+    expect(input).toMatchObject({
+      salaryPayerType: "owner",
+      salaryPayerName: "合成车队",
+      payrollEnabled: false,
+      baseSalary: null,
+      version: 7,
+    });
+    expect(input).not.toHaveProperty("userId");
+    expect(input.salaryEffectiveFrom).toBeTruthy();
+  });
+  it("工资发放方和老板名称变更新增工资版本，空名称可明确移除而号码留空仍保留", () => {
+    const original = {
+      ...newPersonnelDraft("external"),
+      name: "合成人员",
+      salaryPayerName: "原合成老板",
+    };
+    const draft = {
+      ...original,
+      salaryPayerName: "",
+      salaryEffectiveFrom: "2026-12-01",
+    };
+    expect(salaryChanged(draft, original)).toBe(true);
+    expect(
+      buildPersonnelSave(draft, original, { id: 1, version: 7 })
+    ).toMatchObject({
+      salaryPayerName: null,
+      salaryEffectiveFrom: "2026-12-01",
+    });
+  });
+  it("新增主分类必须选真实启用项；旧未分类可保留而已分类不得改空", () => {
+    const draft = { ...newPersonnelDraft("external"), name: "合成司机" };
+    const positions = [{ id: 21, status: "active" }];
+    expect(personnelDraftError(draft, positions)).toContain("必须分类");
+    expect(personnelDraftError(draft, positions, draft)).toBe("");
+    expect(
+      personnelDraftError({ ...draft, primaryPositionId: "21" }, positions)
+    ).toBe("");
+    expect(
+      personnelDraftError({ ...draft, primaryPositionId: "22" }, positions)
+    ).toContain("不存在");
+    expect(
+      personnelDraftError(draft, positions, {
+        ...draft,
+        primaryPositionId: "21",
+      })
+    ).toContain("已分类人员");
+  });
   it("切换发薪资格或用工归属也提交工资生效版本", () => {
     const original = {
       ...newPersonnelDraft(),

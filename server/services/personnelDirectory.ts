@@ -5,7 +5,7 @@ import type { Express } from "express";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, lte, or } from "drizzle-orm";
 import * as s from "../../drizzle/schema";
-import { personnelSaveInput, type PersonnelSaveInput, personnelDocumentInput, personnelPositionInput, personnelTeamInput, personnelListInput, personnelInsuranceInput } from "../../shared/personnel";
+import { personnelSaveInput, type PersonnelSaveInput, personnelDocumentInput, personnelPositionInput, personnelTeamInput, personnelListInput, personnelInsuranceInput, resolvePersonnelSalaryPayer } from "../../shared/personnel";
 import { assertCertificateFileSignature } from "../../shared/domain";
 import { getDb } from "../db";
 import { assertSuperAdmin } from "../access";
@@ -14,6 +14,7 @@ import { ENV } from "../_core/env";
 import { storagePut, storageGetSignedUrl } from "../storage";
 import { encryptSecret, decryptSecret, fingerprintSecret, revealBusinessSecret } from "./secretVault";
 import { chinaBusinessDate } from "./chinaBusinessTime";
+import { protectPersonnelHistory, revealPersonnelHistory } from "./personnelHistorySecurity";
 import { ensureLegacyPayrollSubjects, syncLegacyMirrors, getLegacyCompensation } from "./personnelLegacyBridge";
 import { isAliyunOssPhotoStorageKey } from "./aliyunOssPhotoStorage";
 
@@ -31,7 +32,7 @@ export function safePersonnel(person: Person, avatarDocumentId: number | null = 
     primaryPositionId: person.primaryPositionId, secondaryPositionIds: person.secondaryPositionIds, projectId: person.projectId, teamId: person.teamId,
     entryDate: person.entryDate, exitDate: person.exitDate, gender: person.gender, birthDate: person.birthDate, address: person.address,
     emergencyContactName: person.emergencyContactName, emergencyContactPhoneMasked: revealBusinessSecret(person.emergencyContactPhoneEncrypted),
-    remarks: person.remarks, payrollEnabled: person.payrollEnabled, phoneMasked: revealBusinessSecret(person.phoneEncrypted), identityMasked: revealBusinessSecret(person.identityNoEncrypted),
+    remarks: person.remarks, payrollEnabled: person.payrollEnabled, ...resolvePersonnelSalaryPayer(person), phoneMasked: revealBusinessSecret(person.phoneEncrypted), identityMasked: revealBusinessSecret(person.identityNoEncrypted),
     bankMasked: revealBusinessSecret(person.bankAccountEncrypted), bankName: person.bankName, userId: person.userId, legacyProfileId: person.legacyProfileId,
     legacyWorkerId: person.legacyWorkerId, avatarDocumentId, version: person.version, createdAt: person.createdAt, updatedAt: person.updatedAt };
 }
@@ -67,7 +68,7 @@ function safeChanges(previous: Person | undefined, next: Person) {
     const old = (before as any)[key] ?? null; const value = after[key] ?? null;
     if (JSON.stringify(old) !== JSON.stringify(value)) changes[key] = { before: old, after: value };
   }
-  return changes;
+  return protectPersonnelHistory(changes);
 }
 export function currentPersonnelSalary<T extends { effectiveFrom: string }>(rows: T[], day = chinaBusinessDate(new Date())): T | null {
   return rows.filter(row => row.effectiveFrom <= day).sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0] ?? null;
@@ -122,17 +123,24 @@ export async function saveDirectoryPerson(rawInput: PersonnelSaveInput, actorId:
     if (patch.phoneFingerprint) await assertPersonnelPhoneUnique(tx, patch.phoneFingerprint, previous);
     const salaryRows = previous ? await tx.select().from(s.personnelSalaryHistory).where(eq(s.personnelSalaryHistory.personId, previous.id)) : [];
     const current = currentPersonnelSalary(salaryRows, today);
-    const nextSalary = { salaryBasis: input.salaryBasis ?? current?.salaryBasis ?? (input.affiliation === "temporary" ? "daily" : "monthly"), baseSalary: input.baseSalary === undefined ? current?.baseSalary ?? null : input.baseSalary === null ? null : Number(input.baseSalary).toFixed(2), payrollEnabled: input.payrollEnabled, affiliation: input.affiliation };
+    const payer = resolvePersonnelSalaryPayer(previous ?? { affiliation: input.affiliation }, current);
+    const nextSalary = { salaryBasis: input.salaryBasis ?? current?.salaryBasis ?? (input.affiliation === "temporary" ? "daily" : "monthly"), baseSalary: input.baseSalary === undefined ? current?.baseSalary ?? null : input.baseSalary === null ? null : Number(input.baseSalary).toFixed(2), payrollEnabled: input.payrollEnabled, affiliation: input.affiliation, salaryPayerType: input.salaryPayerType ?? payer.salaryPayerType, salaryPayerName: input.salaryPayerName === undefined ? payer.salaryPayerName : input.salaryPayerName };
+    if (nextSalary.salaryPayerType === "owner" && nextSalary.payrollEnabled) throw new TRPCError({ code: "BAD_REQUEST", message: "车队/机械老板自行发放工资不能启用公司计薪" });
     if (nextSalary.payrollEnabled && input.affiliation === "external") throw new TRPCError({ code: "BAD_REQUEST", message: "外部人员不能启用工资计薪" });
     if (input.affiliation === "temporary" && nextSalary.payrollEnabled && nextSalary.salaryBasis === "monthly") throw new TRPCError({ code: "BAD_REQUEST", message: "临时工使用日结，不得重复生成月薪" });
-    const meaningfulInitialSalary = input.payrollEnabled || input.baseSalary !== undefined && input.baseSalary !== null;
-    const salaryChanged = current ? Object.keys(nextSalary).some(key => (current as any)[key] !== (nextSalary as any)[key]) : meaningfulInitialSalary;
+    const meaningfulInitialSalary = input.payrollEnabled || input.baseSalary !== undefined && input.baseSalary !== null || !previous && (input.salaryPayerType !== undefined || input.salaryPayerName !== undefined);
+    const payerChanged = nextSalary.salaryPayerType !== payer.salaryPayerType || nextSalary.salaryPayerName !== payer.salaryPayerName;
+    const currentSetting = current ? { ...current, ...payer } : null;
+    const salaryChanged = currentSetting ? Object.keys(nextSalary).some(key => (currentSetting as any)[key] !== (nextSalary as any)[key]) : meaningfulInitialSalary || payerChanged;
     const effectiveFrom = input.salaryEffectiveFrom ?? today;
     if (salaryChanged && previous && !input.salaryEffectiveFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "变更计薪设置须明确生效日期" });
     if (salaryChanged && previous && effectiveFrom < today) throw new TRPCError({ code: "BAD_REQUEST", message: "不能追溯覆盖历史薪资；请走原历史工资审核流程" });
     if (salaryChanged && salaryRows.some(row => row.effectiveFrom === effectiveFrom)) throw new TRPCError({ code: "CONFLICT", message: "该生效日期已有薪资版本，请选择新的生效日期；历史版本不能覆盖" });
     if (salaryChanged && input.affiliation !== previous?.affiliation && effectiveFrom !== today && previous) throw new TRPCError({ code: "BAD_REQUEST", message: "归属立即生效，联动计薪资格请采用今天生效的薪资版本" });
     patch.payrollEnabled = salaryChanged && effectiveFrom <= today ? nextSalary.payrollEnabled : current?.payrollEnabled ?? false;
+    // 未来版本不覆盖今天镜像；旧caller省略新字段保留原数据，不按计薪开关推断发薪主体。
+    if (salaryChanged && effectiveFrom <= today) Object.assign(patch, { salaryPayerType: nextSalary.salaryPayerType, salaryPayerName: nextSalary.salaryPayerName });
+    else if (current) Object.assign(patch, { salaryPayerType: current.salaryPayerType, salaryPayerName: current.salaryPayerName });
     const prospective = { projectId: null, teamId: null, userId: null, entryDate: null, exitDate: null, primaryPositionId: null, ...previous, ...patch, id: previous?.id ?? 0 } as Person;
     await validateReferences(tx, prospective, previous);
     const version = (previous?.version ?? 0) + 1; let personId: number;
@@ -143,11 +151,11 @@ export async function saveDirectoryPerson(rawInput: PersonnelSaveInput, actorId:
     if (salaryChanged) await tx.insert(s.personnelSalaryHistory).values({ ...nextSalary, personId, effectiveFrom, createdBy: actorId });
     const assignmentKeys = ["affiliation", "primaryPositionId", "secondaryPositionIds", "projectId", "teamId", "employmentStatus"] as const;
     if (!previous || assignmentKeys.some(k => JSON.stringify(previous[k]) !== JSON.stringify(person[k]))) await tx.insert(s.personnelAssignments).values({ personId, affiliation: person.affiliation, primaryPositionId: person.primaryPositionId, secondaryPositionIds: person.secondaryPositionIds, projectId: person.projectId, teamId: person.teamId, employmentStatus: person.employmentStatus, effectiveFrom: today, version, createdBy: actorId });
-    if (nextSalary.payrollEnabled && person.affiliation !== "external") await ensureLegacyPayrollSubjects(tx, { ...person, payrollEnabled: true }, actorId);
+    if (nextSalary.payrollEnabled && nextSalary.salaryPayerType === "company" && person.affiliation !== "external") await ensureLegacyPayrollSubjects(tx, { ...person, payrollEnabled: true, salaryPayerType: nextSalary.salaryPayerType, salaryPayerName: nextSalary.salaryPayerName }, actorId);
     person = await findPersonnel(tx, personId);
-    await syncLegacyMirrors(tx, person);
+    await syncLegacyMirrors(tx, person, { teamId: input.teamId });
     const changes = safeChanges(previous, person);
-    if (salaryChanged) changes.salarySetting = { before: current ? { salaryBasis: current.salaryBasis, baseSalary: current.baseSalary, payrollEnabled: current.payrollEnabled, affiliation: current.affiliation } : null, after: { ...nextSalary, effectiveFrom } };
+    if (salaryChanged) changes.salarySetting = { before: current ? { salaryBasis: current.salaryBasis, baseSalary: current.baseSalary, payrollEnabled: current.payrollEnabled, affiliation: current.affiliation, ...payer } : null, after: { ...nextSalary, effectiveFrom } };
     await tx.insert(s.personnelChanges).values({ personId, action: previous ? "update" : "create", version, changes, createdBy: actorId });
     return { success: true as const, id: personId, personNo: person.personNo, version };
   }); } catch (error) { if (duplicate(error)) throw new TRPCError({ code: "CONFLICT", message: "身份、账号或生效版本已存在，请刷新并核实档案，不能重复建档" }); throw error; }
@@ -165,13 +173,13 @@ export async function personnelOptions() {
 }
 export async function listDirectoryPeople(input: Parameters<typeof personnelListInput.parse>[0]) {
   const filter = personnelListInput.parse(input); const db = await requirePersonnelDb();
-  const [people, positions, projects, teams, salaries, sources, policies, documents] = await Promise.all([db.select().from(s.personnelPeople).orderBy(desc(s.personnelPeople.id)), db.select().from(s.personnelPositions), db.select().from(s.projects), db.select().from(s.personnelTeams), db.select().from(s.personnelSalaryHistory), db.select().from(s.personnelSourceLinks), db.select({ employeeProfileId: s.employeeInsurancePolicies.employeeProfileId, expiresAt: s.employeeInsurancePolicies.expiresAt, status: s.employeeInsurancePolicies.status }).from(s.employeeInsurancePolicies), db.select({ id: s.personnelDocuments.id, evidenceId: s.personnelDocuments.evidenceId, personId: s.personnelDocuments.personId, documentType: s.personnelDocuments.documentType, expiresAt: s.personnelDocuments.expiresAt }).from(s.personnelDocuments)]);
+  const [people, positions, projects, teams, salaries, sources, policies, documents] = await Promise.all([db.select().from(s.personnelPeople).orderBy(desc(s.personnelPeople.id)), db.select().from(s.personnelPositions), db.select().from(s.projects), db.select().from(s.personnelTeams), db.select().from(s.personnelSalaryHistory), db.select().from(s.personnelSourceLinks), db.select({ employeeProfileId: s.employeeInsurancePolicies.employeeProfileId, purchasedAt: s.employeeInsurancePolicies.purchasedAt, expiresAt: s.employeeInsurancePolicies.expiresAt, status: s.employeeInsurancePolicies.status }).from(s.employeeInsurancePolicies), db.select({ id: s.personnelDocuments.id, evidenceId: s.personnelDocuments.evidenceId, personId: s.personnelDocuments.personId, documentType: s.personnelDocuments.documentType, expiresAt: s.personnelDocuments.expiresAt }).from(s.personnelDocuments)]);
   const positionById = new Map(positions.map(p => [p.id, p]));
   return people.filter(p => (!filter?.search || `${p.name} ${p.personNo}`.toLowerCase().includes(filter.search.toLowerCase())) && (!filter?.affiliation || p.affiliation === filter.affiliation) && (!filter?.status || p.employmentStatus === filter.status) && (!filter?.projectId || p.projectId === filter.projectId) && (!filter?.teamId || p.teamId === filter.teamId) && (!filter?.positionId || p.primaryPositionId === filter.positionId || p.secondaryPositionIds.includes(filter.positionId))).map(p => {
     const salary = currentPersonnelSalary(salaries.filter(x => x.personId === p.id));
     const profileIds = Array.from(new Set([...sources.filter(x => x.personId === p.id && x.sourceType === "profile").map(x => x.sourceId), ...(p.legacyProfileId ? [p.legacyProfileId] : [])]));
-    const insurance = summarizePersonnelInsurance([...policies.filter(x => profileIds.includes(x.employeeProfileId) && x.status !== "cancelled").map(x => ({ expiresAt: chinaBusinessDate(x.expiresAt), active: x.status !== "expired" })), ...documents.filter(x => x.personId === p.id && x.documentType === "insurance").map(x => ({ expiresAt: x.expiresAt, active: true }))]);
-    return { ...safePersonnel(p, mappedAvatarDocumentId(p, documents)), ...insurance, historicalDuplicateProfileCount: Math.max(0, profileIds.length - 1), payrollEnabled: salary?.payrollEnabled ?? p.payrollEnabled, positionName: p.primaryPositionId ? positionById.get(p.primaryPositionId)?.name ?? null : null, secondaryPositionNames: p.secondaryPositionIds.map(id => positionById.get(id)?.name).filter((x): x is string => !!x), projectName: projects.find(x => x.id === p.projectId)?.name ?? null, teamName: teams.find(x => x.id === p.teamId)?.name ?? null, salaryBasis: salary?.salaryBasis ?? null, baseSalary: salary?.baseSalary ?? null };
+    const insurance = summarizePersonnelInsurance(policies.filter(x => profileIds.includes(x.employeeProfileId) && x.status !== "cancelled" && chinaBusinessDate(x.purchasedAt) <= chinaBusinessDate(new Date())).map(x => ({ expiresAt: chinaBusinessDate(x.expiresAt), active: x.status === "active" })));
+    return { ...safePersonnel(p, mappedAvatarDocumentId(p, documents)), ...resolvePersonnelSalaryPayer(p, salary), ...insurance, historicalDuplicateProfileCount: Math.max(0, profileIds.length - 1), payrollEnabled: salary?.payrollEnabled ?? p.payrollEnabled, positionName: p.primaryPositionId ? positionById.get(p.primaryPositionId)?.name ?? null : null, secondaryPositionNames: p.secondaryPositionIds.map(id => positionById.get(id)?.name).filter((x): x is string => !!x), projectName: projects.find(x => x.id === p.projectId)?.name ?? null, teamName: teams.find(x => x.id === p.teamId)?.name ?? null, salaryBasis: salary?.salaryBasis ?? null, baseSalary: salary?.baseSalary ?? null };
   });
 }
 /** 有有效保单优先；同时保留过期数，未知有效期的附件不冒充有效保险。 */
@@ -203,11 +211,12 @@ export async function directoryDetail(personId: number, period?: string) {
     db.select({ id: s.machines.id, projectId: s.machines.projectId, code: s.machines.code, name: s.machines.name, operatorPersonId: s.machines.operatorPersonId, operatorUserId: s.machines.operatorUserId }).from(s.machines).where(raw.userId ? or(eq(s.machines.operatorPersonId, personId), eq(s.machines.operatorUserId, raw.userId)) : eq(s.machines.operatorPersonId, personId)),
   ]);
   const rows = attendanceRows.filter(row => !period || chinaBusinessDate(row.attendanceDate).startsWith(period));
+  const confirmedRows = rows.filter(row => row.status === "confirmed" || row.status === "locked");
   const salary = currentPersonnelSalary(salaryHistory); const positionName = positions.find(x => x.id === raw.primaryPositionId)?.name ?? null;
-  return { person: { ...safePersonnel(raw, mappedAvatarDocumentId(raw, documents)), payrollEnabled: salary?.payrollEnabled ?? raw.payrollEnabled, positionName, secondaryPositionNames: raw.secondaryPositionIds.map(id => positions.find(x => x.id === id)?.name).filter((x): x is string => !!x), projectName: projectRows.find(x => x.id === raw.projectId)?.name ?? null, teamName: teamRows.find(x => x.id === raw.teamId)?.name ?? null, salaryBasis: salary?.salaryBasis ?? null, baseSalary: salary?.baseSalary ?? null }, sourceLinks, assignments, salaryHistory, payrollSubjects,
-    attendance: { rows, days: new Set(rows.map(r => chinaBusinessDate(r.attendanceDate))).size, workHours: rows.reduce((n, r) => n + Number(r.workHours), 0), overtimeHours: rows.reduce((n, r) => n + Number(r.overtimeHours), 0) }, compensation,
+  return { person: { ...safePersonnel(raw, mappedAvatarDocumentId(raw, documents)), ...resolvePersonnelSalaryPayer(raw, salary), payrollEnabled: salary?.payrollEnabled ?? raw.payrollEnabled, positionName, secondaryPositionNames: raw.secondaryPositionIds.map(id => positions.find(x => x.id === id)?.name).filter((x): x is string => !!x), projectName: projectRows.find(x => x.id === raw.projectId)?.name ?? null, teamName: teamRows.find(x => x.id === raw.teamId)?.name ?? null, salaryBasis: salary?.salaryBasis ?? null, baseSalary: salary?.baseSalary ?? null }, sourceLinks, assignments, salaryHistory: salaryHistory.map(row => ({ ...row, ...resolvePersonnelSalaryPayer(row) })), payrollSubjects,
+    attendance: { rows, summaryBasis: "confirmed_and_locked" as const, summaryLabel: "已确认考勤（含锁定）", days: new Set(confirmedRows.map(r => chinaBusinessDate(r.attendanceDate))).size, workHours: confirmedRows.reduce((n, r) => n + Number(r.workHours), 0), overtimeHours: confirmedRows.reduce((n, r) => n + Number(r.overtimeHours), 0) }, compensation,
     resources: { vehicles: vehicleRows, machines: machineRows, history: resourceHistory }, documents,
-    changes, insurance: insuranceRows.map(row => ({ id: row.id, employeeProfileId: row.employeeProfileId, insuranceType: row.insuranceType, providerName: row.providerName, premiumAmount: row.premiumAmount, coverageAmount: row.coverageAmount, purchasedAt: row.purchasedAt, expiresAt: row.expiresAt, status: row.status, evidenceId: row.evidenceId, hasAttachment: !!row.evidenceId, remarks: row.remarks })) };
+    changes: changes.map(row => ({ ...row, changes: revealPersonnelHistory(row.changes) })), insurance: insuranceRows.map(row => ({ id: row.id, employeeProfileId: row.employeeProfileId, insuranceType: row.insuranceType, providerName: row.providerName, premiumAmount: row.premiumAmount, coverageAmount: row.coverageAmount, purchasedAt: row.purchasedAt, expiresAt: row.expiresAt, status: row.status, evidenceId: row.evidenceId, hasAttachment: !!row.evidenceId, remarks: row.remarks })) };
 }
 export async function saveDirectoryPosition(input: typeof personnelPositionInput._output) {
   const db = await requirePersonnelDb();
@@ -268,15 +277,15 @@ async function assertPersonProfile(db: ReadDb, person: Person, profileId: number
   return profile;
 }
 /** 期间内的真实旧主体；多项目/多profile明确要求选择，绝不猜今天pointer。 */
-export async function resolvePersonnelPayrollProfile(input: { personId: number; period: string; employeeProfileId?: number; projectId?: number }) {
+export async function resolvePersonnelPayrollProfile(input: { personId: number; period: string; employeeProfileId?: number; projectId?: number; advanceDate?: string }) {
   const db = await requirePersonnelDb(); const person = await findPersonnel(db, input.personId);
   const [links, history] = await Promise.all([db.select().from(s.personnelSourceLinks).where(eq(s.personnelSourceLinks.personId, person.id)), db.select().from(s.personnelSalaryHistory).where(eq(s.personnelSalaryHistory.personId, person.id))]);
   const ids = Array.from(new Set([...links.filter(x => x.sourceType === "profile").map(x => x.sourceId), ...(person.legacyProfileId ? [person.legacyProfileId] : [])]));
   if (input.employeeProfileId && !ids.includes(input.employeeProfileId)) throw new TRPCError({ code: "FORBIDDEN", message: "所选工资主体不属于该人员" });
-  const start = `${input.period}-01`; const end = chinaBusinessDate(new Date(Date.UTC(Number(input.period.slice(0, 4)), Number(input.period.slice(5)), 0)));
+  const start = input.advanceDate ?? `${input.period}-01`; const end = input.advanceDate ?? chinaBusinessDate(new Date(Date.UTC(Number(input.period.slice(0, 4)), Number(input.period.slice(5)), 0)));
   const versions = [...history].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
-  const eligibleRanges = versions.map((v, i) => ({ ...v, endExclusive: versions[i + 1]?.effectiveFrom ?? "9999-12-31" })).filter(v => v.payrollEnabled && v.affiliation !== "external" && v.affiliation !== "temporary" && v.effectiveFrom <= end && v.endExclusive > start);
-  if (!eligibleRanges.length) throw new TRPCError({ code: "BAD_REQUEST", message: "所选期间没有启用公司/施工队月度工资的生效薪资历史；外部费用和临时日结不能生成月薪" });
+  const eligibleRanges = versions.map((v, i) => ({ ...v, endExclusive: versions[i + 1]?.effectiveFrom ?? "9999-12-31" })).filter(v => resolvePersonnelSalaryPayer(v).salaryPayerType === "company" && v.payrollEnabled && v.affiliation !== "external" && (Boolean(input.advanceDate) || v.affiliation !== "temporary") && v.effectiveFrom <= end && v.endExclusive > start);
+  if (!eligibleRanges.length) throw new TRPCError({ code: "BAD_REQUEST", message: input.advanceDate ? "所选预支日期没有公司发薪的有效任职资格；老板自行发薪不能登记公司工资预支" : "所选期间没有启用公司/施工队月度工资的生效薪资历史；外部费用和临时日结不能生成月薪" });
   const profiles = ids.length ? await db.select().from(s.employeeProfiles).where(inArray(s.employeeProfiles.id, ids)) : [];
   const candidates = profiles.filter(p => p.projectId && p.laborWorkerId && (!input.employeeProfileId || p.id === input.employeeProfileId) && (!input.projectId || p.projectId === input.projectId) && eligibleRanges.some(v => {
     const rangeStart = [start, v.effectiveFrom, p.joinedAt ? chinaBusinessDate(p.joinedAt) : start].sort().at(-1)!;

@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -124,6 +124,7 @@ const workerInput = z.object({
 /** 考勤录入输入。工时与加班工时均使用小时作为统一计量单位。 */
 const attendanceInput = z
   .object({
+    id: z.number().int().positive().optional(),
     workerId: z.number().int().positive(),
     projectId: z.number().int().positive(),
     attendanceDate: z.string().date(),
@@ -284,6 +285,40 @@ function getChinaBusinessDate(now: Date) {
       .map(part => [part.type, part.value])
   );
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+/** 历史主体按入离场闭区间维护；left 不影响合法历史日期的补录。 */
+function assertAttendanceWorkerDate(
+  worker: typeof laborWorkers.$inferSelect,
+  attendanceDate: string
+) {
+  const entry = worker.entryDate ? getChinaBusinessDate(worker.entryDate) : null;
+  const exit = worker.exitDate ? getChinaBusinessDate(worker.exitDate) : null;
+  if ((entry && attendanceDate < entry) || (exit && attendanceDate > exit)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "考勤日期必须处于该历史工人的入场至离场日期闭区间内",
+    });
+  }
+}
+
+/** 更新必须实际命中读取时的非锁定状态，工资锁定后绝不回写解锁。 */
+function assertAttendanceRecordWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (!header || typeof header !== "object" ||
+      !("affectedRows" in header) || Number(header.affectedRows) !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "该考勤记录已被更新或锁定，请刷新后重试",
+    });
+  }
+}
+
+function isAttendanceDuplicate(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { code?: string; cause?: unknown };
+  return value.code === "ER_DUP_ENTRY" ||
+    (value.cause !== error && isAttendanceDuplicate(value.cause));
 }
 
 /**
@@ -1474,21 +1509,32 @@ export const laborRouter = router({
           input.projectId
         );
         assertAttendanceWorkHours(input.workHours, input.overtimeHours);
+        assertAttendanceWorkerDate(worker, input.attendanceDate);
         const attendanceDate = toBusinessDate(input.attendanceDate);
-        const existingRows = await db
+        try { return await db.transaction(async tx => {
+        const existingRows = await tx
           .select({
             id: attendanceRecords.id,
+            workerId: attendanceRecords.workerId,
+            projectId: attendanceRecords.projectId,
+            attendanceDate: attendanceRecords.attendanceDate,
             status: attendanceRecords.status,
           })
           .from(attendanceRecords)
           .where(
-            and(
+            input.id ? eq(attendanceRecords.id, input.id) : and(
               eq(attendanceRecords.workerId, input.workerId),
-              eq(attendanceRecords.attendanceDate, attendanceDate)
+              eq(attendanceRecords.projectId, input.projectId),
+              eq(attendanceRecords.attendanceDate, sql`${input.attendanceDate}`)
             )
           )
           .limit(1);
         const existing = existingRows[0];
+        if (input.id && (!existing || existing.workerId !== input.workerId ||
+            existing.projectId !== input.projectId ||
+            getChinaBusinessDate(existing.attendanceDate) !== input.attendanceDate)) {
+          throw new TRPCError({ code: "CONFLICT", message: "考勤记录与所选历史人员、项目或日期不一致，请刷新后重试" });
+        }
         if (existing?.status === "locked") {
           throw new TRPCError({
             code: "CONFLICT",
@@ -1506,25 +1552,41 @@ export const laborRouter = router({
           source: input.source,
           status: input.status,
         } as const;
+        let id: number;
         if (existing) {
-          await db
+          const result = await tx
             .update(attendanceRecords)
             .set(values)
-            .where(eq(attendanceRecords.id, existing.id));
+            .where(and(
+              eq(attendanceRecords.id, existing.id),
+              eq(attendanceRecords.workerId, input.workerId),
+              eq(attendanceRecords.projectId, input.projectId),
+              eq(attendanceRecords.attendanceDate, sql`${input.attendanceDate}`),
+              eq(attendanceRecords.status, existing.status),
+              inArray(attendanceRecords.status, ["draft", "confirmed"])
+            ));
+          assertAttendanceRecordWrite(result);
+          id = existing.id;
         } else {
-          await db.insert(attendanceRecords).values(values);
+          const [result] = await tx.insert(attendanceRecords).values(values);
+          id = Number(result.insertId);
         }
-        await db.insert(auditLogs).values({
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: existing ? "update_attendance" : "create_attendance",
           targetType: "attendance_record",
-          targetId: String(
-            existing?.id ?? `${input.workerId}-${input.attendanceDate}`
-          ),
+          targetId: String(id),
           summary: `${input.attendanceDate} 考勤${existing ? "更新" : "录入"}：${input.workHours} 小时，加班 ${input.overtimeHours} 小时`,
         });
-        return { success: true, id: existing?.id ?? null };
+        return { success: true, id };
+        }); } catch (error) {
+          if (isAttendanceDuplicate(error)) throw new TRPCError({
+            code: "CONFLICT",
+            message: "该人员当天考勤已由其他请求新增，请刷新后核实，不能重复新增",
+          });
+          throw error;
+        }
       }),
   }),
 

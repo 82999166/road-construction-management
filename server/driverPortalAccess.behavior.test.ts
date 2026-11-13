@@ -184,3 +184,34 @@ describe("driver portal: payment status is derived from scoped cash, not legacy 
     expect(driverSettlementPaymentFacts(statement({ netPayableAmount: "0" }), [], 0)).toMatchObject({ actualPaidAmount: 0, remainingAmount: 0, paymentStatus: "zero" });
   });
 });
+
+
+describe("同日可信交接期间回归", () => {
+  it("09:00上岗10:00换人保留09:30本人记录，10:00及跨司机整日拒绝", () => {
+    const start = at("2026-11-04T09:00:00+08:00");
+    const binding = personnelBinding({ effectiveFrom: "2026-11-04", effectiveTo: "2026-11-04", createdAt: start });
+    const own = ranges({ personnelBindings: [binding], personnelEvents: [event(1, start, null, identity(101)), event(2, handover, identity(101), identity(102, 52))] });
+    expect(driverRangeCovers(own, 7, 11, at("2026-11-04T09:30:00+08:00").getTime())).toBe(true);
+    expect(driverRangeCovers(own, 7, 11, handover.getTime())).toBe(false);
+    expect(driverRangeCovers(own, 7, 11, driverBusinessDayStart("2026-11-04"), driverBusinessDayStart("2026-11-05"))).toBe(false);
+  });
+  it("可信事件不得扩宽已关闭历史到下一天；未知基线不能授权", () => {
+    const start = at("2026-11-03T09:00:00+08:00");
+    const own = ranges({ personnelBindings: [personnelBinding({ effectiveFrom: "2026-11-03", effectiveTo: "2026-11-04", createdAt: start })], personnelEvents: [event(1, start, null, identity(101)), event(2, at("2026-11-05T10:00:00+08:00"), identity(101), identity(102))] });
+    expect(driverRangeCovers(own, 7, 11, handover.getTime())).toBe(false);
+    expect(ranges({ personnelBindings: [personnelBinding({ effectiveFrom: "2026-11-04", effectiveTo: "2026-11-04", createdAt: handover })], personnelEvents: [event(1, handover, { ...identity(101), baselineUnknown: true }, identity(102))] })).toEqual([]);
+  });
+});
+
+
+describe("同日A到B到A不借第一次上岗授权", () => {
+  it("第二次A只从自己的createdAt事件起算", () => {
+    const morning = at("2026-11-04T09:00:00+08:00"), returned = at("2026-11-04T11:00:00+08:00");
+    const bindings = [personnelBinding({ id: 1, effectiveFrom: "2026-11-04", effectiveTo: "2026-11-04", createdAt: morning }), personnelBinding({ id: 3, effectiveFrom: "2026-11-04", createdAt: returned })];
+    const own = ranges({ personnelBindings: bindings, personnelEvents: [event(1, morning, null, identity(101)), event(2, handover, identity(101), identity(102, 52)), event(3, returned, identity(102, 52), identity(101))] });
+    expect(driverRangeCovers(own, 7, 11, morning.getTime())).toBe(true);
+    expect(driverRangeCovers(own, 7, 11, handover.getTime())).toBe(false);
+    expect(driverRangeCovers(own, 7, 11, returned.getTime() - 1)).toBe(false);
+    expect(driverRangeCovers(own, 7, 11, returned.getTime())).toBe(true);
+  });
+});
