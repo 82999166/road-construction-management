@@ -39,7 +39,7 @@ describe("敏感数据、证据留存与审计完整性控制", () => {
       "checkoutAddress: attendanceCheckIns.checkoutAddress"
     );
     expect(source).toContain("getDisputeCoordinates");
-    expect(source).toContain("purpose: z.string().trim().min(10");
+    expect(source).toContain('min(10, "请说明争议核验用途，至少 10 个字符")');
     expect(source).toContain('dataCategory: "raw_location_coordinate"');
   });
 
@@ -77,7 +77,7 @@ describe("敏感数据、证据留存与审计完整性控制", () => {
     expect(finance).toContain('sourceType: "financial_invoice"');
     expect(finance).toMatch(/contentSha256,\s*contentBytes: bytes\.length/);
     expect(labor).toContain("sourceType: LABOR_CERTIFICATE_SOURCE_TYPE");
-    expect(labor).toContain("contentSha256, contentBytes: bytes.length");
+    expect(labor).toMatch(/contentSha256,\s*contentBytes:\s*bytes\.length/);
     expect(finance).toContain("appendIntegrityProtectedAudit(tx");
     expect(labor).toContain("appendIntegrityProtectedAudit(tx");
   });

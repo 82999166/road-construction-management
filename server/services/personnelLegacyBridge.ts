@@ -9,7 +9,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { chinaBusinessDate } from "./chinaBusinessTime";
-import { decryptSecret, fingerprintSecret, maskSecret } from "./secretVault";
+import { decryptSecret, fingerprintSecret, revealBusinessSecret } from "./secretVault";
 
 export type BridgeDb = Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select" | "insert" | "update">;
 export type LegacySourceType = "user" | "profile" | "worker";
@@ -24,9 +24,8 @@ export function legacyDate(value: Date | string | null | undefined) {
   return typeof value === "string" ? value.slice(0, 10) : value.toISOString().slice(0, 10);
 }
 function secretFingerprint(cipher: string | null | undefined) { return cipher ? fingerprintSecret(decryptSecret(cipher)) : null; }
-function masked(cipher: string | null | undefined) {
-  if (!cipher) return null;
-  try { return maskSecret(decryptSecret(cipher)); } catch { return "****"; }
+function businessValue(cipher: string | null | undefined) {
+  try { return revealBusinessSecret(cipher); } catch { return null; }
 }
 function insertId(result: unknown): number {
   const header = Array.isArray(result) ? result[0] : result;
@@ -116,9 +115,9 @@ export async function adoptLegacy(db: BridgeDb, input: { sourceType: LegacySourc
       entryDate: legacyDate(profile?.joinedAt ?? worker?.entryDate), exitDate: legacyDate(profile?.leftAt ?? worker?.exitDate),
       payrollEnabled: Boolean(profile?.baseSalary !== null && profile?.baseSalary !== undefined && worker),
       userId, legacyProfileId: profile?.id ?? null, legacyWorkerId: worker?.id ?? null,
-      phoneEncrypted, phoneFingerprint: worker?.phoneFingerprint ?? userProfile?.phoneFingerprint ?? null, phoneMasked: masked(phoneEncrypted),
-      identityNoEncrypted: worker?.identityNoEncrypted ?? null, identityNoFingerprint: secretFingerprint(worker?.identityNoEncrypted), identityMasked: masked(worker?.identityNoEncrypted),
-      bankAccountEncrypted, bankAccountFingerprint: secretFingerprint(bankAccountEncrypted), bankMasked: masked(bankAccountEncrypted), bankName: worker?.bankName ?? userProfile?.bankName ?? null,
+      phoneEncrypted, phoneFingerprint: worker?.phoneFingerprint ?? userProfile?.phoneFingerprint ?? null, phoneMasked: businessValue(phoneEncrypted),
+      identityNoEncrypted: worker?.identityNoEncrypted ?? null, identityNoFingerprint: secretFingerprint(worker?.identityNoEncrypted), identityMasked: businessValue(worker?.identityNoEncrypted),
+      bankAccountEncrypted, bankAccountFingerprint: secretFingerprint(bankAccountEncrypted), bankMasked: businessValue(bankAccountEncrypted), bankName: worker?.bankName ?? userProfile?.bankName ?? null,
       createdBy: input.actorUserId, updatedBy: input.actorUserId, version: 1,
     };
     id = insertId(await db.insert(personnelPeople).values(values));

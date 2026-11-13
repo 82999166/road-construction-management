@@ -991,20 +991,14 @@ const purchaseRequestInput = z.object({
   description: z.string().trim().min(2, "请填写采购说明").max(2000),
 });
 
-/** 供应商只存储脱敏联系方式，不接受原始手机号等个人敏感字段。 */
+/** 供应商联系方式按授权业务原文保存；系统密钥仍使用独立密文保护。 */
 const supplierInput = z.object({
   id: z.number().int().positive().optional(),
   organizationId: z.number().int().positive().nullable().optional(),
   name: z.string().trim().min(2, "请填写供应商名称").max(200),
   unifiedSocialCreditCode: z.string().trim().max(64).nullable().optional(),
   contactName: z.string().trim().max(64).nullable().optional(),
-  contactPhoneMasked: z
-    .string()
-    .trim()
-    .regex(/^[*0-9\-+() ]*$/, "联系电话只能填写脱敏号码")
-    .max(32)
-    .nullable()
-    .optional(),
+  contactPhoneMasked: z.string().trim().max(64).nullable().optional(),
   status: z.enum(["active", "disabled"]),
 });
 
@@ -1771,7 +1765,7 @@ export const purchasingRouter = router({
       };
     }),
 
-  /** 保存供应商基础资料；联系方式仅允许以脱敏形式进入本系统。 */
+  /** 保存供应商基础资料；联系方式按原文登记。 */
   saveSupplier: protectedProcedure
     .input(supplierInput)
     .mutation(async ({ ctx, input }) => {

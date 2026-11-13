@@ -1295,7 +1295,7 @@ function createMachinePaymentSettlementNo(
   return `MS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
-/** 非财务角色只查看账户尾号；付款执行与导出由财务角色读取完整受控账户信息。 */
+/** 账户按当前运输/机械业务授权完整展示；付款执行仍由财务权限控制。 */
 function maskPaymentAccount(account: string | null) {
   if (!account) return null;
   const compact = account.replace(/\s/g, "");
@@ -4471,7 +4471,7 @@ export const machineryRouter = router({
             input.driverPhone === undefined || input.driverPhone === ""
               ? (existing?.driverPhoneMasked ?? null)
               : input.driverPhone
-                ? maskSecret(input.driverPhone)
+                ? input.driverPhone
                 : null,
           code: input.code,
           name: input.name,
@@ -5707,7 +5707,7 @@ export const machineryRouter = router({
       return { success: true };
     }),
 
-  /** 外租机械付款结算台账；账户仅向财务岗位返回完整值，其他岗位仅可查看掩码。 */
+  /** 外租机械付款结算台账；账户按当前业务授权完整展示，付款执行仍受财务岗位控制。 */
   listPaymentSettlements: protectedProcedure
     .input(
       z.object({
@@ -5830,10 +5830,8 @@ export const machineryRouter = router({
           legacyPaymentUnconfirmed: legacyFinalized,
           machine: machineById.get(item.machineId) ?? null,
           statement: statementById.get(item.monthlyStatementId) ?? null,
-          payeeAccount: canReadFullAccount
-            ? item.payeeAccount
-            : maskPaymentAccount(item.payeeAccount),
-          accountMasked: !canReadFullAccount,
+          payeeAccount: item.payeeAccount,
+          accountMasked: false,
         };
       });
     }),
@@ -7138,10 +7136,8 @@ export const transportRouter = router({
       );
       return rows.map(row => ({
         ...row,
-        accountNo: mayViewAccount
-          ? row.accountNo
-          : maskPaymentAccount(row.accountNo),
-        accountMasked: !mayViewAccount,
+        accountNo: row.accountNo,
+        accountMasked: false,
       }));
     }),
 
@@ -7657,7 +7653,7 @@ export const transportRouter = router({
             input.driverPhone === undefined || input.driverPhone === ""
               ? (existing?.driverPhoneMasked ?? null)
               : input.driverPhone
-                ? maskSecret(input.driverPhone)
+                ? input.driverPhone
                 : null,
           boxLengthMeters: String(input.boxLengthMeters),
           boxWidthMeters: String(input.boxWidthMeters),
@@ -8161,7 +8157,7 @@ export const transportRouter = router({
         cardUidFingerprint,
         cardUidMasked: maskRfidCardUid(input.cardUid),
         driverPhoneEncrypted: encryptSecret(input.driverPhone),
-        driverPhoneMasked: maskSecret(input.driverPhone),
+        driverPhoneMasked: input.driverPhone,
       };
       if (input.id) {
         // 未完成过实体写入的卡不能通过普通维护接口提前启用；已挂失卡也不能借编辑绕过换卡/补写流程恢复。
@@ -8349,7 +8345,7 @@ export const transportRouter = router({
           cardUidMasked,
           managementCode: createRfidCardManagementCode(),
           driverPhoneEncrypted: encryptSecret(driverPhone),
-          driverPhoneMasked: maskSecret(driverPhone),
+          driverPhoneMasked: driverPhone,
           payloadVersion: 3,
           status: "suspended",
           issuedAt: new Date(),
@@ -11710,10 +11706,8 @@ export const transportRouter = router({
         ...item,
         ...paymentFacts(item),
         vehicle: vehicleById.get(item.vehicleId) ?? null,
-        payeeAccount: canReadFullAccount
-          ? item.payeeAccount
-          : maskPaymentAccount(item.payeeAccount),
-        accountMasked: !canReadFullAccount,
+        payeeAccount: item.payeeAccount,
+        accountMasked: false,
         itemCount: itemBySettlement.get(item.id)?.length ?? 0,
         tripNos:
           itemBySettlement.get(item.id)?.map(detail => detail.tripNo) ?? [],

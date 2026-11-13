@@ -13305,7 +13305,7 @@ export default function AdminPage({
                 <div>
                   <CardTitle className="text-base">施工队台账</CardTitle>
                   <CardDescription>
-                    施工队联系人电话仅以加密和脱敏形式保存；停用或关闭的施工队不可承接新的分包批次，但保留历史结算责任链。
+                    施工队联系人电话加密保存并按授权完整显示；停用或关闭的施工队不可承接新的分包批次，但保留历史结算责任链。
                   </CardDescription>
                 </div>
                 <Button
@@ -13687,7 +13687,7 @@ export default function AdminPage({
                 {subcontractTeamForm.id ? "维护施工队台账" : "新建施工队台账"}
               </DialogTitle>
               <DialogDescription>
-                联系人电话号码在服务端加密保存，后台列表仅显示脱敏号码；停用施工队不会影响历史分包批次。
+                联系人电话号码在服务端加密保存，后台列表按授权显示完整号码；停用施工队不会影响历史分包批次。
               </DialogDescription>
             </DialogHeader>
             <form
@@ -14247,7 +14247,7 @@ export default function AdminPage({
                   <MetricCard
                     title="实名制人员"
                     value={workers.length}
-                    description="已按敏感字段脱敏"
+                    description="已按授权显示业务资料"
                     icon={UsersRound}
                   />
                   <MetricCard
@@ -14325,7 +14325,7 @@ export default function AdminPage({
                       "扣款",
                       "实发",
                       "开户行",
-                      "脱敏银行卡",
+                      "银行卡",
                       "状态",
                       "实际付款日期",
                     ];
@@ -14392,9 +14392,7 @@ export default function AdminPage({
                         })),
                       ]
                     );
-                    toast.success(
-                      "分类工资 Excel 已生成，普通报表仅含脱敏银行卡"
-                    );
+                    toast.success("分类工资 Excel 已生成，普通报表仅含银行卡");
                   }}
                   onExportPaymentList={async () => {
                     const response = await payrollPaymentListExport.refetch();
@@ -15690,7 +15688,7 @@ export default function AdminPage({
               <DialogDescription>
                 {rfidCardForm.reuseRevokedUnboundCard
                   ? "此操作只适用于已挂失且已解绑的同一张实体卡。请读取当前卡 ID，选择新的目标车辆；系统会保留历史台账与审计、使旧深链失效，并将该卡恢复为待写入。"
-                  : "此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端只保存 UID 指纹、电话密文和掩码；请勿写入身份证、银行卡、路线或结算金额。"}
+                  : "此窗口的车牌、驾驶员姓名和电话来自当前选择的车辆台账预填，并非从实体卡读取。只有“卡 ID / UID”由读卡器读取；UID 是芯片出厂标识，不会因恢复初卡而改变。恢复初卡已清空的是 NDEF 用户区。服务端保存 UID 指纹和电话密文；业务资料按授权展示，卡片写入不会写入身份证、银行卡、路线或结算金额。"}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
@@ -20181,7 +20179,7 @@ export default function AdminPage({
               AI 项目风险预警中心
             </CardTitle>
             <CardDescription className="mt-1">
-              系统先以真实业务记录执行确定性规则：施工日报待办、上下班考勤缺口、加油量与核定油箱容量不符、运输里程与时长/速度不匹配。仅将脱敏的风险计数和费用分类提交给
+              系统先以真实业务记录执行确定性规则：施工日报待办、上下班考勤缺口、加油量与核定油箱容量不符、运输里程与时长/速度不匹配。仅将授权范围内的风险计数和费用分类提交给
               AI 生成管理摘要；所有预警均可回到原始单据核验。
             </CardDescription>
           </CardHeader>
@@ -20685,7 +20683,7 @@ export default function AdminPage({
                   </div>
                 ) : (
                   <p className="text-sm text-slate-500">
-                    生成后将展示本期风险与成本结构的脱敏管理摘要。系统不会让 AI
+                    生成后将展示本期风险与成本结构的管理摘要。系统不会让 AI
                     替代现场核验、财务审核或责任认定。
                   </p>
                 )}

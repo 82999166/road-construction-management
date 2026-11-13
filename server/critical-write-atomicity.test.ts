@@ -28,8 +28,8 @@ describe("关键多表写入原子性", () => {
     const procedure = source.slice(start, end);
 
     expect(procedure).toContain("await db.transaction(async tx => {");
-    expect(procedure).toContain("tx.insert(attendanceDeviceBindings)");
-    expect(procedure).toContain("tx.insert(attendanceCheckIns)");
-    expect(procedure).toContain("tx.insert(auditLogs)");
+    expect(procedure).toMatch(/tx\s*\.insert\(attendanceDeviceBindings\)/);
+    expect(procedure).toMatch(/tx\s*\.insert\(attendanceCheckIns\)/);
+    expect(procedure).toMatch(/tx\s*\.insert\(auditLogs\)/);
   });
 });

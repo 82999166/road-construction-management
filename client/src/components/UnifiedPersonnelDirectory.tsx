@@ -1418,8 +1418,8 @@ function PersonnelDetail({
                       <Facts
                         items={[
                           ["姓名", person.name],
-                          ["手机号（脱敏）", person.phoneMasked],
-                          ["证件号（脱敏）", person.identityMasked],
+                          ["手机号", person.phoneMasked],
+                          ["证件号", person.identityMasked],
                           [
                             "性别",
                             person.gender === "male"
@@ -1454,10 +1454,7 @@ function PersonnelDetail({
                           ],
                           ["联系地址", person.address],
                           ["紧急联系人", person.emergencyContactName],
-                          [
-                            "紧急电话（脱敏）",
-                            person.emergencyContactPhoneMasked,
-                          ],
+                          ["紧急电话", person.emergencyContactPhoneMasked],
                           ["备注", person.remarks],
                         ]}
                       />
@@ -1651,7 +1648,7 @@ function PersonnelDetail({
                     />
                   </TabsContent>
                   <TabsContent value="changes" className="space-y-3">
-                    <Section title="收款信息（脱敏）" action={editButton}>
+                    <Section title="收款信息" action={editButton}>
                       <Facts
                         items={[
                           ["银行卡", person.bankMasked],
@@ -1675,7 +1672,7 @@ function PersonnelDetail({
                         ])}
                       />
                       <p className="text-[11px] leading-5 text-slate-500">
-                        为保护敏感资料，仅显示变更字段与操作，不展示手机号、证件或银行卡的原值。
+                        变更记录按当前授权展示手机号、证件和银行卡原值。
                       </p>
                     </Section>
                   </TabsContent>

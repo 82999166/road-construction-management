@@ -2510,7 +2510,7 @@ export default function MobilePurchasingPage() {
                   />
                 </div>
                 <div>
-                  <Label>脱敏电话</Label>
+                  <Label>联系电话</Label>
                   <Input
                     className="mt-1"
                     placeholder="****1234"

@@ -1990,7 +1990,7 @@ describe("机械与运输 tRPC 路由", () => {
       vehicleId: 11,
       managementCode: "RFID-001",
       cardUidMasked: "****1234",
-      driverPhoneMasked: "*******8000",
+      driverPhoneMasked: "13800138000",
       status: "suspended",
     });
     expect(binding).not.toHaveProperty("lastWrittenAt");

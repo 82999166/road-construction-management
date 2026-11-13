@@ -12,7 +12,7 @@ import { assertSuperAdmin } from "../access";
 import { createContext } from "../_core/context";
 import { ENV } from "../_core/env";
 import { storagePut, storageGetSignedUrl } from "../storage";
-import { encryptSecret, decryptSecret, fingerprintSecret, maskSecret } from "./secretVault";
+import { encryptSecret, decryptSecret, fingerprintSecret, revealBusinessSecret } from "./secretVault";
 import { chinaBusinessDate } from "./chinaBusinessTime";
 import { ensureLegacyPayrollSubjects, syncLegacyMirrors, getLegacyCompensation } from "./personnelLegacyBridge";
 import { isAliyunOssPhotoStorageKey } from "./aliyunOssPhotoStorage";
@@ -30,9 +30,9 @@ export function safePersonnel(person: Person, avatarDocumentId: number | null = 
   return { id: person.id, personNo: person.personNo, name: person.name, affiliation: person.affiliation, employmentStatus: person.employmentStatus,
     primaryPositionId: person.primaryPositionId, secondaryPositionIds: person.secondaryPositionIds, projectId: person.projectId, teamId: person.teamId,
     entryDate: person.entryDate, exitDate: person.exitDate, gender: person.gender, birthDate: person.birthDate, address: person.address,
-    emergencyContactName: person.emergencyContactName, emergencyContactPhoneMasked: person.emergencyContactPhoneMasked,
-    remarks: person.remarks, payrollEnabled: person.payrollEnabled, phoneMasked: person.phoneMasked, identityMasked: person.identityMasked,
-    bankMasked: person.bankMasked, bankName: person.bankName, userId: person.userId, legacyProfileId: person.legacyProfileId,
+    emergencyContactName: person.emergencyContactName, emergencyContactPhoneMasked: revealBusinessSecret(person.emergencyContactPhoneEncrypted),
+    remarks: person.remarks, payrollEnabled: person.payrollEnabled, phoneMasked: revealBusinessSecret(person.phoneEncrypted), identityMasked: revealBusinessSecret(person.identityNoEncrypted),
+    bankMasked: revealBusinessSecret(person.bankAccountEncrypted), bankName: person.bankName, userId: person.userId, legacyProfileId: person.legacyProfileId,
     legacyWorkerId: person.legacyWorkerId, avatarDocumentId, version: person.version, createdAt: person.createdAt, updatedAt: person.updatedAt };
 }
 function mappedAvatarDocumentId(person: Person, documents: { id: number; personId: number; evidenceId: number; documentType: string }[]) {
@@ -51,10 +51,10 @@ export function buildPersonnelPatch(input: PersonnelSaveInput, previous?: Person
   ] as const;
   for (const [value, clear, encrypted, fingerprint, masked] of definitions) {
     if (input[clear]) { patch[encrypted] = null; patch[fingerprint] = null; patch[masked] = null; }
-    else if (input[value] !== undefined) { const plain = value === "phoneNumber" ? input[value]!.replace(/[\s\-()]/g, "") : input[value]!.trim(); if (value === "phoneNumber" && plain.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "手机号有效内容不足" }); patch[encrypted] = encryptSecret(plain); patch[fingerprint] = fingerprintSecret(plain); patch[masked] = maskSecret(plain); }
+    else if (input[value] !== undefined) { const plain = value === "phoneNumber" ? input[value]!.replace(/[\s\-()]/g, "") : input[value]!.trim(); if (value === "phoneNumber" && plain.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "手机号有效内容不足" }); patch[encrypted] = encryptSecret(plain); patch[fingerprint] = fingerprintSecret(plain); patch[masked] = plain; }
   }
   if (input.emergencyContactPhone !== undefined) {
-    const plain = input.emergencyContactPhone?.trim(); patch.emergencyContactPhoneEncrypted = plain ? encryptSecret(plain) : null; patch.emergencyContactPhoneMasked = plain ? maskSecret(plain) : null;
+    const plain = input.emergencyContactPhone?.trim(); patch.emergencyContactPhoneEncrypted = plain ? encryptSecret(plain) : null; patch.emergencyContactPhoneMasked = plain || null;
   }
   return patch;
 }

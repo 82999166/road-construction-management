@@ -1945,6 +1945,7 @@ export const adminRouter = router({
           .select({
             userId: userProfiles.userId,
             phoneMasked: userProfiles.phoneMasked,
+            phoneEncrypted: userProfiles.phoneEncrypted,
             bankAccountEncrypted: userProfiles.bankAccountEncrypted,
             bankName: userProfiles.bankName,
             positionId: userProfiles.positionId,
@@ -2160,17 +2161,17 @@ export const adminRouter = router({
         )[0];
         const userProfile = userId ? userProfileById.get(userId) : undefined;
         const worker = workerId ? workerById.get(workerId) : undefined;
-        const phoneMasked =
-          userProfile?.phoneMasked ??
-          (worker?.phoneEncrypted
-            ? maskSecret(decryptSecret(worker.phoneEncrypted))
-            : null);
+        const phoneMasked = worker?.phoneEncrypted
+          ? decryptSecret(worker.phoneEncrypted)
+          : userProfile?.phoneEncrypted
+            ? decryptSecret(userProfile.phoneEncrypted)
+            : userProfile?.phoneMasked ?? null;
         return {
           contactPhoneMasked: phoneMasked,
           bankAccountMasked: worker?.bankAccountEncrypted
-            ? maskSecret(decryptSecret(worker.bankAccountEncrypted))
+            ? decryptSecret(worker.bankAccountEncrypted)
             : userProfile?.bankAccountEncrypted
-              ? maskSecret(decryptSecret(userProfile.bankAccountEncrypted))
+              ? decryptSecret(userProfile.bankAccountEncrypted)
               : null,
           bankName: worker?.bankName ?? userProfile?.bankName ?? null,
           tradeName:
@@ -2898,9 +2899,7 @@ export const adminRouter = router({
           const userProfileSensitiveValues = {
             ...(input.phoneNumber !== undefined
               ? {
-                  phoneMasked: normalizedPhoneNumber
-                    ? maskSecret(normalizedPhoneNumber)
-                    : null,
+                  phoneMasked: normalizedPhoneNumber || null,
                   phoneEncrypted: normalizedPhoneNumber
                     ? encryptSecret(normalizedPhoneNumber)
                     : null,
@@ -4596,7 +4595,7 @@ export const adminRouter = router({
               input.driverPhone === undefined || input.driverPhone === ""
                 ? (existing?.driverPhoneMasked ?? null)
                 : input.driverPhone
-                  ? maskSecret(input.driverPhone)
+                  ? input.driverPhone
                   : null,
             boxLengthMeters: String(input.boxLengthMeters),
             boxWidthMeters: String(input.boxWidthMeters),
@@ -4637,13 +4636,11 @@ export const adminRouter = router({
               .from(transportVehicles)
               .where(eq(transportVehicles.id, vehicleId))
               .limit(1);
-            await db
-              .insert(vehicleFleetProfiles)
-              .values({
-                ...initialFleetProfile(newVehicle, admin.id),
-                projectStatus: "pending",
-                dispatchStatus: "paused",
-              });
+            await db.insert(vehicleFleetProfiles).values({
+              ...initialFleetProfile(newVehicle, admin.id),
+              projectStatus: "pending",
+              dispatchStatus: "paused",
+            });
           }
           if (!vehicleId)
             throw new TRPCError({

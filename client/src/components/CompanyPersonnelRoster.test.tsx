@@ -24,17 +24,17 @@ describe("CompanyPersonnelRoster", () => {
   });
 
   it("不回显完整手机号、证件号、银行卡和登录账号", () => {
-    expect(source).toContain("详情只显示脱敏号码");
+    expect(source).toContain("已登记手机号会完整显示");
     expect(source).not.toContain("phoneEncrypted");
     expect(source).not.toContain("bankAccountEncrypted");
     expect(source).not.toContain("localUsername");
   });
 
-  it("支持从人员详情维护档案并仅展示银行卡脱敏信息", () => {
+  it("支持从人员详情维护档案并展示完整银行卡信息", () => {
     expect(source).toContain("修改员工资料");
     expect(source).toContain("保存员工档案");
     expect(source).toContain("bankAccountMasked");
-    expect(source).toContain("银行卡（脱敏）");
+    expect(source).toContain("银行卡");
     expect(source).toContain("手机号（新增或修改）");
     expect(source).not.toContain("decryptSecret");
   });

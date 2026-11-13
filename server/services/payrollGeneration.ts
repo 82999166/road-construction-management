@@ -16,7 +16,7 @@ import { calculateEmployeePayrollAccrual } from "../../shared/domain";
 import { getDb } from "../db";
 import { assertCompensationChannel, type BridgeDb } from "./personnelLegacyBridge";
 import { chinaBusinessDate, chinaBusinessMonth } from "./chinaBusinessTime";
-import { decryptSecret, maskSecret } from "./secretVault";
+import { decryptSecret } from "./secretVault";
 
 export const PAYROLL_GENERATION_SCOPE_KEY = "company-monthly-payroll-draft";
 
@@ -282,7 +282,7 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
   if (preview.existingPayroll) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
   if (!preview.calculable || preview.payableAmount === null) return { status: "blocked" as const, reason: preview.blockedReason ?? "工资核算条件未满足", preview };
   const [worker] = await tx.select({ bankAccountEncrypted: laborWorkers.bankAccountEncrypted }).from(laborWorkers).where(eq(laborWorkers.id, profile.laborWorkerId!)).limit(1);
-  const bankAccountMasked = worker?.bankAccountEncrypted ? maskSecret(decryptSecret(worker.bankAccountEncrypted)) : null;
+  const bankAccountMasked = worker?.bankAccountEncrypted ? decryptSecret(worker.bankAccountEncrypted) : null;
   try {
     await tx.insert(payrollStatements).values({
       workerId: profile.laborWorkerId!,

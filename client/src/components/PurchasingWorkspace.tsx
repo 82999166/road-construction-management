@@ -669,7 +669,7 @@ export function PurchasingWorkspace({
     "供应商名称",
     "统一社会信用代码",
     "联系人",
-    "脱敏电话",
+    "联系电话",
     "档案状态",
   ];
   const supplierCells = filteredSuppliers.map(r => [
@@ -1840,7 +1840,7 @@ export function PurchasingWorkspace({
                           {s.unifiedSocialCreditCode ||
                             "未填写统一社会信用代码"}{" "}
                           · {s.contactName || "未填联系人"} ·{" "}
-                          {s.contactPhoneMasked || "未填脱敏电话"} ·{" "}
+                          {s.contactPhoneMasked || "未填联系电话"} ·{" "}
                           {statusLabel(s.status)}
                         </p>
                         <Button
@@ -2133,7 +2133,7 @@ export function PurchasingWorkspace({
                 )}
                 {field("unifiedSocialCreditCode", "统一社会信用代码")}
                 {field("contactName", "联系人")}
-                {field("contactPhoneMasked", "脱敏电话")}
+                {field("contactPhoneMasked", "联系电话")}
                 {selectField("supplierStatus", "供应商档案状态", [
                   { value: "active", label: "启用" },
                   { value: "disabled", label: "停用" },

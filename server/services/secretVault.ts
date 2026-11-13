@@ -35,10 +35,25 @@ export function decryptSecret(cipherText: string): string {
   return Buffer.concat([decipher.update(Buffer.from(payloadBase64, "base64url")), decipher.final()]).toString("utf8");
 }
 
-/** 仅展示密钥末尾少量字符，避免在后台列表和审计日志中泄露明文。 */
+/** 仅用于系统密钥、令牌等凭据的预览；业务人员资料不调用此函数。 */
 export function maskSecret(plainText: string): string {
   if (plainText.length <= 4) return "****";
   return `${"*".repeat(Math.min(12, plainText.length - 4))}${plainText.slice(-4)}`;
+}
+
+/**
+ * 返回已通过服务端权限校验的业务资料完整值。
+ * 手机号、证件号、银行卡号仍在数据库中加密保存；业务路由完成权限和
+ * 项目范围校验后，使用此函数生成管理、打印和导出投影。
+ */
+export function revealBusinessSecret(cipherText: string | null | undefined): string | null {
+  if (!cipherText) return null;
+  try {
+    return decryptSecret(cipherText);
+  } catch {
+    // 历史脏数据或测试夹具不能阻断整条业务详情；不回显密文。
+    return null;
+  }
 }
 
 /**

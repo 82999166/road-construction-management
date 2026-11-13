@@ -13,6 +13,7 @@ import {
   type BusinessOperationAction,
 } from "../access";
 import type { TrpcContext } from "../_core/context";
+import { revealBusinessSecret } from "./secretVault";
 
 export type FleetDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 export type FleetTx = Parameters<Parameters<FleetDb["transaction"]>[0]>[0];
@@ -118,7 +119,7 @@ export function safeVehicle(v: typeof s.transportVehicles.$inferSelect) {
     driverPersonId: v.driverPersonId,
     driverUserId: v.driverUserId,
     driverName: v.driverName,
-    driverPhoneMasked: v.driverPhoneMasked,
+    driverPhoneMasked: revealBusinessSecret(v.driverPhoneEncrypted) ?? v.driverPhoneMasked,
     boxLengthMeters: v.boxLengthMeters,
     boxWidthMeters: v.boxWidthMeters,
     boxHeightMeters: v.boxHeightMeters,
