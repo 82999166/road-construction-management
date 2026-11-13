@@ -1,3 +1,9 @@
+import { ConstructionSmartInput } from "@/components/ConstructionSmartInput";
+import {
+  CONSTRUCTION_ASSISTANT_FIELDS,
+  CONSTRUCTION_ASSISTANT_FIELD_LIMITS,
+  type ConstructionAssistantField,
+} from "@shared/constructionAssistant";
 import ConstructionWorkspace, {
   type ConstructionWorkspaceReport,
 } from "@/components/ConstructionWorkspace";
@@ -249,6 +255,30 @@ export default function MobileConstructionPage() {
   const { isSuperAdmin } = useManagementPermissions();
   const navigate = useMobileSafeNavigate();
   const utils = trpc.useUtils();
+  // 只记忆当前账号本人已保存/主动保存草稿的文字，不复制他人的日报。
+  const rememberInput = trpc.constructionAssistant.remember.useMutation();
+  async function rememberSavedContent(
+    savedProjectId: number,
+    content: Partial<
+      Record<ConstructionAssistantField, string | null | undefined>
+    >
+  ) {
+    const entries = CONSTRUCTION_ASSISTANT_FIELDS.map(field => ({
+      field,
+      content: String(content[field] ?? "").trim(),
+    })).filter(entry => entry.content);
+    if (!entries.length || !user?.id) return;
+    try {
+      await rememberInput.mutateAsync({ projectId: savedProjectId, entries });
+      await utils.constructionAssistant.history.invalidate({
+        projectId: savedProjectId,
+      });
+    } catch {
+      toast.info(
+        "正文已保存；最近内容记忆未同步，可联网后再次保存草稿，原日报不受影响"
+      );
+    }
+  }
   const [projectId, setProjectId] = useState<number | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -273,7 +303,7 @@ export default function MobileConstructionPage() {
     useState<ConstructionWorkspaceReport | null>(null);
   const [reviewReply, setReviewReply] = useState("");
 
-  const deviceDraftKey = `construction-report:${projectId ?? "pending"}:${editingId ?? "new"}`;
+  const deviceDraftKey = `construction-report:${user?.id ?? "pending-user"}:${projectId ?? "pending"}:${editingId ?? "new"}`;
   const localDraftPayload = useMemo(
     () => ({
       reportDate: draft.reportDate,
@@ -316,6 +346,7 @@ export default function MobileConstructionPage() {
       if (!saveMobileDraft(deviceDraftKey, localDraftPayload))
         throw new Error("本机草稿保存失败");
       toast.success("日报文字内容已保存到本机草稿；照片不会保存在设备草稿中");
+      if (projectId) void rememberSavedContent(projectId, localDraftPayload);
     },
     discard: () => {
       clearMobileDraft(deviceDraftKey);
@@ -420,7 +451,9 @@ export default function MobileConstructionPage() {
   }, [dialogOpen, deviceDraftKey]);
 
   const saveReport = trpc.construction.saveReport.useMutation({
-    onSuccess: async result => {
+    onSuccess: async (result, savedInput) => {
+      // 使用请求快照而不是异步回调时已可能切换的表单值。
+      void rememberSavedContent(savedInput.projectId, savedInput);
       const files = pendingEvidenceFiles;
       const watermarkTemplate =
         captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
@@ -874,7 +907,7 @@ export default function MobileConstructionPage() {
               {editingId ? "修改施工日报" : "新建施工日报"}
             </DialogTitle>
             <DialogDescription>
-              先保存日报与本次照片，再由日报卡片点击“提交主管审核”。照片将自动关联本日报，无须跳转或反复返回填写页面。
+              可使用语音录入、最近内容联想或AI整理；所有建议确认采用后才填入。保存日报与照片后，再由日报卡片提交主管审核。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -947,6 +980,17 @@ export default function MobileConstructionPage() {
                   }))
                 }
               />
+              <ConstructionSmartInput
+                projectId={selectedProjectId ?? 0}
+                userId={user?.id ?? 0}
+                field="workArea"
+                value={draft.workArea}
+                onChange={value =>
+                  setDraft(current => ({ ...current, workArea: value }))
+                }
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.workArea}
+                active={dialogOpen && isAuthenticated && !saveReport.isPending}
+              />
             </div>
             <div>
               <Label htmlFor="report-progress">累计完成比例（%）</Label>
@@ -979,6 +1023,17 @@ export default function MobileConstructionPage() {
                   }))
                 }
               />
+              <ConstructionSmartInput
+                projectId={selectedProjectId ?? 0}
+                userId={user?.id ?? 0}
+                field="constructionPlan"
+                value={draft.constructionPlan}
+                onChange={value =>
+                  setDraft(current => ({ ...current, constructionPlan: value }))
+                }
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.constructionPlan}
+                active={dialogOpen && isAuthenticated && !saveReport.isPending}
+              />
             </div>
             <div>
               <Label htmlFor="report-content">当日施工内容</Label>
@@ -993,6 +1048,17 @@ export default function MobileConstructionPage() {
                     workContent: event.target.value,
                   }))
                 }
+              />
+              <ConstructionSmartInput
+                projectId={selectedProjectId ?? 0}
+                userId={user?.id ?? 0}
+                field="workContent"
+                value={draft.workContent}
+                onChange={value =>
+                  setDraft(current => ({ ...current, workContent: value }))
+                }
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.workContent}
+                active={dialogOpen && isAuthenticated && !saveReport.isPending}
               />
             </div>
             <div>
@@ -1009,6 +1075,17 @@ export default function MobileConstructionPage() {
                   }))
                 }
               />
+              <ConstructionSmartInput
+                projectId={selectedProjectId ?? 0}
+                userId={user?.id ?? 0}
+                field="safetyNotes"
+                value={draft.safetyNotes}
+                onChange={value =>
+                  setDraft(current => ({ ...current, safetyNotes: value }))
+                }
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.safetyNotes}
+                active={dialogOpen && isAuthenticated && !saveReport.isPending}
+              />
             </div>
             <div>
               <Label htmlFor="report-issues">质量 / 协调问题（可选）</Label>
@@ -1023,6 +1100,17 @@ export default function MobileConstructionPage() {
                     issueNotes: event.target.value,
                   }))
                 }
+              />
+              <ConstructionSmartInput
+                projectId={selectedProjectId ?? 0}
+                userId={user?.id ?? 0}
+                field="issueNotes"
+                value={draft.issueNotes}
+                onChange={value =>
+                  setDraft(current => ({ ...current, issueNotes: value }))
+                }
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.issueNotes}
+                active={dialogOpen && isAuthenticated && !saveReport.isPending}
               />
             </div>
             <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3">
@@ -1106,9 +1194,11 @@ export default function MobileConstructionPage() {
             <Button
               variant="secondary"
               onClick={() => {
-                if (saveMobileDraft(deviceDraftKey, localDraftPayload))
+                if (saveMobileDraft(deviceDraftKey, localDraftPayload)) {
                   toast.success("日报文字内容已保存到本机草稿；照片需重新选择");
-                else toast.error("本机草稿保存失败，请检查设备存储权限");
+                  if (projectId)
+                    void rememberSavedContent(projectId, localDraftPayload);
+                } else toast.error("本机草稿保存失败，请检查设备存储权限");
               }}
             >
               保存本机草稿

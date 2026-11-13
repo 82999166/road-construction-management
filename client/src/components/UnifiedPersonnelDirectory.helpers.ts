@@ -90,7 +90,7 @@ export function salaryChanged(
         draft.payrollEnabled !== original.payrollEnabled ||
         draft.affiliation !== original.affiliation;
 }
-/** Only edited optional fields are submitted. Empty secret inputs always preserve saved values. */
+/** Only edited optional fields are submitted. Blank sensitive inputs preserve saved values; clear flags explicitly remove them. */
 export function buildPersonnelSave(
   draft: PersonnelDraft,
   original?: PersonnelDraft,
@@ -133,7 +133,11 @@ export function buildPersonnelSave(
     ["bankAccount", "clearBankAccount"],
   ] as const) {
     if (draft[clear]) result[clear] = true;
-    else if (draft[key].trim()) result[key] = draft[key].trim();
+    else {
+      const value = draft[key].trim();
+      if (value && (!original || value !== original[key].trim()))
+        result[key] = value;
+    }
   }
   if (salaryChanged(draft, original)) {
     result.salaryBasis = draft.salaryBasis;

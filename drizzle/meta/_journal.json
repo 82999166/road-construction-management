@@ -673,6 +673,13 @@
       "when": 1794575038771,
       "tag": "0095_eager_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "5",
+      "when": 1794577731539,
+      "tag": "0096_cold_sentinel",
+      "breakpoints": true
     }
   ]
 }

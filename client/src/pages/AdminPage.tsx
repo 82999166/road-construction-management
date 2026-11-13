@@ -1,3 +1,4 @@
+import { ConstructionAssistantSettings } from "@/components/ConstructionAssistantSettings";
 import {
   DieselPriceHistory,
   DieselSupplierReport,
@@ -2559,6 +2560,11 @@ export default function AdminPage({
   );
   const onPurchasingDirtyChange = useCallback(
     (dirty: boolean) => recordWorkspaceDirty("purchasing", dirty),
+    [recordWorkspaceDirty]
+  );
+  const onConstructionAssistantSettingsDirtyChange = useCallback(
+    (dirty: boolean) =>
+      recordWorkspaceDirty("construction-assistant-settings", dirty),
     [recordWorkspaceDirty]
   );
   const onEvidenceDirtyChange = useCallback(
@@ -11627,6 +11633,16 @@ export default function AdminPage({
                 </form>
               </CardContent>
             </Card>
+            <div
+              className={settingsCategory === "integrations" ? "" : "hidden"}
+            >
+              <ConstructionAssistantSettings
+                active={
+                  canQuery && isSettings && settingsCategory === "integrations"
+                }
+                onDirtyChange={onConstructionAssistantSettingsDirtyChange}
+              />
+            </div>
             <Card
               className={
                 settingsCategory === "integrations"
@@ -11642,8 +11658,8 @@ export default function AdminPage({
                       AI 模型 API 接入
                     </CardTitle>
                     <CardDescription className="mt-1">
-                      用于 AI 项目风控的管理摘要。支持兼容 OpenAI Chat
-                      Completions 的公开 HTTPS
+                      用于 AI 项目风控管理摘要及施工日志智能整理。支持兼容
+                      OpenAI Chat Completions 的公开 HTTPS
                       API；风险扫描、通知和整改不依赖该接口，调用失败会自动回退。
                     </CardDescription>
                   </div>

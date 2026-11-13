@@ -4979,3 +4979,47 @@ export const vehicleChanges = mysqlTable("vehicle_changes", {
   id: int("id").autoincrement().primaryKey(), vehicleId: int("vehicleId").notNull(), projectId: int("projectId").notNull(), version: int("version").notNull(), action: varchar("action", { length: 64 }).notNull(),
   changes: json("changes").$type<Record<string, unknown>>().notNull(), createdBy: int("createdBy").notNull(), createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, t => ({ versionUnique: uniqueIndex("vehicle_change_version_unique").on(t.vehicleId, t.version) }));
+
+export const constructionInputMemory = mysqlTable(
+  "construction_input_memory",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    projectId: int("projectId").notNull(),
+    field: varchar("field", { length: 32 }).notNull(),
+    content: text("content").notNull(),
+    contentHash: varchar("contentHash", { length: 64 }).notNull(),
+    usedAt: timestamp("usedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    uniqueMemory: uniqueIndex(
+      "construction_input_memory_user_project_field_hash_unique"
+    ).on(table.userId, table.projectId, table.field, table.contentHash),
+    recentIndex: index("construction_input_memory_recent_index").on(
+      table.userId,
+      table.projectId,
+      table.field,
+      table.usedAt
+    ),
+  })
+);
+
+/** 施工助手每日调用计数；业务日按北京时间计算。 */
+export const constructionAssistantDailyUsage = mysqlTable(
+  "construction_assistant_daily_usage",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    usageDate: date("usageDate", { mode: "string" }).notNull(),
+    channel: mysqlEnum("channel", ["ai", "voice"]).notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => ({
+    userDateChannelUnique: uniqueIndex(
+      "construction_assistant_usage_user_date_channel_unique"
+    ).on(table.userId, table.usageDate, table.channel),
+  })
+);

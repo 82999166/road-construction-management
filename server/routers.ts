@@ -11,6 +11,7 @@ import {
 } from "./localAuth";
 import { adminRouter } from "./routers/admin";
 import { constructionRouter } from "./routers/construction";
+import { constructionAssistantRouter } from "./routers/constructionAssistant";
 import { evidenceRouter } from "./routers/evidence";
 import { dieselRouter } from "./routers/diesel";
 import {
@@ -101,6 +102,7 @@ export const appRouter = router({
   }),
   admin: adminRouter,
   construction: constructionRouter,
+  constructionAssistant: constructionAssistantRouter,
   mobile: mobileRouter,
   officialAccount: officialAccountRouter,
   dailyDigest: dailyDigestRouter,

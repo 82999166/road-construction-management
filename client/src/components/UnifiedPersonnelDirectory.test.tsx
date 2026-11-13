@@ -61,6 +61,69 @@ describe("统一人员目录安全回归", () => {
     expect(input.exitDate).toBeUndefined();
     expect(input.remarks).toBeUndefined();
   });
+  it("已回填完整号码未变或仅两端空白不提交，避免无关更新触发号码写入", () => {
+    const original = {
+      ...newPersonnelDraft("external"),
+      name: "合成测试人员",
+      phoneNumber: "19900000001",
+      identityNo: "TEST-IDENTITY-001",
+      bankAccount: "TEST-BANK-001",
+    };
+    for (const draft of [
+      { ...original, name: "更正姓名" },
+      {
+        ...original,
+        phoneNumber: ` ${original.phoneNumber} `,
+        identityNo: ` ${original.identityNo} `,
+        bankAccount: ` ${original.bankAccount} `,
+      },
+      { ...original, phoneNumber: " ", identityNo: "", bankAccount: "\t" },
+    ]) {
+      const input = buildPersonnelSave(draft, original, { id: 1, version: 7 });
+      for (const key of ["phoneNumber", "identityNo", "bankAccount"] as const) {
+        expect(input).not.toHaveProperty(key);
+      }
+      expect(input).not.toHaveProperty("clearPhoneNumber");
+      expect(input).not.toHaveProperty("clearIdentityNo");
+      expect(input).not.toHaveProperty("clearBankAccount");
+      expect(personnelSaveInput.safeParse(input).success).toBe(true);
+    }
+  });
+  it.each([
+    ["phoneNumber", "clearPhoneNumber", "19900000002"],
+    ["identityNo", "clearIdentityNo", "TEST-IDENTITY-002"],
+    ["bankAccount", "clearBankAccount", "TEST-BANK-002"],
+  ] as const)(
+    "仅变更%s提交该字段；清空标记优先且不误清其它字段",
+    (key, clear, replacement) => {
+      const original = {
+        ...newPersonnelDraft("external"),
+        name: "合成测试人员",
+        phoneNumber: "19900000001",
+        identityNo: "TEST-IDENTITY-001",
+        bankAccount: "TEST-BANK-001",
+      };
+      const draft = { ...original, [key]: ` ${replacement} ` };
+      const input = buildPersonnelSave(draft, original, { id: 1, version: 7 });
+      expect(input[key]).toBe(replacement);
+      for (const other of ["phoneNumber", "identityNo", "bankAccount"] as const)
+        if (other !== key) expect(input).not.toHaveProperty(other);
+      const clearing = buildPersonnelSave(
+        { ...draft, [clear]: true },
+        original,
+        { id: 1, version: 7 }
+      );
+      expect(clearing[clear]).toBe(true);
+      expect(clearing).not.toHaveProperty(key);
+      for (const other of [
+        "clearPhoneNumber",
+        "clearIdentityNo",
+        "clearBankAccount",
+      ] as const)
+        if (other !== clear) expect(clearing).not.toHaveProperty(other);
+      expect(personnelSaveInput.safeParse(clearing).success).toBe(true);
+    }
+  );
   it("明确修改为空才清空普通字段，敏感清空须独立标记", () => {
     const original = {
       ...newPersonnelDraft(),
@@ -154,6 +217,16 @@ describe("统一人员目录安全回归", () => {
     expect(source).toContain("核对后引入");
     expect(source).toContain("openLegacySource");
     expect(source).not.toContain("localUsername");
+  });
+  it("帮助文案说明完整显示与安全保留，不新增浏览器持久化", () => {
+    expect(source).toContain("手机号、证件号、银行卡完整显示并可修改");
+    expect(source).toContain("未修改或留空均保留已登记值");
+    expect(source).toContain("取消勾选恢复勾选前的输入");
+    expect(source).not.toContain("敏感字段不回显");
+    expect(source).not.toContain("不回显原值");
+    expect(source).not.toMatch(
+      /localStorage|sessionStorage|indexedDB|document\.cookie/
+    );
   });
 });
 

@@ -295,9 +295,10 @@ function draftFromPerson(person: Person): PersonnelDraft {
     bankName: person.bankName ?? "",
     salaryBasis: person.salaryBasis ?? "monthly",
     baseSalary: person.baseSalary == null ? "" : String(person.baseSalary),
-    phoneNumber: "",
-    identityNo: "",
-    bankAccount: "",
+    // The authorized personnel API keeps legacy *Masked names but returns full values.
+    phoneNumber: person.phoneMasked ?? "",
+    identityNo: person.identityMasked ?? "",
+    bankAccount: person.bankMasked ?? "",
     clearPhoneNumber: false,
     clearIdentityNo: false,
     clearBankAccount: false,
@@ -1177,13 +1178,14 @@ function PersonnelForm({
                 <Field label={label}>
                   <Input
                     className="h-9 text-xs"
+                    aria-label={label}
+                    aria-describedby="personnel-sensitive-help"
                     autoComplete="off"
-                    type={key === "phoneNumber" ? "tel" : "password"}
+                    type={key === "phoneNumber" ? "tel" : "text"}
+                    spellCheck={false}
                     disabled={draft[clear]}
-                    value={draft[key]}
-                    placeholder={
-                      original ? "留空保留，不回显原值" : "可暂不登记"
-                    }
+                    value={draft[clear] ? "" : draft[key]}
+                    placeholder={original ? "留空保留已登记值" : "可暂不登记"}
                     onChange={event => update(key, event.target.value)}
                   />
                 </Field>
@@ -1191,14 +1193,9 @@ function PersonnelForm({
                   <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-rose-700">
                     <input
                       type="checkbox"
+                      aria-label={`明确清空${label.split("（")[0]}`}
                       checked={draft[clear]}
-                      onChange={event =>
-                        setDraft({
-                          ...draft,
-                          [clear]: event.target.checked,
-                          [key]: "",
-                        })
-                      }
+                      onChange={event => update(clear, event.target.checked)}
                     />
                     明确清空已登记资料
                   </label>
@@ -1207,8 +1204,11 @@ function PersonnelForm({
             ))}
             {text("bankName", "开户行")}
           </div>
-          <p className="mt-3 text-[11px] leading-5 text-slate-500">
-            手机号、证件、银行卡默认不回显；留空保持原值。勾选清空后仍需二次确认，操作留安全变更记录。
+          <p
+            id="personnel-sensitive-help"
+            className="mt-3 text-[11px] leading-5 text-slate-500"
+          >
+            获授权编辑时，手机号、证件号、银行卡完整显示并可修改；未修改或留空均保留已登记值。仅勾选对应清空项并确认保存才删除；取消勾选恢复勾选前的输入。请勿在公共屏幕展示这些资料。
           </p>
         </Section>
       </div>
@@ -1356,7 +1356,7 @@ function PersonnelDetail({
               {person
                 ? `${person.positionName || "未设置岗位"} · ${person.projectName || "未分配项目"} · ${person.teamName || "未分配施工队"} · 版本 ${person.version}`
                 : "正在读取统一主档"}
-              。敏感字段不回显；关联账号不授权限。
+              。获授权人员可查看并编辑完整联系与收款资料；关联账号不授予权限。
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 overflow-y-auto overscroll-contain">
