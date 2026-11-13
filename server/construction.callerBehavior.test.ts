@@ -76,7 +76,7 @@ function memoryDb(records: Report[]) {
   );
   memory.exec(`CREATE TABLE construction_daily_reports (
     id INTEGER PRIMARY KEY, projectId INTEGER, reportDate TEXT, workArea TEXT, weather TEXT DEFAULT 'sunny',
-    workContent TEXT, safetyNotes TEXT, issueNotes TEXT, progressPercent TEXT DEFAULT '25', status TEXT,
+    workContent TEXT, constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, progressPercent TEXT DEFAULT '25', status TEXT,
     createdBy INTEGER, reviewReply TEXT, reviewedBy INTEGER DEFAULT 3, reviewedAt TEXT,
     createdAt TEXT DEFAULT '2026-10-15', updatedAt TEXT DEFAULT '2026-10-15');
     CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT);

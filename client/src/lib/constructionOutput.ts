@@ -9,6 +9,7 @@ export interface ConstructionWorkspaceReport {
   workArea: string;
   weather: "sunny" | "cloudy" | "rainy" | "snowy" | "windy" | "other";
   workContent: string;
+  constructionPlan: string | null;
   safetyNotes: string | null;
   issueNotes: string | null;
   progressPercent: string | number;
@@ -38,6 +39,7 @@ export const CONSTRUCTION_OUTPUT_HEADERS = [
   "天气",
   "累计进度(%)",
   "审核结果",
+  "施工计划",
   "施工内容",
   "安全情况",
   "质量/协调问题",
@@ -126,6 +128,7 @@ export function constructionOutputRows(
     CONSTRUCTION_WEATHER[report.weather],
     Number(report.progressPercent).toFixed(2),
     getBusinessStatusLabel(report.status),
+    report.constructionPlan || "—",
     report.workContent,
     report.safetyNotes || "—",
     report.issueNotes || "—",
@@ -135,19 +138,267 @@ export function constructionOutputRows(
     report.reviewedAt ? formatChinaDateTime(report.reviewedAt) : "—",
   ]);
 }
+export interface ConstructionPrintMetadata {
+  projectName: string;
+  filterText: string;
+  total: number;
+  offset?: number;
+  batchLabel?: string;
+}
+
+/**
+ * 详情与独立打印文档共用。所有普通选择器均限定到 daily-report-sheet；
+ * named page 仅由该表单启用，不改变其他模块的 @page 或打印表格。
+ * 有意高于 reportPrintTable.css 的 specificity，并覆盖其 !important：
+ * 单元格保留换行；长正文可跨页；不设固定页面高度、裁切或正文省略。
+ */
+export const CONSTRUCTION_REPORT_SHEET_CSS = `
+.daily-report-sheet {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 186mm;
+  min-width: 0;
+  margin: 0 auto;
+  padding: 0;
+  color: #000;
+  background: #fff;
+  font-family: "SimSun", "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.daily-report-sheet *, .daily-report-sheet *::before, .daily-report-sheet *::after {
+  box-sizing: border-box;
+}
+.daily-report-sheet .daily-report-title {
+  margin: 0 0 12px;
+  color: #000;
+  text-align: center;
+  font-family: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: .3em;
+  text-indent: .3em;
+}
+.daily-report-sheet .daily-report-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.daily-report-sheet .daily-report-heading > span { min-width: 0; }
+.daily-report-sheet .daily-report-number { margin-left: auto; text-align: right; }
+.daily-report-sheet table.daily-report-table {
+  display: table !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  margin: 0;
+  border: 1px solid #000 !important;
+  border-collapse: collapse !important;
+  table-layout: fixed !important;
+  font-family: inherit;
+  font-size: inherit;
+  break-inside:auto;
+  page-break-inside: auto;
+}
+.daily-report-sheet .daily-report-table .daily-report-label-column { width: 56px; }
+.daily-report-sheet .daily-report-table > tbody {
+  display: table-row-group !important;
+  break-inside: auto;
+  page-break-inside: auto;
+}
+.daily-report-sheet .daily-report-table > tbody > tr {
+  display: table-row !important;
+  break-inside: auto;
+  page-break-inside: auto;
+}
+.daily-report-sheet .daily-report-table > tbody > tr > :is(th, td) {
+  display: table-cell !important;
+  border: 1px solid #000 !important;
+  padding: 7px 10px !important;
+  min-width: 0 !important;
+  max-height: none !important;
+  color: #000 !important;
+  background: #fff !important;
+  vertical-align: middle !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  line-height: 1.6;
+  break-inside: auto;
+  page-break-inside: auto;
+}
+.daily-report-sheet .daily-report-table > tbody > tr > th {
+  text-align: center !important;
+  font-size: 13px;
+  font-weight: 400;
+}
+.daily-report-sheet .daily-report-table .daily-report-section-label {
+  padding: 8px 4px !important;
+}
+.daily-report-sheet .daily-report-table .daily-report-vertical-label {
+  display: inline-block;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: .08em;
+  white-space: normal !important;
+  line-height: 1.2;
+}
+.daily-report-sheet .daily-report-table .daily-report-content {
+  min-height: 82px;
+  margin: 0;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  max-height: none !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  -webkit-line-clamp: unset !important;
+  break-inside: auto;
+  page-break-inside: auto;
+}
+.daily-report-sheet .daily-report-table .daily-report-progress-content { min-height: 110px; }
+.daily-report-sheet .daily-report-table .daily-report-plan-content { min-height: 94px; }
+.daily-report-sheet .daily-report-table .daily-report-review-result {
+  margin: 0 0 4px;
+  font-weight: 700;
+  white-space: pre-wrap !important;
+}
+.daily-report-sheet .daily-report-table .daily-report-time-row > :is(th, td) { font-size: 12px; }
+.daily-report-sheet .daily-report-caution {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #000;
+}
+.daily-report-sheet .daily-report-output-metadata {
+  margin: 8px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid #000;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.daily-report-sheet .daily-report-output-metadata p { margin: 0; white-space: pre-wrap; }
+.daily-report-sheet .daily-report-empty { margin: 24px 0; text-align: center; }
+@media screen and (max-width: 480px) {
+  .daily-report-sheet { font-size: 13px; }
+  .daily-report-sheet .daily-report-title { font-size: 24px; }
+  .daily-report-sheet .daily-report-heading { font-size: 12px; }
+  .daily-report-sheet .daily-report-table .daily-report-label-column { width: 38px; }
+  .daily-report-sheet .daily-report-table > tbody > tr > :is(th, td) { padding: 6px !important; }
+  .daily-report-sheet .daily-report-table > tbody > tr > th { font-size: 12px; }
+  .daily-report-sheet .daily-report-table .daily-report-section-label { padding: 8px 3px !important; }
+  .daily-report-sheet .daily-report-table .daily-report-time-row > :is(th, td) { font-size: 11px; }
+}
+@page daily-construction-report { size: A4 portrait; margin: 12mm; }
+@media print {
+  .daily-report-sheet {
+    page: daily-construction-report;
+    max-width: none;
+    margin: 0;
+    font-size: 11pt;
+    break-inside: auto;
+    page-break-inside: auto;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .daily-report-sheet + .daily-report-sheet {
+    break-before: page;
+    page-break-before: always;
+  }
+  .daily-report-sheet .daily-report-title { margin-bottom: 3mm; font-size: 22pt; }
+  .daily-report-sheet .daily-report-heading { margin-bottom: 2mm; font-size: 10pt; }
+  .daily-report-sheet .daily-report-table .daily-report-label-column { width: 18mm; }
+  .daily-report-sheet .daily-report-table > tbody > tr > :is(th, td) { padding: 2mm 2.5mm !important; }
+  .daily-report-sheet .daily-report-table > tbody > tr > th { padding: 2mm 1mm !important; font-size: 10pt; }
+  .daily-report-sheet .daily-report-table .daily-report-section-label { padding: 2mm 1mm !important; }
+  .daily-report-sheet .daily-report-table .daily-report-content { min-height: 18mm; }
+  .daily-report-sheet .daily-report-table .daily-report-progress-content { min-height: 26mm; }
+  .daily-report-sheet .daily-report-table .daily-report-plan-content { min-height: 22mm; }
+  .daily-report-sheet .daily-report-table .daily-report-time-row > :is(th, td) { font-size: 9pt; }
+  .daily-report-sheet .daily-report-caution { font-size: 8pt; margin-top: 2mm; }
+  .daily-report-sheet .daily-report-output-metadata { font-size: 8pt; margin-top: 2mm; padding-top: 1.5mm; }
+}
+`;
+
+function reportSection(label: string, value: unknown, contentClass = "") {
+  const text =
+    value === null || value === undefined || value === "" ? "未填写" : value;
+  return `<tr><th scope="row" class="daily-report-section-label"><span class="daily-report-vertical-label">${escapePrintHtml(label)}</span></th><td colspan="3"><div class="daily-report-content ${contentClass}">${escapePrintHtml(text)}</div></td></tr>`;
+}
+
+/** 只显式投影已有日报业务字段，绝不序列化附件、URL 或额外的账户属性。 */
+function renderConstructionReportSheet(
+  report: ConstructionWorkspaceReport,
+  projectName: string,
+  outputMetadataHtml = ""
+) {
+  const h = escapePrintHtml;
+  const reviewer =
+    report.reviewedByName ||
+    (report.reviewedBy ? `管理员 #${report.reviewedBy}` : "未审核");
+  const status = getBusinessStatusLabel(report.status);
+  return `<section class="daily-report-sheet" aria-label="施工日志 ${h(report.id)}">
+<h1 class="daily-report-title">施工日志</h1>
+<div class="daily-report-heading"><span>日期：${h(formatChinaDate(report.reportDate))}</span><span class="daily-report-number">日报编号：${h(report.id)}</span></div>
+<table class="daily-report-table" aria-label="施工日志明细"><colgroup><col class="daily-report-label-column"><col><col class="daily-report-label-column"><col></colgroup><tbody>
+<tr><th scope="row">工程名称</th><td colspan="3">${h(projectName || "未填写")}</td></tr>
+<tr><th scope="row">作业面</th><td>${h(report.workArea)}</td><th scope="row">天气</th><td>${h(CONSTRUCTION_WEATHER[report.weather])}</td></tr>
+<tr><th scope="row">累计进度</th><td>${h(Number(report.progressPercent).toFixed(2))}%</td><th scope="row">状态</th><td>${h(status)}</td></tr>
+${reportSection("施工进度情况", report.workContent, "daily-report-progress-content")}
+${reportSection("施工计划", report.constructionPlan, "daily-report-plan-content")}
+${reportSection("安全情况", report.safetyNotes)}
+${reportSection("质量/协调问题", report.issueNotes)}
+<tr><th scope="row" class="daily-report-section-label"><span class="daily-report-vertical-label">审核结果与回复</span></th><td colspan="3"><div class="daily-report-content"><p class="daily-report-review-result">审核结果：${h(status)}</p>${h(report.reviewReply || "未填写")}</div></td></tr>
+<tr><th scope="row">记录人</th><td>${h(report.createdByName)}</td><th scope="row">审核人</th><td>${h(reviewer)}</td></tr>
+<tr class="daily-report-time-row"><th scope="row">审核时间</th><td colspan="3">${h(report.reviewedAt ? formatChinaDateTime(report.reviewedAt) : "未审核")}</td></tr>
+<tr class="daily-report-time-row"><th scope="row">创建时间</th><td>${h(formatChinaDateTime(report.createdAt))}</td><th scope="row">更新时间</th><td>${h(formatChinaDateTime(report.updatedAt))}</td></tr>
+</tbody></table>
+<p class="daily-report-caution">审核通过或归档不等同于问题已整改。</p>
+${outputMetadataHtml}</section>`;
+}
+
+/** 安全的纯报告 HTML（不含筛选、批次等输出元数据）；搭配共享 CSS 使用。 */
+export function constructionReportSheetHtml(
+  report: ConstructionWorkspaceReport,
+  projectName: string
+) {
+  return renderConstructionReportSheet(report, projectName);
+}
+
+/** 完整打印 body：共享样式 + 每份独立日志 + 原有筛选/数量/批次/生成时间说明。 */
 export function constructionPrintBody(
   reports: readonly ConstructionWorkspaceReport[],
-  metadata: {
-    projectName: string;
-    filterText: string;
-    total: number;
-    offset?: number;
-    batchLabel?: string;
-  }
+  metadata: ConstructionPrintMetadata
 ) {
-  const rows = constructionOutputRows(reports, metadata.offset);
   const h = escapePrintHtml;
-  return `<style>td{white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:top}tbody tr{break-inside:auto}</style><h1>施工日报筛选明细表</h1><p class="sub">项目：${h(metadata.projectName)} | ${h(metadata.filterText)}</p><p class="sub">${h(metadata.batchLabel || "完整当前筛选")} | 全筛选 ${metadata.total} 份，本批 ${reports.length} 份 | 生成时间：${h(formatChinaDateTime(new Date()))}</p><hr class="rule"><table><thead><tr>${CONSTRUCTION_OUTPUT_HEADERS.map(label => `<th>${h(label)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${h(cell)}</td>`).join("")}</tr>`).join("") || '<tr><td colspan="13">当前筛选暂无日报</td></tr>'}</tbody></table><p>审核通过或归档不等同于问题已整改；本表保留原日报问题及审核回复，不推断闭环。</p><div class="footer"><span>制表人：________________</span><span>复核人：________________</span></div>`;
+  const generatedAt = formatChinaDateTime(new Date());
+  const outputMetadata = (
+    index?: number
+  ) => `<footer class="daily-report-output-metadata">
+<p>项目：${h(metadata.projectName)}　筛选：${h(metadata.filterText)}</p>
+<p>全筛选记录数：${h(metadata.total)}　本批记录数：${h(reports.length)}　输出范围：${h(metadata.batchLabel || "完整当前筛选")}${index === undefined ? "" : `　第${h((metadata.offset ?? 0) + index + 1)}份 / 共${h(metadata.total)}份`}</p>
+<p>生成时间：${h(generatedAt)}</p></footer>`;
+  const sheets = reports.length
+    ? reports
+        .map((report, index) =>
+          renderConstructionReportSheet(
+            report,
+            metadata.projectName,
+            outputMetadata(index)
+          )
+        )
+        .join("\n")
+    : `<section class="daily-report-sheet"><h1 class="daily-report-title">施工日志</h1><p class="daily-report-empty">当前筛选暂无日报</p>${outputMetadata()}</section>`;
+  return `<style>${CONSTRUCTION_REPORT_SHEET_CSS}</style>\n${sheets}`;
 }
 function csvCell(value: unknown) {
   const text = String(value ?? "");

@@ -53,12 +53,20 @@ describe("移动端施工日报关联影像与工作区集成", () => {
     for (const text of [
       "<ConstructionReportDetail report={detail} active={active}",
       "详情不授予编辑或审核权限",
-      "审核时间",
-      "report.reviewedByName",
+      "<ConstructionReportSheet",
     ])
       expect(
         workspace.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
       ).toContain(text.replace(/\s+/g, "").replace(/,([})\]])/g, "$1"));
+  });
+  it("PC手机共用的新日报表单保留审核时间和审核人", () => {
+    const sheet = readFileSync(
+      new URL("../lib/constructionOutput.ts", import.meta.url),
+      "utf8"
+    );
+    expect(sheet).toContain("审核时间");
+    expect(sheet).toContain("report.reviewedByName");
+    expect(sheet).toContain("report.reviewedAt");
   });
   it("原设备日期/中国时区不变，打印导出使用完整当前筛选不截取施工内容", () => {
     expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
@@ -75,7 +83,7 @@ describe("移动端施工日报关联影像与工作区集成", () => {
       "utils.construction.outputManifest.fetch",
       "utils.construction.printReports.fetch",
       "utils.construction.exportReports.fetch",
-      "openA4LandscapePrintDocument",
+      "openA4PrintDocument",
     ])
       expect(
         workspace.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")

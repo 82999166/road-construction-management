@@ -545,6 +545,8 @@ export const constructionDailyReports = mysqlTable(
       .default("other")
       .notNull(),
     workContent: text("workContent").notNull(),
+    /** 施工计划为可选字段，历史日报留空，不覆盖原施工内容。 */
+    constructionPlan: text("constructionPlan"),
     safetyNotes: varchar("safetyNotes", { length: 1000 }),
     issueNotes: varchar("issueNotes", { length: 1000 }),
     /** 由现场管理人员申报的累计完成比例，范围由服务端校验为 0 至 100。 */

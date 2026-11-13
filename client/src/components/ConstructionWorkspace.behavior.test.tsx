@@ -46,6 +46,7 @@ function report(id = 1): ConstructionWorkspaceReport {
     workArea: `工区${id}`,
     weather: "sunny",
     workContent: "完成真实施工作业",
+    constructionPlan: "完成下一段路基施工计划",
     safetyNotes: "安全说明",
     issueNotes: "现场完整问题",
     progressPercent: "25",
@@ -329,8 +330,10 @@ describe("施工筛选、动作和输出纯行为", () => {
     });
     expect(html).toContain("施".repeat(8000));
     expect(html).toContain("正文末尾&lt;script&gt;");
-    expect(html).toContain("<th>质量/协调问题</th><th>审核回复</th>");
-    expect(html).toContain("<td>原问题尾部</td><td>审核回复尾部</td>");
+    expect(html).toContain("质量/协调问题");
+    expect(html).toContain("审核结果与回复");
+    expect(html).toContain("原问题尾部</div></td></tr>");
+    expect(html).toContain("审核回复尾部</div></td></tr>");
     expect(html).not.toContain("https://secret.example");
     expect(html).not.toContain("/secret/file");
     expect(html).not.toContain("private@example.com");

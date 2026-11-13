@@ -75,6 +75,7 @@ const emptyDraft = {
   workArea: "",
   weather: "other" as Weather,
   workContent: "",
+  constructionPlan: "",
   safetyNotes: "",
   issueNotes: "",
   progressPercent: "0",
@@ -279,6 +280,7 @@ export default function MobileConstructionPage() {
       workArea: draft.workArea,
       weather: draft.weather,
       workContent: draft.workContent,
+      constructionPlan: draft.constructionPlan,
       safetyNotes: draft.safetyNotes,
       issueNotes: draft.issueNotes,
       progressPercent: draft.progressPercent,
@@ -597,6 +599,7 @@ export default function MobileConstructionPage() {
       workArea: report.workArea,
       weather: report.weather,
       workContent: report.workContent,
+      constructionPlan: report.constructionPlan ?? "",
       safetyNotes: report.safetyNotes ?? "",
       issueNotes: report.issueNotes ?? "",
       progressPercent: String(report.progressPercent ?? 0),
@@ -667,6 +670,7 @@ export default function MobileConstructionPage() {
       workArea: draft.workArea,
       weather: draft.weather,
       workContent: draft.workContent,
+      constructionPlan: draft.constructionPlan || null,
       safetyNotes: draft.safetyNotes || null,
       issueNotes: draft.issueNotes || null,
       progressPercent,
@@ -957,6 +961,21 @@ export default function MobileConstructionPage() {
                   setDraft(current => ({
                     ...current,
                     progressPercent: event.target.value,
+                  }))
+                }
+              />
+            </div>
+            <div>
+              <Label htmlFor="report-plan">施工计划（可选）</Label>
+              <Textarea
+                id="report-plan"
+                value={draft.constructionPlan}
+                maxLength={8000}
+                placeholder="填写计划工序、作业安排或下一步施工计划"
+                onChange={event =>
+                  setDraft(current => ({
+                    ...current,
+                    constructionPlan: event.target.value,
                   }))
                 }
               />

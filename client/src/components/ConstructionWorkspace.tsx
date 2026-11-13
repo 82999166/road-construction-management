@@ -1,3 +1,4 @@
+import { ConstructionReportSheet } from "./ConstructionReportSheet";
 import React, {
   useEffect,
   useMemo,
@@ -32,7 +33,7 @@ import {
   formatChinaDateTime,
   toChinaDateInput,
 } from "@/lib/businessTime";
-import { openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { openA4PrintDocument } from "@/lib/a4Print";
 import {
   assertConstructionOutputManifest,
   assertConstructionOutputSnapshot,
@@ -89,9 +90,11 @@ export interface ConstructionWorkspaceProps {
 export function ConstructionReportDetail({
   report,
   active = true,
+  projectName,
 }: {
   report: ConstructionWorkspaceReport;
   active?: boolean;
+  projectName?: string;
 }) {
   const evidenceInput = useMemo(
     () => ({ projectId: report.projectId, reportIds: [report.id] }),
@@ -104,64 +107,12 @@ export function ConstructionReportDetail({
   });
   return (
     <div className="min-w-0 space-y-4 [overflow-wrap:anywhere]">
-      <section className="rounded-lg border bg-muted/30 p-3">
-        <h3 className="font-semibold">日报基本信息</h3>
-        <p className="mt-2 whitespace-pre-wrap">
-          {formatChinaDate(report.reportDate)} · {report.workArea}
-        </p>
-        <p className="mt-1 text-sm">
-          填报管理员：{report.createdByName} · 天气：
-          {CONSTRUCTION_WEATHER[report.weather]} · 累计进度：
-          {Number(report.progressPercent).toFixed(2)}%
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          创建：{formatChinaDateTime(report.createdAt)} · 更新：
-          {formatChinaDateTime(report.updatedAt)}
-        </p>
-      </section>
-      <section>
-        <h3 className="font-semibold">当日施工内容</h3>
-        <p className="mt-2 whitespace-pre-wrap rounded-lg border p-3 text-sm leading-6">
-          {report.workContent}
-        </p>
-      </section>
-      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-        <section className="rounded-lg border p-3">
-          <h3 className="font-semibold">安全情况</h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-            {report.safetyNotes || "未记录"}
-          </p>
-        </section>
-        <section className="rounded-lg border p-3">
-          <h3 className="font-semibold">质量 / 协调问题</h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-            {report.issueNotes || "未记录"}
-          </p>
-        </section>
+      <div className="rounded-lg border bg-white p-3 sm:p-5">
+        <ConstructionReportSheet
+          report={report}
+          projectName={projectName || `项目 #${report.projectId}`}
+        />
       </div>
-      <section className="rounded-lg border bg-muted/30 p-3">
-        <h3 className="font-semibold">审核结果与回复</h3>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <BusinessStatusBadge status={report.status} />
-          <span className="text-sm">
-            审核人：
-            {report.reviewedByName ||
-              (report.reviewedBy ? `管理员 #${report.reviewedBy}` : "未审核")}
-          </span>
-        </div>
-        <p className="mt-2 text-sm">
-          审核时间：
-          {report.reviewedAt
-            ? formatChinaDateTime(report.reviewedAt)
-            : "未审核"}
-        </p>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-          {report.reviewReply || "未填写审核回复"}
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          归档状态不代表问题已整改；保留原问题与审核记录。
-        </p>
-      </section>
       <section>
         <h3 className="font-semibold">关联现场照片</h3>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -284,6 +235,24 @@ export default function ConstructionWorkspace({
     { enabled: active && projectId > 0, retry: false }
   );
   const caps = capabilities.isError ? undefined : capabilities.data;
+  const detailContext = useRef({ key: "", revision: 0 });
+  const detailContextKey = JSON.stringify([
+    active,
+    projectId,
+    detail?.id,
+    caps?.canPrint,
+  ]);
+  if (detailContext.current.key !== detailContextKey)
+    detailContext.current = {
+      key: detailContextKey,
+      revision: detailContext.current.revision + 1,
+    };
+  useEffect(
+    () => () => {
+      detailContext.current.revision += 1;
+    },
+    []
+  );
   const outputContextKey = JSON.stringify([
     active,
     projectName,
@@ -383,8 +352,9 @@ export default function ConstructionWorkspace({
         batchLabel: `第${batch.batch}/${plan.batches.length}批（${batch.from}–${batch.to}）`,
       };
       if (plan.action === "print")
-        openA4LandscapePrintDocument({
-          title: "施工日报筛选明细表",
+        openA4PrintDocument({
+          title: "施工日志批量打印",
+          orientation: "portrait",
           bodyHtml: constructionPrintBody(outputRows, metadata),
         });
       else
@@ -477,6 +447,57 @@ export default function ConstructionWorkspace({
   }
   const selectClass =
     "min-h-10 w-full min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-sm";
+  async function printDetail(report: ConstructionWorkspaceReport) {
+    const revision = detailContext.current.revision;
+    const contextRevision = outputContext.current.revision;
+    if (
+      detailContext.current.key !== detailContextKey ||
+      !enabled ||
+      !caps?.canPrint ||
+      outputBusy ||
+      outputLock.current ||
+      outputBatchLock.current ||
+      report.projectId !== projectId ||
+      detail?.id !== report.id
+    )
+      return;
+    outputBatchLock.current = true;
+    setOutputBusy(true);
+    try {
+      const latest = await utils.construction.printReports.fetch({
+        ...input,
+        reportIds: [report.id],
+      });
+      if (
+        detailContext.current.revision !== revision ||
+        outputContext.current.revision !== contextRevision
+      ) {
+        toast.info(
+          "详情、项目、筛选或权限已变化，本份打印已取消，请重新打开详情"
+        );
+        return;
+      }
+      const rows = constructionOutputBatchRows(latest, [report.id], projectId);
+      openA4PrintDocument({
+        title: "施工日报",
+        orientation: "portrait",
+        bodyHtml: constructionPrintBody(rows, {
+          projectName,
+          filterText: "单份详情",
+          total: 1,
+          batchLabel: "施工日报详情",
+        }),
+      });
+      toast.success("施工日报已送交打印，请在打印对话框选择A4竖版或保存PDF");
+    } catch (error) {
+      toast.error(
+        getUserFacingErrorMessage(error, "施工日报打印失败，请刷新后重试")
+      );
+    } finally {
+      outputBatchLock.current = false;
+      setOutputBusy(false);
+    }
+  }
   function actions(report: ConstructionWorkspaceReport) {
     const permission = constructionRowActions(report.status, {
       canEdit: Boolean(caps?.canEdit),
@@ -983,9 +1004,22 @@ export default function ConstructionWorkspace({
             </DialogDescription>
           </DialogHeader>
           {detail && detail.projectId === projectId ? (
-            <ConstructionReportDetail report={detail} active={active} />
+            <ConstructionReportDetail
+              report={detail}
+              active={active}
+              projectName={projectName}
+            />
           ) : null}
           <DialogFooter>
+            {detail && detail.projectId === projectId && caps?.canPrint ? (
+              <Button
+                variant="outline"
+                disabled={outputBusy}
+                onClick={() => void printDetail(detail)}
+              >
+                {outputBusy ? "正在生成…" : "打印本份日报"}
+              </Button>
+            ) : null}
             <Button onClick={() => setDetail(null)}>关闭详情</Button>
           </DialogFooter>
         </DialogContent>

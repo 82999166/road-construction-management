@@ -1,0 +1,1 @@
+ALTER TABLE `construction_daily_reports` ADD `constructionPlan` text;

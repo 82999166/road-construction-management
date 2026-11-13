@@ -928,7 +928,11 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(CONSTRUCTION_SOURCE, "查看详情 / 照片");
     expectSourceToContain(CONSTRUCTION_SOURCE, "关联现场照片");
     expectSourceToContain(CONSTRUCTION_SOURCE, "<ProtectedImagePreview");
-    expectSourceToContain(CONSTRUCTION_SOURCE, "审核结果与回复");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "<ConstructionReportSheet");
+    expectSourceToContain(
+      readSource(new URL("../lib/constructionOutput.ts", import.meta.url)),
+      "审核结果与回复"
+    );
   });
 
   it("在 PC 施工日报台账中按日期、提交管理员和关键字服务端筛选，并按当前筛选批量打印", () => {
@@ -953,8 +957,9 @@ describe("统一后台业务工作区范围保护", () => {
       "utils.construction.printReports.fetch"
     );
     expectSourceToContain(CONSTRUCTION_SOURCE, "批量打印当前筛选日报");
-    expectSourceToContain(CONSTRUCTION_SOURCE, "施工日报筛选明细表");
-    expectSourceToContain(CONSTRUCTION_SOURCE, "openA4LandscapePrintDocument");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "施工日志批量打印");
+    expectSourceToContain(CONSTRUCTION_SOURCE, "openA4PrintDocument");
+    expectSourceToContain(CONSTRUCTION_SOURCE, 'orientation: "portrait"');
     expectSourceToContain(CONSTRUCTION_SOURCE, "reportIds: batch.ids");
   });
 

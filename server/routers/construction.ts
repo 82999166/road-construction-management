@@ -158,6 +158,7 @@ const dailyReportInput = z.object({
   workArea: z.string().trim().min(2, "请填写施工部位或作业面").max(200),
   weather: z.enum(["sunny", "cloudy", "rainy", "snowy", "windy", "other"]),
   workContent: z.string().trim().min(4, "请填写当日施工内容").max(8000),
+  constructionPlan: z.string().trim().max(8000).nullable().optional(),
   safetyNotes: z.string().trim().max(1000).nullable().optional(),
   issueNotes: z.string().trim().max(1000).nullable().optional(),
   progressPercent: z
@@ -209,6 +210,7 @@ function getConstructionReportPredicates(input: ConstructionReportFilter) {
     predicates.push(
       or(
         like(constructionDailyReports.workArea, keyword),
+        like(constructionDailyReports.constructionPlan, keyword),
         like(constructionDailyReports.workContent, keyword),
         like(constructionDailyReports.safetyNotes, keyword),
         like(constructionDailyReports.issueNotes, keyword),
@@ -226,6 +228,7 @@ const constructionReportProjection = {
   workArea: constructionDailyReports.workArea,
   weather: constructionDailyReports.weather,
   workContent: constructionDailyReports.workContent,
+  constructionPlan: constructionDailyReports.constructionPlan,
   safetyNotes: constructionDailyReports.safetyNotes,
   issueNotes: constructionDailyReports.issueNotes,
   progressPercent: constructionDailyReports.progressPercent,
@@ -736,6 +739,9 @@ export const constructionRouter = router({
         workArea: input.workArea,
         weather: input.weather,
         workContent: input.workContent,
+        ...(input.constructionPlan !== undefined
+          ? { constructionPlan: input.constructionPlan || null }
+          : {}),
         safetyNotes: input.safetyNotes || null,
         issueNotes: input.issueNotes || null,
         progressPercent: String(input.progressPercent),

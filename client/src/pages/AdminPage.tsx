@@ -830,6 +830,7 @@ type ConstructionReportEditor = {
   workArea: string;
   weather: ConstructionWeather;
   workContent: string;
+  constructionPlan: string;
   safetyNotes: string;
   issueNotes: string;
   progressPercent: string;
@@ -12367,6 +12368,7 @@ export default function AdminPage({
             workArea: item.workArea,
             weather: item.weather,
             workContent: item.workContent,
+            constructionPlan: item.constructionPlan ?? "",
             safetyNotes: item.safetyNotes ?? "",
             issueNotes: item.issueNotes ?? "",
             progressPercent: String(item.progressPercent),
@@ -12378,6 +12380,7 @@ export default function AdminPage({
             workArea: "",
             weather: "other",
             workContent: "",
+            constructionPlan: "",
             safetyNotes: "",
             issueNotes: "",
             progressPercent: "0",
@@ -12591,6 +12594,22 @@ export default function AdminPage({
                   />
                 </Field>
               </div>
+              <Field label="施工计划（可选）">
+                <Textarea
+                  className="min-h-24"
+                  maxLength={8000}
+                  placeholder="填写计划工序、作业安排或下一步施工计划"
+                  value={constructionReportEditor?.constructionPlan ?? ""}
+                  disabled={!editorCanEdit}
+                  onChange={event =>
+                    setConstructionReportEditor(current =>
+                      current
+                        ? { ...current, constructionPlan: event.target.value }
+                        : current
+                    )
+                  }
+                />
+              </Field>
               <Field label="当日施工内容">
                 <Textarea
                   className="min-h-32"
@@ -12666,6 +12685,9 @@ export default function AdminPage({
                       workArea: constructionReportEditor.workArea.trim(),
                       weather: constructionReportEditor.weather,
                       workContent: constructionReportEditor.workContent.trim(),
+                      constructionPlan:
+                        constructionReportEditor.constructionPlan.trim() ||
+                        null,
                       safetyNotes:
                         constructionReportEditor.safetyNotes.trim() || null,
                       issueNotes:

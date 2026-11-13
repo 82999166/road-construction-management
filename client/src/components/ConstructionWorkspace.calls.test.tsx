@@ -119,7 +119,7 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/a4Print", async original => ({
   ...(await original<typeof import("@/lib/a4Print")>()),
-  openA4LandscapePrintDocument: vi.fn(),
+  openA4PrintDocument: vi.fn(),
 }));
 vi.mock("@/lib/constructionOutput", async original => ({
   ...(await original<typeof import("@/lib/constructionOutput")>()),
@@ -147,7 +147,7 @@ import { BusinessWorkspaceNavigation } from "./BusinessWorkspaceNavigation";
 import { FinancePagination } from "./FinanceWorkspaceNavigation";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { openA4LandscapePrintDocument } from "@/lib/a4Print";
+import { openA4PrintDocument } from "@/lib/a4Print";
 import {
   downloadConstructionCsv,
   type ConstructionWorkspaceReport,
@@ -177,6 +177,7 @@ function report(id: number): ConstructionWorkspaceReport {
     workArea: `工区${id}`,
     weather: "sunny",
     workContent: `施工正文${id}`,
+    constructionPlan: "完成下一段路基施工计划",
     safetyNotes: "安全说明",
     issueNotes: "原问题",
     progressPercent: 25,
@@ -348,7 +349,7 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       const output =
         action === "print"
           ? vi
-              .mocked(openA4LandscapePrintDocument)
+              .mocked(openA4PrintDocument)
               .mock.calls.map(([x]) => x.bodyHtml)
               .join("")
           : vi
@@ -358,8 +359,8 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       expect(output).toContain("工区501");
       expect(output).toContain("501");
       if (action === "print")
-        expect(output.indexOf("<td>工区1</td>")).toBeLessThan(
-          output.indexOf("<td>工区250</td>")
+        expect(output.indexOf("工区1</")).toBeLessThan(
+          output.indexOf("工区250</")
         );
     }
   );
@@ -438,9 +439,9 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       action: "print",
     });
     expect(harness.print.mock.calls[0][0]).toMatchObject(expected);
-    expect(
-      vi.mocked(openA4LandscapePrintDocument).mock.calls[0][0].bodyHtml
-    ).toContain("管理员乙");
+    expect(vi.mocked(openA4PrintDocument).mock.calls[0][0].bodyHtml).toContain(
+      "管理员乙"
+    );
   });
   it.each(["project", "keyword", "tab", "active", "permission", "aba"])(
     "迟到清单在%s变化时取消，A→B→A也不恢复旧快照",
@@ -481,7 +482,7 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
     pending.resolve(Array.from({ length: 250 }, (_, i) => report(i + 1)));
     await settle();
     expect(downloadConstructionCsv).not.toHaveBeenCalled();
-    expect(openA4LandscapePrintDocument).not.toHaveBeenCalled();
+    expect(openA4PrintDocument).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
   });
   it("批次快速双击只发一份调用；下载失败不标记完成且允许重试", async () => {
@@ -553,5 +554,84 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
         ),
         label
       ).toBe(false);
+  });
+});
+
+describe("施工详情单份竖版受控打印", () => {
+  it("详情打印重读最新完整记录，勾选权限不改变状态，每份使用A4竖版", async () => {
+    let tree = render();
+    await click(tree, "查看详情 / 照片");
+    tree = render();
+    harness.print.mockResolvedValue([
+      {
+        ...report(1),
+        constructionPlan: "最新施工计划",
+        workContent: "服务端最新完整正文",
+      },
+    ]);
+    await click(tree, "打印本份日报");
+    expect(harness.print.mock.calls[0][0]).toMatchObject({
+      projectId: 10,
+      reportIds: [1],
+    });
+    const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
+    expect(options.orientation).toBe("portrait");
+    expect(options.bodyHtml).toContain("最新施工计划");
+    expect(options.bodyHtml).toContain("服务端最新完整正文");
+    expect(props.onTransition).not.toHaveBeenCalled();
+  });
+  it("快速双击只读取一次，读取失败不给假成功且可重试", async () => {
+    await click(render(), "查看详情 / 照片");
+    const tree = render();
+    const pending = deferred<ConstructionWorkspaceReport[]>();
+    harness.print.mockReturnValue(pending.promise);
+    const node = button(tree, "打印本份日报");
+    node.props.onClick();
+    node.props.onClick();
+    expect(harness.print).toHaveBeenCalledTimes(1);
+    pending.resolve([report(1)]);
+    await settle();
+    expect(openA4PrintDocument).toHaveBeenCalledTimes(1);
+  });
+  it.each(["project", "permission", "close", "keyword", "active", "aba"])(
+    "迟到单份请求在%s变化后不输出旧数据",
+    async change => {
+      await click(render(), "查看详情 / 照片");
+      let tree = render();
+      const pending = deferred<ConstructionWorkspaceReport[]>();
+      harness.print.mockReturnValue(pending.promise);
+      button(tree, "打印本份日报").props.onClick();
+      if (change === "project" || change === "aba") props.projectId = 20;
+      if (change === "permission") harness.data.capabilities.canPrint = false;
+      if (change === "close") button(tree, "关闭详情").props.onClick();
+      if (change === "keyword") fill(tree, "construction-keyword", "新范围");
+      if (change === "active") props.active = false;
+      tree = render();
+      if (change === "aba") {
+        props.projectId = 10;
+        tree = render();
+      }
+      pending.resolve([report(1)]);
+      await settle();
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+    }
+  );
+  it("没有打印权限时详情仍可读，但不显示单份/批量打印按钮", async () => {
+    harness.data.capabilities.canPrint = false;
+    await click(render(), "查看详情 / 照片");
+    const tree = render();
+    expect(
+      walk(tree).some(
+        n => n.type === Button && text(n.props.children) === "打印本份日报"
+      )
+    ).toBe(false);
+    expect(
+      walk(tree).some(
+        n =>
+          n.type === Button && text(n.props.children) === "批量打印当前筛选日报"
+      )
+    ).toBe(false);
+    expect(harness.print).not.toHaveBeenCalled();
   });
 });
