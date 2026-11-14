@@ -59,11 +59,18 @@ function createAuthContext(): TrpcContext {
 /** 构造基础查询链，供只读机械、车辆与状态记录测试复用。 */
 function createSelectDb(rows: unknown[]) {
   return {
+    transaction: vi.fn(async function (this: any, callback: any) {
+      return callback(this);
+    }),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           orderBy: vi.fn(async () => rows),
-          limit: vi.fn(async () => rows),
+          limit: vi.fn(() =>
+            Object.assign(Promise.resolve(rows), {
+              for: vi.fn(async () => rows),
+            })
+          ),
         })),
       })),
     })),

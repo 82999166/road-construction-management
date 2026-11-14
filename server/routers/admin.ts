@@ -172,7 +172,10 @@ import {
   normalizeLocalManagerUsername,
 } from "../localAuth";
 import { storageGetSignedUrl, storagePut } from "../storage";
-import { previewInsuranceDocument, uploadPersonnelDocument } from "../services/personnelDirectory";
+import {
+  previewInsuranceDocument,
+  uploadPersonnelDocument,
+} from "../services/personnelDirectory";
 import {
   createHeartbeatJob,
   listHeartbeatJobs,
@@ -184,6 +187,10 @@ import {
   getEmployeePayrollAccrualPreview,
   PAYROLL_GENERATION_SCOPE_KEY,
 } from "../services/payrollGeneration";
+import {
+  lockMachineFuelLedger,
+  assertNoDuplicateMachineFuel,
+} from "../services/machineFuelLedger";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -1843,10 +1850,42 @@ export const adminRouter = router({
             );
           const policyViews = await Promise.all(
             policies.map(async policy => {
-              const [link] = policy.evidenceId ? await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, policy.employeeProfileId))).limit(1) : [];
-              const [person] = policy.evidenceId && !link ? await db.select({ id: personnelPeople.id }).from(personnelPeople).where(eq(personnelPeople.legacyProfileId, policy.employeeProfileId)).limit(1) : [];
+              const [link] = policy.evidenceId
+                ? await db
+                    .select()
+                    .from(personnelSourceLinks)
+                    .where(
+                      and(
+                        eq(personnelSourceLinks.sourceType, "profile"),
+                        eq(
+                          personnelSourceLinks.sourceId,
+                          policy.employeeProfileId
+                        )
+                      )
+                    )
+                    .limit(1)
+                : [];
+              const [person] =
+                policy.evidenceId && !link
+                  ? await db
+                      .select({ id: personnelPeople.id })
+                      .from(personnelPeople)
+                      .where(
+                        eq(
+                          personnelPeople.legacyProfileId,
+                          policy.employeeProfileId
+                        )
+                      )
+                      .limit(1)
+                  : [];
               const personId = link?.personId ?? person?.id;
-              const evidence = personId ? await previewInsuranceDocument(personId, policy.id, admin.id).catch(() => null) : null;
+              const evidence = personId
+                ? await previewInsuranceDocument(
+                    personId,
+                    policy.id,
+                    admin.id
+                  ).catch(() => null)
+                : null;
               return {
                 ...policy,
                 evidence,
@@ -1995,24 +2034,66 @@ export const adminRouter = router({
           .from(transportVehicles),
       ]);
       const [directoryRows, directoryLinks] = await Promise.all([
-        db.select({ id: personnelPeople.id, userId: personnelPeople.userId, legacyWorkerId: personnelPeople.legacyWorkerId, phoneEncrypted: personnelPeople.phoneEncrypted, bankAccountEncrypted: personnelPeople.bankAccountEncrypted, bankName: personnelPeople.bankName }).from(personnelPeople),
-        db.select({ personId: personnelSourceLinks.personId, sourceType: personnelSourceLinks.sourceType, sourceId: personnelSourceLinks.sourceId }).from(personnelSourceLinks),
+        db
+          .select({
+            id: personnelPeople.id,
+            userId: personnelPeople.userId,
+            legacyWorkerId: personnelPeople.legacyWorkerId,
+            phoneEncrypted: personnelPeople.phoneEncrypted,
+            bankAccountEncrypted: personnelPeople.bankAccountEncrypted,
+            bankName: personnelPeople.bankName,
+          })
+          .from(personnelPeople),
+        db
+          .select({
+            personId: personnelSourceLinks.personId,
+            sourceType: personnelSourceLinks.sourceType,
+            sourceId: personnelSourceLinks.sourceId,
+          })
+          .from(personnelSourceLinks),
       ]);
-      const directoryById = new Map(directoryRows.map(person => [person.id, person]));
-      const directoryByUser = new Map<number, (typeof directoryRows)[number] | null>();
-      const directoryByWorker = new Map<number, (typeof directoryRows)[number] | null>();
-      const registerDirectorySource = (map: typeof directoryByUser, sourceId: number | null, person: (typeof directoryRows)[number] | null) => {
+      const directoryById = new Map(
+        directoryRows.map(person => [person.id, person])
+      );
+      const directoryByUser = new Map<
+        number,
+        (typeof directoryRows)[number] | null
+      >();
+      const directoryByWorker = new Map<
+        number,
+        (typeof directoryRows)[number] | null
+      >();
+      const registerDirectorySource = (
+        map: typeof directoryByUser,
+        sourceId: number | null,
+        person: (typeof directoryRows)[number] | null
+      ) => {
         if (!sourceId) return;
-        if (map.has(sourceId) && map.get(sourceId)?.id !== person?.id) map.set(sourceId, null);
+        if (map.has(sourceId) && map.get(sourceId)?.id !== person?.id)
+          map.set(sourceId, null);
         else map.set(sourceId, person);
       };
       for (const person of directoryRows) {
         registerDirectorySource(directoryByUser, person.userId, person);
-        registerDirectorySource(directoryByWorker, person.legacyWorkerId, person);
+        registerDirectorySource(
+          directoryByWorker,
+          person.legacyWorkerId,
+          person
+        );
       }
       for (const link of directoryLinks) {
-        if (link.sourceType === "user") registerDirectorySource(directoryByUser, link.sourceId, directoryById.get(link.personId) ?? null);
-        if (link.sourceType === "worker") registerDirectorySource(directoryByWorker, link.sourceId, directoryById.get(link.personId) ?? null);
+        if (link.sourceType === "user")
+          registerDirectorySource(
+            directoryByUser,
+            link.sourceId,
+            directoryById.get(link.personId) ?? null
+          );
+        if (link.sourceType === "worker")
+          registerDirectorySource(
+            directoryByWorker,
+            link.sourceId,
+            directoryById.get(link.personId) ?? null
+          );
       }
       const accountById = new Map(
         accountRows.map(account => [account.id, account])
@@ -2173,26 +2254,44 @@ export const adminRouter = router({
         )[0];
         const userProfile = userId ? userProfileById.get(userId) : undefined;
         const worker = workerId ? workerById.get(workerId) : undefined;
-        const linkedWorker = workerId ? directoryByWorker.get(workerId) : undefined;
+        const linkedWorker = workerId
+          ? directoryByWorker.get(workerId)
+          : undefined;
         const linkedUser = userId ? directoryByUser.get(userId) : undefined;
-        const authority = linkedWorker !== undefined && linkedUser !== undefined && linkedWorker?.id !== linkedUser?.id ? null : linkedWorker !== undefined ? linkedWorker : linkedUser;
-        const phoneMasked = authority !== undefined
-          ? authority?.phoneEncrypted ? decryptSecret(authority.phoneEncrypted) : null
-          : worker?.phoneEncrypted
-          ? decryptSecret(worker.phoneEncrypted)
-          : userProfile?.phoneEncrypted
-            ? decryptSecret(userProfile.phoneEncrypted)
-            : userProfile?.phoneMasked ?? null;
+        const authority =
+          linkedWorker !== undefined &&
+          linkedUser !== undefined &&
+          linkedWorker?.id !== linkedUser?.id
+            ? null
+            : linkedWorker !== undefined
+              ? linkedWorker
+              : linkedUser;
+        const phoneMasked =
+          authority !== undefined
+            ? authority?.phoneEncrypted
+              ? decryptSecret(authority.phoneEncrypted)
+              : null
+            : worker?.phoneEncrypted
+              ? decryptSecret(worker.phoneEncrypted)
+              : userProfile?.phoneEncrypted
+                ? decryptSecret(userProfile.phoneEncrypted)
+                : (userProfile?.phoneMasked ?? null);
         return {
           contactPhoneMasked: phoneMasked,
-          bankAccountMasked: authority !== undefined
-            ? authority?.bankAccountEncrypted ? decryptSecret(authority.bankAccountEncrypted) : null
-            : worker?.bankAccountEncrypted
-            ? decryptSecret(worker.bankAccountEncrypted)
-            : userProfile?.bankAccountEncrypted
-              ? decryptSecret(userProfile.bankAccountEncrypted)
-              : null,
-          bankName: authority !== undefined ? authority?.bankName ?? null : worker?.bankName ?? userProfile?.bankName ?? null,
+          bankAccountMasked:
+            authority !== undefined
+              ? authority?.bankAccountEncrypted
+                ? decryptSecret(authority.bankAccountEncrypted)
+                : null
+              : worker?.bankAccountEncrypted
+                ? decryptSecret(worker.bankAccountEncrypted)
+                : userProfile?.bankAccountEncrypted
+                  ? decryptSecret(userProfile.bankAccountEncrypted)
+                  : null,
+          bankName:
+            authority !== undefined
+              ? (authority?.bankName ?? null)
+              : (worker?.bankName ?? userProfile?.bankName ?? null),
           tradeName:
             profileTradeName ||
             (userProfile?.positionId
@@ -2673,7 +2772,10 @@ export const adminRouter = router({
             .where(eq(employeeProfiles.id, input.employeeProfileId))
             .limit(1);
           if (!profile)
-            throw new TRPCError({ code: "NOT_FOUND", message: "员工档案不存在" });
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "员工档案不存在",
+            });
           await assertCompanyPayrollAdvance(db, profile, input.advanceDate);
           const [created] = await db.insert(employeePayrollAdvances).values({
             employeeProfileId: profile.id,
@@ -2981,9 +3083,31 @@ export const adminRouter = router({
             code: "NOT_FOUND",
             message: "员工档案不存在，不能上传保单",
           });
-        const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, profile.id))).limit(1);
-        const [person] = await db.select().from(personnelPeople).where(link ? eq(personnelPeople.id, link.personId) : eq(personnelPeople.legacyProfileId, profile.id)).limit(1);
-        if (!person || person.projectId !== profile.projectId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "请在统一人员证照保险中上传加密附件；未统一或历史项目档案不支持旧上传" });
+        const [link] = await db
+          .select()
+          .from(personnelSourceLinks)
+          .where(
+            and(
+              eq(personnelSourceLinks.sourceType, "profile"),
+              eq(personnelSourceLinks.sourceId, profile.id)
+            )
+          )
+          .limit(1);
+        const [person] = await db
+          .select()
+          .from(personnelPeople)
+          .where(
+            link
+              ? eq(personnelPeople.id, link.personId)
+              : eq(personnelPeople.legacyProfileId, profile.id)
+          )
+          .limit(1);
+        if (!person || person.projectId !== profile.projectId)
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "请在统一人员证照保险中上传加密附件；未统一或历史项目档案不支持旧上传",
+          });
         const encoded = input.base64Data.includes(",")
           ? input.base64Data.slice(input.base64Data.indexOf(",") + 1)
           : input.base64Data;
@@ -3010,8 +3134,22 @@ export const adminRouter = router({
           input.fileName
             .replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, "_")
             .slice(-160) || "insurance-policy";
-        const uploaded = await uploadPersonnelDocument({ personId: person.id, name: "保单附件", documentType: "insurance", fileName: safeFileName, mimeType: input.mimeType, base64Data: bytes.toString("base64") }, admin.id);
-        const [created] = await db.select({ evidenceId: personnelDocuments.evidenceId }).from(personnelDocuments).where(eq(personnelDocuments.id, uploaded.id)).limit(1);
+        const uploaded = await uploadPersonnelDocument(
+          {
+            personId: person.id,
+            name: "保单附件",
+            documentType: "insurance",
+            fileName: safeFileName,
+            mimeType: input.mimeType,
+            base64Data: bytes.toString("base64"),
+          },
+          admin.id
+        );
+        const [created] = await db
+          .select({ evidenceId: personnelDocuments.evidenceId })
+          .from(personnelDocuments)
+          .where(eq(personnelDocuments.id, uploaded.id))
+          .limit(1);
         await db.insert(auditLogs).values({
           userId: admin.id,
           module: "personnel",
@@ -3038,89 +3176,135 @@ export const adminRouter = router({
             message: "数据库连接暂不可用",
           });
         return db.transaction(async tx => {
-        const db = tx;
-        const [existing] = input.id ? await db.select().from(employeeInsurancePolicies).where(eq(employeeInsurancePolicies.id, input.id)).limit(1).for("update") : [];
-        if (input.id && !existing) throw new TRPCError({ code: "NOT_FOUND", message: "保单不存在，不能覆盖" });
-        if (existing && existing.employeeProfileId !== input.employeeProfileId) throw new TRPCError({ code: "FORBIDDEN", message: "不能移动历史保单员工主体" });
-        const [link] = await db.select().from(personnelSourceLinks).where(and(eq(personnelSourceLinks.sourceType, "profile"), eq(personnelSourceLinks.sourceId, input.employeeProfileId))).limit(1);
-        const [unified] = await db.select({ id: personnelPeople.id }).from(personnelPeople).where(eq(personnelPeople.legacyProfileId, input.employeeProfileId)).limit(1);
-        if (link || unified) throw new TRPCError({ code: "FORBIDDEN", message: "已统一人员请使用personnel.saveInsurance版本化入口" });
-        const [profile] = await db
-          .select({
-            id: employeeProfiles.id,
-            projectId: employeeProfiles.projectId,
-          })
-          .from(employeeProfiles)
-          .where(eq(employeeProfiles.id, input.employeeProfileId))
-          .limit(1);
-        if (!profile)
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "请先建立有效员工档案",
-          });
-        const retained = <K extends "providerName" | "policyReference" | "evidenceId" | "premiumAmount" | "coverageAmount" | "remarks">(key: K) => input[key] === undefined ? existing?.[key] ?? null : input[key];
-        const evidenceId = retained("evidenceId");
-        if (evidenceId) {
-          const [evidence] = await db
-            .select({
-              id: evidenceRecords.id,
-              projectId: evidenceRecords.projectId,
-              sourceType: evidenceRecords.sourceType,
-              sourceId: evidenceRecords.sourceId,
-              status: evidenceRecords.status,
-            })
-            .from(evidenceRecords)
-            .where(eq(evidenceRecords.id, evidenceId))
-            .limit(1);
+          const db = tx;
+          const [existing] = input.id
+            ? await db
+                .select()
+                .from(employeeInsurancePolicies)
+                .where(eq(employeeInsurancePolicies.id, input.id))
+                .limit(1)
+                .for("update")
+            : [];
+          if (input.id && !existing)
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "保单不存在，不能覆盖",
+            });
           if (
-            !evidence ||
-            evidence.status !== "active" ||
-            evidence.sourceType !== "employee_insurance_policy" ||
-            evidence.sourceId !== String(profile.id) ||
-            evidence.projectId !== (profile.projectId ?? null)
-          ) {
+            existing &&
+            existing.employeeProfileId !== input.employeeProfileId
+          )
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "不能移动历史保单员工主体",
+            });
+          const [link] = await db
+            .select()
+            .from(personnelSourceLinks)
+            .where(
+              and(
+                eq(personnelSourceLinks.sourceType, "profile"),
+                eq(personnelSourceLinks.sourceId, input.employeeProfileId)
+              )
+            )
+            .limit(1);
+          const [unified] = await db
+            .select({ id: personnelPeople.id })
+            .from(personnelPeople)
+            .where(eq(personnelPeople.legacyProfileId, input.employeeProfileId))
+            .limit(1);
+          if (link || unified)
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "已统一人员请使用personnel.saveInsurance版本化入口",
+            });
+          const [profile] = await db
+            .select({
+              id: employeeProfiles.id,
+              projectId: employeeProfiles.projectId,
+            })
+            .from(employeeProfiles)
+            .where(eq(employeeProfiles.id, input.employeeProfileId))
+            .limit(1);
+          if (!profile)
             throw new TRPCError({
               code: "BAD_REQUEST",
-              message: "保单附件不存在、已失效或不属于当前员工档案",
+              message: "请先建立有效员工档案",
             });
+          const retained = <
+            K extends
+              | "providerName"
+              | "policyReference"
+              | "evidenceId"
+              | "premiumAmount"
+              | "coverageAmount"
+              | "remarks",
+          >(
+            key: K
+          ) =>
+            input[key] === undefined ? (existing?.[key] ?? null) : input[key];
+          const evidenceId = retained("evidenceId");
+          if (evidenceId) {
+            const [evidence] = await db
+              .select({
+                id: evidenceRecords.id,
+                projectId: evidenceRecords.projectId,
+                sourceType: evidenceRecords.sourceType,
+                sourceId: evidenceRecords.sourceId,
+                status: evidenceRecords.status,
+              })
+              .from(evidenceRecords)
+              .where(eq(evidenceRecords.id, evidenceId))
+              .limit(1);
+            if (
+              !evidence ||
+              evidence.status !== "active" ||
+              evidence.sourceType !== "employee_insurance_policy" ||
+              evidence.sourceId !== String(profile.id) ||
+              evidence.projectId !== (profile.projectId ?? null)
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "保单附件不存在、已失效或不属于当前员工档案",
+              });
+            }
           }
-        }
-        const values = {
-          employeeProfileId: input.employeeProfileId,
-          insuranceType: input.insuranceType,
-          providerName: retained("providerName"),
-          policyReference: retained("policyReference"),
-          evidenceId,
-          premiumAmount:
-            retained("premiumAmount") === null
-              ? null
-              : String(retained("premiumAmount")),
-          coverageAmount:
-            retained("coverageAmount") === null
-              ? null
-              : String(retained("coverageAmount")),
-          purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`),
-          expiresAt: new Date(`${input.expiresAt}T00:00:00Z`),
-          status: input.status,
-          remarks: retained("remarks"),
-        };
-        if (input.id)
-          await db
-            .update(employeeInsurancePolicies)
-            .set(values)
-            .where(eq(employeeInsurancePolicies.id, input.id));
-        else await db.insert(employeeInsurancePolicies).values(values);
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "personnel",
-          action: input.id
-            ? "update_employee_insurance"
-            : "create_employee_insurance",
-          targetType: "employee_insurance",
-          targetId: String(input.id ?? input.employeeProfileId),
-          summary: `${input.id ? "维护" : "登记"}员工保险：${input.insuranceType}`,
-        });
-        return { success: true };
+          const values = {
+            employeeProfileId: input.employeeProfileId,
+            insuranceType: input.insuranceType,
+            providerName: retained("providerName"),
+            policyReference: retained("policyReference"),
+            evidenceId,
+            premiumAmount:
+              retained("premiumAmount") === null
+                ? null
+                : String(retained("premiumAmount")),
+            coverageAmount:
+              retained("coverageAmount") === null
+                ? null
+                : String(retained("coverageAmount")),
+            purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`),
+            expiresAt: new Date(`${input.expiresAt}T00:00:00Z`),
+            status: input.status,
+            remarks: retained("remarks"),
+          };
+          if (input.id)
+            await db
+              .update(employeeInsurancePolicies)
+              .set(values)
+              .where(eq(employeeInsurancePolicies.id, input.id));
+          else await db.insert(employeeInsurancePolicies).values(values);
+          await db.insert(auditLogs).values({
+            userId: admin.id,
+            module: "personnel",
+            action: input.id
+              ? "update_employee_insurance"
+              : "create_employee_insurance",
+            targetType: "employee_insurance",
+            targetId: String(input.id ?? input.employeeProfileId),
+            summary: `${input.id ? "维护" : "登记"}员工保险：${input.insuranceType}`,
+          });
+          return { success: true };
         });
       }),
   }),
@@ -3702,7 +3886,11 @@ export const adminRouter = router({
       .query(async ({ ctx, input }) => {
         await assertSuperAdmin(ctx);
         const db = await getDb();
-        if (!db) return [];
+        if (!db)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "数据库连接暂不可用，柴油台账读取失败",
+          });
         const rows = await db
           .select()
           .from(dieselRefuelRecords)
@@ -3822,12 +4010,48 @@ export const adminRouter = router({
                   .where(eq(transportTrips.id, row.transportTripId))
                   .limit(1)
               : [];
+            const machineCostSourceId = /^DS-MC-([1-9]\d*)$/.exec(row.recordNo);
+            const sourceCostId = machineCostSourceId
+              ? Number(machineCostSourceId[1])
+              : null;
+            const [sourceCost] =
+              sourceCostId && Number.isSafeInteger(sourceCostId)
+                ? await db
+                    .select({
+                      id: machineCostRecords.id,
+                      projectId: machineCostRecords.projectId,
+                      machineId: machineCostRecords.machineId,
+                      costType: machineCostRecords.costType,
+                      evidenceId: machineCostRecords.evidenceId,
+                      dieselRefuelRecordId:
+                        machineCostRecords.dieselRefuelRecordId,
+                    })
+                    .from(machineCostRecords)
+                    .where(
+                      and(
+                        eq(machineCostRecords.id, sourceCostId),
+                        eq(machineCostRecords.dieselRefuelRecordId, row.id)
+                      )
+                    )
+                    .limit(1)
+                : [];
+            const validMachineSource = Boolean(
+              sourceCost &&
+                sourceCost.id === sourceCostId &&
+                sourceCost.dieselRefuelRecordId === row.id &&
+                sourceCost.projectId === row.projectId &&
+                sourceCost.machineId === row.machineId &&
+                sourceCost.costType === "fuel" &&
+                sourceCost.evidenceId === row.evidenceId &&
+                row.assetType === "machine"
+            );
             const [evidence] = row.evidenceId
               ? await db
                   .select({
                     id: evidenceRecords.id,
                     projectId: evidenceRecords.projectId,
                     sourceType: evidenceRecords.sourceType,
+                    sourceId: evidenceRecords.sourceId,
                     status: evidenceRecords.status,
                     fileName: evidenceRecords.fileName,
                     fileKey: evidenceRecords.fileKey,
@@ -3838,7 +4062,18 @@ export const adminRouter = router({
                     and(
                       eq(evidenceRecords.id, row.evidenceId),
                       eq(evidenceRecords.projectId, row.projectId),
-                      eq(evidenceRecords.sourceType, "diesel_receipt"),
+                      sourceCostId && validMachineSource
+                        ? or(
+                            eq(evidenceRecords.sourceType, "diesel_receipt"),
+                            and(
+                              eq(evidenceRecords.sourceType, "machine_cost"),
+                              eq(
+                                evidenceRecords.sourceId,
+                                `machine-cost-${sourceCostId}`
+                              )
+                            )
+                          )
+                        : eq(evidenceRecords.sourceType, "diesel_receipt"),
                       eq(evidenceRecords.status, "active")
                     )
                   )
@@ -3848,15 +4083,39 @@ export const adminRouter = router({
               evidence &&
               evidence.id === row.evidenceId &&
               evidence.projectId === row.projectId &&
-              evidence.sourceType === "diesel_receipt" &&
-              evidence.status === "active"
+              (evidence.sourceType === "diesel_receipt" ||
+                (validMachineSource &&
+                  evidence.sourceType === "machine_cost" &&
+                  evidence.sourceId === `machine-cost-${sourceCostId}`)) &&
+              (!sourceCostId || validMachineSource) &&
+              evidence.status === "active" &&
+              [
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+                "image/heic",
+                "image/heif",
+              ].includes(evidence.mimeType ?? "")
                 ? evidence
                 : null;
-            const receiptImageUrl = receiptEvidence
-              ? await storageGetSignedUrl(receiptEvidence.fileKey)
-              : null;
+            let receiptImageUrl: string | null = null;
+            if (receiptEvidence) {
+              try {
+                receiptImageUrl = await storageGetSignedUrl(
+                  receiptEvidence.fileKey
+                );
+              } catch {
+                // 单张影像暂不可用不应隐藏完整柴油主账或其他有效照片。
+              }
+            }
             return {
               ...row,
+              sourceType: machineCostSourceId
+                ? ("machine_cost" as const)
+                : ("diesel_refuel" as const),
+              sourceLabel: machineCostSourceId ? "机械录入" : "柴油登记",
+              sourceRecordId: sourceCostId,
+              readOnly: row.recordNo.startsWith("DS-MC-"),
               assetName: asset
                 ? "code" in asset && asset.code
                   ? `${asset.name} · ${asset.code}`
@@ -3876,6 +4135,7 @@ export const adminRouter = router({
                     url: receiptImageUrl,
                   }
                 : null,
+              receiptEvidenceSource: receiptEvidence?.sourceType ?? null,
               priceAlert: calculateDieselPriceAlert(row, rows, alertRule),
             };
           })
@@ -3969,258 +4229,404 @@ export const adminRouter = router({
             message: "运费扣油仅适用于车辆，机械油料不得扣减运输运费",
           });
         }
-        const [project] = await db
-          .select({ id: projects.id, status: projects.status })
-          .from(projects)
-          .where(eq(projects.id, input.projectId))
-          .limit(1);
-        if (!project || project.status === "archived")
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "柴油记录必须归属有效项目",
-          });
-        if (!input.id && input.status !== "void" && !input.evidenceId) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "柴油领用必须使用后置相机现场拍摄加油表照片并归档水印凭证",
-          });
-        }
-        if (input.evidenceId) {
-          const [evidence] = await db
-            .select({
-              id: evidenceRecords.id,
-              projectId: evidenceRecords.projectId,
-              sourceType: evidenceRecords.sourceType,
-            })
-            .from(evidenceRecords)
-            .where(eq(evidenceRecords.id, input.evidenceId))
-            .limit(1);
-          if (
-            !evidence ||
-            evidence.projectId !== input.projectId ||
-            evidence.sourceType !== "diesel_receipt"
-          )
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "加油表现场影像必须是归属所选项目的柴油水印凭证",
-            });
-        }
-        if (input.assetType === "vehicle") {
-          const [vehicle] = await db
-            .select({
-              id: transportVehicles.id,
-              projectId: transportVehicles.projectId,
-            })
-            .from(transportVehicles)
-            .where(eq(transportVehicles.id, input.vehicleId!))
-            .limit(1);
-          if (!vehicle || vehicle.projectId !== input.projectId)
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "车辆必须归属所选项目",
-            });
-        } else {
-          const [machine] = await db
-            .select({ id: machines.id, projectId: machines.projectId })
-            .from(machines)
-            .where(eq(machines.id, input.machineId!))
-            .limit(1);
-          if (!machine || machine.projectId !== input.projectId)
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "机械必须归属所选项目",
-            });
-        }
-        if (input.transportTripId) {
-          const [trip] = await db
-            .select({
-              id: transportTrips.id,
-              projectId: transportTrips.projectId,
-              vehicleId: transportTrips.vehicleId,
-              status: transportTrips.status,
-            })
-            .from(transportTrips)
-            .where(eq(transportTrips.id, input.transportTripId))
-            .limit(1);
-          if (
-            !trip ||
-            trip.projectId !== input.projectId ||
-            trip.vehicleId !== input.vehicleId
-          )
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "运输趟次必须属于所选项目和车辆",
-            });
-          if (trip.status === "settled" || trip.status === "void")
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "已结算或已作废趟次不得新增柴油扣款",
-            });
-        }
-        const refuelDate = chinaBusinessDate(input.refueledAt);
-        let appliedUnitPrice = input.actualUnitPrice ?? 0;
-        if (input.supplyMethod === "project_supply") {
-          const prices = await db
-            .select()
-            .from(dieselGuidelinePrices)
-            .where(eq(dieselGuidelinePrices.projectId, input.projectId))
-            .orderBy(desc(dieselGuidelinePrices.effectiveFrom));
-          const activePrice = prices.find(
-            price =>
-              price.status === "active" &&
-              chinaBusinessDate(price.effectiveFrom) <= refuelDate &&
-              (!price.effectiveTo ||
-                chinaBusinessDate(price.effectiveTo) >= refuelDate)
-          );
-          if (!activePrice)
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "项目部供油前请先维护当日有效的柴油指导单价",
-            });
-          appliedUnitPrice = Number(activePrice.pricePerLiter);
-        }
-        const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
-        const allRefuelRows =
-          input.supplyMethod === "external_station"
-            ? await db
+        const {
+          recordId,
+          amount,
+          appliedUnitPrice,
+          priceAlert,
+          effectiveStatus,
+        } = await db.transaction(async tx => {
+          const [hint] = input.id
+            ? await tx
                 .select()
                 .from(dieselRefuelRecords)
-                .orderBy(desc(dieselRefuelRecords.refueledAt))
-            : [];
-        const [alertRule] =
-          input.supplyMethod === "external_station"
-            ? await db
-                .select()
-                .from(dieselPriceAlertRules)
-                .where(eq(dieselPriceAlertRules.projectId, input.projectId))
+                .where(eq(dieselRefuelRecords.id, input.id))
                 .limit(1)
             : [];
-        const effectiveStatus = normalizeDieselRefuelStatus(input.status);
-        const values = {
-          projectId: input.projectId,
-          assetType: input.assetType,
-          vehicleId:
-            input.assetType === "vehicle" ? (input.vehicleId ?? null) : null,
-          machineId:
-            input.assetType === "machine" ? (input.machineId ?? null) : null,
-          transportTripId: input.deductFromFreight
-            ? null
-            : (input.transportTripId ?? null),
-          supplyMethod: input.supplyMethod,
-          stationOrSupplierName: input.stationOrSupplierName ?? null,
-          liters: String(input.liters),
-          actualUnitPrice:
-            input.actualUnitPrice === null ||
-            input.actualUnitPrice === undefined
-              ? null
-              : String(input.actualUnitPrice),
-          appliedUnitPrice: String(appliedUnitPrice),
-          amount: String(amount),
-          deductFromFreight:
-            input.assetType === "vehicle" ? input.deductFromFreight : false,
-          refueledAt: new Date(input.refueledAt),
-          meterReading:
-            input.meterReading === null || input.meterReading === undefined
-              ? null
-              : String(input.meterReading),
-          receiptNo: input.receiptNo ?? null,
-          evidenceId: input.evidenceId ?? null,
-          remarks: input.remarks ?? null,
-          status: effectiveStatus,
-          createdBy: admin.id,
-          approvedBy: effectiveStatus === "approved" ? admin.id : null,
-          approvedAt: effectiveStatus === "approved" ? new Date() : null,
-        };
-        let recordId = input.id;
-        if (input.id) {
-          const [existing] = await db
-            .select({
-              id: dieselRefuelRecords.id,
-              status: dieselRefuelRecords.status,
-            })
-            .from(dieselRefuelRecords)
-            .where(eq(dieselRefuelRecords.id, input.id))
-            .limit(1);
-          if (!existing)
+          if (
+            hint &&
+            (hint.projectId !== input.projectId ||
+              hint.assetType !== input.assetType ||
+              (hint.assetType === "machine" &&
+                hint.machineId !== input.machineId) ||
+              (hint.assetType === "vehicle" &&
+                hint.vehicleId !== input.vehicleId))
+          )
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "已有柴油记录不得更换项目或车辆机械，避免破坏原费用关联",
+            });
+          if (input.assetType === "machine")
+            await lockMachineFuelLedger(tx, {
+              machineId: input.machineId!,
+              projectId: input.projectId,
+            });
+          const [existing] = input.id
+            ? await tx
+                .select()
+                .from(dieselRefuelRecords)
+                .where(eq(dieselRefuelRecords.id, input.id))
+                .limit(1)
+                .for("update")
+            : [];
+          if (input.id && !existing)
             throw new TRPCError({
               code: "NOT_FOUND",
               message: "柴油领用记录不存在",
             });
-          if (existing.status === "settled")
+          if (existing?.recordNo.startsWith("DS-MC-"))
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "该柴油记录由机械成本同步，只读展示；请前往机械管理原成本记录办理修改、审核、结算或作废，不得在柴油管理绕过机械原办理权限",
+            });
+          if (existing?.status === "settled")
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "已结算柴油记录不得修改或作废",
             });
-          await db
-            .update(dieselRefuelRecords)
-            .set(values)
-            .where(eq(dieselRefuelRecords.id, input.id));
-        } else {
-          const recordNo = `DS${input.projectId}${Date.now().toString().slice(-8)}`;
-          await db.insert(dieselRefuelRecords).values({ ...values, recordNo });
-          const [created] = await db
-            .select({ id: dieselRefuelRecords.id })
-            .from(dieselRefuelRecords)
-            .where(eq(dieselRefuelRecords.recordNo, recordNo))
-            .limit(1);
-          recordId = created?.id;
-        }
-        if (!recordId)
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "柴油记录保存后无法确认编号",
-          });
-        const alertCandidate: DieselRefuelRow = {
-          ...values,
-          id: recordId,
-          recordNo: `DS${recordId}`,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        const priceAlert =
-          input.supplyMethod === "external_station"
-            ? calculateDieselPriceAlert(
-                alertCandidate,
-                allRefuelRows,
-                alertRule
-              )
-            : calculateDieselPriceAlert(alertCandidate, [], null);
-        if (input.assetType === "machine") {
-          const [existingCost] = await db
-            .select({ id: machineCostRecords.id })
-            .from(machineCostRecords)
-            .where(eq(machineCostRecords.dieselRefuelRecordId, recordId))
-            .limit(1);
-          const costValues = {
-            machineId: input.machineId!,
-            projectId: input.projectId,
-            costType: "fuel" as const,
-            quantity: String(input.liters),
-            unitPrice: String(appliedUnitPrice),
-            amount: String(amount),
-            dieselRefuelRecordId: recordId,
-            occurredAt: new Date(input.refueledAt),
-            evidenceId: input.evidenceId ?? null,
-            status:
-              effectiveStatus === "void"
-                ? ("void" as const)
-                : ("approved" as const),
+          const [existingCost] = existing
+            ? await tx
+                .select()
+                .from(machineCostRecords)
+                .where(eq(machineCostRecords.dieselRefuelRecordId, existing.id))
+                .limit(1)
+                .for("update")
+            : [];
+          if (existingCost?.status === "settled")
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "关联机械成本已结算，不得修改或作废柴油记录；请前往机械管理核对原结算",
+            });
+          if (
+            input.assetType === "vehicle" &&
+            (existing?.assetType === "machine" || existingCost)
+          )
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "机械柴油记录不得改为车辆，避免遗留关联机械成本；请保留原记录并按原业务办理",
+            });
+          const assertRefuelWrite = (result: unknown) => {
+            const header = Array.isArray(result) ? result[0] : result;
+            if (
+              !header ||
+              typeof header !== "object" ||
+              !("affectedRows" in header) ||
+              Number(header.affectedRows) !== 1
+            )
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "柴油记录或关联机械成本状态已变化，未覆盖写入，请刷新后重试",
+              });
           };
-          if (existingCost)
-            await db
-              .update(machineCostRecords)
-              .set(costValues)
-              .where(eq(machineCostRecords.id, existingCost.id));
-          else if (input.status !== "void")
-            await db.insert(machineCostRecords).values(costValues);
-        }
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "diesel",
-          action: input.id ? "update_refuel" : "create_refuel",
-          targetType: "diesel_refuel",
-          targetId: String(recordId),
-          summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}`,
+          const [project] = await tx
+            .select({ id: projects.id, status: projects.status })
+            .from(projects)
+            .where(eq(projects.id, input.projectId))
+            .limit(1);
+          if (!project || project.status === "archived")
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "柴油记录必须归属有效项目",
+            });
+          if (!input.id && input.status !== "void" && !input.evidenceId) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "柴油领用必须使用后置相机现场拍摄加油表照片并归档水印凭证",
+            });
+          }
+          if (input.evidenceId) {
+            const [evidence] = await tx
+              .select({
+                id: evidenceRecords.id,
+                projectId: evidenceRecords.projectId,
+                sourceType: evidenceRecords.sourceType,
+                status: evidenceRecords.status,
+                mimeType: evidenceRecords.mimeType,
+              })
+              .from(evidenceRecords)
+              .where(eq(evidenceRecords.id, input.evidenceId))
+              .limit(1);
+            if (
+              !evidence ||
+              evidence.id !== input.evidenceId ||
+              evidence.projectId !== input.projectId ||
+              evidence.sourceType !== "diesel_receipt" ||
+              evidence.status !== "active" ||
+              ![
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+                "image/heic",
+                "image/heif",
+              ].includes(evidence.mimeType ?? "")
+            )
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message:
+                  "加油表现场影像必须是归属所选项目的有效柴油水印照片凭证",
+              });
+          }
+          if (input.assetType === "vehicle") {
+            const [vehicle] = await tx
+              .select({
+                id: transportVehicles.id,
+                projectId: transportVehicles.projectId,
+              })
+              .from(transportVehicles)
+              .where(eq(transportVehicles.id, input.vehicleId!))
+              .limit(1);
+            if (!vehicle || vehicle.projectId !== input.projectId)
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "车辆必须归属所选项目",
+              });
+          } else {
+            const [machine] = await tx
+              .select({ id: machines.id, projectId: machines.projectId })
+              .from(machines)
+              .where(eq(machines.id, input.machineId!))
+              .limit(1);
+            if (!machine || machine.projectId !== input.projectId)
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "机械必须归属所选项目",
+              });
+          }
+          if (input.transportTripId) {
+            const [trip] = await tx
+              .select({
+                id: transportTrips.id,
+                projectId: transportTrips.projectId,
+                vehicleId: transportTrips.vehicleId,
+                status: transportTrips.status,
+              })
+              .from(transportTrips)
+              .where(eq(transportTrips.id, input.transportTripId))
+              .limit(1);
+            if (
+              !trip ||
+              trip.projectId !== input.projectId ||
+              trip.vehicleId !== input.vehicleId
+            )
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "运输趟次必须属于所选项目和车辆",
+              });
+            if (trip.status === "settled" || trip.status === "void")
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "已结算或已作废趟次不得新增柴油扣款",
+              });
+          }
+          const refuelDate = chinaBusinessDate(input.refueledAt);
+          let appliedUnitPrice = input.actualUnitPrice ?? 0;
+          if (input.supplyMethod === "project_supply") {
+            const prices = await tx
+              .select()
+              .from(dieselGuidelinePrices)
+              .where(eq(dieselGuidelinePrices.projectId, input.projectId))
+              .orderBy(desc(dieselGuidelinePrices.effectiveFrom));
+            const activePrice = prices.find(
+              price =>
+                price.status === "active" &&
+                chinaBusinessDate(price.effectiveFrom) <= refuelDate &&
+                (!price.effectiveTo ||
+                  chinaBusinessDate(price.effectiveTo) >= refuelDate)
+            );
+            if (!activePrice)
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "项目部供油前请先维护当日有效的柴油指导单价",
+              });
+            appliedUnitPrice = Number(activePrice.pricePerLiter);
+          }
+          const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
+          const allRefuelRows =
+            input.supplyMethod === "external_station"
+              ? await tx
+                  .select()
+                  .from(dieselRefuelRecords)
+                  .orderBy(desc(dieselRefuelRecords.refueledAt))
+              : [];
+          const [alertRule] =
+            input.supplyMethod === "external_station"
+              ? await tx
+                  .select()
+                  .from(dieselPriceAlertRules)
+                  .where(eq(dieselPriceAlertRules.projectId, input.projectId))
+                  .limit(1)
+              : [];
+          const effectiveStatus = normalizeDieselRefuelStatus(input.status);
+          if (
+            !input.id &&
+            input.assetType === "machine" &&
+            input.supplyMethod === "project_supply"
+          )
+            await assertNoDuplicateMachineFuel(tx, {
+              machineId: input.machineId!,
+              projectId: input.projectId,
+              liters: input.liters,
+              refueledAt: new Date(input.refueledAt),
+            });
+          const values = {
+            projectId: input.projectId,
+            assetType: input.assetType,
+            vehicleId:
+              input.assetType === "vehicle" ? (input.vehicleId ?? null) : null,
+            machineId:
+              input.assetType === "machine" ? (input.machineId ?? null) : null,
+            transportTripId: input.deductFromFreight
+              ? null
+              : (input.transportTripId ?? null),
+            supplyMethod: input.supplyMethod,
+            stationOrSupplierName: input.stationOrSupplierName ?? null,
+            liters: String(input.liters),
+            actualUnitPrice:
+              input.actualUnitPrice === null ||
+              input.actualUnitPrice === undefined
+                ? null
+                : String(input.actualUnitPrice),
+            appliedUnitPrice: String(appliedUnitPrice),
+            amount: String(amount),
+            deductFromFreight:
+              input.assetType === "vehicle" ? input.deductFromFreight : false,
+            refueledAt: new Date(input.refueledAt),
+            meterReading:
+              input.meterReading === null || input.meterReading === undefined
+                ? null
+                : String(input.meterReading),
+            receiptNo: input.receiptNo ?? null,
+            evidenceId: input.evidenceId ?? null,
+            remarks: input.remarks ?? null,
+            status: effectiveStatus,
+            createdBy: existing?.createdBy ?? admin.id,
+            approvedBy: effectiveStatus === "approved" ? admin.id : null,
+            approvedAt: effectiveStatus === "approved" ? new Date() : null,
+          };
+          let recordId = input.id;
+          if (existing) {
+            const updated = await tx
+              .update(dieselRefuelRecords)
+              .set(values)
+              .where(
+                and(
+                  eq(dieselRefuelRecords.id, existing.id),
+                  eq(dieselRefuelRecords.status, existing.status)
+                )
+              );
+            assertRefuelWrite(updated);
+          } else {
+            const recordNo = `DS${input.projectId}-${randomBytes(12).toString("hex")}`;
+            const created = await tx
+              .insert(dieselRefuelRecords)
+              .values({ ...values, recordNo });
+            recordId = Number(
+              (created[0] as { insertId?: number } | undefined)?.insertId ?? 0
+            );
+          }
+          if (!recordId || !Number.isSafeInteger(recordId))
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "柴油记录保存后无法确认编号",
+            });
+          const alertCandidate: DieselRefuelRow = {
+            ...values,
+            id: recordId,
+            recordNo: `DS${recordId}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          const priceAlert =
+            input.supplyMethod === "external_station"
+              ? calculateDieselPriceAlert(
+                  alertCandidate,
+                  allRefuelRows,
+                  alertRule
+                )
+              : calculateDieselPriceAlert(alertCandidate, [], null);
+          if (input.assetType === "machine") {
+            const costValues = {
+              machineId: input.machineId!,
+              projectId: input.projectId,
+              costType: "fuel" as const,
+              quantity: String(input.liters),
+              unitPrice: String(appliedUnitPrice),
+              amount: String(amount),
+              dieselRefuelRecordId: recordId,
+              occurredAt: new Date(input.refueledAt),
+              evidenceId: input.evidenceId ?? null,
+              status:
+                effectiveStatus === "void"
+                  ? ("void" as const)
+                  : ("approved" as const),
+            };
+            let costId = existingCost?.id;
+            if (existingCost) {
+              const updated = await tx
+                .update(machineCostRecords)
+                .set(costValues)
+                .where(
+                  and(
+                    eq(machineCostRecords.id, existingCost.id),
+                    eq(machineCostRecords.dieselRefuelRecordId, recordId),
+                    eq(machineCostRecords.status, existingCost.status)
+                  )
+                );
+              assertRefuelWrite(updated);
+            } else if (effectiveStatus !== "void") {
+              const created = await tx
+                .insert(machineCostRecords)
+                .values(costValues);
+              costId = Number(
+                (created[0] as { insertId?: number } | undefined)?.insertId ?? 0
+              );
+              if (!costId || !Number.isSafeInteger(costId))
+                throw new TRPCError({
+                  code: "INTERNAL_SERVER_ERROR",
+                  message: "机械柴油成本保存后无法确认编号",
+                });
+            }
+            if (costId)
+              await tx.insert(auditLogs).values({
+                userId: admin.id,
+                module: "machinery",
+                action: existingCost
+                  ? "update_diesel_cost"
+                  : "create_diesel_cost",
+                targetType: "machine_cost",
+                targetId: String(costId),
+                summary: `柴油台账 #${recordId} 同步机械油料成本：¥${amount}，${costValues.status === "void" ? "已作废" : "已记账"}`,
+              });
+          }
+          await tx.insert(auditLogs).values({
+            userId: admin.id,
+            module: "diesel",
+            action: input.id ? "update_refuel" : "create_refuel",
+            targetType: "diesel_refuel",
+            targetId: String(recordId),
+            summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}`,
+          });
+          if (priceAlert.isAlert)
+            await tx.insert(auditLogs).values({
+              userId: admin.id,
+              module: "diesel",
+              action: "price_alert",
+              targetType: "diesel_refuel",
+              targetId: String(recordId),
+              summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）`,
+            });
+          return {
+            recordId,
+            amount,
+            appliedUnitPrice,
+            priceAlert,
+            effectiveStatus,
+          };
         });
         void notifyOfficialAccountBusinessEventSafely({
           userId: admin.id,
@@ -4334,14 +4740,6 @@ export const adminRouter = router({
           });
         }
         if (priceAlert.isAlert) {
-          await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "diesel",
-            action: "price_alert",
-            targetType: "diesel_refuel",
-            targetId: String(recordId),
-            summary: `现金柴油价格异常：¥${appliedUnitPrice}/L，相对${input.stationOrSupplierName}上一笔 ¥${priceAlert.referenceUnitPrice}/L 波动 ${priceAlert.deviationPercent}%（阈值 ${priceAlert.thresholdPercent}%）`,
-          });
           void notifyOfficialAccountBusinessEventSafely({
             userId: admin.id,
             projectId: input.projectId,

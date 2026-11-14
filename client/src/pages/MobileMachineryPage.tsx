@@ -831,11 +831,15 @@ export default function MobileMachineryPage() {
       clearMobileDraft(costDraftKey);
       resetCostForm();
       toast.success(
-        `机械成本已录入，系统核算 ${formatMoney(data.amount)}${data.guidelinePriceId ? "，已采用系统柴油指导价" : ""}`
+        data.dieselRefuelRecordId
+          ? `机械柴油已归入柴油管理，金额 ${formatMoney(data.amount)}，无需重复登记`
+          : `机械成本已录入，系统核算 ${formatMoney(data.amount)}${data.guidelinePriceId ? "，已采用系统柴油指导价" : ""}`
       );
       await Promise.all([
         utils.machinery.listCosts.invalidate(),
         utils.machinery.settlementPreview.invalidate(),
+        utils.admin.diesel.invalidate(),
+        utils.diesel.invalidate(),
       ]);
     },
     onError: error =>
@@ -849,6 +853,8 @@ export default function MobileMachineryPage() {
       await Promise.all([
         utils.machinery.listCosts.invalidate(),
         utils.machinery.settlementPreview.invalidate(),
+        utils.admin.diesel.invalidate(),
+        utils.diesel.invalidate(),
       ]);
     },
     onError: error =>

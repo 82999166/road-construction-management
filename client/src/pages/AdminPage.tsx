@@ -33,6 +33,17 @@ import { PersonnelResourceSelect } from "@/components/PersonnelResourceSelect";
 import { PurchasingWorkspace } from "@/components/PurchasingWorkspace";
 import { useManagementPermissions } from "@/hooks/useManagementPermissions";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { DieselLedgerDataState } from "@/components/DieselLedgerDataState";
+import {
+  changeDieselLedgerFilter,
+  resetDieselProjectResourceFilter,
+  isDieselLedgerDataReady,
+  type DieselLedgerFilter,
+} from "@/lib/dieselLedgerFilter";
+import {
+  getDieselRecordSourceLabel,
+  MACHINE_DIESEL_LEDGER_NOTE,
+} from "@/lib/dieselLedgerSource";
 import DashboardLayout, {
   type DashboardMenuItem,
 } from "@/components/DashboardLayout";
@@ -2846,16 +2857,26 @@ export default function AdminPage({
   );
   const [financeReopenReason, setFinanceReopenReason] = useState("");
   const [dieselDate, setDieselDate] = useState(() => toLocalDateInput());
-  const [dieselLedgerFilter, setDieselLedgerFilter] = useState(() => ({
-    plateNo: "",
-    dateFrom: toLocalDateInput(),
-    dateTo: toLocalDateInput(),
-    month: "",
-    supplyMethod: "all",
-    assetType: "all",
-    supplierName: "",
-  }));
-  const [dieselMachineName, setDieselMachineName] = useState("");
+  const [dieselLedgerFilter, setDieselLedgerFilter] =
+    useState<DieselLedgerFilter>(() => ({
+      machineName: "",
+      plateNo: "",
+      dateFrom: toLocalDateInput(),
+      dateTo: toLocalDateInput(),
+      month: "",
+      supplyMethod: "all",
+      assetType: "all",
+      supplierName: "",
+    }));
+  const dieselMachineName = dieselLedgerFilter.machineName;
+  const setDieselMachineName = (value: string) =>
+    setDieselLedgerFilter(current =>
+      changeDieselLedgerFilter(current, "machineName", value)
+    );
+  useEffect(() => {
+    setDieselLedgerFilter(current => resetDieselProjectResourceFilter(current));
+    setDieselPrintOpen(false);
+  }, [financeProjectId]);
   const [dieselPrintMode, setDieselPrintMode] = useState<
     "current" | "daily" | "vehicle" | "machine"
   >("current");
@@ -3470,6 +3491,13 @@ export default function AdminPage({
         Number(financeProjectId) > 0,
     }
   );
+  const dieselLedgerReady = isDieselLedgerDataReady(
+    dieselRefuelRecords,
+    canQuery && isDiesel && Number(financeProjectId) > 0
+  );
+  useEffect(() => {
+    setDieselPrintOpen(false);
+  }, [dieselRefuelRecordsInput]);
   const dieselLedgerPagination = useFinancePagination(
     dieselRefuelRecords.data ?? [],
     JSON.stringify(dieselRefuelRecordsInput)
@@ -4801,13 +4829,17 @@ export default function AdminPage({
         trpcUtils.machinery.printSummary.invalidate(),
       ]);
       toast.success(
-        `机械成本已录入，系统核算金额 ¥${displayMoney(data.amount)}`
+        data.dieselRefuelRecordId
+          ? `机械柴油已归入柴油管理，金额 ¥${displayMoney(data.amount)}，未重复计费`
+          : `机械成本已录入，系统核算金额 ¥${displayMoney(data.amount)}`
       );
       setMachineCostForm(EMPTY_MACHINE_COST_FORM);
       setMachineCostDialogOpen(false);
       await Promise.all([
         trpcUtils.machinery.listCosts.invalidate(),
         trpcUtils.machinery.listCostSummaries.invalidate(),
+        trpcUtils.admin.diesel.invalidate(),
+        trpcUtils.diesel.invalidate(),
         audits.refetch(),
       ]);
     },
@@ -6325,6 +6357,8 @@ export default function AdminPage({
       await Promise.all([
         trpcUtils.machinery.listCosts.invalidate(),
         trpcUtils.machinery.listCostSummaries.invalidate(),
+        trpcUtils.admin.diesel.invalidate(),
+        trpcUtils.diesel.invalidate(),
       ]);
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
@@ -14236,7 +14270,14 @@ export default function AdminPage({
       <Tabs
         value={scopedSection ? "operations" : laborWorkspaceTab}
         onValueChange={value => {
-          if (value !== laborWorkspaceTab && workspaceDrafts["personnel-directory"] && !window.confirm("人员档案有未保存修改，切换栏目将放弃草稿，确认切换吗？")) return;
+          if (
+            value !== laborWorkspaceTab &&
+            workspaceDrafts["personnel-directory"] &&
+            !window.confirm(
+              "人员档案有未保存修改，切换栏目将放弃草稿，确认切换吗？"
+            )
+          )
+            return;
           setLaborWorkspaceTab(value);
         }}
         className="space-y-4"
@@ -18706,6 +18747,7 @@ export default function AdminPage({
                           onClick={() => {
                             const today = toLocalDateInput();
                             setDieselLedgerFilter({
+                              machineName: "",
                               plateNo: "",
                               dateFrom: today,
                               dateTo: today,
@@ -18725,14 +18767,13 @@ export default function AdminPage({
                           value={dieselLedgerFilter.plateNo || "ALL_VEHICLES"}
                           disabled={dieselLedgerFilter.assetType === "machine"}
                           onValueChange={value =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              plateNo: value === "ALL_VEHICLES" ? "" : value,
-                              assetType:
-                                value === "ALL_VEHICLES"
-                                  ? current.assetType
-                                  : "vehicle",
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "plateNo",
+                                value === "ALL_VEHICLES" ? "" : value
+                              )
+                            )
                           }
                         >
                           <SelectTrigger aria-label="柴油筛选车牌">
@@ -18763,10 +18804,13 @@ export default function AdminPage({
                           value={dieselLedgerFilter.dateFrom}
                           aria-label="柴油加油开始日期"
                           onChange={event =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              dateFrom: event.target.value,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "dateFrom",
+                                event.target.value
+                              )
+                            )
                           }
                         />
                         <Input
@@ -18775,10 +18819,13 @@ export default function AdminPage({
                           value={dieselLedgerFilter.dateTo}
                           aria-label="柴油加油结束日期"
                           onChange={event =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              dateTo: event.target.value,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "dateTo",
+                                event.target.value
+                              )
+                            )
                           }
                         />
                         <Input
@@ -18786,19 +18833,25 @@ export default function AdminPage({
                           value={dieselLedgerFilter.month}
                           aria-label="柴油加油月份"
                           onChange={event =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              month: event.target.value,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "month",
+                                event.target.value
+                              )
+                            )
                           }
                         />
                         <Select
                           value={dieselLedgerFilter.supplyMethod}
                           onValueChange={value =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              supplyMethod: value,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "supplyMethod",
+                                value as DieselLedgerFilter["supplyMethod"]
+                              )
+                            )
                           }
                         >
                           <SelectTrigger aria-label="柴油供油方式">
@@ -18817,12 +18870,13 @@ export default function AdminPage({
                         <Select
                           value={dieselLedgerFilter.assetType}
                           onValueChange={value =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              assetType: value,
-                              plateNo:
-                                value === "machine" ? "" : current.plateNo,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "assetType",
+                                value as DieselLedgerFilter["assetType"]
+                              )
+                            )
                           }
                         >
                           <SelectTrigger aria-label="柴油车辆机械">
@@ -18854,10 +18908,13 @@ export default function AdminPage({
                           aria-label="柴油筛选供应商"
                           placeholder="供应商 / 加油站（可选）"
                           onChange={event =>
-                            setDieselLedgerFilter(current => ({
-                              ...current,
-                              supplierName: event.target.value,
-                            }))
+                            setDieselLedgerFilter(current =>
+                              changeDieselLedgerFilter(
+                                current,
+                                "supplierName",
+                                event.target.value
+                              )
+                            )
                           }
                         />
                       </div>
@@ -18866,7 +18923,10 @@ export default function AdminPage({
                           打印、导出和台账始终使用以上当前筛选条件。
                         </p>
                         <Button
-                          disabled={!dieselRefuelRecords.data?.length}
+                          disabled={
+                            !dieselLedgerReady ||
+                            !dieselRefuelRecords.data?.length
+                          }
                           onClick={() => {
                             setDieselPrintMode(
                               dieselLedgerFilter.assetType === "vehicle"
@@ -18893,7 +18953,10 @@ export default function AdminPage({
                       </Button>
                       <Button
                         variant="outline"
-                        disabled={!dieselRefuelRecords.data?.length}
+                        disabled={
+                          !dieselLedgerReady ||
+                          !dieselRefuelRecords.data?.length
+                        }
                         onClick={() =>
                           downloadCsvFile(
                             `柴油领用明细-${dieselLedgerFilter.month || dieselLedgerFilter.dateFrom || "当前筛选"}.csv`,
@@ -18901,6 +18964,7 @@ export default function AdminPage({
                               "单号",
                               "资源",
                               "资源类型",
+                              "录入来源",
                               "供油方式",
                               "供应商/供油点",
                               "加油员",
@@ -18915,6 +18979,7 @@ export default function AdminPage({
                               item.recordNo,
                               item.assetName,
                               item.assetType === "vehicle" ? "车辆" : "机械",
+                              getDieselRecordSourceLabel(item.recordNo),
                               item.supplyMethod === "project_supply"
                                 ? "项目部供油"
                                 : "加油站加油",
@@ -18933,32 +18998,39 @@ export default function AdminPage({
                         导出当前筛选明细
                       </Button>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                      <MetricCard
-                        title="当前筛选供油量"
-                        value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
-                        description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
-                        icon={Truck}
-                      />
-                      <MetricCard
-                        title="当前筛选柴油金额"
-                        value={dieselCurrentSummary.totalAmount}
-                        description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
-                        icon={BarChart3}
-                      />
-                      <MetricCard
-                        title="车辆 / 机械领用"
-                        value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
-                        description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
-                        icon={Settings2}
-                      />
-                      <MetricCard
-                        title="待扣运费油款"
-                        value={dieselCurrentSummary.deductibleAmount}
-                        description="同当前筛选；结算运输趟次时从总运费扣减"
-                        icon={ScrollText}
-                      />
-                    </div>
+                    <DieselLedgerDataState
+                      loading={
+                        !dieselLedgerReady && !dieselRefuelRecords.isError
+                      }
+                      error={dieselRefuelRecords.isError}
+                    >
+                      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                        <MetricCard
+                          title="当前筛选供油量"
+                          value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
+                          description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
+                          icon={Truck}
+                        />
+                        <MetricCard
+                          title="当前筛选柴油金额"
+                          value={`¥ ${displayMoney(dieselCurrentSummary.totalAmount)}`}
+                          description={`有效 ${dieselCurrentSummary.effectiveRecordCount} 笔；作废不计入`}
+                          icon={BarChart3}
+                        />
+                        <MetricCard
+                          title="车辆 / 机械领用"
+                          value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
+                          description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
+                          icon={Settings2}
+                        />
+                        <MetricCard
+                          title="待扣运费油款"
+                          value={`¥ ${displayMoney(dieselCurrentSummary.deductibleAmount)}`}
+                          description="同当前筛选；结算运输趟次时从总运费扣减"
+                          icon={ScrollText}
+                        />
+                      </div>
+                    </DieselLedgerDataState>
                   </FinanceRetainedPanel>
                   <FinanceRetainedPanel
                     active={isDiesel && dieselTab === "ledger"}
@@ -18978,154 +19050,182 @@ export default function AdminPage({
                         每次登记当天实际单价和升数，系统自动计算金额并固化现金油价快照。
                       </p>
                     </div>
-                    <LedgerTable
-                      title="每日柴油领用明细"
-                      description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
+                    <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-900">
+                      {MACHINE_DIESEL_LEDGER_NOTE}
+                    </p>
+                    <DieselLedgerDataState
                       loading={
-                        dieselRefuelRecords.isLoading ||
-                        dieselRefuelRecords.isFetching
+                        !dieselLedgerReady && !dieselRefuelRecords.isError
                       }
-                      columns={[
-                        "单号/资源",
-                        "供油方式",
-                        "油量 / 单价",
-                        "金额",
-                        "凭证 / 预警",
-                        "运输扣油",
-                        "加油时间",
-                        "状态",
-                      ]}
-                      rows={dieselLedgerPagination.pageRows.map(item => ({
-                        id: Number(item.id),
-                        cells: [
-                          <div>
-                            <p>{item.recordNo}</p>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              {item.assetName}
-                            </p>
-                          </div>,
-                          item.supplyMethod === "project_supply"
-                            ? "项目部供油"
-                            : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
-                          `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
-                          `¥ ${displayMoney(item.amount)}`,
-                          <div className="space-y-1">
-                            {item.receiptEvidence?.url ? (
-                              <ProtectedImagePreview
-                                file={{
-                                  url: item.receiptEvidence.url!,
-                                  fileName: item.receiptEvidence.fileName,
-                                  mimeType: item.receiptEvidence.mimeType,
-                                }}
-                                title="柴油加油小票"
-                                description="小票照片仅在当前授权范围内站内预览。"
-                                className="text-xs font-medium text-[#2b6660] underline"
-                              >
-                                查看小票照片
-                              </ProtectedImagePreview>
-                            ) : (
-                              <p className="text-xs text-slate-500">
-                                无小票照片
+                      error={dieselRefuelRecords.isError}
+                    >
+                      <LedgerTable
+                        title="每日柴油领用明细"
+                        description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
+                        loading={
+                          dieselRefuelRecords.isLoading ||
+                          dieselRefuelRecords.isFetching
+                        }
+                        columns={[
+                          "单号/资源",
+                          "供油方式",
+                          "油量 / 单价",
+                          "金额",
+                          "凭证 / 预警",
+                          "运输扣油",
+                          "加油时间",
+                          "状态",
+                        ]}
+                        rows={dieselLedgerPagination.pageRows.map(item => ({
+                          id: Number(item.id),
+                          cells: [
+                            <div>
+                              <p>{item.recordNo}</p>
+                              <p className="mt-1 text-[11px] font-medium text-emerald-700">
+                                {getDieselRecordSourceLabel(item.recordNo)}
                               </p>
-                            )}
-                            {item.priceAlert?.isAlert ? (
-                              <p className="text-xs font-medium text-rose-700">
-                                价格波动 {item.priceAlert.deviationPercent}%
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                {item.assetName}
                               </p>
-                            ) : item.supplyMethod === "external_station" ? (
-                              <p className="text-xs text-emerald-700">
-                                价格正常
-                              </p>
-                            ) : null}
-                          </div>,
-                          item.deductFromFreight
-                            ? item.tripNo
-                              ? `扣 ${item.tripNo}`
-                              : "待关联趟次"
-                            : "不扣",
-                          displayDate(item.refueledAt),
-                          <BusinessStatusBadge status={item.status} />,
-                        ],
-                        onOpen: () =>
-                          setDesktopRecordDetail({
-                            title: `柴油领用 ${item.recordNo}`,
-                            description:
-                              "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
-                            fields: [
-                              { label: "资源", value: item.assetName },
-                              {
-                                label: "供油方式",
-                                value:
-                                  item.supplyMethod === "project_supply"
-                                    ? "项目部供油"
-                                    : "加油站现金加油",
-                              },
-                              {
-                                label: "加油量",
-                                value: `${Number(item.liters).toFixed(2)} L`,
-                              },
-                              {
-                                label: "适用单价",
-                                value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
-                              },
-                              {
-                                label: "金额",
-                                value: `¥ ${displayMoney(item.amount)}`,
-                              },
-                              {
-                                label: "价格预警",
-                                value: item.priceAlert?.isAlert
-                                  ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
-                                  : item.supplyMethod === "external_station"
-                                    ? "未触发预警"
-                                    : "项目部指导价供油，不参与现金价格预警",
-                              },
-                              {
-                                label: "现金小票",
-                                value: item.receiptEvidence?.url ? (
-                                  <ProtectedImagePreview
-                                    file={{
-                                      url: item.receiptEvidence.url!,
-                                      fileName: item.receiptEvidence.fileName,
-                                      mimeType: item.receiptEvidence.mimeType,
-                                    }}
-                                    title="柴油加油小票"
-                                    description="小票照片仅在当前授权范围内站内预览。"
-                                    className="font-medium text-[#2b6660] underline"
-                                  >
-                                    查看受控小票影像：
-                                    {item.receiptEvidence.fileName}
-                                  </ProtectedImagePreview>
-                                ) : (
-                                  "未关联小票照片"
-                                ),
-                              },
-                              {
-                                label: "运输扣款",
-                                value: item.deductFromFreight
-                                  ? (item.tripNo ?? "待关联趟次")
-                                  : "不扣减运费",
-                              },
-                              {
-                                label: "时间",
-                                value: displayDate(item.refueledAt),
-                              },
-                              {
-                                label: "状态",
-                                value: getBusinessStatusLabel(item.status),
-                              },
-                            ],
-                          }),
-                      }))}
-                    />
-                    <FinancePagination
-                      page={dieselLedgerPagination.page}
-                      pageSize={dieselLedgerPagination.pageSize}
-                      total={dieselLedgerPagination.total}
-                      onPageChange={dieselLedgerPagination.setPage}
-                      onPageSizeChange={dieselLedgerPagination.setPageSize}
-                      label="加油台账"
-                    />
+                            </div>,
+                            item.supplyMethod === "project_supply"
+                              ? "项目部供油"
+                              : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
+                            `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
+                            `¥ ${displayMoney(item.amount)}`,
+                            <div className="space-y-1">
+                              {item.receiptEvidence?.url ? (
+                                <ProtectedImagePreview
+                                  file={{
+                                    url: item.receiptEvidence.url!,
+                                    fileName: item.receiptEvidence.fileName,
+                                    mimeType: item.receiptEvidence.mimeType,
+                                  }}
+                                  title="柴油加油小票"
+                                  description="小票照片仅在当前授权范围内站内预览。"
+                                  className="text-xs font-medium text-[#2b6660] underline"
+                                >
+                                  查看小票照片
+                                </ProtectedImagePreview>
+                              ) : (
+                                <p className="text-xs text-slate-500">
+                                  无小票照片
+                                </p>
+                              )}
+                              {item.priceAlert?.isAlert ? (
+                                <p className="text-xs font-medium text-rose-700">
+                                  价格波动 {item.priceAlert.deviationPercent}%
+                                </p>
+                              ) : item.supplyMethod === "external_station" ? (
+                                <p className="text-xs text-emerald-700">
+                                  价格正常
+                                </p>
+                              ) : null}
+                            </div>,
+                            item.deductFromFreight
+                              ? item.tripNo
+                                ? `扣 ${item.tripNo}`
+                                : "待关联趟次"
+                              : "不扣",
+                            displayDate(item.refueledAt),
+                            <BusinessStatusBadge status={item.status} />,
+                          ],
+                          onOpen: () =>
+                            setDesktopRecordDetail({
+                              title: `柴油领用 ${item.recordNo}`,
+                              description:
+                                "领用金额、计价方式、小票影像和运输扣款均以服务端快照为准。",
+                              fields: [
+                                { label: "资源", value: item.assetName },
+                                {
+                                  label: "录入来源",
+                                  value: getDieselRecordSourceLabel(
+                                    item.recordNo
+                                  ),
+                                },
+                                {
+                                  label: "办理说明",
+                                  value:
+                                    getDieselRecordSourceLabel(
+                                      item.recordNo
+                                    ) === "机械录入"
+                                      ? "已关联原机械成本，未重复计费；审核、结算或作废在机械管理原记录办理，柴油台账同步状态"
+                                      : "柴油登记与资源成本同源关联",
+                                },
+                                {
+                                  label: "供油方式",
+                                  value:
+                                    item.supplyMethod === "project_supply"
+                                      ? "项目部供油"
+                                      : "加油站现金加油",
+                                },
+                                {
+                                  label: "加油量",
+                                  value: `${Number(item.liters).toFixed(2)} L`,
+                                },
+                                {
+                                  label: "适用单价",
+                                  value: `¥ ${displayMoney(item.appliedUnitPrice)}/L`,
+                                },
+                                {
+                                  label: "金额",
+                                  value: `¥ ${displayMoney(item.amount)}`,
+                                },
+                                {
+                                  label: "价格预警",
+                                  value: item.priceAlert?.isAlert
+                                    ? `异常波动 ${item.priceAlert.deviationPercent}%（基准 ¥${displayMoney(item.priceAlert.referenceUnitPrice)}/L，阈值 ${item.priceAlert.thresholdPercent}%）`
+                                    : item.supplyMethod === "external_station"
+                                      ? "未触发预警"
+                                      : "项目部指导价供油，不参与现金价格预警",
+                                },
+                                {
+                                  label: "现金小票",
+                                  value: item.receiptEvidence?.url ? (
+                                    <ProtectedImagePreview
+                                      file={{
+                                        url: item.receiptEvidence.url!,
+                                        fileName: item.receiptEvidence.fileName,
+                                        mimeType: item.receiptEvidence.mimeType,
+                                      }}
+                                      title="柴油加油小票"
+                                      description="小票照片仅在当前授权范围内站内预览。"
+                                      className="font-medium text-[#2b6660] underline"
+                                    >
+                                      查看受控小票影像：
+                                      {item.receiptEvidence.fileName}
+                                    </ProtectedImagePreview>
+                                  ) : (
+                                    "未关联小票照片"
+                                  ),
+                                },
+                                {
+                                  label: "运输扣款",
+                                  value: item.deductFromFreight
+                                    ? (item.tripNo ?? "待关联趟次")
+                                    : "不扣减运费",
+                                },
+                                {
+                                  label: "时间",
+                                  value: displayDate(item.refueledAt),
+                                },
+                                {
+                                  label: "状态",
+                                  value: getBusinessStatusLabel(item.status),
+                                },
+                              ],
+                            }),
+                        }))}
+                      />
+                      <FinancePagination
+                        page={dieselLedgerPagination.page}
+                        pageSize={dieselLedgerPagination.pageSize}
+                        total={dieselLedgerPagination.total}
+                        onPageChange={dieselLedgerPagination.setPage}
+                        onPageSizeChange={dieselLedgerPagination.setPageSize}
+                        label="加油台账"
+                      />
+                    </DieselLedgerDataState>
                   </FinanceRetainedPanel>
                   <FinanceRetainedPanel
                     active={isDiesel && dieselTab === "prices"}
@@ -22339,6 +22439,11 @@ export default function AdminPage({
                   />
                 </Field>
               </div>
+              {machineCostForm.costType === "fuel" && (
+                <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                  油料数量按升填写，按发生日期匹配项目指导价；保存后自动归入柴油管理，保留一笔机械成本关联，审核和结算状态同步，无需到柴油管理重复登记。
+                </p>
+              )}
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label="成本类别">
                   <Select

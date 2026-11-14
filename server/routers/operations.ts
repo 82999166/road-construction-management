@@ -85,6 +85,12 @@ import { assertFleetDayWritable } from "../services/vehicleManagementPolicy";
 import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { assertVehicleDispatchable } from "../services/vehicleManagementPolicy";
 import { getDb } from "../db";
+import {
+  lockMachineFuelLedger,
+  assertNoDuplicateMachineFuel,
+  ensureMachineFuelRefuelRecord,
+  transitionMachineFuelRefuelRecord,
+} from "../services/machineFuelLedger";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
 import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
@@ -6249,43 +6255,100 @@ export const machineryRouter = router({
           ? guideline!.price!.pricePerLiter
           : input.unitPrice;
       const amount = roundMoney(input.quantity * appliedUnitPrice);
-      const result = await db.insert(machineCostRecords).values({
-        machineId: input.machineId,
-        projectId: input.projectId,
-        costType: input.costType,
-        costName: input.costName.trim(),
-        quantity: String(input.quantity),
-        unitPrice: String(roundMoney(appliedUnitPrice)),
-        amount: String(amount),
-        occurredAt,
-        evidenceId: input.evidenceId ?? null,
-        remarks: input.remarks?.trim() || null,
-        status: "draft",
-      });
-      const costId = Number(
-        (result[0] as { insertId?: number } | undefined)?.insertId ?? 0
-      );
-      if (input.evidenceId && costId)
-        await db
-          .update(evidenceRecords)
-          .set({ sourceId: `machine-cost-${costId}` })
-          .where(
-            and(
-              eq(evidenceRecords.id, input.evidenceId),
-              eq(evidenceRecords.projectId, input.projectId)
-            )
+      const { costId, dieselRefuelRecordId } = await db.transaction(
+        async tx => {
+          if (input.costType === "fuel") {
+            if (!(input.quantity > 0))
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: "机械柴油加油量必须大于0",
+              });
+            await lockMachineFuelLedger(tx, {
+              machineId: input.machineId,
+              projectId: input.projectId,
+            });
+            await assertNoDuplicateMachineFuel(tx, {
+              machineId: input.machineId,
+              projectId: input.projectId,
+              liters: input.quantity,
+              refueledAt: occurredAt,
+            });
+          }
+          const result = await tx.insert(machineCostRecords).values({
+            machineId: input.machineId,
+            projectId: input.projectId,
+            costType: input.costType,
+            costName: input.costName.trim(),
+            quantity: String(input.quantity),
+            unitPrice: String(roundMoney(appliedUnitPrice)),
+            amount: String(amount),
+            occurredAt,
+            evidenceId: input.evidenceId ?? null,
+            remarks: input.remarks?.trim() || null,
+            status: "draft",
+          });
+          const costId = Number(
+            (result[0] as { insertId?: number } | undefined)?.insertId ?? 0
           );
-      const priceSource = guideline?.price
-        ? `，引用柴油指导价 ¥${guideline.price.pricePerLiter}/L（${guideline.businessDate}，规则 #${guideline.price.id}）`
-        : "";
-      await db.insert(auditLogs).values({
-        userId: user.id,
-        module: "machinery",
-        action: "create_cost",
-        targetType: "machine_cost",
-        targetId: String(costId || `${input.machineId}:${input.occurredAt}`),
-        summary: `录入机械${input.costType}成本：${input.costName.trim()}，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}`,
-      });
+          if (!costId)
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "机械费用保存后无法确认编号",
+            });
+          let dieselRefuelRecordId: number | null = null;
+          if (input.costType === "fuel") {
+            const [createdCost] = await tx
+              .select()
+              .from(machineCostRecords)
+              .where(eq(machineCostRecords.id, costId))
+              .limit(1)
+              .for("update");
+            if (!createdCost)
+              throw new TRPCError({
+                code: "INTERNAL_SERVER_ERROR",
+                message: "机械柴油成本保存后无法回读",
+              });
+            const linked = await ensureMachineFuelRefuelRecord(
+              tx,
+              createdCost,
+              user.id
+            );
+            dieselRefuelRecordId = linked?.id ?? null;
+            await tx.insert(auditLogs).values({
+              userId: user.id,
+              module: "diesel",
+              action: "create_machine_fuel",
+              targetType: "diesel_refuel",
+              targetId: String(dieselRefuelRecordId),
+              summary: `机械柴油已归集至柴油管理，关联原机械成本 #${costId}，未重复计费`,
+            });
+          }
+          if (input.evidenceId && costId)
+            await tx
+              .update(evidenceRecords)
+              .set({ sourceId: `machine-cost-${costId}` })
+              .where(
+                and(
+                  eq(evidenceRecords.id, input.evidenceId),
+                  eq(evidenceRecords.projectId, input.projectId)
+                )
+              );
+          const priceSource = guideline?.price
+            ? `，引用柴油指导价 ¥${guideline.price.pricePerLiter}/L（${guideline.businessDate}，规则 #${guideline.price.id}）`
+            : "";
+          await tx.insert(auditLogs).values({
+            userId: user.id,
+            module: "machinery",
+            action: "create_cost",
+            targetType: "machine_cost",
+            targetId: String(
+              costId || `${input.machineId}:${input.occurredAt}`
+            ),
+            summary: `录入机械${input.costType}成本：${input.costName.trim()}，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}`,
+          });
+          return { costId, dieselRefuelRecordId };
+        }
+      );
       const [ownerProfile] = machine.ownerUserId
         ? await db
             .select({ phoneEncrypted: userProfiles.phoneEncrypted })
@@ -6325,7 +6388,8 @@ export const machineryRouter = router({
       }).catch(() => undefined);
       return {
         success: true,
-        id: costId || null,
+        id: costId,
+        dieselRefuelRecordId,
         amount,
         unitPrice: appliedUnitPrice,
         guidelinePriceId: guideline?.price?.id ?? null,
@@ -6383,30 +6447,65 @@ export const machineryRouter = router({
           code: "NOT_FOUND",
           message: "机械成本记录不存在",
         });
-      try {
-        assertMachineCostStatusTransition(record.status, input.nextStatus);
-      } catch (error) {
-        throwDomainAsBadRequest(error);
-      }
-      const updateResult = await db
-        .update(machineCostRecords)
-        .set({ status: input.nextStatus })
-        .where(
-          and(
-            eq(machineCostRecords.id, input.id),
-            eq(machineCostRecords.status, record.status)
-          )
-        );
-      assertConditionalStatusWrite(updateResult, "机械成本记录");
-      const machineCostStatusLabel = getBusinessStatusLabel(input.nextStatus);
-      await db.insert(auditLogs).values({
-        userId: user.id,
-        module: "machinery",
-        action: "transition_cost",
-        targetType: "machine_cost",
-        targetId: String(input.id),
-        summary: `机械成本状态变更为：${machineCostStatusLabel}`,
+      await db.transaction(async tx => {
+        if (record.costType === "fuel")
+          await lockMachineFuelLedger(tx, {
+            machineId: record.machineId,
+            projectId: input.projectId,
+          });
+        const [lockedRecord] = await tx
+          .select()
+          .from(machineCostRecords)
+          .where(eq(machineCostRecords.id, input.id))
+          .limit(1)
+          .for("update");
+        if (
+          !lockedRecord ||
+          lockedRecord.projectId !== input.projectId ||
+          lockedRecord.machineId !== record.machineId ||
+          lockedRecord.status !== record.status
+        )
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "机械成本状态已变化，请刷新后重试",
+          });
+        try {
+          assertMachineCostStatusTransition(record.status, input.nextStatus);
+        } catch (error) {
+          throwDomainAsBadRequest(error);
+        }
+        const fuelRecord =
+          lockedRecord.costType === "fuel"
+            ? await ensureMachineFuelRefuelRecord(tx, lockedRecord)
+            : null;
+        const updateResult = await tx
+          .update(machineCostRecords)
+          .set({ status: input.nextStatus })
+          .where(
+            and(
+              eq(machineCostRecords.id, input.id),
+              eq(machineCostRecords.status, record.status)
+            )
+          );
+        assertConditionalStatusWrite(updateResult, "机械成本记录");
+        if (fuelRecord)
+          await transitionMachineFuelRefuelRecord(
+            tx,
+            fuelRecord,
+            input.nextStatus,
+            user.id
+          );
+        const machineCostStatusLabel = getBusinessStatusLabel(input.nextStatus);
+        await tx.insert(auditLogs).values({
+          userId: user.id,
+          module: "machinery",
+          action: "transition_cost",
+          targetType: "machine_cost",
+          targetId: String(input.id),
+          summary: `机械成本状态变更为：${machineCostStatusLabel}`,
+        });
       });
+      const machineCostStatusLabel = getBusinessStatusLabel(input.nextStatus);
       void notifyOfficialAccountBusinessEventSafely({
         userId: user.id,
         module: "machinery",

@@ -9,7 +9,7 @@ const dieselRouterSource = readFileSync(new URL("../../../server/routers/diesel.
 function getRouterProcedure(source: string, name: string) {
   const start = source.indexOf(`  ${name}:`);
   expect(start, `未找到 ${name} 路由`).toBeGreaterThan(-1);
-  return source.slice(start, source.indexOf("\n  }),", start) + 5);
+  const tail=source.slice(start+1);const next=tail.search(/^  [A-Za-z_]\w*:/m);return source.slice(start,next<0?undefined:start+1+next);
 }
 
 describe("移动采购与后勤项目范围守卫", () => {
@@ -37,6 +37,6 @@ describe("移动采购与后勤项目范围守卫", () => {
     for (const name of ["printSummary", "mobileRefuelOptions", "mobileCreateRefuel"]) {
       expect(getRouterProcedure(dieselRouterSource, name)).toContain("await assertProjectInCurrentScope(ctx, input.projectId)");
     }
-    expect(dieselRouterSource).toContain("if (selectedProjectId && !authorizedProjects.some(project => project.id === selectedProjectId)) throw new TRPCError");
+    expect(dieselRouterSource.replace(/\s+/g,"" )).toContain("if(selectedProjectId&&!authorizedProjects.some(project=>project.id===selectedProjectId))thrownewTRPCError");
   });
 });

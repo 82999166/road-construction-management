@@ -55,7 +55,7 @@ describe("共享打印表格布局", () => {
   ])("%s 的两条打印路径只读取同一列宽定义", (file, columns) => {
     const source = readFileSync(new URL(`../components/${file}`, import.meta.url), "utf8");
     expect(source).toContain(`printColumnGroup(${columns})`);
-    expect(source).toContain(`<colgroup>{${columns}.map`);
+    expect(source.replace(/\s+/g,"" )).toContain(`<colgroup>{${columns}.map`);
     expect(source).not.toMatch(/<th (?:style="width:|className="w-\[)/);
   });
 });
