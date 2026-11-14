@@ -16,6 +16,7 @@ import {
   useFinancePagination,
 } from "@/components/FinanceWorkspaceNavigation";
 import { formatChinaDate, formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount } from "@shared/numberFormat";
 
 /** A server-authorized, project-scoped snapshot. Never contains payment credentials. */
 export type FinanceApprovalItem = {
@@ -71,7 +72,7 @@ const statusLabel = (item: FinanceApprovalItem) =>
   item.businessStatus === "submitted" ? "已提交待审" : "审核中（待财务审核）";
 const money = (amount: number) =>
   Number.isFinite(amount)
-    ? `¥${amount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    ? `¥${formatAmount(amount)}`
     : "—";
 const amountNote = (amount: number) =>
   amount < 0 ? "待收补款" : amount === 0 ? "无现金收付" : "待付金额（审核不等于付款）";

@@ -4669,7 +4669,7 @@ export const adminRouter = router({
               effectiveStatus === "void"
                 ? "车辆柴油扣款已作废"
                 : "车辆柴油扣款已登记",
-            content: `本车柴油 ${Number(input.liters).toFixed(3)}L，金额 ¥${amount.toFixed(2)}${effectiveStatus === "void" ? "已作废" : "将按规则进入运费扣款或结算核对"}。`,
+            content: `本车柴油 ${Number(input.liters).toFixed(2)}L，金额 ¥${amount.toFixed(2)}${effectiveStatus === "void" ? "已作废" : "将按规则进入运费扣款或结算核对"}。`,
             deepLink: "/api/official-account/driver-portal/start",
           }).catch(() => undefined);
         }
@@ -4733,7 +4733,7 @@ export const adminRouter = router({
               vehicle: machine
                 ? `${machine.label}${machine.code ? `（${machine.code}）` : ""}`
                 : (vehicle?.label ?? "车辆"),
-              quantity: Number(input.liters).toFixed(3),
+              quantity: Number(input.liters).toFixed(2),
               amount: amount.toFixed(2),
               time: formatChinaSmsTime(new Date(input.refueledAt)),
             },

@@ -31,6 +31,7 @@ import {
 import { toDeviceDateInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { Pencil, Plus, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -73,8 +74,7 @@ function createEmptyFreightRuleDraft(): FreightRuleDraft {
 }
 
 function formatMoney(value: unknown) {
-  const amount = Number(value ?? 0);
-  return Number.isFinite(amount) ? `¥${amount.toFixed(2)}` : "—";
+  return `¥${formatAmount(value as string | number | null | undefined)}`;
 }
 
 /**
@@ -225,7 +225,7 @@ export function TransportFreightRuleManager({
                         : ""}
                     </p>
                     <p className="mt-1 text-xs text-[#32665d]">
-                      {rule.startDistanceKm} km 起步 ·{" "}
+                      {formatQuantity(rule.startDistanceKm)} km 起步 ·{" "}
                       {formatMoney(rule.basePricePerUnit)}/
                       {SETTLEMENT_UNIT_LABEL[rule.settlementUnit]} · 每{" "}
                       {rule.stepMeters} m 增{" "}

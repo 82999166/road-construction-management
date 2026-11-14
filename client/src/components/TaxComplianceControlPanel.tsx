@@ -56,12 +56,13 @@ import {
   Stamp,
 } from "lucide-react";
 import { useState } from "react";
+import { formatAmount } from "@shared/numberFormat";
 import { toast } from "sonner";
 
 const money = (value: string | number | null | undefined) =>
   value === null || value === undefined
     ? "未确认"
-    : `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    : `¥${formatAmount(value)}`;
 const label: Record<string, string> = {
   draft: "草稿",
   reviewed: "已复核",

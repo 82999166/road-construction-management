@@ -12,13 +12,14 @@ import { clearMobileDraft, hasMobileDraftContent, readMobileDraft, saveMobileDra
 import { formatChinaDate, formatChinaDateTime, toChinaDateInput, toChinaMonthInput, toDeviceDateTimeInput } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { formatAmount } from "@shared/numberFormat";
 import { ArrowDownRight, ArrowLeft, ArrowUpRight, CircleHelp, FilePlus2, HardHat, Printer, ReceiptText, WalletCards } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "../_core/hooks/useAuth";
 
 /** 资金金额在移动端只用于阅读；项目利润和待收待付都以服务端汇总为准。 */
-function formatMoney(value: string | number | null | undefined) { return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+function formatMoney(value: string | number | null | undefined) { return `¥${formatAmount(value)}`; }
 function currentPeriod() { return toChinaMonthInput(); }
 function currentDate() { return toChinaDateInput(); }
 function invoiceTypeLabel(type: string) { return ({ vat_special: "增值税专票", vat_normal: "增值税普票", electronic: "电子发票", receipt: "收据", other: "其他票据" } as Record<string, string>)[type] ?? "其他票据"; }

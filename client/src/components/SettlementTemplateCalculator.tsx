@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { escapePrintHtml, openA4LandscapePrintDocument } from "@/lib/a4Print";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { Calculator, Plus, Printer, RotateCcw, Trash2 } from "lucide-react";
 import React, { useMemo, useState } from "react";
 
@@ -17,8 +18,8 @@ const toNumber = (value: string) => {
   const result = Number.parseFloat(value);
   return Number.isFinite(result) ? result : 0;
 };
-const money = (value: number) => `¥${value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const quantity = (value: number) => value.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+const money = (value: number) => `¥${formatAmount(value)}`;
+const quantity = (value: number) => formatQuantity(value);
 const makeEarthRow = (id: number): EarthSurveyRow => ({ id, stakeNo: "", length: "", width: "", depth: "", soil: "", rock: "", materialType: "土" });
 const makeAuxiliaryRow = (id: number, itemName = "", unit = ""): AuxiliaryRow => ({ id, mileage: "", structureType: "涵洞", itemName, unit, drawingLength: "", drawingWidth: "", drawingHeight: "", aperture: "", count: "1", quantity: "", subcontract: "", owner: "", remarks: "" });
 

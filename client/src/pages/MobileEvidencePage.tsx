@@ -1,3 +1,4 @@
+import { formatRecognizedAmount } from "@shared/numberFormat";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -835,7 +836,7 @@ export function EvidenceWorkspace({
                                   {item.ocrResult.summary || "未能识别摘要"}
                                 </p>
                                 <p className="mt-1">
-                                  金额：{item.ocrResult.amount || "未识别"}
+                                  金额：{formatRecognizedAmount(item.ocrResult.amount)}
                                 </p>
                               </div>
                             ) : item.sourceType === "purchase" ? (

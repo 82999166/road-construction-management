@@ -42,6 +42,7 @@ import {
 } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import {
   ArrowLeft,
   Ban,
@@ -108,7 +109,7 @@ function readFileAsBase64(file: File) {
 
 /** 将数据库中的金额转为两位小数展示，兼容 decimal 字段的字符串返回值。 */
 function formatMoney(value: string | number | null | undefined) {
-  return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `¥${formatAmount(value)}`;
 }
 
 /** 将业务日期在移动端按中文本地习惯展示，不向用户暴露 UTC 存储细节。 */
@@ -1543,9 +1544,9 @@ export default function MobileLaborPage() {
                         </div>
                         <div className="text-right">
                           <p className="text-sm font-semibold text-[#6d3f2b]">
-                            {record.workHours}h{" "}
+                            {formatQuantity(record.workHours)}h{" "}
                             <span className="text-xs font-normal text-[#9a755f]">
-                              + {record.overtimeHours}h 加班
+                              + {formatQuantity(record.overtimeHours)}h 加班
                             </span>
                           </p>
                           <p className="mt-1 text-[10px] text-[#7a675a]">

@@ -15,8 +15,11 @@ export const MACHINERY_DETAIL_TABS = [
 ] as const;
 export type MachineryDetailTab =
   (typeof MACHINERY_DETAIL_TABS)[number]["value"];
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 export const machineryMoney = (value: unknown) =>
-  `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `¥${formatAmount(value as Parameters<typeof formatAmount>[0])}`;
+export const machineryQuantity = (value: unknown) =>
+  formatQuantity(value as Parameters<typeof formatQuantity>[0]);
 export const machineryStatus = (status: string) =>
   (
     ({

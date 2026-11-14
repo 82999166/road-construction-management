@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { formatQuantity } from "@shared/numberFormat";
 
 type SiteDraft = {
   id: number | null;
@@ -450,7 +451,7 @@ export function TransportRouteConfigurationEditor({
                           {unload?.name ?? `卸土点 #${route.unloadSiteId}`}
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
-                          {route.presetDistanceKm} km · 运价 #
+                          {formatQuantity(route.presetDistanceKm)} km · 运价 #
                           {route.freightRuleId} ·{" "}
                           {route.status === "active" ? "启用" : "停用"}
                         </p>

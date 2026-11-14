@@ -32,6 +32,7 @@ import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
 import { PersonnelInsuranceEditor } from "@/components/PersonnelInsuranceEditor";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { escapePrintHtml, openA4PrintDocument } from "@/lib/a4Print";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import {
   affiliationLabels,
   employmentStatusLabels,
@@ -112,7 +113,7 @@ const defaultDisplayDate = (value: Date | string) => dateInput(value) || "—";
 const money = (value: string | number | null | undefined) =>
   value == null
     ? "—"
-    : `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    : `¥${formatAmount(value)}`;
 const optionClass =
   "h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring";
 function Picker({
@@ -2045,10 +2046,10 @@ function PersonnelDetail({
                       <Facts
                         items={[
                           ["出勤天数", `${detail.attendance.days} 天`],
-                          ["工作工时", `${detail.attendance.workHours} 小时`],
+                          ["工作工时", `${formatQuantity(detail.attendance.workHours)} 小时`],
                           [
                             "加班工时",
-                            `${detail.attendance.overtimeHours} 小时`,
+                            `${formatQuantity(detail.attendance.overtimeHours)} 小时`,
                           ],
                           [
                             "录入与审核",

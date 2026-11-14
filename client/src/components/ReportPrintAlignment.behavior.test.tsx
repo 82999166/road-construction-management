@@ -82,7 +82,7 @@ describe("表头、长文本明细与跨列合计的真实打印行为", () => {
     const details = columns(previewRows()[0]);
     expect(details.find(cell => cell.column === 3)?.value).toBe(longName);
     expect(details.find(cell => cell.column === 5)?.value).toBe(`${longName}<供油站>`);
-    expect(details.find(cell => cell.column === 10)?.value).toBe(record.meterReading);
+    expect(details.find(cell => cell.column === 10)?.value).toBe(`${record.meterReading}.00`);
     const summary = columns(previewRows().at(-1)!);
     expect(summary.find(cell => cell.column === 7)).toMatchObject({ value: "123456.78", className: "text-right" });
     expect(summary.find(cell => cell.column === 9)).toMatchObject({ value: "¥802469.07", className: "text-right" });

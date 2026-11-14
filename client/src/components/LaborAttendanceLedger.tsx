@@ -1,3 +1,4 @@
+import { formatQuantity } from "@shared/numberFormat";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -27,7 +28,7 @@ export default function LaborAttendanceLedger({ filter, onFilterChange, teams, r
       </div>
     </CardHeader>
     <CardContent className="space-y-2">
-      {rows.length ? rows.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><p className="text-sm font-medium text-slate-800">{item.workerName} <span className="font-normal text-slate-400">{item.teamName ? `· ${item.teamName}` : ""}</span></p><p className="mt-1 text-xs text-slate-500">{displayDate(item.attendanceDate)} · 正常 {item.workHours} h · 加班 {item.overtimeHours} h · {getAttendanceSourceLabel(item.source)} · {categoryLabel(getWorkerCategory(item.workerId))}</p></div><BusinessStatusBadge status={item.status} /></div>) : <p className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-sm text-slate-500">{hasAttendance ? "当前筛选条件下没有考勤记录。" : "当前项目尚无真实考勤记录。"}</p>}
+      {rows.length ? rows.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3"><div><p className="text-sm font-medium text-slate-800">{item.workerName} <span className="font-normal text-slate-400">{item.teamName ? `· ${item.teamName}` : ""}</span></p><p className="mt-1 text-xs text-slate-500">{displayDate(item.attendanceDate)} · 正常 {formatQuantity(item.workHours)} h · 加班 {formatQuantity(item.overtimeHours)} h · {getAttendanceSourceLabel(item.source)} · {categoryLabel(getWorkerCategory(item.workerId))}</p></div><BusinessStatusBadge status={item.status} /></div>) : <p className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-sm text-slate-500">{hasAttendance ? "当前筛选条件下没有考勤记录。" : "当前项目尚无真实考勤记录。"}</p>}
     </CardContent>
   </Card>;
 }

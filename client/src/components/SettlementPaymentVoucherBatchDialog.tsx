@@ -3,6 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { escapePrintHtml, openA4PrintDocument } from "@/lib/a4Print";
 import { Printer } from "lucide-react";
+import { formatAmount } from "@shared/numberFormat";
 import { useEffect, useMemo, useState } from "react";
 
 type VoucherRecord = {
@@ -21,7 +22,7 @@ type VoucherRecord = {
   proof: { evidenceId: number; fileName: string; mimeType: string; sha256Prefix: string } | null;
   reconciliationStatus: "matched" | "missing" | "inconsistent";
 };
-const money = (value: number) => `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (value: number) => `¥${formatAmount(value)}`;
 
 /**
  * 财务真实凭证批打：默认只输出已选且处于当前服务器筛选范围的付款记录。

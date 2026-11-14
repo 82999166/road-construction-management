@@ -34,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 
 export type CompanyPersonnelRosterRow = {
   id: string;
@@ -442,17 +443,17 @@ export default function CompanyPersonnelRoster({
                     </TableCell>
                     <TableCell className="px-3 py-2.5 text-slate-700">
                       <p>
-                        {row.attendanceDays} 天 · {row.workHours.toFixed(2)}{" "}
+                        {row.attendanceDays} 天 · {formatQuantity(row.workHours)}{" "}
                         小时
                       </p>
                       <p className="mt-0.5 text-slate-500">
-                        加班 {row.overtimeHours.toFixed(2)} 小时
+                        加班 {formatQuantity(row.overtimeHours)} 小时
                       </p>
                     </TableCell>
                     <TableCell className="px-3 py-2.5 text-slate-700">
                       <p>{getSalaryBasisLabel(row.salaryBasis)}</p>
                       <p className="mt-0.5 text-slate-500">
-                        基础 ¥{row.baseSalary ?? "未维护"}
+                        基础 {row.baseSalary == null ? "未维护" : `¥${formatAmount(row.baseSalary)}`}
                       </p>
                     </TableCell>
                     <TableCell className="px-3 py-2.5 text-right">
@@ -545,13 +546,13 @@ export default function CompanyPersonnelRoster({
                   <div>
                     <p className="text-xs text-slate-500">工作时长</p>
                     <p className="mt-1 font-semibold">
-                      {selectedRow.workHours.toFixed(2)} 小时
+                      {formatQuantity(selectedRow.workHours)} 小时
                     </p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-500">加班时长</p>
                     <p className="mt-1 font-semibold">
-                      {selectedRow.overtimeHours.toFixed(2)} 小时
+                      {formatQuantity(selectedRow.overtimeHours)} 小时
                     </p>
                   </div>
                   <div>
@@ -580,7 +581,7 @@ export default function CompanyPersonnelRoster({
                   <div>
                     <p className="text-xs text-slate-500">基础工资 / 单价</p>
                     <p className="mt-1 font-semibold">
-                      ¥ {selectedRow.baseSalary ?? "未维护"}
+                      {selectedRow.baseSalary == null ? "未维护" : `¥ ${formatAmount(selectedRow.baseSalary)}`}
                     </p>
                   </div>
                   <div>
@@ -591,8 +592,7 @@ export default function CompanyPersonnelRoster({
                   </div>
                 </div>
                 <p className="mt-3 text-xs text-slate-500">
-                  最近应发 ¥{selectedRow.latestPayableAmount ?? "—"}，实发 ¥
-                  {selectedRow.latestActualAmount ?? "—"}
+                  最近应发 {selectedRow.latestPayableAmount == null ? "—" : `¥${formatAmount(selectedRow.latestPayableAmount)}`}，实发 {selectedRow.latestActualAmount == null ? "—" : `¥${formatAmount(selectedRow.latestActualAmount)}`}
                   ；金额以审核工资条为准。
                 </p>
               </section>
@@ -677,7 +677,7 @@ export default function CompanyPersonnelRoster({
                       <p className="mt-1 text-lg font-semibold text-[#205d4e]">
                         {compensationQuery.data.accrual.payableAmount == null
                           ? "待补全"
-                          : `¥${compensationQuery.data.accrual.payableAmount.toFixed(2)}`}
+                          : `¥${formatAmount(compensationQuery.data.accrual.payableAmount)}`}
                       </p>
                       <p className="mt-0.5 text-xs text-slate-500">
                         截至 {compensationQuery.data.accrual.asOfDate}
@@ -688,10 +688,7 @@ export default function CompanyPersonnelRoster({
                         已批准预支（提示）
                       </p>
                       <p className="mt-1 text-lg font-semibold text-amber-700">
-                        ¥
-                        {compensationQuery.data.accrual.approvedAdvanceAmount.toFixed(
-                          2
-                        )}
+                        ¥{formatAmount(compensationQuery.data.accrual.approvedAdvanceAmount)}
                       </p>
                       <p className="mt-0.5 text-xs text-slate-500">
                         不自动扣减，需复核后录入
@@ -800,7 +797,7 @@ export default function CompanyPersonnelRoster({
                                   {item.date} · {item.label}
                                 </span>
                                 <span>
-                                  实发 ¥{item.amount} · {item.status}
+                                  实发 ¥{formatAmount(item.amount)} · {item.status}
                                 </span>
                               </div>
                             ))}
@@ -824,7 +821,7 @@ export default function CompanyPersonnelRoster({
                               <span>
                                 {String(item.advanceDate)} · {item.status}
                               </span>
-                              <span>¥{item.amount}</span>
+                              <span>¥{formatAmount(item.amount)}</span>
                             </div>
                           ))}
                         {!compensationQuery.data?.advances.length && (

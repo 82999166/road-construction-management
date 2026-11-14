@@ -61,10 +61,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "../_core/hooks/useAuth";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 
 /** 将服务端 decimal 结果格式化展示，前端不参与库存或金额的业务重算。 */
 function formatMoney(value: string | number | null | undefined) {
-  return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `¥${formatAmount(value)}`;
 }
 
 function requestStatus(status: string) {
@@ -598,7 +599,7 @@ export default function MobilePurchasingPage() {
           order.documentUploadedByName ??
           order.createdByName ??
           `管理员 #${order.documentUploadedBy ?? order.createdBy}`;
-        return `<section class="receipt-page"><div class="receipt-left"><h1>采购票据详单</h1><p class="receipt-no">${escapePrintHtml(order.orderNo)}</p><div class="receipt-grid"><div><small>采购模式</small><b>${escapePrintHtml(order.procurementMode === "small_direct" ? "小额直接采购" : order.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单")}</b></div><div><small>物资说明</small><b>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</b></div><div><small>数量</small><b>${escapePrintHtml(order.quantity ?? "—")}</b></div><div><small>单价</small><b>${order.unitPrice == null ? "—" : `¥${escapePrintHtml(Number(order.unitPrice).toFixed(2))}`}</b></div><div><small>订单金额</small><b>¥${escapePrintHtml(Number(order.amount).toFixed(2))}</b></div><div><small>当前状态</small><b>${escapePrintHtml(orderStatus(order.status).label)}</b></div></div><p class="receipt-meta">下单时间：${escapePrintHtml(formatChinaDateTime(order.orderedAt))}</p><p class="receipt-meta">上传人：${escapePrintHtml(uploaderName)}</p><p class="receipt-meta">第 ${index + 1} / ${filteredOrders.length} 张</p></div><div class="receipt-right">${attachment?.url ? `<img src="${escapePrintHtml(attachment.url)}" alt="采购票据 ${escapePrintHtml(order.orderNo)}" />` : "<span>未上传票据图片</span>"}</div></section>`;
+        return `<section class="receipt-page"><div class="receipt-left"><h1>采购票据详单</h1><p class="receipt-no">${escapePrintHtml(order.orderNo)}</p><div class="receipt-grid"><div><small>采购模式</small><b>${escapePrintHtml(order.procurementMode === "small_direct" ? "小额直接采购" : order.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单")}</b></div><div><small>物资说明</small><b>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</b></div><div><small>数量</small><b>${escapePrintHtml(order.quantity == null ? "—" : formatQuantity(order.quantity))}</b></div><div><small>单价</small><b>${order.unitPrice == null ? "—" : `¥${escapePrintHtml(formatAmount(order.unitPrice))}`}</b></div><div><small>订单金额</small><b>¥${escapePrintHtml(formatAmount(order.amount))}</b></div><div><small>当前状态</small><b>${escapePrintHtml(orderStatus(order.status).label)}</b></div></div><p class="receipt-meta">下单时间：${escapePrintHtml(formatChinaDateTime(order.orderedAt))}</p><p class="receipt-meta">上传人：${escapePrintHtml(uploaderName)}</p><p class="receipt-meta">第 ${index + 1} / ${filteredOrders.length} 张</p></div><div class="receipt-right">${attachment?.url ? `<img src="${escapePrintHtml(attachment.url)}" alt="采购票据 ${escapePrintHtml(order.orderNo)}" />` : "<span>未上传票据图片</span>"}</div></section>`;
       })
       .join("");
     const printWindow = window.open("", "_blank");
@@ -621,7 +622,7 @@ export default function MobilePurchasingPage() {
     if (!printWindow)
       return toast.error("浏览器阻止了打印页，请允许弹出窗口后重试");
     printWindow.document.write(
-      `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>采购票据详单 · ${escapePrintHtml(selectedOrder.orderNo)}</title><style>*{box-sizing:border-box}html,body{margin:0;background:#eee;color:#241914;font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif}.receipt-page{display:grid;grid-template-columns:1fr 1fr;width:210mm;height:148.5mm;margin:8mm auto;padding:7mm;background:#fff}.receipt-left{padding:2mm 6mm 2mm 1mm;border-right:1px solid #d9c8b8}.receipt-left h1{margin:0;font-size:19px}.receipt-no{margin:3mm 0 6mm;color:#80543d;font-size:12px;font-weight:700}.receipt-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.receipt-grid div{min-height:15mm;padding:3mm;background:#faf5ef}.receipt-grid small{display:block;color:#987e6d;font-size:9px}.receipt-grid b{display:block;margin-top:1.5mm;font-size:12px;word-break:break-all}.receipt-meta{margin:4mm 0 0;color:#6e5546;font-size:10px}.receipt-right{display:flex;align-items:center;justify-content:center;padding-left:6mm}.receipt-right img{width:92mm;height:128mm;object-fit:contain}.receipt-right span{color:#a28c7c;font-size:12px}@media print{body{background:#fff}.receipt-page{width:210mm;height:148.5mm;margin:0}@page{size:A4 portrait;margin:0}}</style></head><body><section class="receipt-page"><div class="receipt-left"><h1>采购票据详单</h1><p class="receipt-no">${escapePrintHtml(selectedOrder.orderNo)}</p><div class="receipt-grid"><div><small>采购模式</small><b>${escapePrintHtml(selectedOrder.procurementMode === "small_direct" ? "小额直接采购" : selectedOrder.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单")}</b></div><div><small>物资说明</small><b>${escapePrintHtml(selectedOrder.itemDescription || "采购申请关联订单")}</b></div><div><small>数量</small><b>${escapePrintHtml(selectedOrder.quantity ?? "—")}</b></div><div><small>单价</small><b>${selectedOrder.unitPrice == null ? "—" : `¥${escapePrintHtml(Number(selectedOrder.unitPrice).toFixed(2))}`}</b></div><div><small>订单金额</small><b>¥${escapePrintHtml(Number(selectedOrder.amount).toFixed(2))}</b></div><div><small>状态</small><b>${escapePrintHtml(orderStatus(selectedOrder.status).label)}</b></div></div><p class="receipt-meta">下单时间：${escapePrintHtml(formatChinaDateTime(selectedOrder.orderedAt))}</p><p class="receipt-meta">提交/上传管理员：${escapePrintHtml(uploaderName)}</p></div><div class="receipt-right">${attachment?.url ? `<img src="${escapePrintHtml(attachment.url)}" alt="采购票据" />` : "<span>未上传票据图片</span>"}</div></section><script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`
+      `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>采购票据详单 · ${escapePrintHtml(selectedOrder.orderNo)}</title><style>*{box-sizing:border-box}html,body{margin:0;background:#eee;color:#241914;font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif}.receipt-page{display:grid;grid-template-columns:1fr 1fr;width:210mm;height:148.5mm;margin:8mm auto;padding:7mm;background:#fff}.receipt-left{padding:2mm 6mm 2mm 1mm;border-right:1px solid #d9c8b8}.receipt-left h1{margin:0;font-size:19px}.receipt-no{margin:3mm 0 6mm;color:#80543d;font-size:12px;font-weight:700}.receipt-grid{display:grid;grid-template-columns:1fr 1fr;gap:3mm}.receipt-grid div{min-height:15mm;padding:3mm;background:#faf5ef}.receipt-grid small{display:block;color:#987e6d;font-size:9px}.receipt-grid b{display:block;margin-top:1.5mm;font-size:12px;word-break:break-all}.receipt-meta{margin:4mm 0 0;color:#6e5546;font-size:10px}.receipt-right{display:flex;align-items:center;justify-content:center;padding-left:6mm}.receipt-right img{width:92mm;height:128mm;object-fit:contain}.receipt-right span{color:#a28c7c;font-size:12px}@media print{body{background:#fff}.receipt-page{width:210mm;height:148.5mm;margin:0}@page{size:A4 portrait;margin:0}}</style></head><body><section class="receipt-page"><div class="receipt-left"><h1>采购票据详单</h1><p class="receipt-no">${escapePrintHtml(selectedOrder.orderNo)}</p><div class="receipt-grid"><div><small>采购模式</small><b>${escapePrintHtml(selectedOrder.procurementMode === "small_direct" ? "小额直接采购" : selectedOrder.procurementMode === "imported" ? "历史 Excel 导入" : "采购申请转订单")}</b></div><div><small>物资说明</small><b>${escapePrintHtml(selectedOrder.itemDescription || "采购申请关联订单")}</b></div><div><small>数量</small><b>${escapePrintHtml(selectedOrder.quantity == null ? "—" : formatQuantity(selectedOrder.quantity))}</b></div><div><small>单价</small><b>${selectedOrder.unitPrice == null ? "—" : `¥${escapePrintHtml(formatAmount(selectedOrder.unitPrice))}`}</b></div><div><small>订单金额</small><b>¥${escapePrintHtml(formatAmount(selectedOrder.amount))}</b></div><div><small>状态</small><b>${escapePrintHtml(orderStatus(selectedOrder.status).label)}</b></div></div><p class="receipt-meta">下单时间：${escapePrintHtml(formatChinaDateTime(selectedOrder.orderedAt))}</p><p class="receipt-meta">提交/上传管理员：${escapePrintHtml(uploaderName)}</p></div><div class="receipt-right">${attachment?.url ? `<img src="${escapePrintHtml(attachment.url)}" alt="采购票据" />` : "<span>未上传票据图片</span>"}</div></section><script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`
     );
     printWindow.document.close();
   };
@@ -631,7 +632,7 @@ export default function MobilePurchasingPage() {
       const rows = filteredOrders
         .map(
           (order, index) =>
-            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(order.orderNo)}</td><td>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</td><td>${escapePrintHtml(formatChinaDateTime(order.orderedAt))}</td><td class="right">${escapePrintHtml(order.quantity ?? "—")}</td><td class="right">${order.unitPrice === null || order.unitPrice === undefined ? "—" : `¥${escapePrintHtml(Number(order.unitPrice).toFixed(2))}`}</td><td class="right">¥${escapePrintHtml(Number(order.amount).toFixed(2))}</td><td>${escapePrintHtml(orderStatus(order.status).label)}</td></tr>`
+            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(order.orderNo)}</td><td>${escapePrintHtml(order.itemDescription || "采购申请关联订单")}</td><td>${escapePrintHtml(formatChinaDateTime(order.orderedAt))}</td><td class="right">${escapePrintHtml(order.quantity == null ? "—" : formatQuantity(order.quantity))}</td><td class="right">${order.unitPrice === null || order.unitPrice === undefined ? "—" : `¥${escapePrintHtml(formatAmount(order.unitPrice))}`}</td><td class="right">¥${escapePrintHtml(formatAmount(order.amount))}</td><td>${escapePrintHtml(orderStatus(order.status).label)}</td></tr>`
         )
         .join("");
       const total = filteredOrders
@@ -639,7 +640,7 @@ export default function MobilePurchasingPage() {
         .reduce((sum, order) => sum + Number(order.amount ?? 0), 0);
       openA4LandscapePrintDocument({
         title: "采购订单明细表",
-        bodyHtml: `<h1>采购订单明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　状态：${escapePrintHtml(orderPrintStatus === "all" ? "全部（不含作废金额）" : orderStatus(orderPrintStatus).label)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>订单号</th><th>物资/说明</th><th>下单时间</th><th>数量</th><th>单价</th><th>金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="center">当前筛选范围暂无采购订单</td></tr>'}<tr class="summary"><td colspan="6">合计：订单 ${filteredOrders.length} 笔</td><td class="right">¥${escapePrintHtml(total.toFixed(2))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>采购订单明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　状态：${escapePrintHtml(orderPrintStatus === "all" ? "全部（不含作废金额）" : orderStatus(orderPrintStatus).label)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>订单号</th><th>物资/说明</th><th>下单时间</th><th>数量</th><th>单价</th><th>金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="center">当前筛选范围暂无采购订单</td></tr>'}<tr class="summary"><td colspan="6">合计：订单 ${filteredOrders.length} 笔</td><td class="right">¥${escapePrintHtml(formatAmount(total))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
       return;
     }
@@ -647,7 +648,7 @@ export default function MobilePurchasingPage() {
       const rows = inventoryBalances
         .map(
           (item, index) =>
-            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(item.itemName)}</td><td class="right">${escapePrintHtml(item.balanceQuantity)}</td><td>${escapePrintHtml(item.unit)}</td><td class="right">¥${escapePrintHtml(Number(item.totalAmount ?? 0).toFixed(2))}</td></tr>`
+            `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(item.itemName)}</td><td class="right">${escapePrintHtml(formatQuantity(item.balanceQuantity))}</td><td>${escapePrintHtml(item.unit)}</td><td class="right">¥${escapePrintHtml(formatAmount(item.totalAmount ?? 0))}</td></tr>`
         )
         .join("");
       const total = inventoryBalances.reduce(
@@ -656,14 +657,14 @@ export default function MobilePurchasingPage() {
       );
       openA4LandscapePrintDocument({
         title: "库存余额明细表",
-        bodyHtml: `<h1>库存余额明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>物料名称</th><th>库存数量</th><th>单位</th><th>库存成本</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="center">当前项目暂无库存余额</td></tr>'}<tr class="summary"><td colspan="4">合计：物料 ${inventoryBalances.length} 项</td><td class="right">¥${escapePrintHtml(total.toFixed(2))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+        bodyHtml: `<h1>库存余额明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>物料名称</th><th>库存数量</th><th>单位</th><th>库存成本</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="center">当前项目暂无库存余额</td></tr>'}<tr class="summary"><td colspan="4">合计：物料 ${inventoryBalances.length} 项</td><td class="right">¥${escapePrintHtml(formatAmount(total))}</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
       });
       return;
     }
     const rows = (requests.data ?? [])
       .map(
         (request, index) =>
-          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(request.requestNo)}</td><td>${escapePrintHtml(request.description)}</td><td class="right">¥${escapePrintHtml(Number(request.amount).toFixed(2))}</td><td>${escapePrintHtml(requestStatus(request.status).label)}</td></tr>`
+          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(request.requestNo)}</td><td>${escapePrintHtml(request.description)}</td><td class="right">¥${escapePrintHtml(formatAmount(request.amount))}</td><td>${escapePrintHtml(requestStatus(request.status).label)}</td></tr>`
       )
       .join("");
     const total = (requests.data ?? [])
@@ -671,7 +672,7 @@ export default function MobilePurchasingPage() {
       .reduce((sum, request) => sum + Number(request.amount ?? 0), 0);
     openA4LandscapePrintDocument({
       title: "采购申请明细表",
-      bodyHtml: `<h1>采购申请明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>申请单号</th><th>采购说明</th><th>申请金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="center">当前项目暂无采购申请</td></tr>'}<tr class="summary"><td colspan="3">合计：申请 ${requests.data?.length ?? 0} 笔</td><td class="right">¥${escapePrintHtml(total.toFixed(2))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+      bodyHtml: `<h1>采购申请明细表</h1><p class="sub">项目：${escapePrintHtml(activeProjectName)}　|　生成时间：${createdAt}</p><hr class="rule"><table><thead><tr><th>序号</th><th>申请单号</th><th>采购说明</th><th>申请金额</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="center">当前项目暂无采购申请</td></tr>'}<tr class="summary"><td colspan="3">合计：申请 ${requests.data?.length ?? 0} 笔</td><td class="right">¥${escapePrintHtml(formatAmount(total))}</td><td>—</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
     });
   };
   const exportCurrentPurchasingTab = () => {
@@ -683,9 +684,9 @@ export default function MobilePurchasingPage() {
           order.orderNo,
           order.itemDescription || "采购申请关联订单",
           formatChinaDateTime(order.orderedAt),
-          order.quantity ?? "",
-          order.unitPrice ?? "",
-          order.amount,
+          order.quantity == null ? "" : formatQuantity(order.quantity),
+          order.unitPrice == null ? "" : formatAmount(order.unitPrice),
+          formatAmount(order.amount),
           orderStatus(order.status).label,
         ])
       );
@@ -695,9 +696,9 @@ export default function MobilePurchasingPage() {
         ["物料名称", "库存数量", "单位", "库存成本"],
         inventoryBalances.map(item => [
           item.itemName,
-          item.balanceQuantity,
+          formatQuantity(item.balanceQuantity),
           item.unit,
-          item.totalAmount,
+          formatAmount(item.totalAmount),
         ])
       );
     return downloadCurrentFilteredCsv(
@@ -813,8 +814,8 @@ export default function MobilePurchasingPage() {
       onSuccess: async result => {
         toast.success(
           result.requiresSupervisorApproval
-            ? `清单采购已上报主管确认（金额 ¥${result.amount.toFixed(2)}）`
-            : `清单采购已直接入账（金额 ¥${result.amount.toFixed(2)}）`
+            ? `清单采购已上报主管确认（金额 ¥${formatAmount(result.amount)}）`
+            : `清单采购已直接入账（金额 ¥${formatAmount(result.amount)}）`
         );
         clearMobileDraft(smallDirectDraftKey);
         closeSmallDirectForm();
@@ -1308,7 +1309,7 @@ export default function MobilePurchasingPage() {
                     : "—"}
                 </p>
                 <p className="text-xs leading-5 text-[#8f7566]">
-                  数量：{selectedOrder?.quantity ?? "—"}　单价：
+                  数量：{selectedOrder?.quantity == null ? "—" : formatQuantity(selectedOrder.quantity)}　单价：
                   {selectedOrder?.unitPrice === null ||
                   selectedOrder?.unitPrice === undefined
                     ? "—"

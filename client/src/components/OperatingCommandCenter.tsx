@@ -1,3 +1,4 @@
+import { formatAmount } from "@shared/numberFormat";
 import {
   Activity,
   ArrowUpRight,
@@ -110,7 +111,7 @@ const MONTHLY_COST_DEFINITIONS: readonly MonthlyCostDefinition[] = [
 ];
 
 const currency = (value: number | null | undefined) =>
-  `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `¥${formatAmount(value)}`;
 const percentage = (value: number | null) =>
   value === null ? "—" : `${Number(value).toFixed(1)}%`;
 const safeNumber = (value: number | null | undefined) =>

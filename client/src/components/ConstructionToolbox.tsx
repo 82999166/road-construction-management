@@ -24,6 +24,7 @@ import {
   type ConcreteStrengthGrade,
   calculateConcreteMaterialTotals,
 } from "@/lib/toolKnowledgeCalculations";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 
 type NumberFieldProps = {
   label: string;
@@ -149,7 +150,7 @@ function toNumber(value: string) {
 }
 
 function formatKg(value: number) {
-  return `${value.toLocaleString("zh-CN", { maximumFractionDigits: 1 })} kg`;
+  return `${formatQuantity(value, true)} kg`;
 }
 
 function SectionLabel({ title, note }: { title: string; note: string }) {
@@ -356,7 +357,7 @@ export default function ConstructionToolbox() {
           title="机械成本测算"
           description="按油耗、油价、人工及维修费用快速估算单次作业或台班成本。"
           inputs="油耗、油价、人工、维修"
-          summary={`当前成本 ¥${machineCost.toFixed(2)}`}
+          summary={`当前成本 ¥${formatAmount(machineCost)}`}
         >
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -387,7 +388,7 @@ export default function ConstructionToolbox() {
             </div>
             <ResultMetric
               label="预计机械成本"
-              value={`¥${machineCost.toFixed(2)}`}
+              value={`¥${formatAmount(machineCost)}`}
               tone="amber"
             />
           </div>
@@ -399,7 +400,7 @@ export default function ConstructionToolbox() {
           title="运输运距运价测算"
           description="按运输方量、首公里单价、运距与超距加价测算当前运输费用。"
           inputs="方量、运距、首公里单价、超距加价"
-          summary={`当前运费 ¥${transportPrice.toFixed(2)}`}
+          summary={`当前运费 ¥${formatAmount(transportPrice)}`}
         >
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -430,7 +431,7 @@ export default function ConstructionToolbox() {
             </div>
             <ResultMetric
               label="预计运输费用"
-              value={`¥${transportPrice.toFixed(2)}`}
+              value={`¥${formatAmount(transportPrice)}`}
               tone="amber"
             />
           </div>

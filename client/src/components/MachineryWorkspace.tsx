@@ -1,3 +1,4 @@
+import { formatQuantity } from "@shared/numberFormat";
 import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { BusinessWorkspaceNavigation } from "@/components/BusinessWorkspaceNavigation";
@@ -34,6 +35,7 @@ import {
   MACHINERY_WORKSPACE_TABS,
   MACHINERY_DETAIL_TABS,
   MACHINERY_COST_SCOPE_NOTE,
+  machineryQuantity,
   type MachineryWorkspaceTab,
   type MachineryDetailTab,
 } from "@/lib/machineryWorkspace";
@@ -223,11 +225,11 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
     (machines.data ?? []).find(machine => machine.id === row.machineId)?.name ||
       `机械 #${row.machineId}`,
     machineryStatus(row.status),
-    row.totalOutput,
-    row.driverTotalWage,
-    row.repairAmount,
-    row.fuelAmount,
-    row.machineShareAmount,
+    machineryMoney(row.totalOutput),
+    machineryMoney(row.driverTotalWage),
+    machineryMoney(row.repairAmount),
+    machineryMoney(row.fuelAmount),
+    machineryMoney(row.machineShareAmount),
     row.signatureName || "",
   ]);
   function printMonthly() {
@@ -269,7 +271,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
     machine.leaseTerms?.effectiveTo
       ? formatChinaDate(machine.leaseTerms.effectiveTo)
       : "",
-    summaryById.get(machine.id)?.totalAmount ?? 0,
+    machineryMoney(summaryById.get(machine.id)?.totalAmount),
   ]);
   function printArchives() {
     openA4LandscapePrintDocument({
@@ -776,7 +778,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                   </p>
                   <p>
                     状态：{machineStatus(selected.status)} · 油箱：
-                    {selected.fuelTankCapacityLiters || "未登记"} L
+                    {selected.fuelTankCapacityLiters === null || selected.fuelTankCapacityLiters === undefined || selected.fuelTankCapacityLiters === "" ? "未登记" : formatQuantity(selected.fuelTankCapacityLiters)} L
                   </p>
                   <p>合同：{leaseLabel(selected)}</p>
                   <p>
@@ -862,7 +864,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                               ) : null}
                             </td>
                             <td className="p-2">
-                              {row.overtimeHours} 小时 ·{" "}
+                              {machineryQuantity(row.overtimeHours)} 小时 ·{" "}
                               {machineryMoney(row.overtimeAmount)}
                               <p>{row.driverName || "未登记"}</p>
                             </td>
@@ -871,7 +873,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                               {machineryMoney(row.driverWageAmount)}
                             </td>
                             <td className="p-2">
-                              {row.fuelLiters} L ·{" "}
+                              {machineryQuantity(row.fuelLiters)} L ·{" "}
                               {machineryMoney(row.fuelAmount)}
                             </td>
                             <td className="p-2">

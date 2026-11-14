@@ -111,7 +111,7 @@ describe("柴油票据只读栏目", () => {
     const book = buildDieselReceiptBook(records, props.filterLabel);
     expect(book.rows).toHaveLength(21);
     expect(book.rows[20].cells).toContain("已作废");
-    expect(book.summaryLabel).toContain("有效升数 200.000 L");
+    expect(book.summaryLabel).toContain("有效升数 200.00 L");
     expect(book.summaryLabel).toContain("有效金额 ¥1400.00");
     expect(book.summaryLabel).toContain("不含作废 1 条");
     expect(JSON.stringify(book)).not.toContain("/controlled");

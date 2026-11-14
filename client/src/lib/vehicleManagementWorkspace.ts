@@ -1,4 +1,5 @@
 import { escapePrintHtml } from "@/lib/a4Print";
+import { formatAmount } from "@shared/numberFormat";
 import {
   formatChinaDate,
   formatChinaDateTime,
@@ -113,12 +114,7 @@ export function vehicleLabel(value: string | null | undefined) {
   return value ? (VEHICLE_LABELS[value] ?? "其他状态（请核实）") : "未配置";
 }
 export function vehicleMoney(value: number | string | null | undefined) {
-  return value == null
-    ? "未提供"
-    : Number(value).toLocaleString("zh-CN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
+  return value == null ? "未提供" : formatAmount(value);
 }
 export function vehicleDate(value: Date | string | number | null | undefined) {
   return formatChinaDate(value, "未登记");

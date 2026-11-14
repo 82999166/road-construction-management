@@ -1,3 +1,4 @@
+import { formatQuantity } from "@shared/numberFormat";
 import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
   downloadMachineryCsv,
   filterMachineryOvertime,
   machineryMoney,
+  machineryQuantity,
   machineryStatus,
   overtimeNextActions,
   overtimeTotals,
@@ -88,16 +90,16 @@ export default function MachineryOvertimeLedger({
     row.machineName,
     row.machineCode,
     row.driverName || "未登记",
-    row.overtimeHours,
-    row.overtimeHourlyRate,
-    row.overtimeAmount,
+    machineryQuantity(row.overtimeHours),
+    machineryMoney(row.overtimeHourlyRate),
+    machineryMoney(row.overtimeAmount),
     machineryStatus(row.status),
     row.remarks || "",
   ]);
   function print() {
     openA4LandscapePrintDocument({
       title: "司机加班筛选明细",
-      bodyHtml: `<h1>司机加班筛选明细</h1><p class="sub">项目 #${projectId} · ${escapePrintHtml(period)} · ${escapePrintHtml(effectiveDate || "全部当期日期")} · 状态 ${escapePrintHtml(status === "all" ? "全部（作废仅审计）" : machineryStatus(status))}</p><table><thead><tr>${headers.map(value => `<th>${escapePrintHtml(value)}</th>`).join("")}</tr></thead><tbody>${exportRows.map(row => `<tr>${row.map(value => `<td>${escapePrintHtml(value)}</td>`).join("")}</tr>`).join("")}</tbody></table><p>共 ${totals.count} 条；有效加班 ${totals.hours} 小时；有效加班金额 ${escapePrintHtml(machineryMoney(totals.amount))}。作废金额不计入合计；历史合同记录只读留存，未新增台班录入。</p>`,
+      bodyHtml: `<h1>司机加班筛选明细</h1><p class="sub">项目 #${projectId} · ${escapePrintHtml(period)} · ${escapePrintHtml(effectiveDate || "全部当期日期")} · 状态 ${escapePrintHtml(status === "all" ? "全部（作废仅审计）" : machineryStatus(status))}</p><table><thead><tr>${headers.map(value => `<th>${escapePrintHtml(value)}</th>`).join("")}</tr></thead><tbody>${exportRows.map(row => `<tr>${row.map(value => `<td>${escapePrintHtml(value)}</td>`).join("")}</tr>`).join("")}</tbody></table><p>共 ${totals.count} 条；有效加班 ${formatQuantity(totals.hours)} 小时；有效加班金额 ${escapePrintHtml(machineryMoney(totals.amount))}。作废金额不计入合计；历史合同记录只读留存，未新增台班录入。</p>`,
     });
   }
   return (
@@ -155,7 +157,7 @@ export default function MachineryOvertimeLedger({
         />
       </div>
       <p className="text-sm" role="status">
-        当前筛选 {totals.count} 条 · 有效加班 {totals.hours} 小时 · 有效金额{" "}
+        当前筛选 {totals.count} 条 · 有效加班 {formatQuantity(totals.hours)} 小时 · 有效金额{" "}
         {machineryMoney(totals.amount)}（作废不计合计）
       </p>
       {query.error ? (
@@ -204,7 +206,7 @@ export default function MachineryOvertimeLedger({
                   </td>
                   <td className="p-2">{row.driverName || "未登记"}</td>
                   <td className="p-2">
-                    {row.overtimeHours} 小时 ×{" "}
+                    {machineryQuantity(row.overtimeHours)} 小时 ×{" "}
                     {machineryMoney(row.overtimeHourlyRate)}
                   </td>
                   <td className="p-2">{machineryMoney(row.overtimeAmount)}</td>

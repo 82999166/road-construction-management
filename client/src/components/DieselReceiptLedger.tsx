@@ -24,6 +24,7 @@ import {
 } from "@/components/FinancialLedgerPrintPreviewDialogs";
 import { downloadCurrentFilteredCsv } from "@/lib/a4Print";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount, formatQuantity } from "../../../shared/numberFormat";
 
 /** 仅接受现有 admin.diesel.listRefuelRecords 的非敏感显示字段，不接收全项目发票列表。 */
 export type DieselReceiptRecord = {
@@ -148,16 +149,16 @@ export function buildDieselReceiptBook(
         record.assetType,
         record.supplyMethod,
         record.supplierName,
-        record.liters.toFixed(3),
-        record.unitPrice.toFixed(2),
-        record.amount.toFixed(2),
+        formatQuantity(record.liters),
+        formatAmount(record.unitPrice, false),
+        formatAmount(record.amount, false),
         record.status,
         record.receiptNo || "未登记小票 / 凭证号",
         record.receiptEvidence ? "已关联可预览影像" : "未关联可预览影像",
         DIESEL_NO_INVOICE_LINKAGE,
       ],
     })),
-    summaryLabel: `合计 ${projected.length} 条；有小票号或影像 ${receiptCount} 条；可预览影像 ${previewCount} 条；有效升数 ${liters.toFixed(3)} L；有效金额 ¥${amount.toFixed(2)}（不含作废 ${projected.length - active.length} 条）。小票 / 加油表影像不等于正式发票；当前记录未提供可核验的正式发票关联。`,
+    summaryLabel: `合计 ${projected.length} 条；有小票号或影像 ${receiptCount} 条；可预览影像 ${previewCount} 条；有效升数 ${formatQuantity(liters)} L；有效金额 ¥${formatAmount(amount, false)}（不含作废 ${projected.length - active.length} 条）。小票 / 加油表影像不等于正式发票；当前记录未提供可核验的正式发票关联。`,
   };
 }
 
@@ -305,9 +306,9 @@ export function DieselReceiptLedger({
                         </TableCell>
                         <TableCell>{record.supplierName}</TableCell>
                         <TableCell className="whitespace-nowrap">
-                          {record.liters.toFixed(3)} L
+                          {formatQuantity(record.liters)} L
                           <p className="mt-1 font-medium">
-                            ¥{record.amount.toFixed(2)}
+                            ¥{formatAmount(record.amount, false)}
                           </p>
                         </TableCell>
                         <TableCell

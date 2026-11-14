@@ -20,6 +20,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { toDeviceDateInput } from "@/lib/businessTime";
+import { formatAmount } from "@shared/numberFormat";
 import { FileText, Landmark, Loader2, Upload, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -54,7 +55,7 @@ const paymentMethodLabel: Record<PaymentMethod, string> = {
   other: "其他方式",
 };
 const money = (value: string | number | null | undefined) =>
-  `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `¥${formatAmount(value)}`;
 const typeLabel: Record<SettlementType, string> = {
   transport_vehicle: "车辆结算",
   machine: "机械结算",

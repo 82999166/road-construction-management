@@ -33,6 +33,7 @@ import {
   type PurchasingTab,
 } from "@/lib/purchasingWorkspace";
 import { amountToChineseUppercase } from "@shared/purchasingRules";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 
 export interface PurchasingWorkspaceProps {
   projectId: number;
@@ -78,8 +79,7 @@ const emptyDraft = () => ({
   unifiedSocialCreditCode: "",
   supplierStatus: "active",
 });
-const money = (v: unknown) =>
-  `¥${Number(v ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (v: unknown) => `¥${formatAmount(v as number | string | null | undefined)}`;
 export function PurchasingEvidencePreview({
   file,
   label,
@@ -614,11 +614,11 @@ export function PurchasingWorkspace({
     o.purchaserName,
     o.categoryName,
     formatChinaDateTime(o.orderedAt),
-    o.amount,
+    formatAmount(o.amount),
     statusLabel(o.status),
-    `${statusLabel(o.receiptStatus)} (${o.receivedQuantity}/${o.receiptExpectedQuantity ?? "未核验"})`,
-    o.paidAmount,
-    o.remainingAmount,
+    `${statusLabel(o.receiptStatus)} (${formatQuantity(o.receivedQuantity)}/${o.receiptExpectedQuantity == null ? "未核验" : formatQuantity(o.receiptExpectedQuantity)})`,
+    formatAmount(o.paidAmount),
+    formatAmount(o.remainingAmount),
     o.invoiceEvidenceId ? "已绑定" : o.hasInvoice ? "声明有票待补传" : "无票",
   ]);
   const stockHeaders = [
@@ -640,9 +640,9 @@ export function PurchasingWorkspace({
     statusLabel(r.transactionType),
     r.itemName,
     r.unit,
-    r.quantity,
-    r.costingUnitCost ?? r.unitCost,
-    r.amount,
+    formatQuantity(r.quantity),
+    formatAmount(r.costingUnitCost ?? r.unitCost),
+    formatAmount(r.amount),
     formatChinaDateTime(r.occurredAt),
     r.costRuleVersion,
     r.originalOutboundId,
@@ -660,7 +660,7 @@ export function PurchasingWorkspace({
   const paymentCells = filteredPayments.map(r => [
     r.recordNo,
     r.sourceId,
-    r.amount,
+    formatAmount(r.amount),
     formatChinaDateTime(r.occurredAt),
     statusLabel(r.settlementStatus),
     r.remarks,
@@ -683,7 +683,7 @@ export function PurchasingWorkspace({
   const requestCells = filteredRequests.map(r => [
     r.requestNo,
     r.description,
-    r.amount,
+    formatAmount(r.amount),
     statusLabel(r.status),
   ]);
   function outputOverview(print: boolean) {
@@ -755,8 +755,8 @@ export function PurchasingWorkspace({
       cells = filteredBalances.map(r => [
         r.itemName,
         r.unit,
-        r.balanceQuantity,
-        r.totalAmount,
+        formatQuantity(r.balanceQuantity),
+        formatAmount(r.totalAmount),
         r.valuationLabel,
       ]);
     } else if (tab === "inventory") {
@@ -1429,8 +1429,8 @@ export function PurchasingWorkspace({
                         </span>
                         <p className="min-w-0 text-xs">
                           实物验收：{statusLabel(o.receiptStatus)} ·{" "}
-                          {o.receivedQuantity}/
-                          {o.receiptExpectedQuantity ?? "尚未登记"}{" "}
+                          {formatQuantity(o.receivedQuantity)}/
+                          {o.receiptExpectedQuantity == null ? "尚未登记" : formatQuantity(o.receiptExpectedQuantity)}{" "}
                           {o.inventoryUnit}　 实际付款：{money(o.paidAmount)} ·
                           未付 {money(o.remainingAmount)}
                         </p>
@@ -1446,8 +1446,8 @@ export function PurchasingWorkspace({
                         <div className="mt-3 space-y-2">
                           <p className="text-xs">
                             申请 #{o.requestId ?? "无（直接/历史采购）"} ·
-                            原采购数量 {o.quantity ?? "未记录"} · 单价{" "}
-                            {o.unitPrice ?? "未记录"} · 关联资产{" "}
+                            原采购数量 {o.quantity == null ? "未记录" : formatQuantity(o.quantity)} · 单价{" "}
+                            {o.unitPrice == null ? "未记录" : money(o.unitPrice)} · 关联资产{" "}
                             {o.assetLabel ?? "无"}
                           </p>
                           <p className="text-xs">
@@ -1661,7 +1661,7 @@ export function PurchasingWorkspace({
                         className="rounded-lg border p-3"
                       >
                         <b>
-                          {b.itemName} · {b.balanceQuantity} {b.unit} ·{" "}
+                          {b.itemName} · {formatQuantity(b.balanceQuantity)} {b.unit} ·{" "}
                           {money(b.totalAmount)}
                         </b>
                         <p
@@ -1704,14 +1704,14 @@ export function PurchasingWorkspace({
                           {r.itemName}
                         </b>
                         <p className="mt-1 text-sm">
-                          {r.quantity} {r.unit} · 流水估值 {money(r.amount)} ·{" "}
+                          {formatQuantity(r.quantity)} {r.unit} · 流水估值 {money(r.amount)} ·{" "}
                           {formatChinaDateTime(r.occurredAt)}
                         </p>
                         <details className="mt-2 text-xs">
                           <summary>追溯与计价详情</summary>
                           <p className="mt-2">
                             版本 {r.costRuleVersion} · 精确成本单价{" "}
-                            {r.costingUnitCost ?? r.unitCost} · 订单 #
+                            {formatAmount(r.costingUnitCost ?? r.unitCost)} · 订单 #
                             {r.purchaseOrderId ?? "无"} · 原领用 #
                             {r.originalOutboundId ?? "无"} · 操作人 #
                             {r.operatorId} · 授权原因{" "}
@@ -1993,7 +1993,7 @@ export function PurchasingWorkspace({
                         .filter(r => r.transactionType === "outbound")
                         .map(r => ({
                           value: String(r.id),
-                          label: `${r.transactionNo} ${r.itemName} ${r.quantity}${r.unit}`,
+                          label: `${r.transactionNo} ${r.itemName} ${formatQuantity(r.quantity)}${r.unit}`,
                         })),
                       id => {
                         const r = stock.find(r => String(r.id) === id);

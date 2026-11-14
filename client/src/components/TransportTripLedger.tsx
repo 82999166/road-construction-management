@@ -42,6 +42,7 @@ import {
   printColumnGroup,
 } from "@/lib/reportPrintLayout";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
 import {
@@ -128,13 +129,8 @@ const ownershipLabel: Record<string, string> = {
 };
 const dateTime = (value: Date | string | number | null | undefined) =>
   formatChinaDateTime(value, "未记录");
-const money = (value: unknown) =>
-  Number(value ?? 0).toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-const decimal = (value: unknown) =>
-  Number(value ?? 0).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+const money = (value: unknown) => formatAmount(value as string | number | null | undefined);
+const decimal = (value: unknown) => formatQuantity(value as string | number | null | undefined);
 const isNfcSingleScanClosed = (trip: any) =>
   Boolean(
     trip.invoiceMode === "nfc_card" && trip.routeSnapshot?.nfcSingleScanClosed
@@ -434,12 +430,12 @@ export default function TransportTripLedger({
                     item.routeSnapshot?.routePresetId
                       ? `路线 #${item.routeSnapshot.routePresetId}`
                       : "未关联预设",
-                    item.actualDistanceKm,
-                    item.volumeCubicMeters,
-                    item.calculatedUnitPrice,
-                    item.calculatedAmount,
-                    item.fuelDeductionAmount,
-                    transportNetAmount(item),
+                    formatQuantity(item.actualDistanceKm),
+                    formatQuantity(item.volumeCubicMeters),
+                    formatAmount(item.calculatedUnitPrice),
+                    formatAmount(item.calculatedAmount),
+                    formatAmount(item.fuelDeductionAmount),
+                    formatAmount(transportNetAmount(item)),
                     getBusinessStatusLabel(item.status),
                     item.anomalies
                       ?.map(

@@ -58,6 +58,7 @@ import {
   openA4LandscapePrintDocument,
 } from "@/lib/a4Print";
 import { filterTransportSettlements } from "@/lib/transportWorkspace";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 export type TransportSettlementFocusTrip = {
   id: number;
   vehicleId: number;
@@ -100,11 +101,7 @@ const settlementStatusLabel: Record<string, string> = {
   offset: "已抵扣",
   void: "已作废",
 };
-const money = (value: unknown) =>
-  Number(value ?? 0).toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const money = (value: unknown) => formatAmount(value as string | number | null | undefined);
 const paymentMethodDisplay = (method: string | null | undefined) =>
   paymentMethodLabel[method ?? ""] ?? "其他方式";
 const settlementStatusDisplay = (status: string | null | undefined) =>
@@ -302,14 +299,14 @@ export default function TransportVehicleSettlementManager({
     formatChinaDate(row.periodStart),
     formatChinaDate(row.periodEnd),
     row.tripCount,
-    row.grossFreightAmount,
-    row.fuelDeductionAmount,
-    row.assetDeductionAmount,
-    row.carryForwardDeductionAmount,
-    row.netPayableAmount,
-    row.actualPaidAmount ?? 0,
-    row.actualReceivedAmount ?? 0,
-    row.remainingAmount ?? "待核对",
+    money(row.grossFreightAmount),
+    money(row.fuelDeductionAmount),
+    money(row.assetDeductionAmount),
+    money(row.carryForwardDeductionAmount),
+    money(row.netPayableAmount),
+    money(row.actualPaidAmount ?? 0),
+    money(row.actualReceivedAmount ?? 0),
+    row.remainingAmount == null ? "待核对" : money(row.remainingAmount),
     settlementStatusDisplay(row.status),
   ]);
   const printCurrent = () => {
@@ -549,10 +546,7 @@ export default function TransportVehicleSettlementManager({
                       <TableCell>{date}</TableCell>
                       <TableCell>{row.tripCount}</TableCell>
                       <TableCell>
-                        {Number(row.totalVolumeCubicMeters ?? 0).toLocaleString(
-                          "zh-CN",
-                          { maximumFractionDigits: 3 }
-                        )}{" "}
+                        {formatQuantity(row.totalVolumeCubicMeters)}{" "}
                         m³
                       </TableCell>
                       <TableCell>¥{money(row.grossFreightAmount)}</TableCell>

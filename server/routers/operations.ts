@@ -2225,7 +2225,7 @@ async function recordTransportCardEvent(
     summary: `运输${eventType === "load" ? "装土" : "卸土"}刷卡确认成功${siteName ? `：${siteName}` : ""}`,
   });
   const eventLabel = eventType === "load" ? "装土" : "卸土";
-  const tripFinancialSummary = `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车${eventLabel}成功${siteName ? `，地点 ${siteName}` : ""}；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(3)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
+  const tripFinancialSummary = `车辆 ${vehicle.plateNo} 今日第 ${dailyVehicleTripOrdinal} 车${eventLabel}成功${siteName ? `，地点 ${siteName}` : ""}；里程 ${trip.actualDistanceKm ? `${Number(trip.actualDistanceKm).toFixed(2)} km` : "待补录"}，运费 ${trip.calculatedAmount ? `¥${Number(trip.calculatedAmount).toFixed(2)}` : "待核算"}。`;
   if (eventType === "unload") {
     // 站内通知只记录必要的闭环结果，不暴露定位坐标、司机电话或结算账户等敏感字段。
     const recipientUserIds = Array.from(

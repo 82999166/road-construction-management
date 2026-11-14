@@ -23,6 +23,7 @@ import {
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { summarizeDieselLedgerRecords } from "@/lib/dieselLedgerSummary";
 import { getDieselRecordSourceLabel } from "@/lib/dieselLedgerSource";
+import { formatAmount, formatQuantity } from "../../../shared/numberFormat";
 import { Printer } from "lucide-react";
 
 export type DieselPrintRecord = {
@@ -44,7 +45,7 @@ export type DieselPrintRecord = {
 };
 
 type PrintMode = "current" | "daily" | "vehicle" | "machine";
-const money = (value: number | string) => `¥${Number(value || 0).toFixed(2)}`;
+const money = (value: number | string) => `¥${formatAmount(value, false)}`;
 const dateTime = (value: Date | string) => formatChinaDateTime(value);
 const refuelerName = (value: string | null | undefined) =>
   value?.trim() || "未登记";
@@ -90,12 +91,12 @@ export default function DieselRefuelPrintDialog({
     const rows = records
       .map(
         (item, index) =>
-          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(dateTime(item.refueledAt))}</td><td>${escapePrintHtml(item.assetName)}</td><td class="center">${item.assetType === "vehicle" ? "车辆" : "机械"}<br/>${getDieselRecordSourceLabel(item.recordNo)}</td><td>${item.supplyMethod === "project_supply" ? "项目部供油" : escapePrintHtml(item.stationOrSupplierName || "加油站")}</td><td class="center">${escapePrintHtml(refuelerName(item.refuelerName))}</td><td class="right">${Number(item.liters).toFixed(2)}</td><td class="right">${money(item.appliedUnitPrice)}</td><td class="right">${money(item.amount)}</td><td class="right">${escapePrintHtml(item.meterReading ?? "未记录")}</td><td class="center">${item.deductFromFreight ? "扣运费" : "不扣"}</td><td class="center">${escapePrintHtml(statusLabel(item.status))}</td></tr>`
+          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(dateTime(item.refueledAt))}</td><td>${escapePrintHtml(item.assetName)}</td><td class="center">${item.assetType === "vehicle" ? "车辆" : "机械"}<br/>${getDieselRecordSourceLabel(item.recordNo)}</td><td>${item.supplyMethod === "project_supply" ? "项目部供油" : escapePrintHtml(item.stationOrSupplierName || "加油站")}</td><td class="center">${escapePrintHtml(refuelerName(item.refuelerName))}</td><td class="right">${formatQuantity(item.liters)}</td><td class="right">${money(item.appliedUnitPrice)}</td><td class="right">${money(item.amount)}</td><td class="right">${item.meterReading === null ? "未记录" : formatQuantity(item.meterReading)}</td><td class="center">${item.deductFromFreight ? "扣运费" : "不扣"}</td><td class="center">${escapePrintHtml(statusLabel(item.status))}</td></tr>`
       )
       .join("");
     openA4LandscapePrintDocument({
       title: modeTitle,
-      bodyHtml: `<h1>${modeTitle}</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　统计条件：${escapePrintHtml(dateLabel)}　|　生成时间：${escapePrintHtml(dateTime(new Date()))}</p><hr class="rule"/><table>${columnGroup}<thead><tr><th>序号</th><th>加油时间</th><th>车辆 / 机械</th><th>类型</th><th>供油点 / 方式</th><th>加油员</th><th>油量(L)</th><th>单价</th><th>金额</th><th>加油机表数</th><th>运输扣油</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="12" class="center">当前筛选范围暂无柴油记录</td></tr>'}<tr class="summary"><td colspan="6">合计：有效记录 ${summary.effectiveRecordCount} 笔 / 当前筛选 ${summary.displayedRecordCount} 笔，车辆/机械 ${uniqueAssets} 个</td><td class="right">${totalLiters.toFixed(2)}</td><td>—</td><td class="right">${money(totalAmount)}</td><td colspan="3">作废记录不计入汇总</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
+      bodyHtml: `<h1>${modeTitle}</h1><p class="sub">项目：${escapePrintHtml(projectName)}　|　统计条件：${escapePrintHtml(dateLabel)}　|　生成时间：${escapePrintHtml(dateTime(new Date()))}</p><hr class="rule"/><table>${columnGroup}<thead><tr><th>序号</th><th>加油时间</th><th>车辆 / 机械</th><th>类型</th><th>供油点 / 方式</th><th>加油员</th><th>油量(L)</th><th>单价</th><th>金额</th><th>加油机表数</th><th>运输扣油</th><th>状态</th></tr></thead><tbody>${rows || '<tr><td colspan="12" class="center">当前筛选范围暂无柴油记录</td></tr>'}<tr class="summary"><td colspan="6">合计：有效记录 ${summary.effectiveRecordCount} 笔 / 当前筛选 ${summary.displayedRecordCount} 笔，车辆/机械 ${uniqueAssets} 个</td><td class="right">${formatQuantity(totalLiters)}</td><td>—</td><td class="right">${money(totalAmount)}</td><td colspan="3">作废记录不计入汇总</td></tr></tbody></table><div class="footer"><span>制表人：________________</span><span>审核人：________________</span></div>`,
     });
   };
 
@@ -165,14 +166,14 @@ export default function DieselRefuelPrintDialog({
                         {refuelerName(item.refuelerName)}
                       </td>
                       <td className="text-right">
-                        {Number(item.liters).toFixed(2)}
+                        {formatQuantity(item.liters)}
                       </td>
                       <td className="text-right">
                         {money(item.appliedUnitPrice)}
                       </td>
                       <td className="text-right">{money(item.amount)}</td>
                       <td className="text-right">
-                        {item.meterReading ?? "未记录"}
+                        {item.meterReading === null ? "未记录" : formatQuantity(item.meterReading)}
                       </td>
                       <td className="text-center">
                         {item.deductFromFreight ? "扣运费" : "不扣"}
@@ -194,7 +195,7 @@ export default function DieselRefuelPrintDialog({
                       合计：有效 {summary.effectiveRecordCount} 笔 / 当前{" "}
                       {summary.displayedRecordCount} 笔 / {uniqueAssets} 个对象
                     </td>
-                    <td className="text-right">{totalLiters.toFixed(2)}</td>
+                    <td className="text-right">{formatQuantity(totalLiters)}</td>
                     <td className="text-center">—</td>
                     <td className="text-right">{money(totalAmount)}</td>
                     <td colSpan={3} className="text-center">

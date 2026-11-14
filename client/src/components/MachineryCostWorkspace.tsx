@@ -12,6 +12,7 @@ import {
   downloadMachineryCsv,
   machineryCostType,
   machineryMoney,
+  machineryQuantity,
   machineryStatus,
   MACHINERY_COST_SCOPE_NOTE,
 } from "@/lib/machineryWorkspace";
@@ -79,9 +80,9 @@ export default function MachineryCostWorkspace({
     row.machineLabel,
     machineryCostType(row.costType),
     row.costName,
-    row.quantity,
-    row.unitPrice,
-    row.amount,
+    machineryQuantity(row.quantity),
+    machineryMoney(row.unitPrice),
+    machineryMoney(row.amount),
     machineryStatus(row.status),
     row.remarks || "",
   ]);
@@ -182,7 +183,7 @@ export default function MachineryCostWorkspace({
                     </p>
                   </td>
                   <td className="p-2">
-                    {row.quantity} × {machineryMoney(row.unitPrice)}
+                    {machineryQuantity(row.quantity)} × {machineryMoney(row.unitPrice)}
                   </td>
                   <td className="p-2">{machineryMoney(row.amount)}</td>
                   <td className="p-2">{machineryStatus(row.status)}</td>

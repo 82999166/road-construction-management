@@ -1,6 +1,7 @@
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount } from "@shared/numberFormat";
 
 export type SettlementPaymentView =
   | "all"
@@ -85,8 +86,7 @@ export const directionLabel = (direction: "all" | "expense" | "income") =>
     : direction === "expense"
       ? "支出付款"
       : "收入补款";
-export const money = (value: unknown) =>
-  `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const money = (value: unknown) => `¥${formatAmount(value as number | string | null | undefined)}`;
 export const validPeriod = (period: string) =>
   /^\d{4}-(0[1-9]|1[0-2])$/.test(period);
 
@@ -206,6 +206,7 @@ export function buildSettlementPaymentWorkbook(
     sheets: [
       {
         name: "月度汇总",
+        twoDecimalColumns: [2, 3, 4],
         headers: [
           "结算类型",
           "记录数",
@@ -230,6 +231,7 @@ export function buildSettlementPaymentWorkbook(
       },
       {
         name: "付款明细",
+        twoDecimalColumns: [6],
         headers: [
           "凭证编号",
           "结算类型",

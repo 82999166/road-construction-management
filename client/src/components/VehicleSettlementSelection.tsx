@@ -18,6 +18,7 @@ import {
   type VehicleSettlementMode,
   type VehicleSettlementPreview,
 } from "@/lib/vehicleSettlementSelection";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 
 export type {
   VehicleSettlementMode,
@@ -47,16 +48,10 @@ const modeLabels: Record<VehicleSettlementMode, string> = {
 };
 const previewNotice =
   "这是生成前预览，仅展示运费基数。柴油、资产、前期抵扣和净应付由服务端生成草稿时计算，预览不代表付款或收付结果。";
-const money = (value: number | string | null) => {
-  if (value === null || value === "") return "—";
-  const number = Number(value);
-  return Number.isFinite(number)
-    ? number.toLocaleString("zh-CN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })
-    : "—";
-};
+const money = (value: number | string | null) =>
+  value === null || value === "" ? "—" : formatAmount(value);
+const quantity = (value: number | string | null | undefined) =>
+  value == null || value === "" ? "—" : formatQuantity(value);
 // Also protect whitespace/tab-prefixed formulas before the shared CSV escaping helper.
 const safeCsvValue = (value: string | number | null | undefined) => {
   if (typeof value !== "string") return value;
@@ -136,7 +131,7 @@ export function VehicleSettlementSelection({
       const rows = visiblePreview.rows
         .map(
           (row, index) =>
-            `<tr><td>${index + 1}</td><td>${html(row.tripNo)}</td><td>${html(formatChinaDateTime(row.startAt))}</td><td>${html(row.quantity)}</td><td>${html(money(row.unitPrice))}</td><td>${html(money(row.grossAmount))}</td></tr>`
+            `<tr><td>${index + 1}</td><td>${html(row.tripNo)}</td><td>${html(formatChinaDateTime(row.startAt))}</td><td>${html(quantity(row.quantity))}</td><td>${html(money(row.unitPrice))}</td><td>${html(money(row.grossAmount))}</td></tr>`
         )
         .join("");
       const groups = visiblePreview.dailyGroups
@@ -197,10 +192,10 @@ export function VehicleSettlementSelection({
           plateNo,
           formatChinaDateTime(row.startAt),
           row.tripNo,
-          row.quantity,
-          row.unitPrice,
+          quantity(row.quantity),
+          money(row.unitPrice),
           1,
-          row.grossAmount,
+          money(row.grossAmount),
           "",
         ]),
         ...visiblePreview.dailyGroups.map(group => [
@@ -498,7 +493,7 @@ export function VehicleSettlementSelection({
                           {formatChinaDateTime(row.startAt)}
                         </p>
                       </td>
-                      <td className="py-2 pr-1">{row.quantity ?? "—"}</td>
+                      <td className="py-2 pr-1">{row.quantity == null ? "—" : quantity(row.quantity)}</td>
                       <td className="py-2 pr-1">{money(row.unitPrice)}</td>
                       <td className="py-2">{money(row.grossAmount)}</td>
                     </tr>

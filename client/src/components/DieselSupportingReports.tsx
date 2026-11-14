@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { downloadCurrentFilteredCsv } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount, formatQuantity } from "../../../shared/numberFormat";
 import { Download, Printer } from "lucide-react";
 
 export interface DieselSupplierReportRow {
@@ -87,22 +88,18 @@ const priceColumns: FinancialPrintColumn[] = [
 ];
 const selectClass =
   "min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const number = (value: number, digits = 2) =>
-  value.toLocaleString("zh-CN", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+const number = (value: number) => formatAmount(value);
 const priceStatus = (status: string) => priceStatusLabels[status] ?? status;
 
 function supplierCells(row: DieselSupplierReportRow): Array<string | number> {
   return [
     row.supplierName,
-    number(row.liters, 3),
-    number(row.amount),
-    number(row.averageUnitPrice),
-    number(row.minUnitPrice),
-    number(row.maxUnitPrice),
-    number(row.priceSpread),
+    formatQuantity(row.liters),
+    formatAmount(row.amount),
+    formatAmount(row.averageUnitPrice),
+    formatAmount(row.minUnitPrice),
+    formatAmount(row.maxUnitPrice),
+    formatAmount(row.priceSpread),
     row.recordCount,
     row.receiptCount,
     row.alertCount,
@@ -288,8 +285,8 @@ export function DieselSupplierReport({
   );
   // 不平均行均价，不推测缺失凭证或价格异常，零升数时加权价不可计算。
   const weightedPrice =
-    totals.liters > 0 ? number(totals.amount / totals.liters) : "—";
-  const summaryLabel = `当前筛选全部 ${filteredRows.length} 家供应商 · ${totals.records} 笔加油 · 合计 ${number(totals.liters, 3)} L · 金额 ¥${number(totals.amount)} · 加权价 ${weightedPrice === "—" ? "—" : `¥${weightedPrice}/L`} · 凭证 ${totals.receipts} 笔 · 价格异常 ${totals.alerts} 笔`;
+      totals.liters > 0 ? formatAmount(totals.amount / totals.liters) : "—";
+  const summaryLabel = `当前筛选全部 ${filteredRows.length} 家供应商 · ${totals.records} 笔加油 · 合计 ${formatQuantity(totals.liters)} L · 金额 ¥${formatAmount(totals.amount)} · 加权价 ${weightedPrice === "—" ? "—" : `¥${weightedPrice}/L`} · 凭证 ${totals.receipts} 笔 · 价格异常 ${totals.alerts} 笔`;
   const filterLabel = `供应商：${supplier.trim() || "全部"}；价格异常：${alertLabels[alert]}`;
   const outputPeriod = `供应商汇总月份 ${period}（非加油台账日期筛选）`;
   const allPrintRows = useMemo(

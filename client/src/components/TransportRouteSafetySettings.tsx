@@ -22,6 +22,7 @@ import {
 import { ShieldCheck } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { formatQuantity } from "@shared/numberFormat";
 
 export function TransportRouteSafetySettings({
   projectId,
@@ -441,7 +442,7 @@ export function TransportRouteSafetySettings({
             {activeRoutes.map(route => (
               <div key={route.id} className="rounded-lg border p-3">
                 <p className="text-xs">
-                  路线 #{route.id} · {route.presetDistanceKm} km · 卸土点 #
+                  路线 #{route.id} · {formatQuantity(route.presetDistanceKm)} km · 卸土点 #
                   {route.unloadSiteId}
                 </p>
                 <label className="mt-2 flex items-start gap-2 text-xs leading-5">

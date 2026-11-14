@@ -11,6 +11,7 @@ import {
   useFinancePagination,
 } from "@/components/FinanceWorkspaceNavigation";
 import { openA4PrintDocument, downloadCurrentFilteredCsv } from "@/lib/a4Print";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import {
   buildVehicleReport,
   type VehicleReport,
@@ -24,7 +25,11 @@ export function VehicleManagementReport({
 }) {
   const paging = useFinancePagination(report.rows, report.scope);
   const [preview, setPreview] = useState(false);
-  const html = buildVehicleReport(report);
+  const displayRows = report.rows.map(row =>
+    row.map((cell, index) => formatVehicleReportCell(report.headers[index] ?? "", cell))
+  );
+  const displayReport = { ...report, rows: displayRows };
+  const html = buildVehicleReport(displayReport);
   return (
     <div className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -42,7 +47,7 @@ export function VehicleManagementReport({
               downloadCurrentFilteredCsv(
                 `${report.title}.csv`,
                 report.headers,
-                report.rows.map(row => row.map(cell => cell ?? ""))
+                displayRows.map(row => row.map(cell => cell ?? ""))
               )
             }
           >
@@ -71,12 +76,12 @@ export function VehicleManagementReport({
                 key={(paging.page - 1) * paging.pageSize + i}
                 className="border-t"
               >
-                {row.map((cell, j) => (
+                {row.map((_cell, j) => (
                   <td
                     key={j}
                     className="max-w-64 whitespace-normal break-words p-2.5"
                   >
-                    {cell ?? "未登记"}
+                    {displayRows[(paging.page - 1) * paging.pageSize + i]?.[j] ?? "未登记"}
                   </td>
                 ))}
                 {actions && (
@@ -143,4 +148,13 @@ export function VehicleManagementReport({
       )}
     </div>
   );
+}
+
+function formatVehicleReportCell(header: string, value: string | number | null | undefined) {
+  if (value == null || value === "") return value;
+  if (header === "数量") return formatQuantity(value);
+  if (["金额", "单价", "原合同单价", "运费基数", "已核定运费", "待核验运费", "油料", "维修", "保养", "配件", "已核定租赁", "未核定租赁估算", "实际付出", "实际收回"].includes(header)) {
+    return formatAmount(value);
+  }
+  return value;
 }

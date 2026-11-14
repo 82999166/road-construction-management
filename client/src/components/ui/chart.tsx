@@ -1,3 +1,4 @@
+import { formatBusinessMetricValue } from "@shared/numberFormat";
 import * as React from "react";
 import * as RechartsPrimitive from "recharts";
 
@@ -9,6 +10,7 @@ const THEMES = { light: "", dark: ".dark" } as const;
 export type ChartConfig = {
   [k in string]: {
     label?: React.ReactNode;
+    numericKind?: "amount" | "quantity" | "count";
     icon?: React.ComponentType;
   } & (
     | { color?: string; theme?: never }
@@ -232,9 +234,9 @@ function ChartTooltipContent({
                           {itemConfig?.label || item.name}
                         </span>
                       </div>
-                      {item.value && (
+                      {item.value !== undefined && item.value !== null && (
                         <span className="text-foreground font-mono font-medium tabular-nums">
-                          {item.value.toLocaleString()}
+                          {formatBusinessMetricValue(item.value, `${key} ${typeof itemConfig?.label === "string" ? itemConfig.label : ""}`, itemConfig?.numericKind)}
                         </span>
                       )}
                     </div>

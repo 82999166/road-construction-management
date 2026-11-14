@@ -67,6 +67,7 @@ import {
   MACHINERY_COST_SCOPE_NOTE,
 } from "@/lib/machineryWorkspace";
 import { toast } from "sonner";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { useAuth } from "../_core/hooks/useAuth";
 import {
   DEFAULT_EVIDENCE_WATERMARK_TEMPLATE,
@@ -85,7 +86,11 @@ function getCurrentPeriod() {
 
 /** 金额显示兼容后端 decimal 字段序列化后的字符串。 */
 function formatMoney(value: string | number | null | undefined) {
-  return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `¥${formatAmount(value)}`;
+}
+
+function formatQuantityValue(value: string | number | null | undefined) {
+  return formatQuantity(value);
 }
 
 function readImageAsBase64(file: File) {
@@ -1095,7 +1100,7 @@ export default function MobileMachineryPage() {
             : current
         );
         toast.info(
-          `已带入 ${defaultPrice.occurredOn} 有效柴油指导价 ¥${defaultPrice.guidelinePrice}/L`
+          `已带入 ${defaultPrice.occurredOn} 有效柴油指导价 ¥${formatAmount(defaultPrice.guidelinePrice)}/L`
         );
       } else {
         toast.warning(
@@ -1740,7 +1745,7 @@ export default function MobileMachineryPage() {
                                         <div className="mt-0.5 flex items-center justify-between">
                                           <span>
                                             {cost.remarks ||
-                                              `${cost.quantity} × ${formatMoney(cost.unitPrice)}`}
+                                              `${formatQuantityValue(cost.quantity)} × ${formatMoney(cost.unitPrice)}`}
                                           </span>
                                           <span
                                             className={costStatus.className}
@@ -1822,7 +1827,7 @@ export default function MobileMachineryPage() {
                               )}
                             </p>
                             <p className="mt-1 text-[10px] text-[#8f7566]">
-                              {machineAnalysis.data.overtime.hours}{" "}
+                              {formatQuantity(machineAnalysis.data.overtime.hours)}{" "}
                               小时日作业加班
                             </p>
                           </div>

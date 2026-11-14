@@ -146,6 +146,7 @@ import {
   type EvidenceWatermarkTemplate,
 } from "@shared/watermarkTemplate";
 import { getAttendanceSourceLabel, getInvoiceTypeLabel } from "@shared/domain";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import {
   Building2,
   BarChart3,
@@ -2075,13 +2076,28 @@ function getAssignmentLifecycle(input: {
 
 function displayMoney(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === "") return "—";
-  const amount = Number(value);
-  return Number.isFinite(amount)
-    ? amount.toLocaleString("zh-CN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })
-    : "—";
+  return formatAmount(value);
+}
+
+/** 原始导出缺失值仍为空单元格，不能把未知金额或工时误写为有效零值。 */
+function exportMoney(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "";
+  return formatAmount(value, false);
+}
+function exportQuantity(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "";
+  return formatQuantity(value);
+}
+
+/** 数量展示保留件、套、台、人数、趟数和天数计数；物理计量仅格式化只读副本。 */
+function displayUnitQuantity(
+  value: string | number | null | undefined,
+  unit: string
+) {
+  if (value === null || value === undefined || value === "") return "—";
+  return /^(piece|set|件|个|套|台|人|条|趟|天|日|辆|次|张|笔)$/.test(unit.trim())
+    ? String(value)
+    : formatQuantity(value);
 }
 
 /** 将后台表单转换为群发接口的三选一范围契约，避免浏览器同时提交项目、组织和岗位而扩大收件人。 */
@@ -4608,7 +4624,7 @@ export default function AdminPage({
   const saveVehicle = trpc.admin.vehicle.save.useMutation({
     onSuccess: async data => {
       toast.success(
-        `车辆台账已保存，理论方量 ${data.theoreticalVolumeCubicMeters} m³`
+        `车辆台账已保存，理论方量 ${formatQuantity(data.theoreticalVolumeCubicMeters)} m³`
       );
       setVehicleForm(EMPTY_VEHICLE_FORM);
       setVehicleEditorOpen(false);
@@ -12898,7 +12914,7 @@ export default function AdminPage({
                             type: "采购订单",
                             no: item.orderNo || "系统自动生成",
                             content: `${item.purchaserName} · ${item.categoryName} · ${item.itemDescription}`,
-                            amount: `¥${item.amount.toFixed(2)}`,
+                            amount: `¥${formatAmount(item.amount, false)}`,
                             occurredAt: item.orderedAt,
                           })
                         ),
@@ -12912,7 +12928,7 @@ export default function AdminPage({
                                   : "库存退库",
                             no: item.transactionNo || "系统自动生成",
                             content: `${item.itemName} · ${item.unit}`,
-                            amount: `${item.quantity} × ¥${item.unitCost.toFixed(2)}`,
+                            amount: `${displayUnitQuantity(item.quantity, item.unit)} × ¥${formatAmount(item.unitCost, false)}`,
                             occurredAt: item.occurredAt,
                           })
                         ),
@@ -13561,7 +13577,7 @@ export default function AdminPage({
                               </p>
                             </TableCell>
                             <TableCell>
-                              {displayMoney(item.quantity)} {item.unit}
+                              {displayUnitQuantity(item.quantity, item.unit)} {item.unit}
                             </TableCell>
                             <TableCell>
                               <p>¥{displayMoney(item.upstreamAmount)}</p>
@@ -13611,7 +13627,7 @@ export default function AdminPage({
                                         },
                                         {
                                           label: "工程量",
-                                          value: `${displayMoney(item.quantity)} ${item.unit}`,
+                                          value: `${displayUnitQuantity(item.quantity, item.unit)} ${item.unit}`,
                                         },
                                         {
                                           label: "上游金额",
@@ -13989,7 +14005,7 @@ export default function AdminPage({
                       {takeoffs.map(takeoff => (
                         <SelectItem key={takeoff.id} value={String(takeoff.id)}>
                           {takeoff.takeoffNo} · {takeoff.workItem} · 可分配{" "}
-                          {displayMoney(takeoff.quantity)} {takeoff.unit}
+                          {displayUnitQuantity(takeoff.quantity, takeoff.unit)} {takeoff.unit}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -14422,9 +14438,9 @@ export default function AdminPage({
                         row.workerName,
                         row.teamName || "",
                         row.period,
-                        row.payableAmount,
-                        row.deductionAmount,
-                        row.actualAmount,
+                        exportMoney(row.payableAmount),
+                        exportMoney(row.deductionAmount),
+                        exportMoney(row.actualAmount),
                         row.bankName || "",
                         row.bankAccountMasked || "",
                         getBusinessStatusLabel(row.status),
@@ -14435,9 +14451,9 @@ export default function AdminPage({
                         row.workerName,
                         row.teamName || "",
                         toBusinessDateInput(row.settlementDate),
-                        row.payableAmount,
-                        row.deductionAmount,
-                        row.actualAmount,
+                        exportMoney(row.payableAmount),
+                        exportMoney(row.deductionAmount),
+                        exportMoney(row.actualAmount),
                         row.bankName || "",
                         row.bankAccountMasked || "",
                         getBusinessStatusLabel(row.status),
@@ -14507,7 +14523,7 @@ export default function AdminPage({
                       toBusinessDateInput(row.settlementDate),
                       row.bankName || "",
                       row.bankAccount || "未登记",
-                      row.actualAmount,
+                      exportMoney(row.actualAmount),
                       getBusinessStatusLabel(row.status),
                       row.paidAt ? displayDate(row.paidAt) : "",
                     ]);
@@ -14519,7 +14535,7 @@ export default function AdminPage({
                       toBusinessDateInput(row.settlementDate),
                       row.bankName || "",
                       row.bankAccount || "未登记",
-                      row.actualAmount,
+                      exportMoney(row.actualAmount),
                       getBusinessStatusLabel(row.status),
                       row.paidAt ? displayDate(row.paidAt) : "",
                     ]);
@@ -14586,9 +14602,9 @@ export default function AdminPage({
                         item.workerName,
                         item.teamName || "",
                         item.period,
-                        item.payableAmount,
-                        item.deductionAmount,
-                        item.actualAmount,
+                        exportMoney(item.payableAmount),
+                        exportMoney(item.deductionAmount),
+                        exportMoney(item.actualAmount),
                         item.paymentReference || "",
                         getBusinessStatusLabel(item.status),
                       ])
@@ -14690,8 +14706,8 @@ export default function AdminPage({
                                 ? "临时日结人员"
                                 : "劳务队人员",
                             toBusinessDateInput(item.attendanceDate),
-                            item.workHours,
-                            item.overtimeHours,
+                            exportQuantity(item.workHours),
+                            exportQuantity(item.overtimeHours),
                             getAttendanceSourceLabel(item.source),
                             getBusinessStatusLabel(item.status),
                             item.note || "",
@@ -17242,25 +17258,25 @@ export default function AdminPage({
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 <MetricCard
                   title="确认收入（资金总账）"
-                  value={financeSummary.data?.incomeAmount}
+                  value={displayMoney(financeSummary.data?.incomeAmount)}
                   description="不含重复回款口径"
                   icon={BarChart3}
                 />
                 <MetricCard
                   title="项目开支（资金总账）"
-                  value={financeSummary.data?.expenseAmount}
+                  value={displayMoney(financeSummary.data?.expenseAmount)}
                   description="已登记资金支出流水"
                   icon={ScrollText}
                 />
                 <MetricCard
                   title="已开票金额"
-                  value={financeInvoices.data?.summary.totalAmount}
+                  value={displayMoney(financeInvoices.data?.summary.totalAmount)}
                   description="不含作废与红冲"
                   icon={ScrollText}
                 />
                 <MetricCard
                   title="待认证发票"
-                  value={financeInvoices.data?.summary.pendingAmount}
+                  value={displayMoney(financeInvoices.data?.summary.pendingAmount)}
                   description="须会计复核"
                   icon={ScrollText}
                 />
@@ -17268,25 +17284,25 @@ export default function AdminPage({
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 <MetricCard
                   title="应收余额"
-                  value={financeSummary.data?.receivableAmount}
+                  value={displayMoney(financeSummary.data?.receivableAmount)}
                   description="已确认收入待回款"
                   icon={BarChart3}
                 />
                 <MetricCard
                   title="应付余额"
-                  value={financeSummary.data?.payableAmount}
+                  value={displayMoney(financeSummary.data?.payableAmount)}
                   description="已登记开支待结清"
                   icon={ScrollText}
                 />
                 <MetricCard
                   title="本期现金净流"
-                  value={financeSummary.data?.netCashFlowAmount}
+                  value={displayMoney(financeSummary.data?.netCashFlowAmount)}
                   description={`流入 ¥${displayMoney(financeSummary.data?.cashInflowAmount ?? 0)} · 流出 ¥${displayMoney(financeSummary.data?.cashOutflowAmount ?? 0)}`}
                   icon={BarChart3}
                 />
                 <MetricCard
                   title="本期收支差额（资金总账）"
-                  value={financeSummary.data?.profitAmount}
+                  value={displayMoney(financeSummary.data?.profitAmount)}
                   description="确认收入减已登记资金支出"
                   icon={ScrollText}
                 />
@@ -17516,7 +17532,7 @@ export default function AdminPage({
                           financeSettlementStatusDisplay(
                             record.settlementStatus
                           ),
-                          Number(record.amount),
+                          formatAmount(record.amount, false),
                           record.remarks ?? "",
                         ])
                       )
@@ -18073,7 +18089,7 @@ export default function AdminPage({
                                     riskFinanceAnalysis.data?.categories ?? []
                                   ).map(item => [
                                     item.label,
-                                    item.amount,
+                                    exportMoney(item.amount),
                                     `${item.percentage}%`,
                                     item.recordCount,
                                     item.sources.join("、") || "—",
@@ -18221,7 +18237,7 @@ export default function AdminPage({
                                 ).map(item => [
                                   expenseCategoryDisplay(item.parentCode),
                                   item.label,
-                                  item.amount,
+                                  exportMoney(item.amount),
                                   `${item.percentage}%`,
                                   item.recordCount,
                                   item.sources.join("、"),
@@ -18566,7 +18582,7 @@ export default function AdminPage({
                                   displayDate(item.occurredAt),
                                   item.subcategory,
                                   getBusinessStatusLabel(item.status),
-                                  item.amount,
+                                  exportMoney(item.amount),
                                   item.details,
                                 ]
                               )
@@ -18985,9 +19001,9 @@ export default function AdminPage({
                                 : "加油站加油",
                               item.stationOrSupplierName ?? "",
                               item.refuelerName ?? "未登记",
-                              Number(item.liters),
-                              Number(item.appliedUnitPrice),
-                              Number(item.amount),
+                              formatQuantity(item.liters),
+                              formatAmount(item.appliedUnitPrice, false),
+                              formatAmount(item.amount, false),
                               item.deductFromFreight ? "是" : "否",
                               displayDate(item.refueledAt),
                               getBusinessStatusLabel(item.status),
@@ -19007,8 +19023,8 @@ export default function AdminPage({
                       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                         <MetricCard
                           title="当前筛选供油量"
-                          value={`${dieselCurrentSummary.totalLiters.toFixed(2)} L`}
-                          description={`项目部 ${dieselCurrentSummary.projectSupplyLiters.toFixed(2)} L · 加油站 ${dieselCurrentSummary.stationLiters.toFixed(2)} L`}
+                          value={`${formatQuantity(dieselCurrentSummary.totalLiters)} L`}
+                          description={`项目部 ${formatQuantity(dieselCurrentSummary.projectSupplyLiters)} L · 加油站 ${formatQuantity(dieselCurrentSummary.stationLiters)} L`}
                           icon={Truck}
                         />
                         <MetricCard
@@ -19019,7 +19035,7 @@ export default function AdminPage({
                         />
                         <MetricCard
                           title="车辆 / 机械领用"
-                          value={`${dieselCurrentSummary.vehicleLiters.toFixed(2)} / ${dieselCurrentSummary.machineLiters.toFixed(2)} L`}
+                          value={`${formatQuantity(dieselCurrentSummary.vehicleLiters)} / ${formatQuantity(dieselCurrentSummary.machineLiters)} L`}
                           description="同当前筛选；车辆可关联趟次，机械自动进入成本台账"
                           icon={Settings2}
                         />
@@ -19091,7 +19107,7 @@ export default function AdminPage({
                             item.supplyMethod === "project_supply"
                               ? "项目部供油"
                               : `加油站 · ${item.stationOrSupplierName ?? "未填写"}`,
-                            `${Number(item.liters).toFixed(2)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
+                            `${formatQuantity(item.liters)} L / ¥${displayMoney(item.appliedUnitPrice)}`,
                             `¥ ${displayMoney(item.amount)}`,
                             <div className="space-y-1">
                               {item.receiptEvidence?.url ? (
@@ -19161,7 +19177,7 @@ export default function AdminPage({
                                 },
                                 {
                                   label: "加油量",
-                                  value: `${Number(item.liters).toFixed(2)} L`,
+                                  value: `${formatQuantity(item.liters)} L`,
                                 },
                                 {
                                   label: "适用单价",
@@ -19443,8 +19459,8 @@ export default function AdminPage({
                             invoice.counterpartyName,
                             displayDate(invoice.issuedAt),
                             getInvoiceTypeLabel(invoice.invoiceType),
-                            invoice.amount,
-                            invoice.taxAmount ?? 0,
+                            exportMoney(invoice.amount),
+                            formatAmount(invoice.taxAmount ?? 0, false),
                             getBusinessStatusLabel(invoice.status),
                           ])
                         )
@@ -20392,7 +20408,7 @@ export default function AdminPage({
               />
               <MetricCard
                 title="本期成本"
-                value={riskFinanceAnalysis.data?.expenseAmount}
+                value={displayMoney(riskFinanceAnalysis.data?.expenseAmount)}
                 description="分类汇总的真实业务成本"
                 icon={BarChart3}
               />
@@ -20536,7 +20552,7 @@ export default function AdminPage({
                         (riskFinanceAnalysis.data?.categories ?? []).map(
                           item => [
                             item.label,
-                            item.amount,
+                            exportMoney(item.amount),
                             `${item.percentage}%`,
                             item.recordCount,
                             item.sources.join("、"),
@@ -23640,7 +23656,7 @@ export default function AdminPage({
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
                   <span className="font-medium">现金油费预览：</span>
                   {dieselRefuelForm.liters && dieselRefuelForm.actualUnitPrice
-                    ? `${Number(dieselRefuelForm.liters).toFixed(3)} L × ¥${displayMoney(Number(dieselRefuelForm.actualUnitPrice))}/L = ¥${displayMoney(Number(dieselRefuelForm.liters) * Number(dieselRefuelForm.actualUnitPrice))}`
+                    ? `${formatQuantity(dieselRefuelForm.liters)} L × ¥${displayMoney(dieselRefuelForm.actualUnitPrice)}/L = ¥${displayMoney(Number(dieselRefuelForm.liters) * Number(dieselRefuelForm.actualUnitPrice))}`
                     : "请填写当天现金单价和加油升数；最终金额以服务端保存的油价快照为准。"}
                 </div>
               ) : null}

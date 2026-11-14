@@ -184,7 +184,7 @@ describe("柴油供应商汇总", () => {
     expect(reportTable(tree).props.rows).toHaveLength(20);
     expect(pagination(tree).props.total).toBe(25);
     expect(text(tree)).toContain("25 家供应商");
-    expect(text(tree)).toContain("合计 250.000 L");
+    expect(text(tree)).toContain("合计 250.00 L");
     expect(text(tree)).toContain("金额 ¥1,500.00");
     (pagination(tree).props.onPageChange as (value: number) => void)(2);
     tree = supplierView(props);

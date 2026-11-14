@@ -1,6 +1,7 @@
 import { escapePrintHtml, openA4LandscapePrintDocument } from "./a4Print";
 import { toChinaDateInput } from "./businessTime";
 import { amountToChineseUppercase } from "@shared/purchasingRules";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 export const PURCHASING_TABS = [
   { value: "overview", label: "采购总览" },
   { value: "orders", label: "申请与订单" },
@@ -118,8 +119,8 @@ export function printPurchasingHalfA4(order: {
   projectAdministratorName?: string | null;
   remarks?: string | null;
   ocrSummary?: string | null;
-  quantity?: string | null;
-  unitPrice?: string | null;
+  quantity?: string | number | null;
+  unitPrice?: string | number | null;
   documentAttachment?: {
     url: string;
     mimeType?: string;
@@ -130,8 +131,8 @@ export function printPurchasingHalfA4(order: {
     mimeType?: string;
     fileName?: string | null;
   } | null;
-  paidAmount?: number;
-  remainingAmount?: number;
+  paidAmount?: string | number | null;
+  remainingAmount?: string | number | null;
 }) {
   const popup = window.open("", "_blank");
   if (!popup) throw new Error("请允许打印弹窗");
@@ -139,7 +140,7 @@ export function printPurchasingHalfA4(order: {
   const attachment = (label: string, file: typeof order.documentAttachment) =>
     `<div class="voucher-box"><b>${label}</b>${file?.mimeType?.startsWith("image/") ? `<img src="${e(file.url)}" alt="${label}">` : `<span>${file ? `已归档${e(file.fileName)}，PDF请站内预览后单独打印` : "未上传 · 原件粘贴处"}</span>`}</div>`;
   popup.document.write(
-    `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>采购费用票据报销详单</title><style>*{box-sizing:border-box}body{margin:0;color:#273337;font-family:"Microsoft YaHei",sans-serif}.receipt-page{width:210mm;height:148.5mm;padding:6mm 7mm;background:#fff}.receipt-title{text-align:center;margin:0 0 5mm;font-size:20px;letter-spacing:3px;text-decoration:underline}.receipt-main{display:grid;grid-template-columns:minmax(0,1fr) 84mm;gap:7mm}.expense-table{width:100%;border-collapse:collapse;font-size:10px}.expense-table td{border-bottom:1px dashed #aebabc;padding:3mm 2mm;word-break:break-word}.total-line{border-bottom:1px solid #273337;padding:4mm 0;font-size:12px;font-weight:700}.note{font-size:10px;color:#596a6e}.voucher-panel{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.original-caption{grid-column:1 / -1;min-height:10mm;border:1px dashed #8d9b9e;padding:2mm;text-align:center;font-size:10px}.voucher-box{height:62mm;border:1px dashed #8d9b9e;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;text-align:center;overflow:hidden}.voucher-box img{max-width:90%;height:85%;object-fit:contain}.signatures{display:grid;grid-template-columns:repeat(4,1fr);margin-top:7mm;border-top:1px solid #273337;padding-top:5mm;font-size:10px}@media print{@page{size:A4 portrait;margin:0}.receipt-page{break-inside:avoid}}</style></head><body><section class="receipt-page"><h1 class="receipt-title">采购费用票据报销详单</h1><div class="receipt-main"><div><p class="note">单据编号：${e(order.orderNo)} · 日期：${e(toChinaDateInput(order.orderedAt))}</p><table class="expense-table"><tr><td>采购者：${e(order.purchaserName)}</td><td>业务状态：${e(purchasingStatusLabel(order.status))}</td></tr><tr><td colspan="2">物资：${e(order.itemDescription)}</td></tr><tr><td>数量：${e(order.quantity)}</td><td>单价：${e(order.unitPrice)}</td></tr><tr><td>提交上传管理员：${e(order.documentUploadedByName || order.createdByName || "未登记")}</td><td>现场管理员：${e(order.projectAdministratorName || "未登记")}</td></tr><tr><td colspan="2">备注：${e(order.remarks || order.ocrSummary || "未填写")}</td></tr><tr><td>实际付款：¥${e(order.paidAmount ?? 0)}</td><td>未付余额：¥${e(order.remainingAmount ?? order.amount)}</td></tr></table><div class="total-line">订单金额：${e(amountToChineseUppercase(order.amount))}（¥${e(Number(order.amount).toFixed(2))}）</div><p class="note">来源说明：右侧为原采购单据及发票，不是付款凭证。付款事实仅来自采购结算 financial_records；历史关闭不证明已付清。</p></div><div class="voucher-panel">${attachment("原采购单据", order.documentAttachment)}${attachment("发票原件", order.invoiceAttachment)}<div class="original-caption">原采购原件 / 原始票据手贴空栏（粘贴处）</div></div></div><div class="signatures"><div>报销人：________</div><div>部门审批：________</div><div>会计主管：________</div><div>复核：________</div></div></section><script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`
+    `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>采购费用票据报销详单</title><style>*{box-sizing:border-box}body{margin:0;color:#273337;font-family:"Microsoft YaHei",sans-serif}.receipt-page{width:210mm;height:148.5mm;padding:6mm 7mm;background:#fff}.receipt-title{text-align:center;margin:0 0 5mm;font-size:20px;letter-spacing:3px;text-decoration:underline}.receipt-main{display:grid;grid-template-columns:minmax(0,1fr) 84mm;gap:7mm}.expense-table{width:100%;border-collapse:collapse;font-size:10px}.expense-table td{border-bottom:1px dashed #aebabc;padding:3mm 2mm;word-break:break-word}.total-line{border-bottom:1px solid #273337;padding:4mm 0;font-size:12px;font-weight:700}.note{font-size:10px;color:#596a6e}.voucher-panel{display:grid;grid-template-columns:1fr 1fr;gap:4mm}.original-caption{grid-column:1 / -1;min-height:10mm;border:1px dashed #8d9b9e;padding:2mm;text-align:center;font-size:10px}.voucher-box{height:62mm;border:1px dashed #8d9b9e;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;text-align:center;overflow:hidden}.voucher-box img{max-width:90%;height:85%;object-fit:contain}.signatures{display:grid;grid-template-columns:repeat(4,1fr);margin-top:7mm;border-top:1px solid #273337;padding-top:5mm;font-size:10px}@media print{@page{size:A4 portrait;margin:0}.receipt-page{break-inside:avoid}}</style></head><body><section class="receipt-page"><h1 class="receipt-title">采购费用票据报销详单</h1><div class="receipt-main"><div><p class="note">单据编号：${e(order.orderNo)} · 日期：${e(toChinaDateInput(order.orderedAt))}</p><table class="expense-table"><tr><td>采购者：${e(order.purchaserName)}</td><td>业务状态：${e(purchasingStatusLabel(order.status))}</td></tr><tr><td colspan="2">物资：${e(order.itemDescription)}</td></tr><tr><td>数量：${e(order.quantity == null ? null : formatQuantity(order.quantity))}</td><td>单价：${e(order.unitPrice == null ? null : formatAmount(order.unitPrice))}</td></tr><tr><td>提交上传管理员：${e(order.documentUploadedByName || order.createdByName || "未登记")}</td><td>现场管理员：${e(order.projectAdministratorName || "未登记")}</td></tr><tr><td colspan="2">备注：${e(order.remarks || order.ocrSummary || "未填写")}</td></tr><tr><td>实际付款：¥${e(formatAmount(order.paidAmount ?? 0))}</td><td>未付余额：¥${e(formatAmount(order.remainingAmount ?? order.amount))}</td></tr></table><div class="total-line">订单金额：${e(amountToChineseUppercase(order.amount))}（¥${e(formatAmount(order.amount))}）</div><p class="note">来源说明：右侧为原采购单据及发票，不是付款凭证。付款事实仅来自采购结算 financial_records；历史关闭不证明已付清。</p></div><div class="voucher-panel">${attachment("原采购单据", order.documentAttachment)}${attachment("发票原件", order.invoiceAttachment)}<div class="original-caption">原采购原件 / 原始票据手贴空栏（粘贴处）</div></div></div><div class="signatures"><div>报销人：________</div><div>部门审批：________</div><div>会计主管：________</div><div>复核：________</div></div></section><script>window.onload=function(){setTimeout(function(){window.focus();window.print()},180)}</script></body></html>`
   );
   popup.document.close();
 }

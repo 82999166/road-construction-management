@@ -503,7 +503,7 @@ export const subcontractRouter = router({
         ) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: `本次分包工程量超过关联收方可分配余额（剩余 ${Math.max(0, Number(row.quantity) - allocatedQuantity).toFixed(3)}）`,
+            message: `本次分包工程量超过关联收方可分配余额（剩余 ${Math.max(0, Number(row.quantity) - allocatedQuantity).toFixed(2)}）`,
           });
         }
       }

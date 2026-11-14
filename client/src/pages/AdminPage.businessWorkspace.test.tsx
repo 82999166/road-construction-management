@@ -537,7 +537,7 @@ describe("统一后台业务工作区范围保护", () => {
     expectSourceToContain(VEHICLE_REPORT_SOURCE, "downloadCurrentFilteredCsv");
     expectSourceToContain(
       VEHICLE_REPORT_SOURCE,
-      'report.rows.map(row=>row.map(cell=>cell??""))'
+      'displayRows.map(row=>row.map(cell=>cell??""))'
     );
     expectSourceToContain(
       VEHICLE_REPORT_SOURCE,

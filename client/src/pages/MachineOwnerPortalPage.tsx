@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { formatChinaDateTime } from "@/lib/businessTime";
 import { trpc } from "@/lib/trpc";
+import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import {
   Banknote,
@@ -30,8 +31,11 @@ import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
 function money(value: unknown) {
-  const amount = Number(value ?? 0);
-  return `¥${Number.isFinite(amount) ? amount.toFixed(2) : "0.00"}`;
+  return `¥${formatAmount(value as Parameters<typeof formatAmount>[0])}`;
+}
+
+function quantity(value: unknown) {
+  return formatQuantity(value as Parameters<typeof formatQuantity>[0]);
 }
 
 function costTypeLabel(value: string) {
@@ -405,7 +409,7 @@ export default function MachineOwnerPortalPage() {
                         </div>
                       </div>
                       <p className="mt-2 text-xs text-[#71877c]">
-                        数量 {record.quantity} × 单价 {money(record.unitPrice)}
+                        数量 {quantity(record.quantity)} × 单价 {money(record.unitPrice)}
                         {record.remarks ? ` · ${record.remarks}` : ""}
                       </p>
                     </div>

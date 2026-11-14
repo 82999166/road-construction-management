@@ -52,6 +52,7 @@ import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import TaxComplianceControlPanel from "@/components/TaxComplianceControlPanel";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatAmount } from "@shared/numberFormat";
 import {
   Download,
   FileCheck2,
@@ -131,7 +132,7 @@ const sourceTypeLabel: Record<string, string> = {
 };
 
 function formatMoney(value: string | number | null | undefined) {
-  return `¥${Number(value ?? 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `¥${formatAmount(value)}`;
 }
 function downloadCsv(fileName: string, csv: string) {
   const url = URL.createObjectURL(

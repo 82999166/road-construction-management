@@ -1,3 +1,4 @@
+import { formatQuantity } from "@shared/numberFormat";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -345,7 +346,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, ex
                     <>
                       <Select value={routePresetId} onValueChange={setRoutePresetId}>
                         <SelectTrigger className="border-[#a9ccd9]"><SelectValue placeholder="选择运输线路" /></SelectTrigger>
-                        <SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {route.distanceKm} km</SelectItem>)}</SelectContent>
+                        <SelectContent>{preview.data.routes.map(route => <SelectItem key={route.id} value={String(route.id)}>{route.isDefault ? "默认 · " : ""}{route.loadSiteName} → {route.unloadSiteName} · {formatQuantity(route.distanceKm)} km</SelectItem>)}</SelectContent>
                       </Select>
                       {!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}
                     </>
