@@ -326,9 +326,15 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, ex
               {preview.data ? (
                 <div className="mt-3 space-y-2">
                   <div className="rounded-xl bg-[#edf7fb] p-3">
-                    <div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-4 w-4" /><p className="font-semibold">{preview.data.vehicle.plateNo}</p></div>
+                    <div className="flex items-center gap-2 text-[#194d64]"><Truck className="h-6 w-6 shrink-0" /><p className="text-2xl font-black tracking-wide">{preview.data.vehicle.plateNo}</p></div>
                     <p className="mt-1 text-xs text-[#527487]">司机：{preview.data.vehicle.driverName || "未录入"}{preview.data.vehicle.driverPhoneMasked ? ` · ${preview.data.vehicle.driverPhoneMasked}` : ""}</p>
                   </div>
+                  {!preview.data.activeTrip && preview.data.vehicle.dispatchBlockReason ? (
+                    <div role="alert" className="rounded-xl border-2 border-[#c99568] bg-[#fff6ed] p-3 text-sm leading-6 text-[#824b2a]">
+                      <p className="font-bold">本次操作未完成</p>
+                      <p className="mt-1 font-semibold">{preview.data.vehicle.dispatchBlockReason}</p>
+                    </div>
+                  ) : null}
                   {preview.data.activeTrip && unloadOnlyAutoClose ? (
                     <div aria-live="polite" className="rounded-xl border-2 border-[#4f875a] bg-[#eef9ee] p-3 text-sm text-[#1f5f30]">
                       <p className="font-bold">已按路线设置进入卸土刷卡流程</p>
@@ -351,7 +357,7 @@ export function MobileNfcTransportInvoice({ open, onOpenChange, initialToken, ex
                       {!preview.data.routes.length ? <p className="text-xs text-[#9c4d27]">该项目尚未配置可用运输线路，不能开具发票。</p> : null}
                     </>
                   )}
-                  {!unloadOnlyAutoClose ? <Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (!routePresetId || !preview.data.routes.length))} onClick={submit}>
+                  {!unloadOnlyAutoClose ? <Button className="w-full bg-[#286f8f] text-base font-bold hover:bg-[#1d5972]" disabled={issue.isPending || (!preview.data.activeTrip && (Boolean(preview.data.vehicle.dispatchBlockReason) || !routePresetId || !preview.data.routes.length))} onClick={submit}>
                     <CircleCheck className="mr-1 h-4 w-4" />{issue.isPending ? "正在保存并开票…" : preview.data.activeTrip ? "确认卸土闭环" : "保存并开具发票"}
                   </Button> : null}
                 </div>

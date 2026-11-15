@@ -75,6 +75,15 @@ describe("手机刷 NFC 卡发票", () => {
     expect(automatic).toContain("preview.data.activeTrip.id !== expectedUnloadTripId");
     expect(source).toContain('expectedUnloadTripId ? "刷卡卸土"');
   });
+
+  it("车辆不可新出车时预览即显示原因并禁用按钮，同时放大车牌", () => {
+    const source = readFileSync(new URL("./MobileNfcTransportInvoice.tsx", import.meta.url), "utf8");
+    expect(source).toContain("text-2xl font-black tracking-wide");
+    expect(source).toContain("preview.data.vehicle.dispatchBlockReason");
+    expect(source).toContain("!preview.data.activeTrip &&");
+    expect(source).toContain("Boolean(preview.data.vehicle.dispatchBlockReason)");
+    expect(source).toContain("本次操作未完成");
+  });
 });
 
 describe("卸土定位开关统一", () => {

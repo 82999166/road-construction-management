@@ -10,6 +10,9 @@ describe("移动 NFC 自动开票服务端", () => {
     expect(source).toContain("confirmMobileNfcInvoice:");
     expect(source).toContain("mobile_nfc_invoice_created");
     expect(source).toContain("transport_mobile_nfc_invoice_departed");
+    expect(source).toContain("getVehicleDispatchBlockReason");
+    expect(source).toContain("canStartTrip: !dispatchBlockReason");
+    expect(source).toContain("dispatchBlockReason");
   });
 
   it("运单号以日期、时间、秒为主体，同秒才追加序号", () => {

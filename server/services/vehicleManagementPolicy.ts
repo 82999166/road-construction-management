@@ -268,6 +268,18 @@ export async function assertVehicleDispatchable(
     .from(s.vehicleFleetProfiles)
     .where(eq(s.vehicleFleetProfiles.vehicleId, vehicleId))
     .limit(1);
+  const reason = getVehicleDispatchBlockReason(profile, projectId);
+  if (reason) fail(reason, "CONFLICT");
+}
+
+/**
+ * 与出车写入校验共用的只读规则。开票预览可展示原因并禁用按钮，
+ * 但最终确认仍必须再次调用 assertVehicleDispatchable，不能信任前端状态。
+ */
+export function getVehicleDispatchBlockReason(
+  profile: typeof s.vehicleFleetProfiles.$inferSelect | null | undefined,
+  projectId: number
+) {
   if (
     profile &&
     (profile.purpose === "trailer" ||
@@ -277,7 +289,8 @@ export async function assertVehicleDispatchable(
       profile.technicalStatus !== "normal" ||
       profile.dispatchStatus === "paused")
   )
-    fail("车辆维修、安全禁用、暂停调度或已退场，不能新出车", "CONFLICT");
+    return "车辆维修、安全禁用、暂停调度或已退场，不能新出车";
+  return null;
 }
 /** 枚举全部直接/间接业务引用：任一历史只允许归档。profile本身不是历史，changes/授权是。 */
 export async function vehicleDependencies(db: FleetReadDb, vehicleId: number) {

@@ -81,7 +81,10 @@ import {
   vehicleFinanceDate,
   vehicleFinanceHasProject,
 } from "../services/vehicleFinance";
-import { assertFleetDayWritable } from "../services/vehicleManagementPolicy";
+import {
+  assertFleetDayWritable,
+  getVehicleDispatchBlockReason,
+} from "../services/vehicleManagementPolicy";
 import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { assertVehicleDispatchable } from "../services/vehicleManagementPolicy";
 import { getDb } from "../db";
@@ -3131,6 +3134,15 @@ async function resolveMobileNfcInvoice(
       code: "BAD_REQUEST",
       message: "当前车辆未处于可调度状态，不能开具运输发票",
     });
+  const [fleetProfile] = await db
+    .select()
+    .from(vehicleFleetProfiles)
+    .where(eq(vehicleFleetProfiles.vehicleId, vehicle.id))
+    .limit(1);
+  const dispatchBlockReason = getVehicleDispatchBlockReason(
+    fleetProfile,
+    parsed.projectId
+  );
   const activeTrip = await findActiveVehicleTransportTrip(
     db,
     parsed.projectId,
@@ -3210,6 +3222,8 @@ async function resolveMobileNfcInvoice(
       plateNo: vehicle.plateNo,
       driverName: vehicle.driverName ?? null,
       driverPhoneMasked: null,
+      canStartTrip: !dispatchBlockReason,
+      dispatchBlockReason,
     },
     routes: routeRows.map(route => ({
       id: route.id,
