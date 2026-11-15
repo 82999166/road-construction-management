@@ -1,6 +1,7 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import {
+  RFID_FIRST_INSTALL_PACKAGE_VERSION,
   RFID_FIRST_INSTALL_PACKAGE_URL,
   REQUIRED_RFID_BRIDGE_BUILD_ID,
   REQUIRED_RFID_BRIDGE_VERSION,
@@ -49,8 +50,10 @@ export default function RfidBridgeReadinessPanel({
       {result && result.status !== "ready" ? (
         <p className="mt-2">
           下载后先完整解压，双击 <strong>Install-Yuexin-RFID-Bridge.cmd</strong>
-          （旧包可能显示“安装写卡桥接.cmd”），允许安装程序更新并重启桥接，完成后回到这里重新检测。安装包版本为
-          v17，内部桥接版本为 v14，两个编号含义不同。
+          （旧包可能显示“安装写卡桥接.cmd”），允许安装程序更新并重启桥接，完成后回到这里重新检测。安装包版本为{" "}
+          {RFID_FIRST_INSTALL_PACKAGE_VERSION}，内部桥接版本应为{" "}
+          {REQUIRED_RFID_BRIDGE_VERSION}，两个编号含义不同。
+          如果安装后“本机返回”仍是旧版本，说明当前响应的仍是旧桥接；请提供安装结果截图核查，不要继续启动旧快捷方式，也不要绕过版本检查写卡。
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-2">

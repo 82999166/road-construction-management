@@ -2,6 +2,7 @@ export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v15";
 export const REQUIRED_RFID_BRIDGE_BUILD_ID =
   "utrust-rfid-installer-20261115-getversion-v15";
 export const REQUIRED_RFID_WRITER_VERSION = "ntag216-atomic-v2";
+export const RFID_FIRST_INSTALL_PACKAGE_VERSION = "utrust-first-install-v18";
 export const RFID_FIRST_INSTALL_PACKAGE_URL =
   "/manus-storage/utrust-bridge-first-install-v18-20261115_1b52152d.zip";
 
