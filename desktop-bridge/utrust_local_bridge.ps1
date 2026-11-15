@@ -16,8 +16,8 @@ if (Test-Path -LiteralPath $bridgeConfigPath) {
   } catch {}
 }
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-installer-v14"
-$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"
+$bridgeVersion = "utrust-bridge-installer-v15"
+$bridgeBuildId = "utrust-rfid-installer-20261115-getversion-v15"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -358,13 +358,17 @@ function Test-InitialEraseFiles {
 function Get-InitialEraseFailureCode {
   param([string]$Reason)
   if ($Reason -match "^(card_uid_|manufacturer_uid_mismatch|ntag216_uid_invalid|expected_uid_fingerprint_invalid)") { return "erase_card_uid_mismatch" }
-  if ($Reason -match "^(card_type_not_ntag216|get_version_|ntag216_dynamic_lock_profile_unknown)") { return "erase_card_type_not_supported" }
+  # GET_VERSION status/CRC/length failures identify an abnormal reader response, not a proven unsupported tag model.
+  if ($Reason -eq "get_version_crc_invalid") { return "erase_card_identification_crc_invalid" }
+  if ($Reason -match "^get_version_") { return "erase_reader_identification_failed" }
+  if ($Reason -eq "card_type_not_ntag216") { return "erase_card_type_not_supported" }
+  if ($Reason -eq "ntag216_dynamic_lock_profile_unknown") { return "erase_card_protection_profile_unknown" }
   if ($Reason -eq "ntag216_cc_capacity_not_supported") { return "erase_card_capacity_invalid" }
   if ($Reason -match "^(card_write_protected_|card_ascii_mirror_enabled)") { return "erase_card_write_protected" }
   if ($Reason -match "^(read_page_|get_uid_)") { return "erase_card_read_failed" }
   if ($Reason -match "^write_page_") { return "erase_card_write_failed" }
   if ($Reason -match "^(post_write_byte_mismatch_page_|read_only_page_changed_)") { return "erase_card_verify_failed" }
-  foreach ($code in @("erase_confirmation_required", "erase_origin_not_allowed", "erase_script_missing", "erase_writer_version_mismatch", "erase_card_uid_mismatch", "erase_card_type_not_supported", "erase_card_capacity_invalid", "erase_card_write_protected", "erase_card_read_failed", "erase_card_write_failed", "erase_card_verify_failed", "card_not_present", "reader_script_missing")) {
+  foreach ($code in @("erase_confirmation_required", "erase_origin_not_allowed", "erase_script_missing", "erase_writer_version_mismatch", "erase_card_uid_mismatch", "erase_card_identification_crc_invalid", "erase_reader_identification_failed", "erase_card_type_not_supported", "erase_card_protection_profile_unknown", "erase_card_capacity_invalid", "erase_card_write_protected", "erase_card_read_failed", "erase_card_write_failed", "erase_card_verify_failed", "card_not_present", "reader_script_missing")) {
     if ($Reason -eq $code) { return $code }
   }
   return "erase_initial_card_failed"
@@ -396,12 +400,12 @@ function Invoke-InitialCardErase {
     $env:RC_RFID_EXPECTED_UID_FINGERPRINT = $oldExpectedUid
   }
   foreach ($flag in @("success", "erased", "verified", "initialNdef", "writeProtectionChanged")) { if (-not ($eraseResult.$flag -is [bool])) { throw "erase_initial_card_failed" } }
-  if ([string]$eraseResult.writerVersion -ne "ntag216-initial-erase-v1") { throw "erase_writer_version_mismatch" }
+  if ([string]$eraseResult.writerVersion -ne "ntag216-initial-erase-v2") { throw "erase_writer_version_mismatch" }
   if ($eraseResult.success -ne $true -or $eraseResult.erased -ne $true -or $eraseResult.verified -ne $true -or $eraseResult.initialNdef -ne $true -or $eraseResult.writeProtectionChanged -ne $false) {
     throw (Get-InitialEraseFailureCode ([string]$eraseResult.result))
   }
   if ([string]$eraseResult.cardUidFingerprint -ne $fingerprint) { throw "erase_card_uid_mismatch" }
-  return @{ success = $true; message = "initial_card_restored"; cardUidFingerprint = $fingerprint; initialNdef = $true; erased = $true; verified = $true; writeProtectionChanged = $false; writerVersion = "ntag216-initial-erase-v1" }
+  return @{ success = $true; message = "initial_card_restored"; cardUidFingerprint = $fingerprint; initialNdef = $true; erased = $true; verified = $true; writeProtectionChanged = $false; writerVersion = "ntag216-initial-erase-v2" }
 }
 
 $listener = New-Object System.Net.HttpListener
@@ -415,7 +419,7 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
-      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/ready") { Write-BridgeJson $context @{ success = $true; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion; initialEraseReady = (Test-InitialEraseFiles); initialEraseVersion = "ntag216-initial-erase-v1" } 200; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/ready") { Write-BridgeJson $context @{ success = $true; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion; initialEraseReady = (Test-InitialEraseFiles); initialEraseVersion = "ntag216-initial-erase-v2" } 200; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion }; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/api/last-write-failure") {
         if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion }; continue }

@@ -13,6 +13,12 @@ const expectedFingerprint = createHash("sha256").update("road-rfid-card:v1:04A1B
 // A Mono-equipped CI executes the actual C# logic, including raw APDU status
 // checks. No PC/SC DLL, external reader, real card, or network is used by fake.
 const hasMono = spawnSync("mcs", ["--version"]).status === 0 && spawnSync("mono", ["--version"]).status === 0;
+const retainCrcCommand = "FFEF00000160";
+const observedRawVersion = "0004040201001303B1AD";
+const versionByteMutations = [
+  "01040402010013030E2C", "00050402010013036432", "00040502010013039AA9", "0004040301001303F5A6",
+  "00040402000013030AB1", "00040402010113036DF7", "000404020100120369B4", "000404020100130238BC",
+];
 
 type EraseResult = {
   success: boolean; erased: boolean; verified: boolean; initialNdef: boolean;
@@ -23,6 +29,7 @@ type EraseResult = {
 type HarnessResult = {
   harness: true; exitCode: number; calls: number; uidReads: number; versionReads: number;
   writes: number[]; writeData: string[]; reads: number[]; readCounts: number[];
+  versionCommands: string[]; versionResponses: string[];
   protectedPagesPreserved: boolean; memory: string;
 };
 
@@ -61,8 +68,11 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     expect(lines).toHaveLength(2);
     const result = JSON.parse(lines[0]) as EraseResult;
     const harness = JSON.parse(lines[1]) as HarnessResult;
-    expect(result.writerVersion).toBe("ntag216-initial-erase-v1");
+    expect(result.writerVersion).toBe("ntag216-initial-erase-v2");
     expect(harness.harness).toBe(true);
+    // No discard-CRC mode, status fallback, retry, or extra model probe.
+    expect(harness.versionReads).toBeLessThanOrEqual(1);
+    expect(harness.versionCommands).toEqual(Array(harness.versionReads).fill(retainCrcCommand));
     // Every scenario inspects the actual write APDUs, not source-string patterns.
     expect(harness.writes.every(page => page >= 4 && page <= 225)).toBe(true);
     expect(harness.reads.every(page => page <= 228)).toBe(true);
@@ -107,7 +117,7 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     ["ntag213", "card_type_not_ntag216"],
     ["ntag215", "card_type_not_ntag216"],
     ["unknown_version", "card_type_not_ntag216"],
-    ["short_version", "card_type_not_ntag216"],
+    ["short_version", "get_version_response_length_invalid"],
     ["version_status_fail", "get_version_status_6982"],
     ["version_transport_fail", "apdu_transport_0x80100068"],
     ["short_uid", "ntag216_uid_invalid"],
@@ -117,6 +127,60 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     ["manufacturer_mismatch", "manufacturer_uid_mismatch"],
     ["bcc_mismatch", "manufacturer_uid_mismatch"],
   ])("%s 非严格卡能力/身份不允许擦除", (scenario, code) => { refused(scenario, code); });
+  it.each([
+    ["version_crc_low_bad", "get_version_crc_invalid"],
+    ["version_crc_high_bad", "get_version_crc_invalid"],
+    ["version_crc_low_bad_with_status", "get_version_crc_invalid"],
+    ["version_crc_high_bad_with_status", "get_version_crc_invalid"],
+    ["version_crc_sw_spoof", "get_version_crc_invalid"],
+    ["version_no_crc", "get_version_response_length_invalid"],
+    // Eight bytes + 9000 are ten bytes, but 9000 is NOT a valid CRC-A.
+    ["version_no_crc_with_status", "get_version_crc_invalid"],
+    ["version_crc_truncated", "get_version_response_length_invalid"],
+    ["version_crc_truncated_with_status", "get_version_response_length_invalid"],
+    ["short_version_with_status", "get_version_response_length_invalid"],
+    ["version_null", "get_version_response_length_invalid"],
+    ["version_empty", "get_version_response_length_invalid"],
+    ["version_one_byte", "get_version_response_length_invalid"],
+    ["version_wrong_status", "get_version_status_6982"],
+    ["version_unknown_status", "get_version_status_6F00"],
+    ["version_unsupported_status", "get_version_status_6A81"],
+    ["version_extra_prefix", "get_version_response_length_invalid"],
+    ["version_extra_suffix", "get_version_response_length_invalid"],
+    ["version_extra_prefix_with_status", "get_version_response_length_invalid"],
+    ["version_extra_suffix_with_status", "get_version_response_length_invalid"],
+    ["version_two_extra_prefix", "get_version_status_B1AD"],
+    ["version_two_extra_suffix", "get_version_status_AABB"],
+    ["version_two_extra_before_status", "get_version_response_length_invalid"],
+  ])("%s 型号帧错误在任何页读取/写入前闭锁，不 fallback 或剥离字节猜测", (scenario, code) => {
+    const { result, harness } = refused(scenario, code);
+    expect(result).toMatchObject({ stage: "identify_card", pagesWritten: 0, writeProtectionChanged: false });
+    expect(harness.versionReads).toBe(1);
+    expect(harness.uidReads).toBe(1);
+    expect(harness.calls).toBe(2);
+    expect(harness.reads).toEqual([]);
+    expect(harness.writeData).toEqual([]);
+    expect(harness.memory).toBe(Array.from({ length: 222 }, (_, index) => "A55AB6" + (index + 4).toString(16).padStart(2, "0").toUpperCase()).join(""));
+  });
+  it.each([
+    ["ntag213", "0004040201000F038091"],
+    ["ntag215", "0004040201001103019E"],
+    ["unknown_version", "00040402010113036DF7"],
+    ["ntag213_with_status", "0004040201000F0380919000"],
+    ["ntag215_with_status", "0004040201001103019E9000"],
+    ["unknown_version_with_status", "00040402010113036DF79000"],
+    ...versionByteMutations.flatMap((response, index) => [
+      [`version_byte_${index}`, response], [`version_byte_${index}_with_status`, response + "9000"],
+    ]),
+  ])("%s 完整 CRC 正确仍必须逐字节精确 NTAG216，CC 不能替代型号", (scenario, response) => {
+    const { result, harness } = refused(scenario, "card_type_not_ntag216");
+    expect(harness.versionResponses).toEqual([response]);
+    expect(harness.versionCommands).toEqual([retainCrcCommand]);
+    expect(harness.calls).toBe(2);
+    expect(harness.reads).toEqual([]);
+    expect(harness.writeData).toEqual([]);
+    expect(result).toMatchObject({ stage: "identify_card", pagesWritten: 0, writeProtectionChanged: false });
+  });
   it.each([
     ["cc_write_protected", "card_write_protected_cc"],
     ["cc_read_protected", "card_write_protected_cc"],
@@ -137,6 +201,16 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     ["short_page", "read_page_224_length_invalid"],
     ["uid_changed_prewrite", "card_uid_changed"],
   ])("%s 完整物理区预检失败，不写第一页", (scenario, code) => { refused(scenario, code); });
+  it("裸型号回包兼容绝不放宽 GET UID 的 9000 检查", () => {
+    const { harness } = refused("uid_without_status", "get_uid_status_E5F6");
+    expect(harness.versionReads).toBe(0);
+    expect(harness.reads).toEqual([]);
+  });
+  it("裸型号回包兼容绝不放宽通用 ReadBinary 的 9000 检查", () => {
+    const { harness } = refused("page_without_status", "read_page_224_status_B6E0");
+    expect(harness.reads).toContain(224);
+    expect(harness.writes).toEqual([]);
+  });
   it.each([
     ["first_write_fail", "write_page_4_status_6982", [4]],
     ["write_fail", "write_page_6_status_6982", [4, 5, 6]],
@@ -146,6 +220,13 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     const { result, harness } = refused(scenario, code, false);
     expect(result.writeAttempted).toBe(true);
     expect(harness.writes).toEqual(writes);
+    expect(harness.writeData).not.toContain("0300FE00");
+  });
+  it("裸型号回包兼容绝不接受无 9000 的通用 WriteBinary，写后立即中止且不回滚保护页", () => {
+    const { result, harness } = refused("write_without_status", "write_page_4_response_length_invalid", false);
+    expect(result).toMatchObject({ writeAttempted: true, pagesWritten: 0 });
+    expect(harness.writes).toEqual([4]);
+    expect(harness.writeData).toEqual(["00000000"]);
     expect(harness.writeData).not.toContain("0300FE00");
   });
   it.each([
@@ -183,11 +264,16 @@ describe.skipIf(!hasMono)("NTAG216 初卡擦除真实 C# / fake APDU 行为", ()
     expect(harness.protectedPagesPreserved).toBe(false);
     expect(harness.writes).not.toContain(226);
   });
-  it("成功必须清理和回读全部888物理字节，最终03 00 FE + 零尾，保护字节完全保持", () => {
-    const { result, harness } = run("success");
+  it.each([
+    ["success", observedRawVersion],
+    ["version_with_status", observedRawVersion + "9000"],
+  ])("%s 成功必须清理和回读全部888物理字节，最终03 00 FE + 零尾，保护字节完全保持", (scenario, response) => {
+    const { result, harness } = run(scenario);
     expect(result).toMatchObject({ success: true, erased: true, verified: true, initialNdef: true, writeProtectionChanged: false,
       cardUidFingerprint: expectedFingerprint, stage: "complete", result: "initial_card_restored", ndefCapacityBytes: 872, physicalUserBytes: 888, pagesWritten: 223 });
     expect(harness.exitCode).toBe(0);
+    expect(harness.versionCommands).toEqual([retainCrcCommand]);
+    expect(harness.versionResponses).toEqual([response]);
     const userPages = Array.from({ length: 222 }, (_, index) => index + 4);
     expect(harness.writes).toEqual([...userPages, 4]);
     expect(harness.writeData.slice(0, 222).every(data => data === "00000000")).toBe(true);

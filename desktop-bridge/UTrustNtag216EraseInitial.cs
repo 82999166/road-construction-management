@@ -7,7 +7,7 @@ using System.Text;
 // Independent of UTrustNtag216RfidWrite: no change to the formal writer's byte logic.
 public static class UTrustNtag216EraseInitial
 {
-    private const string WriterVersion = "ntag216-initial-erase-v1";
+    private const string WriterVersion = "ntag216-initial-erase-v2";
     private const string Confirmation = "ERASE_NTAG216_USER_AREA";
     private const int FirstUserPage = 4;
     private const int LastUserPage = 225;
@@ -57,6 +57,43 @@ public static class UTrustNtag216EraseInitial
         if (response[length - 2] != 0x90 || response[length - 1] != 0x00)
             throw new InvalidOperationException(operation + "_status_" + string.Format("{0:X2}{1:X2}", response[length - 2], response[length - 1]));
         return response.Take(length - 2).ToArray();
+    }
+    private static byte[] CrcA(byte[] data)
+    {
+        int crc = 0x6363;
+        foreach (byte value in data)
+        {
+            int b = value ^ (crc & 0xFF);
+            b ^= (b << 4) & 0xFF;
+            crc = ((crc >> 8) ^ (b << 8) ^ (b << 3) ^ (b >> 4)) & 0xFFFF;
+        }
+        return new byte[] { (byte)crc, (byte)(crc >> 8) };
+    }
+    private static byte[] ReadVersion(Func<byte[], byte[]> exchange)
+    {
+        // Identiv 47xx 6.2.11: P1=00 retains the PICC CRC-A. The user's
+        // 4701 F firmware returns 8 version bytes + CRC directly (10 bytes),
+        // while other firmware appends SW1/SW2 (12 bytes). Do NOT reuse this
+        // framing exception for READ BINARY, UPDATE BINARY or GET UID.
+        // https://files.identiv.com/products/smart-card-readers/contactless/4711F/utrust_47xx_F_ProductManual.pdf
+        byte[] response = exchange(new byte[] { 0xFF, 0xEF, 0x00, 0x00, 0x01, 0x60 });
+        if (response == null) throw new InvalidOperationException("get_version_response_length_invalid");
+        if (response.Length == 2)
+            throw new InvalidOperationException("get_version_status_" + string.Format("{0:X2}{1:X2}", response[0], response[1]));
+        if (response.Length == 12)
+        {
+            if (response[10] != 0x90 || response[11] != 0x00)
+                throw new InvalidOperationException("get_version_status_" + string.Format("{0:X2}{1:X2}", response[10], response[11]));
+            response = response.Take(10).ToArray();
+        }
+        if (response.Length != 10) throw new InvalidOperationException("get_version_response_length_invalid");
+        byte[] version = response.Take(8).ToArray();
+        if (!CrcA(version).SequenceEqual(response.Skip(8).ToArray()))
+            throw new InvalidOperationException("get_version_crc_invalid");
+        // A valid CRC is not a model check. Unknown/larger/smaller tags must
+        // still fail before any page read or write based on the 216 profile.
+        if (!Ntag216Version.SequenceEqual(version)) throw new InvalidOperationException("card_type_not_ntag216");
+        return version;
     }
     private static byte[] ReadUid(Func<byte[], byte[]> exchange)
     {
@@ -151,10 +188,7 @@ public static class UTrustNtag216EraseInitial
             byte[] uid = ReadUid(exchange);
             progress.Fingerprint = Fingerprint(uid);
             if (!string.Equals(progress.Fingerprint, expectedFingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("card_uid_fingerprint_mismatch");
-            // Identiv uTrust 47xx manual 6.2.11: FF EF, P1=01 discards CRC.
-            // GET_VERSION is read-only. Unsupported firmware/status/length fails closed.
-            byte[] version = Transmit(exchange, new byte[] { 0xFF, 0xEF, 0x01, 0x00, 0x01, 0x60 }, "get_version");
-            if (!Ntag216Version.SequenceEqual(version)) throw new InvalidOperationException("card_type_not_ntag216");
+            ReadVersion(exchange); // Strict model + CRC, native/with-SW framing only.
             RequireUid(exchange, uid);
             progress.Stage = "capability_container";
             RequireCapability(ReadPage(exchange, 3));

@@ -73,34 +73,40 @@ function fixture() {
   mkdirSync(join(root, "output"));
   return root;
 }
-const zipName = "utrust-bridge-first-install-v17-20261115.zip";
+const zipName = "utrust-bridge-first-install-v18-20261115.zip";
 afterAll(() => {
   for (const root of tempRoots) rmSync(root, { recursive: true, force: true });
 });
 
 describe("Windows 恢复未绑定卡依赖安装契约", () => {
-  it("首装v17、桥接/升级器v14和20261115构建一致，不升级底层writerVersion", () => {
+  it("首装v18、桥接/升级器v15和20261115构建一致，不升级底层writerVersion", () => {
     const bridge = readFileSync(
       join(sourceRoot, "utrust_local_bridge.ps1"),
       "utf8"
     );
     for (const source of [installer, upgrader, bridge]) {
       expect(source).toContain(
-        '$bridgeVersion = "utrust-bridge-installer-v14"'
+        '$bridgeVersion = "utrust-bridge-installer-v15"'
       );
       expect(source).toContain(
-        '$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"'
+        '$bridgeBuildId = "utrust-rfid-installer-20261115-getversion-v15"'
       );
     }
     expect(installer).toContain(
-      '$installerVersion = "utrust-first-install-v17"'
+      '$installerVersion = "utrust-first-install-v18"'
     );
     expect(upgrader).toContain(
-      '$installerVersion = "utrust-upgrader-installer-v14"'
+      '$installerVersion = "utrust-upgrader-installer-v15"'
     );
     expect(upgrader).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(bridge).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(packer).toContain(zipName);
+    expect(sha256(readFileSync(join(sourceRoot, "UTrustNtag216RfidWrite.cs")))).toBe(
+      "b602906ad5c982c0e2a5d6945409f77c379f16ff32996094f4b8a243ebb4bd78"
+    );
+    for (const source of [installer, upgrader, bridge])
+      expect(source).toContain('"ntag216-initial-erase-v2"');
+    expect(packer).toContain('const initialEraseVersion = "ntag216-initial-erase-v2"');
   });
 
   it("两项擦除依赖同时进入首装、升级部署与受控SHA-256清单", () => {
@@ -121,6 +127,23 @@ describe("Windows 恢复未绑定卡依赖安装契约", () => {
     );
   });
 
+  it("升级器内嵌桥接解码必须逐字节等于最终BOM原文，预检验证后原字节部署", () => {
+    const encoded = upgrader.match(/\$embeddedBridgeBase64 = "([A-Za-z0-9+/=]+)"/)?.[1];
+    expect(encoded).toBeTruthy();
+    const embeddedBytes = Buffer.from(encoded!, "base64");
+    expect([...embeddedBytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(embeddedBytes.equals(deployedBytes("utrust_local_bridge.ps1"))).toBe(true);
+    expect(sha256(embeddedBytes)).toBe(controlledHashes["utrust_local_bridge.ps1"]);
+    expect(upgrader).toContain('throw "embedded_bridge_checksum_mismatch"');
+    expect(upgrader).toContain('throw "embedded_bridge_bom_missing"');
+    const preflight = upgrader.indexOf("$verifiedBridgeBytes = Get-VerifiedEmbeddedBridgeBytes");
+    expect(preflight).toBeGreaterThan(-1);
+    expect(preflight).toBeLessThan(upgrader.indexOf('$stage = "stop_previous_bridge"'));
+    expect(upgrader).toContain("[System.IO.File]::WriteAllBytes($tempPath, $verifiedBridgeBytes)");
+    expect(upgrader).not.toContain("WriteAllText($tempPath");
+    expect(upgrader).not.toContain("rfid_confirm_receipt.dpapi");
+  });
+
   it("缺件、清单和PS1语法验证在改配置与停止旧桥接之前，失败分支不能报成功", () => {
     const packageCheck = installer.indexOf("\n  Test-InstallerPackage\n");
     const configuration = installer.indexOf(
@@ -135,6 +158,9 @@ describe("Windows 恢复未绑定卡依赖安装契约", () => {
     expect(installer).toContain(
       'throw ("installer_package_checksum_mismatch:" + $name)'
     );
+    expect(installer).toContain('throw "installer_package_build_identity_mismatch"');
+    expect(installer).toContain('[string]$manifest.initialEraseVersion -ne "ntag216-initial-erase-v2"');
+    expect(installer).toContain('[string]$ready.requiredWriterVersion -eq "ntag216-atomic-v2"');
     expect(installer).toContain(
       '$name.EndsWith(".ps1") -and -not (Test-PowerShellScriptSyntax $sourcePath)'
     );
@@ -151,7 +177,7 @@ describe("Windows 恢复未绑定卡依赖安装契约", () => {
     expect(upgrader).toContain('throw "upgrade_file_checksum_mismatch"');
     expect(installer).toContain("$ready.initialEraseReady -eq $true");
     expect(installer).toContain(
-      '[string]$ready.initialEraseVersion -eq "ntag216-initial-erase-v1"'
+      '[string]$ready.initialEraseVersion -eq "ntag216-initial-erase-v2"'
     );
     expect(upgrader).toContain(
       'Reason = "bridge_erase_dependencies_not_ready"'
@@ -192,7 +218,7 @@ describe("Windows 恢复未绑定卡依赖安装契约", () => {
     );
     expect(installer).toContain('Join-Path $targetRoot "bridge.config.json"');
     expect(installer).toContain("tokenPersisted = $false");
-    expect(upgrader).toContain("backup-installer-v14-");
+    expect(upgrader).toContain("backup-installer-v15-");
     expect(upgrader).toContain(
       "$previousFiles[$name] = Test-Path -LiteralPath $targetPath -PathType Leaf"
     );
@@ -200,12 +226,12 @@ describe("Windows 恢复未绑定卡依赖安装契约", () => {
       "if ($previousFiles[$name]) { Copy-Item -LiteralPath $backupPath"
     );
     expect(upgrader).toContain("else { Remove-Item -LiteralPath $targetPath");
-    expect(upgrader).toContain('$targetPath + ".erase-v14.tmp"');
+    expect(upgrader).toContain('$targetPath + ".getversion-v15.tmp"');
     expect(upgrader).toContain("previousVersionRestored = $rollbackHealthy");
   });
 });
 
-describe("v17首装ZIP实际打包回归", () => {
+describe("v18首装ZIP实际打包回归", () => {
   let archive: string;
   let entries: string[];
   let manifest: {
@@ -213,6 +239,7 @@ describe("v17首装ZIP实际打包回归", () => {
     bridgeVersion: string;
     bridgeBuildId: string;
     writerVersion: string;
+    initialEraseVersion: string;
     tokenPersisted: boolean;
     bridgeContentSha256: string;
     files: Record<string, string>;
@@ -254,12 +281,16 @@ describe("v17首装ZIP实际打包回归", () => {
       expect(sha256(zipBytes(name))).toBe(hash);
     for (const name of runtimeFiles)
       expect(manifest.files[name]).toBe(controlledHashes[name]);
-    expect(manifest.packageVersion).toBe("utrust-first-install-v17");
-    expect(manifest.bridgeVersion).toBe("utrust-bridge-installer-v14");
+    expect(manifest.packageVersion).toBe("utrust-first-install-v18");
+    expect(manifest.bridgeVersion).toBe("utrust-bridge-installer-v15");
     expect(manifest.bridgeBuildId).toBe(
-      "utrust-rfid-installer-20261115-erase-v14"
+      "utrust-rfid-installer-20261115-getversion-v15"
     );
     expect(manifest.writerVersion).toBe("ntag216-atomic-v2");
+    expect(manifest.initialEraseVersion).toBe("ntag216-initial-erase-v2");
+    expect(manifest.files["UTrustNtag216RfidWrite.cs"]).toBe("b602906ad5c982c0e2a5d6945409f77c379f16ff32996094f4b8a243ebb4bd78");
+    const embedded = zipBytes("upgrade_utrust_bridge.ps1").toString("utf8").match(/\$embeddedBridgeBase64 = "([A-Za-z0-9+/=]+)"/)?.[1];
+    expect(Buffer.from(embedded!, "base64").equals(zipBytes("utrust_local_bridge.ps1"))).toBe(true);
     expect(manifest.bridgeContentSha256).toBe(
       sha256(zipBytes("utrust_local_bridge.ps1"))
     );
@@ -349,5 +380,45 @@ describe("v17首装ZIP实际打包回归", () => {
       "升级器受控文件校验和不匹配：UTrustNtag216EraseInitial.cs"
     );
     expect(existsSync(join(root, "output", zipName))).toBe(false);
+  });
+
+  it.each([
+    ["embedded", "升级器内嵌桥接与最终 UTF-8 BOM 原文不一致"],
+    ["erase-version", "初卡恢复程序版本不匹配"],
+    ["writer-baseline", "正式写卡器原文 SHA-256 与基线不一致"],
+    ["installer-version", "首次安装器版本不匹配"],
+  ])("%s异常拒绝打包且保留之前的ZIP", (mode, expectedError) => {
+    const root = fixture();
+    const fixtureSource = join(root, "desktop-bridge");
+    const upgradePath = join(fixtureSource, "upgrade_utrust_bridge.ps1");
+    let upgrade = readFileSync(upgradePath, "utf8");
+    if (mode === "embedded") {
+      const encoded = upgrade.match(/\$embeddedBridgeBase64 = "([A-Za-z0-9+/=]+)"/)![1];
+      const corrupted = Buffer.from(encoded, "base64");
+      corrupted[3] ^= 1;
+      upgrade = upgrade.replace(encoded, corrupted.toString("base64"));
+    } else if (mode === "installer-version") {
+      const path = join(fixtureSource, "install-utrust-bridge.ps1");
+      writeFileSync(path, readFileSync(path, "utf8").replace("utrust-first-install-v18", "utrust-first-install-v17"));
+    } else {
+      const name = mode === "erase-version" ? "UTrustNtag216EraseInitial.cs" : "UTrustNtag216RfidWrite.cs";
+      const path = join(fixtureSource, name);
+      const text = readFileSync(path, "utf8");
+      const bytes = Buffer.from(mode === "erase-version" ? text.replace("ntag216-initial-erase-v2", "ntag216-initial-erase-v1") : text + "\n// unauthorized writer change\n");
+      writeFileSync(path, bytes);
+      // Even a refreshed source hash must not permit old erase behavior or any formal-writer change.
+      upgrade = upgrade.replace(`"${name}" = "${controlledHashes[name]}"`, `"${name}" = "${sha256(bytes)}"`);
+    }
+    writeFileSync(upgradePath, upgrade);
+    const output = join(root, "output", zipName);
+    writeFileSync(output, "previous-package-do-not-overwrite\n");
+    const result = spawnSync(process.execPath, [join(root, "scripts/package-utrust-first-install.mjs")], {
+      env: { ...process.env, UTRUST_PACKAGE_OUTPUT_DIR: join(root, "output") },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(expectedError);
+    expect(readFileSync(output, "utf8")).toBe("previous-package-do-not-overwrite\n");
   });
 });

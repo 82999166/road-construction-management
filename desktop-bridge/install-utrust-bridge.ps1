@@ -1,8 +1,8 @@
 ﻿$ErrorActionPreference = "Stop"
 $sourceRoot = $PSScriptRoot
-$bridgeVersion = "utrust-bridge-installer-v14"
-$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"
-$installerVersion = "utrust-first-install-v17"
+$bridgeVersion = "utrust-bridge-installer-v15"
+$bridgeBuildId = "utrust-rfid-installer-20261115-getversion-v15"
+$installerVersion = "utrust-first-install-v18"
 $taskName = "YuexinUTrustRfidBridge"
 $defaultServerBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
@@ -57,6 +57,8 @@ function Test-InstallerPackage {
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "installer_package_manifest_missing" }
   $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
   if ([string]$manifest.packageVersion -ne $installerVersion) { throw "installer_package_version_mismatch" }
+  if ([string]$manifest.bridgeVersion -ne $bridgeVersion -or [string]$manifest.bridgeBuildId -ne $bridgeBuildId -or [string]$manifest.writerVersion -ne "ntag216-atomic-v2" -or [string]$manifest.initialEraseVersion -ne "ntag216-initial-erase-v2" -or $manifest.tokenPersisted -ne $false) { throw "installer_package_build_identity_mismatch" }
+  if ([string]$manifest.bridgeContentSha256 -ne [string]$manifest.files.PSObject.Properties["utrust_local_bridge.ps1"].Value) { throw "installer_package_bridge_checksum_mismatch" }
   foreach ($name in $requiredFiles) {
     $entry = $manifest.files.PSObject.Properties[$name]
     if ($null -eq $entry -or [string]$entry.Value -notmatch "^[a-f0-9]{64}$") { throw ("installer_package_manifest_entry_missing:" + $name) }
@@ -83,7 +85,7 @@ function Test-BridgeReady {
     try {
       $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/ready" -TimeoutSec 2
       $ready = $response.Content | ConvertFrom-Json
-      if ($response.StatusCode -eq 200 -and [bool]$ready.success -and [string]$ready.bridgeVersion -eq $bridgeVersion -and [string]$ready.bridgeBuildId -eq $bridgeBuildId -and [string]$ready.bridgeContentSha256 -eq $ExpectedContentSha256 -and $ready.initialEraseReady -eq $true -and [string]$ready.initialEraseVersion -eq "ntag216-initial-erase-v1") { return $true }
+      if ($response.StatusCode -eq 200 -and [bool]$ready.success -and [string]$ready.bridgeVersion -eq $bridgeVersion -and [string]$ready.bridgeBuildId -eq $bridgeBuildId -and [string]$ready.bridgeContentSha256 -eq $ExpectedContentSha256 -and [string]$ready.requiredWriterVersion -eq "ntag216-atomic-v2" -and $ready.initialEraseReady -eq $true -and [string]$ready.initialEraseVersion -eq "ntag216-initial-erase-v2") { return $true }
     } catch {}
     if ($attempt -eq 4) { Write-InstallProgress "Local bridge is still starting; waiting briefly..." }
     Start-Sleep -Seconds 1

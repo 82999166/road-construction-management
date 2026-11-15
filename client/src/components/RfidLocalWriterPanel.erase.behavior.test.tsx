@@ -177,7 +177,7 @@ const validErase = () => ({
   initialNdef: true,
   writeProtectionChanged: false,
   cardUidFingerprint: fingerprint,
-  writerVersion: "ntag216-initial-erase-v1",
+  writerVersion: "ntag216-initial-erase-v2",
 });
 const response = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -304,10 +304,10 @@ afterEach(async () => {
 });
 
 describe("RfidLocalWriterPanel 初卡恢复：真实组件行为（无实体卡/数据库 I/O）", () => {
-  it("真实桥接版本常量采用擦除能力 v14，不在测试 mock 中伪造版本", () => {
-    expect(REQUIRED_RFID_BRIDGE_VERSION).toBe("utrust-bridge-installer-v14");
+  it("真实桥接版本常量采用CRC兼容擦除能力 v15，不在测试 mock 中伪造版本", () => {
+    expect(REQUIRED_RFID_BRIDGE_VERSION).toBe("utrust-bridge-installer-v15");
     expect(REQUIRED_RFID_BRIDGE_BUILD_ID).toBe(
-      "utrust-rfid-installer-20261115-erase-v14"
+      "utrust-rfid-installer-20261115-getversion-v15"
     );
   });
 

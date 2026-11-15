@@ -6,6 +6,7 @@
 dist/
 build/
 *.dist
+artifacts/utrust-first-install/
 
 # Environment variables
 .env

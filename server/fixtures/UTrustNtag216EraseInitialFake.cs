@@ -15,6 +15,8 @@ public static class UTrustNtag216EraseInitialFake
         public readonly List<int> Writes = new List<int>();
         public readonly List<string> WriteData = new List<string>();
         public readonly List<int> Reads = new List<int>();
+        public readonly List<string> VersionCommands = new List<string>();
+        public readonly List<string> VersionResponses = new List<string>();
         public int Calls;
         public int UidReads;
         public int VersionReads;
@@ -52,6 +54,62 @@ public static class UTrustNtag216EraseInitialFake
         }
         private byte[] Ok(byte[] data) { return data.Concat(new byte[] { 0x90, 0x00 }).ToArray(); }
         private byte[] StatusFail() { return new byte[] { 0x69, 0x82 }; }
+        private static string Hex(byte[] data) { return data == null ? "null" : BitConverter.ToString(data).Replace("-", ""); }
+        // ISO/IEC 14443-A CRC: reflected polynomial 0x8408, initial 0x6363,
+        // no final XOR, transmitted low byte first. Computed from the actual
+        // version, including unsupported profiles, rather than a fixed suffix.
+        private static byte[] WithCrc(byte[] data)
+        {
+            ushort crc = 0x6363;
+            foreach (byte value in data)
+            {
+                crc ^= value;
+                for (int bit = 0; bit < 8; bit++)
+                    crc = (ushort)((crc & 1) != 0 ? (crc >> 1) ^ 0x8408 : crc >> 1);
+            }
+            return data.Concat(new byte[] { (byte)(crc & 0xFF), (byte)(crc >> 8) }).ToArray();
+        }
+        private byte[] VersionResponse()
+        {
+            if (Scenario == "version_status_fail") return StatusFail();
+            if (Scenario == "version_transport_fail") throw new InvalidOperationException("apdu_transport_0x80100068");
+            if (Scenario == "version_null") return null;
+            if (Scenario == "version_empty") return new byte[0];
+            if (Scenario == "version_one_byte") return new byte[] { 0x00 };
+            byte[] version = { 0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x13, 0x03 };
+            if (Scenario == "ntag213" || Scenario == "ntag213_with_status") version[6] = 0x0F;
+            if (Scenario == "ntag215" || Scenario == "ntag215_with_status") version[6] = 0x11;
+            if (Scenario == "unknown_version" || Scenario == "unknown_version_with_status") version[5] = 0x01;
+            if (Scenario.StartsWith("version_byte_"))
+            {
+                int index = int.Parse(Scenario.Split('_')[2]);
+                version[index] ^= 1;
+            }
+            byte[] raw = WithCrc(version);
+            if (Scenario == "short_version") return WithCrc(version.Take(7).ToArray());
+            if (Scenario == "short_version_with_status") return Ok(WithCrc(version.Take(7).ToArray()));
+            if (Scenario == "version_crc_truncated") return raw.Take(9).ToArray();
+            if (Scenario == "version_crc_truncated_with_status") return Ok(raw.Take(9).ToArray());
+            if (Scenario == "version_no_crc") return version;
+            if (Scenario == "version_no_crc_with_status") return Ok(version);
+            if (Scenario == "version_crc_low_bad" || Scenario == "version_crc_low_bad_with_status") raw[8] ^= 1;
+            if (Scenario == "version_crc_high_bad" || Scenario == "version_crc_high_bad_with_status") raw[9] ^= 1;
+            if (Scenario == "version_crc_sw_spoof") { raw[8] = 0x90; raw[9] = 0x00; }
+            if (Scenario == "version_wrong_status") return raw.Concat(StatusFail()).ToArray();
+            if (Scenario == "version_unknown_status") return raw.Concat(new byte[] { 0x6F, 0x00 }).ToArray();
+            if (Scenario == "version_unsupported_status") return raw.Concat(new byte[] { 0x6A, 0x81 }).ToArray();
+            if (Scenario == "version_extra_prefix") return new byte[] { 0xAA }.Concat(raw).ToArray();
+            if (Scenario == "version_extra_suffix") return raw.Concat(new byte[] { 0xAA }).ToArray();
+            if (Scenario == "version_extra_prefix_with_status") return new byte[] { 0xAA }.Concat(Ok(raw)).ToArray();
+            if (Scenario == "version_extra_suffix_with_status") return Ok(raw).Concat(new byte[] { 0xAA }).ToArray();
+            if (Scenario == "version_two_extra_prefix") return new byte[] { 0xAA, 0xBB }.Concat(raw).ToArray();
+            if (Scenario == "version_two_extra_suffix") return raw.Concat(new byte[] { 0xAA, 0xBB }).ToArray();
+            if (Scenario == "version_two_extra_before_status") return Ok(raw.Concat(new byte[] { 0xAA, 0xBB }).ToArray());
+            if (Scenario.EndsWith("_with_status") || Scenario == "version_with_status") return Ok(raw);
+            // Identiv 4701F user-observed FFEF00 reply has no SW1/SW2:
+            // 00 04 04 02 01 00 13 03 B1 AD (CRC-A = B1 AD).
+            return raw;
+        }
         public byte[] Exchange(byte[] command)
         {
             Calls++;
@@ -60,6 +118,7 @@ public static class UTrustNtag216EraseInitialFake
                 UidReads++;
                 if (Scenario == "short_uid") return Ok(Uid.Take(4).ToArray());
                 if (Scenario == "uid_status_fail") return StatusFail();
+                if (Scenario == "uid_without_status") return (byte[])Uid.Clone();
                 bool changed = (Scenario == "uid_changed_prewrite" && ReadCounts[228] >= 2) ||
                     (Scenario == "uid_changed_after_first_write" && Writes.Count >= 1) ||
                     (Scenario == "uid_changed_mid_erase" && Writes.Count >= 50) ||
@@ -69,17 +128,17 @@ public static class UTrustNtag216EraseInitialFake
                 if (changed) value[6] ^= 1;
                 return Ok(value);
             }
-            if (command.SequenceEqual(new byte[] { 0xFF, 0xEF, 1, 0, 1, 0x60 }))
+            if (command.Length >= 2 && command[0] == 0xFF && command[1] == 0xEF)
             {
                 VersionReads++;
-                if (Scenario == "version_status_fail") return StatusFail();
-                if (Scenario == "version_transport_fail") throw new InvalidOperationException("apdu_transport_0x80100068");
-                byte[] version = { 0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x13, 0x03 };
-                if (Scenario == "ntag213") version[6] = 0x0F;
-                if (Scenario == "ntag215") version[6] = 0x11;
-                if (Scenario == "unknown_version") version[5] = 0x01;
-                if (Scenario == "short_version") return Ok(version.Take(7).ToArray());
-                return Ok(version);
+                VersionCommands.Add(Hex(command));
+                // Reject CRC-discard mode and all fallback probes. Every test
+                // checks this trace, even if production catches the exception.
+                if (!command.SequenceEqual(new byte[] { 0xFF, 0xEF, 0, 0, 1, 0x60 }))
+                    throw new InvalidOperationException("TEST_UNEXPECTED_VERSION_APDU_" + Hex(command));
+                byte[] response = VersionResponse();
+                VersionResponses.Add(Hex(response));
+                return response;
             }
             if (command.Length == 5 && command[0] == 0xFF && command[1] == 0xB0 && command[2] == 0 && command[4] == 4)
             {
@@ -88,6 +147,7 @@ public static class UTrustNtag216EraseInitialFake
                 if (Scenario == "tail_read_fail" && page == 225) return StatusFail();
                 if (Scenario == "protection_read_fail" && page == 226) return StatusFail();
                 if (Scenario == "short_page" && page == 224) return Ok(new byte[] { 0, 0, 0 });
+                if (Scenario == "page_without_status" && page == 224) return (byte[])Memory[page].Clone();
                 // Dirty after immediate readback: final complete scan must catch it.
                 if (Scenario == "final_tail_dirty" && page == 225 && Writes.Count == 223) Memory[225][3] = 0x7B;
                 if (Scenario == "zero_scan_tail_dirty" && page == 225 && ReadCounts[page] == 3) Memory[225][3] = 0x7B;
@@ -107,6 +167,7 @@ public static class UTrustNtag216EraseInitialFake
                 if (Scenario == "write_transport_fail" && page == 6) throw new InvalidOperationException("apdu_transport_0x80100069");
                 if (!(Scenario == "tail_not_zero" && page == 225)) Memory[page] = command.Skip(5).ToArray();
                 if (Scenario == "unexpected_write_response" && page == 4) return Ok(new byte[] { 0x0A });
+                if (Scenario == "write_without_status" && page == 4) return new byte[0];
                 return Ok(new byte[0]);
             }
             throw new InvalidOperationException("TEST_UNEXPECTED_APDU_" + BitConverter.ToString(command));
@@ -135,6 +196,8 @@ public static class UTrustNtag216EraseInitialFake
         Console.WriteLine("{\"harness\":true,\"exitCode\":" + exitCode + ",\"calls\":" + card.Calls + ",\"uidReads\":" + card.UidReads + ",\"versionReads\":" + card.VersionReads +
             ",\"writes\":[" + string.Join(",", card.Writes.Select(page => page.ToString()).ToArray()) + "],\"writeData\":[" + string.Join(",", card.WriteData.Select(data => "\"" + data + "\"").ToArray()) +
             "],\"reads\":[" + string.Join(",", card.Reads.Select(page => page.ToString()).ToArray()) + "],\"readCounts\":[" + string.Join(",", card.ReadCounts.Select(count => count.ToString()).ToArray()) +
+            "],\"versionCommands\":[" + string.Join(",", card.VersionCommands.Select(command => "\"" + command + "\"").ToArray()) +
+            "],\"versionResponses\":[" + string.Join(",", card.VersionResponses.Select(response => "\"" + response + "\"").ToArray()) +
             "],\"protectedPagesPreserved\":" + (preserved ? "true" : "false") + ",\"memory\":\"" + memory + "\"}");
         return 0;
     }

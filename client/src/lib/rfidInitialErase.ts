@@ -1,4 +1,4 @@
-export const INITIAL_ERASE_VERSION = "ntag216-initial-erase-v1";
+export const INITIAL_ERASE_VERSION = "ntag216-initial-erase-v2";
 
 export function isVerifiedInitialEraseResult(value: unknown): value is {
   success: true;
@@ -50,7 +50,13 @@ export function getInitialEraseErrorMessage(error: unknown): string {
     erase_card_uid_mismatch:
       "感应区实体卡与本次确认的卡片不一致，已拒绝恢复。请保持同一张卡片不动后重新核对。",
     erase_card_type_not_supported:
-      "卡片型号或读卡器识别能力未通过 NTAG216 核验，已停止恢复，请核对型号与读卡器兼容性。",
+      "当前卡片的完整型号信息不符合受支持的 NTAG216，已停止恢复。系统不会仅凭容量声明擦卡。",
+    erase_card_identification_crc_invalid:
+      "读卡器返回的卡片型号校验码（CRC）不正确，已在写入前停止。请保持卡片贴稳，检查读卡器连接；系统不会跳过校验。",
+    erase_reader_identification_failed:
+      "读卡器返回的卡片型号识别数据不完整或状态异常，已在写入前停止，不能据此认定卡片型号不符。请完整安装最新版桥接后重新检测。",
+    erase_card_protection_profile_unknown:
+      "卡片锁定或配置区不符合已核验的安全恢复规则，已停止恢复。系统不会修改锁定位、配置或口令。",
     erase_card_capacity_invalid:
       "卡片容量声明异常，已停止恢复，不能按固定地址强行擦除。",
     erase_card_write_protected:

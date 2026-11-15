@@ -1,9 +1,9 @@
-export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v14";
+export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v15";
 export const REQUIRED_RFID_BRIDGE_BUILD_ID =
-  "utrust-rfid-installer-20261115-erase-v14";
+  "utrust-rfid-installer-20261115-getversion-v15";
 export const REQUIRED_RFID_WRITER_VERSION = "ntag216-atomic-v2";
 export const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v17-20261115_514543a5.zip";
+  "/manus-storage/utrust-bridge-first-install-v18-20261115_1b52152d.zip";
 
 export type RfidBridgeReadiness = {
   status: "ready" | "upgrade_required" | "unavailable" | "writer_mismatch";
@@ -56,7 +56,7 @@ export function inspectRfidBridgeReadiness(
   if (
     requireInitialErase &&
     (value.initialEraseReady !== true ||
-      value.initialEraseVersion !== "ntag216-initial-erase-v1")
+      value.initialEraseVersion !== "ntag216-initial-erase-v2")
   )
     return {
       ...metadata,
