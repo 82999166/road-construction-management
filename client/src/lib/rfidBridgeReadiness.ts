@@ -1,9 +1,9 @@
-export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13";
+export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v14";
 export const REQUIRED_RFID_BRIDGE_BUILD_ID =
-  "utrust-rfid-installer-20261101-progress-v13";
+  "utrust-rfid-installer-20261115-erase-v14";
 export const REQUIRED_RFID_WRITER_VERSION = "ntag216-atomic-v2";
 export const RFID_FIRST_INSTALL_PACKAGE_URL =
-  "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip";
+  "/manus-storage/utrust-bridge-first-install-v17-20261115_514543a5.zip";
 
 export type RfidBridgeReadiness = {
   status: "ready" | "upgrade_required" | "unavailable" | "writer_mismatch";
@@ -19,7 +19,8 @@ const safeIdentifier = (value: unknown) =>
 
 export function inspectRfidBridgeReadiness(
   body: unknown,
-  httpOk: boolean
+  httpOk: boolean,
+  requireInitialErase = false
 ): RfidBridgeReadiness {
   const value =
     body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -52,6 +53,17 @@ export function inspectRfidBridgeReadiness(
       reason:
         "桥接已连接，但底层写卡程序版本未通过校验。请完整安装最新版，不能只替换单个脚本。",
     };
+  if (
+    requireInitialErase &&
+    (value.initialEraseReady !== true ||
+      value.initialEraseVersion !== "ntag216-initial-erase-v1")
+  )
+    return {
+      ...metadata,
+      status: "upgrade_required",
+      reason:
+        "本机恢复初卡文件不完整或版本不匹配。请完整安装最新版桥接并重启，再重新检测；仅刷新网页不能补齐恢复脚本。",
+    };
   return {
     ...metadata,
     status: "ready",
@@ -62,7 +74,8 @@ export function inspectRfidBridgeReadiness(
 
 /** 只读取本机元数据，不提交任务授权、卡号、载荷或业务请求。 */
 export async function readRfidBridgeReadiness(
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  requireInitialErase = false
 ): Promise<RfidBridgeReadiness> {
   const controller = new AbortController();
   const forwardAbort = () => controller.abort();
@@ -84,7 +97,8 @@ export async function readRfidBridgeReadiness(
       });
     return inspectRfidBridgeReadiness(
       await response.json().catch(() => null),
-      response.ok
+      response.ok,
+      requireInitialErase
     );
   } catch {
     return {

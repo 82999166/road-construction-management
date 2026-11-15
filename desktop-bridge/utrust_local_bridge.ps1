@@ -16,8 +16,8 @@ if (Test-Path -LiteralPath $bridgeConfigPath) {
   } catch {}
 }
 $confirmationReceiptPath = Join-Path $bridgeRoot "rfid_confirm_receipt.dpapi"
-$bridgeVersion = "utrust-bridge-installer-v13"
-$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"
+$bridgeVersion = "utrust-bridge-installer-v14"
+$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"
 $bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $requiredWriterVersion = "ntag216-atomic-v2"
 $formalWriteStage = "idle"
@@ -109,6 +109,7 @@ function Get-StructuredReaderResult {
 function Invoke-ReaderScript {
   param([string]$ScriptName, [switch]$AllowStructuredFailure, [switch]$RequireSuccessProperty)
   $scriptPath = Join-Path $bridgeRoot $ScriptName
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "reader_script_missing" }
   $output = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scriptPath 2>&1
   $text = ($output | Out-String).Trim()
   $structuredResult = Get-StructuredReaderResult $text -RequireSuccessProperty:$RequireSuccessProperty
@@ -347,6 +348,62 @@ function Invoke-PendingVehicleConfirmation {
   return @{ success = $true; jobNo = [string]$receipt.jobNo; status = "confirmed"; confirmationOnly = $true }
 }
 
+function Test-InitialEraseFiles {
+  foreach ($name in @("run_utrust_erase_initial.ps1", "UTrustNtag216EraseInitial.cs", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $bridgeRoot $name) -PathType Leaf)) { return $false }
+  }
+  return $true
+}
+
+function Get-InitialEraseFailureCode {
+  param([string]$Reason)
+  if ($Reason -match "^(card_uid_|manufacturer_uid_mismatch|ntag216_uid_invalid|expected_uid_fingerprint_invalid)") { return "erase_card_uid_mismatch" }
+  if ($Reason -match "^(card_type_not_ntag216|get_version_|ntag216_dynamic_lock_profile_unknown)") { return "erase_card_type_not_supported" }
+  if ($Reason -eq "ntag216_cc_capacity_not_supported") { return "erase_card_capacity_invalid" }
+  if ($Reason -match "^(card_write_protected_|card_ascii_mirror_enabled)") { return "erase_card_write_protected" }
+  if ($Reason -match "^(read_page_|get_uid_)") { return "erase_card_read_failed" }
+  if ($Reason -match "^write_page_") { return "erase_card_write_failed" }
+  if ($Reason -match "^(post_write_byte_mismatch_page_|read_only_page_changed_)") { return "erase_card_verify_failed" }
+  foreach ($code in @("erase_confirmation_required", "erase_origin_not_allowed", "erase_script_missing", "erase_writer_version_mismatch", "erase_card_uid_mismatch", "erase_card_type_not_supported", "erase_card_capacity_invalid", "erase_card_write_protected", "erase_card_read_failed", "erase_card_write_failed", "erase_card_verify_failed", "card_not_present", "reader_script_missing")) {
+    if ($Reason -eq $code) { return $code }
+  }
+  return "erase_initial_card_failed"
+}
+
+function Invoke-InitialCardErase {
+  param($Context)
+  # 浏览器来源必须匹配受控白名单；拒绝无来源或任意站点的破坏性请求。
+  $origin = [string]$Context.Request.Headers["Origin"]
+  if ([string]::IsNullOrWhiteSpace($origin) -or -not ($allowedOrigins -contains $origin)) { throw "erase_origin_not_allowed" }
+  $request = Read-BridgeBody $Context
+  if ($request.confirmErase -ne "ERASE_NTAG216_USER_AREA") { throw "erase_confirmation_required" }
+  if (-not (Test-InitialEraseFiles)) { throw "erase_script_missing" }
+  $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"
+  if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }
+  $fingerprint = Get-UidFingerprint ([string]$uidRead.uid)
+  if ($request.PSObject.Properties.Name -contains "expectedCardUidFingerprint") {
+    if ([string]$request.expectedCardUidFingerprint -notmatch "^[a-f0-9]{64}$" -or [string]$request.expectedCardUidFingerprint -ne $fingerprint) { throw "erase_card_uid_mismatch" }
+  }
+  $oldConfirm = $env:RC_RFID_ERASE_CONFIRM
+  $oldExpectedUid = $env:RC_RFID_EXPECTED_UID_FINGERPRINT
+  try {
+    $env:RC_RFID_ERASE_CONFIRM = "ERASE_NTAG216_USER_AREA"
+    $env:RC_RFID_EXPECTED_UID_FINGERPRINT = $fingerprint
+    Clear-PendingRfidConfirmation
+    $eraseResult = Invoke-ReaderScript "run_utrust_erase_initial.ps1" -AllowStructuredFailure -RequireSuccessProperty
+  } finally {
+    $env:RC_RFID_ERASE_CONFIRM = $oldConfirm
+    $env:RC_RFID_EXPECTED_UID_FINGERPRINT = $oldExpectedUid
+  }
+  foreach ($flag in @("success", "erased", "verified", "initialNdef", "writeProtectionChanged")) { if (-not ($eraseResult.$flag -is [bool])) { throw "erase_initial_card_failed" } }
+  if ([string]$eraseResult.writerVersion -ne "ntag216-initial-erase-v1") { throw "erase_writer_version_mismatch" }
+  if ($eraseResult.success -ne $true -or $eraseResult.erased -ne $true -or $eraseResult.verified -ne $true -or $eraseResult.initialNdef -ne $true -or $eraseResult.writeProtectionChanged -ne $false) {
+    throw (Get-InitialEraseFailureCode ([string]$eraseResult.result))
+  }
+  if ([string]$eraseResult.cardUidFingerprint -ne $fingerprint) { throw "erase_card_uid_mismatch" }
+  return @{ success = $true; message = "initial_card_restored"; cardUidFingerprint = $fingerprint; initialNdef = $true; erased = $true; verified = $true; writeProtectionChanged = $false; writerVersion = "ntag216-initial-erase-v1" }
+}
+
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://127.0.0.1:47601/")
 $listener.Start()
@@ -358,7 +415,7 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($context.Request.HttpMethod -eq "OPTIONS") { Write-BridgeJson $context @{ success = $true } 200; continue }
-      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/ready") { Write-BridgeJson $context @{ success = $true; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion } 200; continue }
+      if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/ready") { Write-BridgeJson $context @{ success = $true; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion; initialEraseReady = (Test-InitialEraseFiles); initialEraseVersion = "ntag216-initial-erase-v1" } 200; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/health") { $probe = Invoke-ReaderScript "utrust_probe.ps1"; $names = @($probe.Readers | ForEach-Object { $_.FriendlyName }); Write-BridgeJson $context @{ success = $true; service = $probe.SmartCardService; readers = $names; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; requiredWriterVersion = $requiredWriterVersion }; continue }
       if ($context.Request.HttpMethod -eq "GET" -and $path -eq "/api/last-write-failure") {
         if ($null -eq $script:lastFormalWriteFailure) { Write-BridgeJson $context @{ success = $true; hasFailure = $false; bridgeVersion = $bridgeVersion; bridgeBuildId = $bridgeBuildId; bridgeContentSha256 = $bridgeContentSha256; writerVersion = $requiredWriterVersion }; continue }
@@ -375,7 +432,11 @@ try {
         } catch { throw (Get-FormalWriteFailureCode ([string]$_.Exception.Message)) }
       }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/test-write") { $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "test_card_not_present" }; $writeResult = Invoke-ReaderScript "run_utrust_authorized_overwrite.ps1"; if (-not $writeResult.written -or -not $writeResult.verified) { throw "test_write_or_verify_failed" }; $recheck = Invoke-ReaderScript "run_utrust_read_ndef.ps1"; if (-not $recheck.payloadPersisted) { throw "test_ndef_recheck_failed" }; Write-BridgeJson $context @{ success = $true; message = "test_write_verified"; cardUidFingerprint = (Get-UidFingerprint $uidRead.uid) }; continue }
-      if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/erase-initial-card") { $request = Read-BridgeBody $context; if ($request.confirmErase -ne "ERASE_NTAG216_USER_AREA") { throw "erase_confirmation_required" }; $uidRead = Invoke-ReaderScript "run_utrust_read_uid.ps1"; if (-not $uidRead.cardPresent -or -not $uidRead.uid) { throw "card_not_present" }; $eraseResult = Invoke-ReaderScript "run_utrust_erase_initial.ps1"; if (-not $eraseResult.success -or -not $eraseResult.erased -or -not $eraseResult.verified) { throw "erase_initial_card_failed" }; Write-BridgeJson $context @{ success = $true; message = "initial_card_restored"; cardUidFingerprint = (Get-UidFingerprint $uidRead.uid); initialNdef = $true; writeProtectionChanged = $false }; continue }
+      if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/erase-initial-card") {
+        try { $result = Invoke-InitialCardErase $context; Write-BridgeJson $context $result }
+        catch { Write-BridgeJson $context @{ success = $false; message = (Get-InitialEraseFailureCode ([string]$_.Exception.Message)); initialNdef = $false } 422 }
+        continue
+      }
       if ($context.Request.HttpMethod -eq "POST" -and $path -eq "/api/write-vehicle-card") {
         $request = Read-BridgeBody $context; $bridgeToken = [string]$request.bridgeToken
         if ([string]::IsNullOrWhiteSpace($bridgeToken) -or $bridgeToken.Length -lt 32) { throw "bridge_token_required" }

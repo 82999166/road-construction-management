@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -49,8 +50,8 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     expect(source).toContain("[switch]$AllowStructuredFailure");
     expect(source).toContain("[switch]$RequireSuccessProperty");
     expect(source).toContain('Invoke-ReaderScript "run_utrust_rfid_write.ps1" -AllowStructuredFailure -RequireSuccessProperty');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v13"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v14"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"');
     expect(source).toContain('$bridgeContentSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()');
     expect(source).toContain('$requiredWriterVersion = "ntag216-atomic-v2"');
     expect(source).toContain('$path -eq "/ready"');
@@ -169,17 +170,17 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     for (const bytes of [upgradeBytes, bridgeBytes, wrapperBytes]) {
       expect(Array.from(bytes.subarray(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
     }
-    expect(source).toContain('$installerVersion = "utrust-upgrader-installer-v13"');
-    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v13"');
-    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"');
-    expect(source).toContain('$bridgeContentSha256 = "5577dab91bdde22ca7bd230ef44cdb150637470fb5885a2ea24a127b445d3e5e"');
+    expect(source).toContain('$installerVersion = "utrust-upgrader-installer-v14"');
+    expect(source).toContain('$bridgeVersion = "utrust-bridge-installer-v14"');
+    expect(source).toContain('$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"');
+    expect(source).toContain(`$bridgeContentSha256 = "${createHash("sha256").update(bridgeBytes).digest("hex")}"`);
     expect(source).toContain('$writerVersion = "ntag216-atomic-v2"');
     expect(source).toContain("Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256");
     expect(source).toContain("function Test-PowerShellScriptSyntax");
     expect(source).toContain("[System.Management.Automation.Language.Parser]::ParseFile");
     expect(source).toContain('$stage = "verify_upgrade_script_syntax"');
     expect(source).toContain('$stage = "verify_bridge_script_syntax"');
-    expect(source).toContain("backup-installer-v13-");
+    expect(source).toContain("backup-installer-v14-");
     expect(source).toContain("Test-UTrustBridgeReady");
     expect(source).toContain('Uri "http://127.0.0.1:47601/ready"');
     expect(source).toContain("Write-UpgradeProgress");
@@ -226,11 +227,11 @@ describe("Windows uTrust 正式写卡桥接脚本", () => {
     for (const requiredFile of ["安装写卡桥接.cmd", "elevate-utrust-installer.ps1", "install-utrust-bridge.ps1", "UTrustBridgeSupport.cs", "run_utrust_read_uid.ps1", "utrust_probe.ps1"]) {
       expect(packer).toContain(`"${requiredFile}"`);
     }
-    expect(installer).toContain('$installerVersion = "utrust-first-install-v16"');
+    expect(installer).toContain('$installerVersion = "utrust-first-install-v17"');
     expect(installer).toContain("Write-InstallProgress");
     expect(installer).toContain('Uri "http://127.0.0.1:47601/ready"');
     expect(installer).toContain("bridge_upgrade_result_missing");
-    expect(packer).toContain("utrust-first-install-v16");
+    expect(packer).toContain("utrust-first-install-v17");
     expect(packer).toContain("utf8Bom");
     expect(packer).toContain("Windows CMD 启动器只能包含 ASCII 字符");
     expect(packer).toContain('text.replace(/\\r?\\n/g, "\\r\\n")');

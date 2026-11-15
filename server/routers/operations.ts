@@ -9111,6 +9111,7 @@ export const transportRouter = router({
       return {
         success: true,
         cardId: card.id,
+        cardUidFingerprint: card.cardUidFingerprint,
         wasActive,
         cardStatus: wasActive ? ("suspended" as const) : card.status,
       };

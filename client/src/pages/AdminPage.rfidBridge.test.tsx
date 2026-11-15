@@ -24,10 +24,10 @@ describe("管理端 PC uTrust 正式写卡", () => {
     expect(source).toContain("bridge_write_authorization_rejected");
     expect(source).toContain("bridge_write_card_or_payload_mismatch");
     expect(readinessSource).toContain(
-      'export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v13"'
+      'export const REQUIRED_RFID_BRIDGE_VERSION = "utrust-bridge-installer-v14"'
     );
     expect(readinessSource).toContain(
-      'export const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20261101-progress-v13"'
+      'export const REQUIRED_RFID_BRIDGE_BUILD_ID = "utrust-rfid-installer-20261115-erase-v14"'
     );
     expect(readinessSource).toContain('fetch("http://127.0.0.1:47601/ready"');
     expect(readinessSource).toContain('fetch("http://127.0.0.1:47601/health"');
@@ -77,9 +77,7 @@ describe("管理端 PC uTrust 正式写卡", () => {
     );
     expect(source).toContain("result.wroteCard !== false");
     expect(source).toContain("只读复核并启用");
-    expect(readinessSource).toContain(
-      'export const RFID_FIRST_INSTALL_PACKAGE_URL = "/manus-storage/utrust-bridge-first-install-v16-20261101_17276df9.zip"'
-    );
+    expect(readinessSource).toMatch(/\/manus-storage\/utrust-bridge-first-install-v17-20261115_[A-Za-z0-9]+\.zip/);
     expect(source).toContain("安装写卡桥接.cmd");
     expect(source).toContain("下载一键安装包");
     expect(source).toContain(

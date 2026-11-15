@@ -1,8 +1,8 @@
 ﻿$ErrorActionPreference = "Stop"
 $sourceRoot = $PSScriptRoot
-$bridgeVersion = "utrust-bridge-installer-v13"
-$bridgeBuildId = "utrust-rfid-installer-20261101-progress-v13"
-$installerVersion = "utrust-first-install-v16"
+$bridgeVersion = "utrust-bridge-installer-v14"
+$bridgeBuildId = "utrust-rfid-installer-20261115-erase-v14"
+$installerVersion = "utrust-first-install-v17"
 $taskName = "YuexinUTrustRfidBridge"
 $defaultServerBaseUrl = "https://yx.maomaoyx.com"
 $allowedOrigins = @("https://yx.maomaoyx.com", "https://roadmanage-xjifzbue.manus.space", "http://localhost:3000")
@@ -24,6 +24,8 @@ function Test-Administrator {
 }
 
 function Get-InstallTargetRoot {
+  $configuredTargetRoot = [Environment]::GetEnvironmentVariable("YUEXIN_RFID_BRIDGE_ROOT", "User")
+  if (-not [string]::IsNullOrWhiteSpace($configuredTargetRoot)) { return $configuredTargetRoot }
   if (Test-Path -LiteralPath "D:\") { return "D:\manus" }
   return (Join-Path $env:ProgramData "YuexinRfidBridge")
 }
@@ -34,6 +36,33 @@ function Test-PowerShellScriptSyntax {
   $parseErrors = $null
   [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
   return (-not $parseErrors -or $parseErrors.Count -eq 0)
+}
+
+function Test-InstallerPackage {
+  $requiredFiles = @(
+    "Install-Yuexin-RFID-Bridge.cmd", "elevate-utrust-installer.ps1",
+    "install-utrust-bridge.ps1", "upgrade_utrust_bridge.ps1", "utrust_local_bridge.ps1",
+    "run_utrust_read_uid.ps1", "utrust_probe.ps1", "run_utrust_rfid_write.ps1",
+    "run_utrust_read_vehicle_entry.ps1", "run_utrust_vehicle_card_diagnostic.ps1",
+    "run_utrust_erase_initial.ps1", "UTrustNtag216RfidWrite.cs", "UTrustBridgeSupport.cs",
+    "UTrustReadVehicleEntry.cs", "UTrustVehicleCardDiagnostic.cs", "UTrustNtag216EraseInitial.cs"
+  )
+  # Fail before configuration, deployment, or stopping any existing bridge.
+  foreach ($name in $requiredFiles) {
+    $sourcePath = Join-Path $sourceRoot $name
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw ("installer_package_file_missing:" + $name) }
+    if ($name.EndsWith(".ps1") -and -not (Test-PowerShellScriptSyntax $sourcePath)) { throw ("installer_package_parse_invalid:" + $name) }
+  }
+  $manifestPath = Join-Path $sourceRoot "manifest.json"
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "installer_package_manifest_missing" }
+  $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+  if ([string]$manifest.packageVersion -ne $installerVersion) { throw "installer_package_version_mismatch" }
+  foreach ($name in $requiredFiles) {
+    $entry = $manifest.files.PSObject.Properties[$name]
+    if ($null -eq $entry -or [string]$entry.Value -notmatch "^[a-f0-9]{64}$") { throw ("installer_package_manifest_entry_missing:" + $name) }
+    $actualHash = (Get-FileHash -LiteralPath (Join-Path $sourceRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne [string]$entry.Value) { throw ("installer_package_checksum_mismatch:" + $name) }
+  }
 }
 
 function Register-BridgeAutostart {
@@ -54,7 +83,7 @@ function Test-BridgeReady {
     try {
       $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:47601/ready" -TimeoutSec 2
       $ready = $response.Content | ConvertFrom-Json
-      if ($response.StatusCode -eq 200 -and [bool]$ready.success -and [string]$ready.bridgeVersion -eq $bridgeVersion -and [string]$ready.bridgeBuildId -eq $bridgeBuildId -and [string]$ready.bridgeContentSha256 -eq $ExpectedContentSha256) { return $true }
+      if ($response.StatusCode -eq 200 -and [bool]$ready.success -and [string]$ready.bridgeVersion -eq $bridgeVersion -and [string]$ready.bridgeBuildId -eq $bridgeBuildId -and [string]$ready.bridgeContentSha256 -eq $ExpectedContentSha256 -and $ready.initialEraseReady -eq $true -and [string]$ready.initialEraseVersion -eq "ntag216-initial-erase-v1") { return $true }
     } catch {}
     if ($attempt -eq 4) { Write-InstallProgress "Local bridge is still starting; waiting briefly..." }
     Start-Sleep -Seconds 1
@@ -74,9 +103,7 @@ try {
 
   $stage = "verify_package_syntax"
   Write-InstallProgress "2/5 Checking the downloaded installation package..."
-  foreach ($name in @("install-utrust-bridge.ps1", "upgrade_utrust_bridge.ps1", "utrust_local_bridge.ps1", "run_utrust_read_uid.ps1", "utrust_probe.ps1", "run_utrust_rfid_write.ps1")) {
-    if (-not (Test-PowerShellScriptSyntax (Join-Path $sourceRoot $name))) { throw "installer_package_parse_invalid" }
-  }
+  Test-InstallerPackage
 
   $stage = "write_local_configuration"
   Write-InstallProgress "3/5 Creating local bridge configuration..."

@@ -22,7 +22,11 @@ import {
   type RfidBridgeReadiness,
 } from "@/lib/rfidBridgeReadiness";
 import { Radio, ShieldCheck, Usb } from "lucide-react";
-import { useState } from "react";
+import React, { useState } from "react";
+import {
+  getInitialEraseErrorMessage,
+  isVerifiedInitialEraseResult,
+} from "@/lib/rfidInitialErase";
 import { toast } from "sonner";
 
 const LOCAL_BRIDGE_URL = "http://127.0.0.1:47601";
@@ -33,6 +37,11 @@ type BridgeResult = {
   cardUidFingerprint?: string;
   message?: string;
   detail?: string;
+  initialNdef?: boolean;
+  erased?: boolean;
+  verified?: boolean;
+  writeProtectionChanged?: boolean;
+  writerVersion?: string;
 };
 
 export default function RfidLocalWriterPanel({
@@ -107,7 +116,11 @@ export default function RfidLocalWriterPanel({
     payload?: Record<string, unknown>
   ) => {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 8_000);
+    const isErase = path === "/api/erase-initial-card";
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      isErase ? 60_000 : 8_000
+    );
     try {
       const isHealthCheck = path === "/health";
       const response = await fetch(`${LOCAL_BRIDGE_URL}${path}`, {
@@ -124,13 +137,18 @@ export default function RfidLocalWriterPanel({
       const body = await response.json().catch(() => ({}));
       if (!response.ok)
         throw new Error(
-          body.message || body.detail || `本地桥接返回 HTTP ${response.status}`
+          (isErase
+            ? getInitialEraseErrorMessage(body)
+            : body.message || body.detail) ||
+            `本地桥接返回 HTTP ${response.status}`
         );
       return body as BridgeResult;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError")
         throw new Error(
-          "检测超时：本机桥接 8 秒内未响应，请确认桥接程序仍在运行。"
+          isErase
+            ? "erase_unknown_in_progress"
+            : "检测超时：本机桥接 8 秒内未响应，请确认桥接程序仍在运行。"
         );
       if (error instanceof TypeError)
         throw new Error(
@@ -228,6 +246,15 @@ export default function RfidLocalWriterPanel({
     }
   };
 
+  const assertInitialEraseReady = async () => {
+    const versionCheck = await readRfidBridgeReadiness(undefined, true);
+    setReadiness(versionCheck);
+    if (versionCheck.status !== "ready") {
+      setBridgeMessage(versionCheck.reason);
+      throw new Error(versionCheck.reason);
+    }
+  };
+
   const eraseToInitial = async () => {
     if (eraseCardId === "UNSELECTED")
       return toast.error("请先选择需要停用并恢复初卡的车辆卡");
@@ -239,7 +266,8 @@ export default function RfidLocalWriterPanel({
       return;
     setErasingInitial(true);
     try {
-      await prepareInitialErase.mutateAsync({
+      await assertInitialEraseReady();
+      const prepared = await prepareInitialErase.mutateAsync({
         projectId,
         cardId: Number(eraseCardId),
         writerDeviceId:
@@ -247,9 +275,10 @@ export default function RfidLocalWriterPanel({
       });
       const result = (await requestBridge("/api/erase-initial-card", {
         confirmErase: "ERASE_NTAG216_USER_AREA",
+        expectedCardUidFingerprint: prepared.cardUidFingerprint,
       })) as BridgeResult & { initialNdef?: boolean };
-      if (!result.success || !result.initialNdef)
-        throw new Error(result.message || "初卡恢复回读校验失败");
+      if (!isVerifiedInitialEraseResult(result))
+        throw new Error(getInitialEraseErrorMessage(result));
       if (!result.cardUidFingerprint)
         throw new Error("桥接未返回卡 UID 指纹，不能登记初卡恢复结果");
       await finalizeInitialErase.mutateAsync({
@@ -264,18 +293,17 @@ export default function RfidLocalWriterPanel({
       );
       toast.success("NFC 卡已恢复为空白初卡，未修改锁定位或写保护。");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "恢复初卡失败";
-      toast.error(
-        message === "erase_confirmation_required"
-          ? "本机桥接未收到擦除确认，请刷新页面后重新确认操作"
-          : message
-      );
+      const message = getInitialEraseErrorMessage(error);
+      setBridgeMessage(message);
+      toast.error(message);
     } finally {
       setErasingInitial(false);
     }
   };
 
   const eraseUnboundToInitial = async () => {
+    if (!hasNoBoundCards)
+      return toast.error("请先确认当前项目车辆卡台账已加载且没有绑定记录。");
     if (
       !window.confirm(
         "当前项目没有车辆卡绑定记录。确认直接擦除读卡器中这张未绑定 NTAG216 的 NDEF 用户区并恢复为空白初卡？此操作不可撤销；不会恢复或写入任何旧车辆、司机或运输业务数据，也不会修改制造商区、锁定位、配置页或写保护口令。"
@@ -284,23 +312,20 @@ export default function RfidLocalWriterPanel({
       return;
     setErasingInitial(true);
     try {
+      await assertInitialEraseReady();
       const result = (await requestBridge("/api/erase-initial-card", {
         confirmErase: "ERASE_NTAG216_USER_AREA",
       })) as BridgeResult & { initialNdef?: boolean };
-      if (!result.success || !result.initialNdef)
-        throw new Error(result.message || "未绑定实体卡初卡恢复回读校验失败");
+      if (!isVerifiedInitialEraseResult(result))
+        throw new Error(getInitialEraseErrorMessage(result));
       setBridgeMessage(
         "已直接清空当前未绑定实体卡的 NDEF 用户区并回读确认空白初卡；未恢复或写入任何历史车辆绑定。"
       );
       toast.success("未绑定实体卡已恢复为空白初卡，未修改锁定位或写保护。");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "未绑定实体卡恢复初卡失败";
-      toast.error(
-        message === "erase_confirmation_required"
-          ? "本机桥接未收到擦除确认，请刷新页面后重新确认操作"
-          : message
-      );
+      const message = getInitialEraseErrorMessage(error);
+      setBridgeMessage(message);
+      toast.error(message);
     } finally {
       setErasingInitial(false);
     }
@@ -321,8 +346,10 @@ export default function RfidLocalWriterPanel({
   };
 
   const hasNoBoundCards =
-    projectId <= 0 ||
-    (vehicleCards.isSuccess && (vehicleCards.data ?? []).length === 0);
+    projectId > 0 &&
+    vehicleCards.isSuccess &&
+    !vehicleCards.isFetching &&
+    (vehicleCards.data ?? []).length === 0;
 
   return (
     <Card className="border-cyan-200 bg-cyan-50/40">
@@ -447,7 +474,7 @@ export default function RfidLocalWriterPanel({
           <p className="mt-2 text-xs leading-5 text-amber-900">
             已绑定车辆卡会先被停用，随后桥接回读 UID 指纹并仅清空 NDEF
             用户区；UID
-            不匹配会拒绝登记最终擦除结果。绝不操作制造商区、锁定位、配置页或写保护口令。
+            不匹配会在实际擦除前拒绝操作。绝不操作制造商区、锁定位、配置页或写保护口令。
           </p>
           {hasNoBoundCards ? (
             <div className="mt-3 rounded-lg border border-amber-300 bg-white/80 p-3">

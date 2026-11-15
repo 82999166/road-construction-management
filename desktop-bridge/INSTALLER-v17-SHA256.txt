@@ -1,0 +1,23 @@
+文件：utrust-bridge-first-install-v17-20261115.zip
+SHA-256：f4bcc9efeed158ebbc44170854b46feb563eb4acc1ba69dbba4cb800e06acfe9
+本地生成位置：artifacts/utrust-first-install-v17/utrust-bridge-first-install-v17-20261115.zip
+首装版本：utrust-first-install-v17
+升级器版本：utrust-upgrader-installer-v14
+桥接版本：utrust-bridge-installer-v14
+桥接构建：utrust-rfid-installer-20261115-erase-v14
+正式写卡器版本：ntag216-atomic-v2（不变）
+初卡恢复器版本：ntag216-initial-erase-v1
+
+说明：v17 增加 run_utrust_erase_initial.ps1 与 UTrustNtag216EraseInitial.cs，覆盖首装源清单、升级部署和受控 SHA-256。首装在写配置前校验完整依赖、PS1语法、manifest与校验和；升级在停止旧桥接前校验完整依赖与PS1语法；缺失/篡改任一擦除文件时不会显示安装成功。/ready 必须报告 initialEraseReady=true 与正确 initialEraseVersion；不探测读卡器。首装与升级均保留5阶段进度。路径优先使用当前用户 YUEXIN_RFID_BRIDGE_ROOT，默认 D:\manus，无D盘则 ProgramData\YuexinRfidBridge，bridge.config.json 位于同目录。CMD 保持纯ASCII与Windows CRLF，归档中10个PowerShell脚本均为UTF-8 BOM。升级失败时恢复原文件、删除仅在失败部署时新引入的文件和临时文件；预检失败不停止旧桥接。不保存服务器令牌。
+
+以下 SHA-256 为 ZIP 中实际部署字节（PS1 包含 UTF-8 BOM）：
+utrust_local_bridge.ps1：5f53ad0ccd4637457e8155567d2033b2e8573601aacf7f7a217a71c8635fc557
+run_utrust_erase_initial.ps1：67d7867b275d73313b5c0ac91de6cd266533c0c3cba8d86afc6de5cb3ddb9e77
+UTrustNtag216EraseInitial.cs：0444be9cf6eea412d8b3d0d7be240cc8c9c98582b018ecc87eff1d8543a74f01
+install-utrust-bridge.ps1：d4ff2b332e720b3cda125ecfa2f1806bff937fa0c662a86eaeb3edd0ff2a0602
+upgrade_utrust_bridge.ps1：eacd6aaba45ebfe9b9331b81a139d7b19cb03910cc97c27fabf2675e1e330fb5
+完整16文件清单位于 ZIP 中 manifest.json。
+
+校验命令：Get-FileHash -LiteralPath .\utrust-bridge-first-install-v17-20261115.zip -Algorithm SHA256
+本地打包命令：UTRUST_PACKAGE_OUTPUT_DIR=./artifacts/utrust-first-install-v17 node scripts/package-utrust-first-install.mjs
+注意：ZIP 时间戳会随重新打包变化；任何源修改或重打包后应重新计算ZIP SHA-256并更新本文档，不可复用上述ZIP摘要。未上传、未发布。

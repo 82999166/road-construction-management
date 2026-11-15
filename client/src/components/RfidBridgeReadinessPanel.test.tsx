@@ -29,8 +29,8 @@ describe("写卡版本诊断面板", () => {
       REQUIRED_RFID_BRIDGE_VERSION,
       REQUIRED_RFID_BRIDGE_BUILD_ID,
       "Install-Yuexin-RFID-Bridge.cmd",
-      "安装包版本为 v16",
-      "内部桥接版本为 v13",
+      "安装包版本为 v17",
+      "内部桥接版本为 v14",
       "不要用",
       "break-all",
     ])

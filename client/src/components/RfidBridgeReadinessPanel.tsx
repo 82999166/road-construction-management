@@ -50,7 +50,7 @@ export default function RfidBridgeReadinessPanel({
         <p className="mt-2">
           下载后先完整解压，双击 <strong>Install-Yuexin-RFID-Bridge.cmd</strong>
           （旧包可能显示“安装写卡桥接.cmd”），允许安装程序更新并重启桥接，完成后回到这里重新检测。安装包版本为
-          v16，内部桥接版本为 v13，两个编号含义不同。
+          v17，内部桥接版本为 v14，两个编号含义不同。
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
