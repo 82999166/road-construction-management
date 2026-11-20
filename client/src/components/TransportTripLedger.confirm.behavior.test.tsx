@@ -239,6 +239,34 @@ afterEach(async () => {
 });
 
 describe("TransportTripLedger 勾选核验的真实组件行为", () => {
+  it("未选择车辆时禁用一键核验，并明确提示先选择车辆", async () => {
+    await render();
+    const batchButton = buttons("一键核验（2 单）")[0];
+    expect(batchButton?.props.disabled).toBe(true);
+    expect(text(root())).toContain("未选择车辆时不能一键核验");
+  });
+
+  it("选中车辆后需二次确认，确认后只发起一次批量核验", async () => {
+    const batchVerify = vi.fn();
+    vi.stubGlobal("window", { confirm: vi.fn(() => true), alert: vi.fn() });
+    await render({
+      onBatchVerify: batchVerify,
+      filter: {
+        periodMode: "all",
+        date: "2026-11-09",
+        month: "2026-11",
+        dateFrom: "",
+        dateTo: "",
+        vehicleId: "7",
+        status: "all",
+        routePresetId: "all",
+      },
+      vehicles: [{ id: 7, plateNo: "湘A00007" }],
+    });
+    await click("一键核验（2 单）");
+    expect(batchVerify).toHaveBeenCalledTimes(1);
+  });
+
   it("选择详情后默认未勾选且不能提交；勾选只发送 true 和 undefined 意见，取消勾选再次禁用", async () => {
     await render();
     expect(

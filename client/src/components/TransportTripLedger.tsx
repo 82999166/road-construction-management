@@ -92,6 +92,7 @@ type Props = {
     reviewRemarks?: string,
     reviewConfirmed?: boolean
   ) => void;
+  onBatchVerify?: () => void;
   active?: boolean;
   canReview?: boolean;
   canCreateSettlement?: boolean;
@@ -173,6 +174,7 @@ export default function TransportTripLedger({
   loading,
   projectName,
   onTransition,
+  onBatchVerify = () => undefined,
   transitionPending,
   onExport,
   active = true,
@@ -326,6 +328,10 @@ export default function TransportTripLedger({
       canReview &&
       !trip.settlementId &&
       ["draft", "submitted", "verified"].includes(trip.status));
+  const batchVerifyCandidates = useMemo(
+    () => trips.filter(trip => canTransition(trip, "verified")),
+    [trips, canReview]
+  );
   const tripStatusVisualRules = useMemo(
     () =>
       pagination.pageRows
@@ -592,6 +598,48 @@ export default function TransportTripLedger({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-3">
+            <div className="text-sm text-emerald-900">
+              <p className="font-semibold">按选中车辆一键核验</p>
+              <p className="mt-1 text-xs leading-5 text-emerald-800">
+                仅处理当前日期、路线和状态筛选范围内的待核验运单；每单仍会重新校验现场影像、GPS、闭环资格、权限和结算关联。
+              </p>
+              {filter.vehicleId === "all" ? (
+                <p className="mt-1 text-xs font-semibold text-amber-700">
+                  请先在上方“车辆”中选择一台车辆，未选择车辆时不能一键核验。
+                </p>
+              ) : null}
+            </div>
+            <Button
+              className="bg-emerald-700 hover:bg-emerald-800"
+              disabled={
+                !active ||
+                transitionPending ||
+                filter.vehicleId === "all" ||
+                !batchVerifyCandidates.length
+              }
+              title={
+                filter.vehicleId === "all"
+                  ? "请先选择车辆"
+                  : `当前筛选下可核验 ${batchVerifyCandidates.length} 单`
+              }
+              onClick={() => {
+                if (filter.vehicleId === "all") {
+                  window.alert("请先选择车辆，再进行一键核验");
+                  return;
+                }
+                if (!batchVerifyCandidates.length) return;
+                if (
+                  window.confirm(
+                    `确认核验车辆 ${selectedVehicleLabel} 当前筛选下的 ${batchVerifyCandidates.length} 单待核验运单？\n\n系统会逐单执行现场影像、GPS、闭环资格、权限和结算关联校验；不符合条件的运单会单独列出，不会被强制放行。`
+                  )
+                )
+                  onBatchVerify();
+              }}
+            >
+              一键核验（{batchVerifyCandidates.length} 单）
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">

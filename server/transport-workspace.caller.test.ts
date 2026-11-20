@@ -448,6 +448,34 @@ describe("运输真实路由资格与授权", () => {
   });
 });
 describe("勾选核验确认不再要求文字意见", () => {
+  it("按车辆和日期筛选逐单核验，返回成功、跳过和失败明细", async () => {
+    seedTrip(1, { status: "submitted" });
+    seedTrip(2, { status: "draft" });
+    seedTrip(3, { status: "submitted" });
+    mock.db.rows.transport_card_events.find(
+      row => row.tripId === 3 && row.eventType === "unload"
+    ).validationStatus = "needs_review";
+    const result = await caller().batchVerifyTrips({
+      projectId: 1,
+      vehicleId: 1,
+      date: "2026-11-04",
+      reviewConfirmed: true,
+    });
+    expect(result.verified.map(item => item.id)).toEqual([1]);
+    expect(result.skipped.map(item => item.id)).toEqual([2]);
+    expect(result.failed.map(item => item.id)).toEqual([3]);
+    expect(result.failed[0]?.reason).toContain("尚未完成有效卸土");
+    expect(mock.db.rows.transport_trips.find(row => row.id === 1).status).toBe(
+      "verified"
+    );
+    expect(mock.db.rows.transport_trips.find(row => row.id === 2).status).toBe(
+      "draft"
+    );
+    expect(mock.db.rows.transport_trips.find(row => row.id === 3).status).toBe(
+      "submitted"
+    );
+  });
+
   it("异常闭环勾选即可核验，留存真实操作者确认审计且不生成付款或伪造事件", async () => {
     seedTrip(1, { status: "submitted", exceptionStatus: "open" });
     const original = structuredClone(mock.db.rows.transport_trips[0]);

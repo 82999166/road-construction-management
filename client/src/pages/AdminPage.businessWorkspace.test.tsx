@@ -216,6 +216,19 @@ describe("统一后台业务工作区范围保护", () => {
     );
   });
 
+  it("运输台账的一键核验只提交当前车辆和筛选条件，并展示逐单结果", () => {
+    expectSourceToContain(
+      ADMIN_PAGE_SOURCE,
+      "batchVerifyTransportTrips"
+    );
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "batchVerifyTrips");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "onBatchVerify");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "transportLedgerFilter.vehicleId");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "reviewConfirmed");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "成功 ${result.verified.length} 单");
+    expectSourceToContain(ADMIN_PAGE_SOURCE, "失败 ${result.failed.length} 单");
+  });
+
   it("超级管理后台登记加班时移除台班字段并自动关联机械驾驶员", () => {
     const source = ADMIN_PAGE_SOURCE;
 

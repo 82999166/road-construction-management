@@ -6386,6 +6386,21 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
+  const batchVerifyTransportTrips = trpc.transport.batchVerifyTrips.useMutation({
+    onSuccess: async result => {
+      await transportTrips.refetch();
+      const summary = `一键核验完成：成功 ${result.verified.length} 单，跳过 ${result.skipped.length} 单，失败 ${result.failed.length} 单`;
+      if (result.failed.length) toast.warning(summary);
+      else if (result.skipped.length) toast.info(summary);
+      else toast.success(summary);
+      const detail = [...result.skipped, ...result.failed]
+        .slice(0, 3)
+        .map(item => `${item.tripNo}：${item.reason}`)
+        .join("；");
+      if (detail) toast.info(`未放行明细：${detail}`);
+    },
+    onError: error => toast.error(getUserFacingErrorMessage(error)),
+  });
 
   const permissionModuleLabels: Record<string, string> = {
     admin: "后台治理",
@@ -15309,7 +15324,17 @@ export default function AdminPage({
                         reviewConfirmed,
                       })
                     }
-                    transitionPending={transitionTransportTrip.isPending}
+                    onBatchVerify={() =>
+                      batchVerifyTransportTrips.mutate({
+                        ...transportWorkspaceInput,
+                        vehicleId: Number(transportLedgerFilter.vehicleId),
+                        reviewConfirmed: true,
+                      })
+                    }
+                    transitionPending={
+                      transitionTransportTrip.isPending ||
+                      batchVerifyTransportTrips.isPending
+                    }
                     onExport={(headers, rows) =>
                       downloadCsvFile(
                         `运输车辆趟次台账-${toChinaDateInput(new Date())}.csv`,

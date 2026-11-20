@@ -11207,6 +11207,140 @@ export const transportRouter = router({
       return { success: true };
     }),
 
+  /**
+   * 按当前项目、车辆和筛选条件批量核验。服务端重新查询运单，不接受前端运单 ID 清单；
+   * 每一单仍通过 transitionTrip 的完整权限、影像、GPS、闭环、结算关联和 CAS 校验。
+   */
+  batchVerifyTrips: protectedProcedure
+    .input(
+      z
+        .object({
+          projectId: z.number().int().positive(),
+          vehicleId: z.number().int().positive(),
+          date: businessDateSchema.optional(),
+          month: z
+            .string()
+            .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+            .optional(),
+          dateFrom: businessDateSchema.optional(),
+          dateTo: businessDateSchema.optional(),
+          status: z
+            .enum(["draft", "submitted", "verified", "settled", "void"])
+            .optional(),
+          routePresetId: z.number().int().positive().optional(),
+          reviewView: z.enum(["all", "pending", "exceptions"]).optional(),
+          reviewConfirmed: z.literal(true),
+        })
+        .superRefine((value, issue) => {
+          if (value.dateFrom && value.dateTo && value.dateFrom > value.dateTo)
+            issue.addIssue({
+              code: "custom",
+              path: ["dateTo"],
+              message: "结束日期不能早于开始日期",
+            });
+        })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const roleCodes = await assertTransportAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      if (!canManageSettlement(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无权批量核验运输趟次",
+        });
+      const db = await getDb();
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "数据库连接暂不可用",
+        });
+
+      const predicates = [
+        eq(transportTrips.projectId, input.projectId),
+        eq(transportTrips.vehicleId, input.vehicleId),
+      ];
+      if (input.date) {
+        const { start, end } = getChinaBusinessDateRange(input.date);
+        predicates.push(gte(transportTrips.startAt, start), lt(transportTrips.startAt, end));
+      }
+      let rows = await db
+        .select()
+        .from(transportTrips)
+        .where(and(...predicates))
+        .orderBy(transportTrips.startAt);
+      if (input.dateFrom) {
+        const { start } = getChinaBusinessDateRange(input.dateFrom);
+        rows = rows.filter(row => new Date(row.startAt) >= start);
+      }
+      if (input.dateTo) {
+        const { end } = getChinaBusinessDateRange(input.dateTo);
+        rows = rows.filter(row => new Date(row.startAt) < end);
+      }
+      if (input.month)
+        rows = rows.filter(
+          row => formatChinaBusinessDate(new Date(row.startAt)).slice(0, 7) === input.month
+        );
+      if (input.dateFrom)
+        rows = rows.filter(row => formatChinaBusinessDate(new Date(row.startAt)) >= input.dateFrom!);
+      if (input.dateTo)
+        rows = rows.filter(row => formatChinaBusinessDate(new Date(row.startAt)) <= input.dateTo!);
+      if (input.status) rows = rows.filter(row => row.status === input.status);
+      else rows = rows.filter(row => row.status !== "void");
+      if (input.reviewView === "pending")
+        rows = rows.filter(row => row.status === "submitted");
+      if (input.reviewView === "exceptions")
+        rows = rows.filter(
+          row => row.exceptionStatus === "open" || calculateTransportAnomalies(row).length > 0
+        );
+      if (input.routePresetId)
+        rows = rows.filter(row => {
+          const snapshot =
+            row.routeSnapshot && typeof row.routeSnapshot === "object"
+              ? (row.routeSnapshot as Record<string, unknown>)
+              : {};
+          return Number(snapshot.routePresetId ?? 0) === input.routePresetId;
+        });
+
+      const caller = transportRouter.createCaller(ctx);
+      const skipped: Array<{ id: number; tripNo: string; reason: string }> = [];
+      const failed: Array<{ id: number; tripNo: string; reason: string }> = [];
+      const verified: Array<{ id: number; tripNo: string }> = [];
+      for (const row of rows) {
+        if (row.status !== "submitted") {
+          skipped.push({
+            id: row.id,
+            tripNo: row.tripNo,
+            reason: `当前状态为${getBusinessStatusLabel(row.status)}，仅处理待核验运单`,
+          });
+          continue;
+        }
+        try {
+          await caller.transitionTrip({
+            id: row.id,
+            projectId: input.projectId,
+            nextStatus: "verified",
+            reviewConfirmed: input.reviewConfirmed,
+          });
+          verified.push({ id: row.id, tripNo: row.tripNo });
+        } catch (error) {
+          const reason =
+            error instanceof TRPCError
+              ? error.message
+              : error instanceof Error
+                ? error.message
+                : "服务端核验失败，请刷新后重试";
+          failed.push({ id: row.id, tripNo: row.tripNo, reason });
+        }
+      }
+      return {
+        success: failed.length === 0,
+        total: rows.length,
+        verified,
+        skipped,
+        failed,
+      };
+    }),
+
   /** 按车辆和业务日汇总真实运单，供运输日结、付款候选和服务号通知共同使用。 */
   dailyVehicleSettlementSummary: protectedProcedure
     .input(
