@@ -18,6 +18,7 @@ const harness = vi.hoisted(() => {
     refetches,
     manifest: vi.fn(),
     print: vi.fn(),
+    printEvidence: vi.fn(),
     export: vi.fn(),
     reset() {
       cursor = 0;
@@ -104,6 +105,7 @@ vi.mock("@/lib/trpc", () => ({
       construction: {
         outputManifest: { fetch: harness.manifest },
         printReports: { fetch: harness.print },
+        printEvidence: { fetch: harness.printEvidence },
         exportReports: { fetch: harness.export },
       },
     }),
@@ -127,6 +129,10 @@ vi.mock("@/lib/a4Print", async original => ({
 }));
 vi.mock("@/lib/constructionOutput", async original => ({
   ...(await original<typeof import("@/lib/constructionOutput")>()),
+  constructionPrintBody: vi.fn(
+    (await original<typeof import("@/lib/constructionOutput")>())
+      .constructionPrintBody
+  ),
   downloadConstructionCsv: vi.fn(),
 }));
 vi.mock("./FinanceWorkspaceNavigation", () => ({
@@ -154,7 +160,9 @@ import { Input } from "./ui/input";
 import { openA4PrintDocument } from "@/lib/a4Print";
 import {
   downloadConstructionCsv,
+  constructionPrintBody,
   type ConstructionWorkspaceReport,
+  type ConstructionPrintPhoto,
 } from "@/lib/constructionOutput";
 import { constructionOutputBatches } from "@shared/constructionWorkspace";
 import { toChinaDateInput } from "@/lib/businessTime";
@@ -197,6 +205,27 @@ function report(id: number): ConstructionWorkspaceReport {
     updatedAt: "2026-11-04T01:00:00Z",
   };
 }
+function photo(reportId: number) {
+  return {
+    id: reportId + 1000,
+    projectId: 10,
+    reportId,
+    fileName: `现场照片${reportId}.jpg`,
+    capturedAt: "2026-11-04T01:00:00Z",
+    description: `照片说明${reportId}`,
+    url: `https://signed.example/print-${reportId}.jpg`,
+  };
+}
+function evidence(
+  input: { projectId: number; reportIds: number[] },
+  photos: ConstructionPrintPhoto[] = []
+) {
+  return {
+    projectId: input.projectId,
+    reportIds: [...input.reportIds],
+    photos,
+  };
+}
 const manifest = (ids = Array.from({ length: 501 }, (_, i) => i + 1)) => ({
   total: ids.length,
   generatedAt: new Date(),
@@ -233,14 +262,17 @@ function tab(tree: Node, value: string) {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(r => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((r, j) => {
     resolve = r;
+    reject = j;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 beforeEach(() => {
   harness.reset();
   vi.clearAllMocks();
+  vi.mocked(openA4PrintDocument).mockReset();
   props = {
     projectId: 10,
     projectName: "项目甲",
@@ -273,6 +305,7 @@ beforeEach(() => {
   harness.print.mockImplementation(async input =>
     input.reportIds.map(report).reverse()
   );
+  harness.printEvidence.mockImplementation(async input => evidence(input));
   harness.export.mockImplementation(async input =>
     input.reportIds.map(report).reverse()
   );
@@ -618,6 +651,10 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
   it.each(["print", "export"] as const)(
     "501份%s逐批250/250/1，没有自动调用或250截断，列表分页不改变清单",
     async action => {
+      if (action === "print")
+        harness.printEvidence.mockImplementation(async input =>
+          evidence(input, input.reportIds.map(photo).reverse())
+        );
       let tree = render();
       const pagination = walk(tree).find(n => n.type === FinancePagination)!;
       pagination.props.onPageSizeChange(50);
@@ -632,6 +669,7 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       tree = render();
       expect(harness.print).not.toHaveBeenCalled();
       expect(harness.export).not.toHaveBeenCalled();
+      expect(harness.printEvidence).not.toHaveBeenCalled();
       expect(text(tree)).toContain("全筛选 501 份 / 3 批；已生成 0 批");
       for (const range of ["第 1–250 份", "第 251–500 份", "第 501–501 份"])
         expect(text(tree)).toContain(range);
@@ -667,10 +705,192 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
               .join("");
       expect(output).toContain("工区501");
       expect(output).toContain("501");
-      if (action === "print")
+      if (action === "print") {
         expect(output.indexOf("工区1</")).toBeLessThan(
           output.indexOf("工区250</")
         );
+        expect(harness.printEvidence.mock.calls).toEqual(
+          harness.print.mock.calls
+        );
+        expect(
+          harness.printEvidence.mock.invocationCallOrder[0]
+        ).toBeGreaterThan(harness.print.mock.invocationCallOrder[0]);
+        expect(vi.mocked(constructionPrintBody).mock.calls).toHaveLength(3);
+        for (let index = 0; index < 3; index++) {
+          const ids = fetch.mock.calls[index][0].reportIds as number[];
+          const [rows, , photos] = vi.mocked(constructionPrintBody).mock.calls[
+            index
+          ];
+          expect(rows.map(row => row.id)).toEqual(ids);
+          expect(photos).toHaveLength(ids.length);
+          expect(
+            photos?.map(item => item.reportId).sort((a, b) => a - b)
+          ).toEqual(ids);
+          const options = vi.mocked(openA4PrintDocument).mock.calls[index][0];
+          expect(options).toMatchObject({ marginMm: 12, waitForImages: true });
+          expect(options.isCurrent?.()).toBe(true);
+          for (const id of ids)
+            expect(options.bodyHtml).toContain(photo(id).url);
+          const outsideId = index === 0 ? 251 : 1;
+          expect(options.bodyHtml).not.toContain(photo(outsideId).url);
+        }
+      } else {
+        expect(harness.printEvidence).not.toHaveBeenCalled();
+        expect(constructionPrintBody).not.toHaveBeenCalled();
+        expect(output).not.toContain("signed.example");
+      }
+    }
+  );
+  it.each(["envelopeProject", "photoProject", "photoReport", "manifestIds"])(
+    "批次照片%s错配拒绝打印、不计完成并清空失效计划",
+    async invalid => {
+      await click(render(), "批量打印当前筛选日报");
+      harness.printEvidence.mockImplementation(async input => {
+        const envelope = evidence(input, [photo(input.reportIds[0])]);
+        if (invalid === "envelopeProject") envelope.projectId = 20;
+        if (invalid === "photoProject") envelope.photos[0].projectId = 20;
+        if (invalid === "photoReport") envelope.photos[0].reportId = 501;
+        if (invalid === "manifestIds") envelope.reportIds[249] = 501;
+        return envelope;
+      });
+      await click(render(), "打印第 1 批");
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(constructionPrintBody).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalled();
+      expect(text(render())).not.toContain("全筛选 501 份 / 3 批");
+    }
+  );
+  it.each(["project", "keyword", "tab", "active", "permission", "aba"])(
+    "批次照片fetch迟到时%s变化取消，不打印也不报告错误",
+    async change => {
+      await click(render(), "批量打印当前筛选日报");
+      let tree = render();
+      const pending = deferred<ReturnType<typeof evidence>>();
+      harness.printEvidence.mockReturnValueOnce(pending.promise);
+      button(tree, "打印第 1 批").props.onClick();
+      await settle();
+      expect(harness.printEvidence).toHaveBeenCalledTimes(1);
+      const request = harness.printEvidence.mock.calls[0][0];
+      if (change === "project" || change === "aba") props.projectId = 20;
+      if (change === "keyword")
+        fill(tree, "construction-keyword", "照片新范围");
+      if (change === "tab") tab(tree, "archive");
+      if (change === "active") props.active = false;
+      if (change === "permission") harness.data.capabilities.canPrint = false;
+      tree = render();
+      if (change === "aba") {
+        props.projectId = 10;
+        tree = render();
+      }
+      pending.resolve(evidence(request, [photo(request.reportIds[0])]));
+      await settle();
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(constructionPrintBody).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.info).toHaveBeenCalled();
+      expect(text(render())).not.toContain("全筛选 501 份 / 3 批");
+    }
+  );
+  it("strict图片等待期间批次锁防快速双击及新输出，成功后才计完成", async () => {
+    await click(render(), "批量打印当前筛选日报");
+    let tree = render();
+    const pending = deferred<void>();
+    vi.mocked(openA4PrintDocument).mockReturnValueOnce(pending.promise);
+    const batch = button(tree, "打印第 1 批");
+    const begin = button(tree, "批量打印当前筛选日报");
+    batch.props.onClick();
+    await settle();
+    tree = render();
+    expect(openA4PrintDocument).toHaveBeenCalledTimes(1);
+    expect(button(tree, "打印第 2 批").props.disabled).toBe(true);
+    expect(button(tree, "导出当前筛选 CSV").props.disabled).toBe(true);
+    expect(text(tree)).toContain("已生成 0 批");
+    expect(toast.success).not.toHaveBeenCalled();
+    batch.props.onClick();
+    begin.props.onClick();
+    expect(harness.manifest).toHaveBeenCalledTimes(2);
+    expect(harness.printEvidence).toHaveBeenCalledTimes(1);
+    const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
+    expect(options).toMatchObject({ marginMm: 12, waitForImages: true });
+    expect(options.isCurrent?.()).toBe(true);
+    pending.resolve();
+    await settle();
+    tree = render();
+    expect(text(tree)).toContain("已生成 1 批");
+    expect(button(tree, "打印第 2 批").props.disabled).toBe(false);
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+  it.each(["project", "keyword", "active", "permission", "aba"])(
+    "strict批次等待期间%s变化使isCurrent失效，CANCELLED只提示取消",
+    async change => {
+      await click(render(), "批量打印当前筛选日报");
+      let tree = render();
+      const pending = deferred<void>();
+      vi.mocked(openA4PrintDocument).mockReturnValueOnce(pending.promise);
+      button(tree, "打印第 1 批").props.onClick();
+      await settle();
+      const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
+      expect(options.isCurrent?.()).toBe(true);
+      if (change === "project" || change === "aba") props.projectId = 20;
+      if (change === "keyword")
+        fill(tree, "construction-keyword", "等待新范围");
+      if (change === "active") props.active = false;
+      if (change === "permission") harness.data.capabilities.canPrint = false;
+      render();
+      if (change === "aba") {
+        props.projectId = 10;
+        render();
+      }
+      expect(options.isCurrent?.()).toBe(false);
+      pending.reject(
+        Object.assign(new Error("旧上下文已取消"), { code: "CANCELLED" })
+      );
+      await settle();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.info).toHaveBeenCalled();
+      expect(text(render())).not.toContain("全筛选 501 份 / 3 批");
+    }
+  );
+  it.each(["load", "timeout"])(
+    "strict照片%s失败不标记完成，锁释放后可重新签名重试",
+    async failure => {
+      await click(render(), "批量打印当前筛选日报");
+      const pending = deferred<void>();
+      vi.mocked(openA4PrintDocument).mockReturnValueOnce(pending.promise);
+      button(render(), "打印第 1 批").props.onClick();
+      await settle();
+      expect(toast.success).not.toHaveBeenCalled();
+      pending.reject(
+        new Error(failure === "load" ? "照片加载失败" : "照片加载超时")
+      );
+      await settle();
+      const tree = render();
+      expect(text(tree)).toContain("已生成 0 批");
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalled();
+      await click(tree, "打印第 1 批");
+      expect(text(render())).toContain("已生成 1 批");
+      expect(harness.printEvidence).toHaveBeenCalledTimes(2);
+    }
+  );
+  it.each(["FORBIDDEN", "CONFLICT", "INTERNAL_SERVER_ERROR"])(
+    "照片签名fetch发生%s时不给无图打印或完成标记",
+    async code => {
+      await click(render(), "批量打印当前筛选日报");
+      harness.printEvidence.mockRejectedValueOnce({
+        data: { code },
+        message: "照片签名读取失败",
+      });
+      await click(render(), "打印第 1 批");
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalled();
+      expect(text(render()).includes("全筛选 501 份 / 3 批")).toBe(
+        code === "INTERNAL_SERVER_ERROR"
+      );
     }
   );
   it.each(["total", "ids"] as const)(
@@ -872,6 +1092,12 @@ describe("施工详情单份竖版受控打印", () => {
     let tree = render();
     await click(tree, "查看详情 / 照片");
     tree = render();
+    harness.data.reportEvidence = [
+      { ...photo(1), url: "https://signed.example/preview-cache.jpg" },
+    ];
+    harness.printEvidence.mockImplementation(async input =>
+      evidence(input, [photo(1)])
+    );
     harness.print.mockResolvedValue([
       {
         ...report(1),
@@ -884,11 +1110,168 @@ describe("施工详情单份竖版受控打印", () => {
       projectId: 10,
       reportIds: [1],
     });
+    expect(harness.printEvidence.mock.calls[0][0]).toEqual(
+      harness.print.mock.calls[0][0]
+    );
+    expect(harness.printEvidence.mock.invocationCallOrder[0]).toBeGreaterThan(
+      harness.print.mock.invocationCallOrder[0]
+    );
     const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
     expect(options.orientation).toBe("portrait");
+    expect(options).toMatchObject({ marginMm: 12, waitForImages: true });
+    expect(options.isCurrent?.()).toBe(true);
     expect(options.bodyHtml).toContain("最新施工计划");
     expect(options.bodyHtml).toContain("服务端最新完整正文");
+    expect(options.bodyHtml).toContain(photo(1).url);
+    expect(options.bodyHtml).toContain("照片说明1");
+    expect(options.bodyHtml).not.toContain("preview-cache.jpg");
+    expect(vi.mocked(constructionPrintBody).mock.calls[0][2]).toEqual([
+      photo(1),
+    ]);
     expect(props.onTransition).not.toHaveBeenCalled();
+  });
+  it("详情打印兼容历史照片空文件名与拍摄时间，不伪造拍摄时间", async () => {
+    await click(render(), "查看详情 / 照片");
+    const historicalPhoto = { ...photo(1), fileName: null, capturedAt: null };
+    harness.printEvidence.mockImplementation(async input =>
+      evidence(input, [historicalPhoto])
+    );
+    await click(render(), "打印本份日报");
+    const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
+    expect(options.bodyHtml).toContain(historicalPhoto.url);
+    expect(options.bodyHtml).toContain("拍摄时间：未记录");
+    expect(vi.mocked(constructionPrintBody).mock.calls[0][2]).toEqual([
+      historicalPhoto,
+    ]);
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+  it.each(["envelopeProject", "photoProject", "photoReport", "manifestIds"])(
+    "详情照片%s错配时拒绝输出，不给假成功",
+    async invalid => {
+      await click(render(), "查看详情 / 照片");
+      harness.printEvidence.mockImplementation(async input => {
+        const envelope = evidence(input, [photo(1)]);
+        if (invalid === "envelopeProject") envelope.projectId = 20;
+        if (invalid === "photoProject") envelope.photos[0].projectId = 20;
+        if (invalid === "photoReport") envelope.photos[0].reportId = 2;
+        if (invalid === "manifestIds") envelope.reportIds = [2];
+        return envelope;
+      });
+      await click(render(), "打印本份日报");
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(constructionPrintBody).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalled();
+    }
+  );
+  it.each(["project", "permission", "close", "keyword", "active", "aba"])(
+    "详情照片fetch迟到时%s变化取消，只提示info",
+    async change => {
+      await click(render(), "查看详情 / 照片");
+      let tree = render();
+      const pending = deferred<ReturnType<typeof evidence>>();
+      harness.printEvidence.mockReturnValueOnce(pending.promise);
+      button(tree, "打印本份日报").props.onClick();
+      await settle();
+      expect(harness.printEvidence).toHaveBeenCalledTimes(1);
+      const request = harness.printEvidence.mock.calls[0][0];
+      if (change === "project" || change === "aba") props.projectId = 20;
+      if (change === "permission") harness.data.capabilities.canPrint = false;
+      if (change === "close") button(tree, "关闭详情").props.onClick();
+      if (change === "keyword")
+        fill(tree, "construction-keyword", "照片新范围");
+      if (change === "active") props.active = false;
+      tree = render();
+      if (change === "aba") {
+        props.projectId = 10;
+        tree = render();
+      }
+      pending.resolve(evidence(request, [photo(1)]));
+      await settle();
+      expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(constructionPrintBody).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.info).toHaveBeenCalled();
+    }
+  );
+  it("strict单份图片等待期间保持全局输出锁，完成后才提示送交成功", async () => {
+    await click(render(), "查看详情 / 照片");
+    let tree = render();
+    const print = button(tree, "打印本份日报");
+    const begin = button(tree, "批量打印当前筛选日报");
+    const pending = deferred<void>();
+    vi.mocked(openA4PrintDocument).mockReturnValueOnce(pending.promise);
+    print.props.onClick();
+    await settle();
+    tree = render();
+    expect(button(tree, "正在生成…").props.disabled).toBe(true);
+    expect(button(tree, "批量打印当前筛选日报").props.disabled).toBe(true);
+    expect(button(tree, "导出当前筛选 CSV").props.disabled).toBe(true);
+    expect(toast.success).not.toHaveBeenCalled();
+    print.props.onClick();
+    begin.props.onClick();
+    await settle();
+    expect(harness.print).toHaveBeenCalledTimes(1);
+    expect(harness.printEvidence).toHaveBeenCalledTimes(1);
+    expect(harness.manifest).not.toHaveBeenCalled();
+    pending.resolve();
+    await settle();
+    expect(toast.success).toHaveBeenCalledTimes(1);
+    expect(button(render(), "打印本份日报").props.disabled).toBe(false);
+  });
+  it.each(["project", "permission", "close", "keyword", "active", "aba"])(
+    "strict单份图片等待期间%s变化使isCurrent失效，CANCELLED不报错",
+    async change => {
+      await click(render(), "查看详情 / 照片");
+      let tree = render();
+      const pending = deferred<void>();
+      vi.mocked(openA4PrintDocument).mockReturnValueOnce(pending.promise);
+      button(tree, "打印本份日报").props.onClick();
+      await settle();
+      const options = vi.mocked(openA4PrintDocument).mock.calls[0][0];
+      expect(options.isCurrent?.()).toBe(true);
+      if (change === "project" || change === "aba") props.projectId = 20;
+      if (change === "permission") harness.data.capabilities.canPrint = false;
+      if (change === "close") button(tree, "关闭详情").props.onClick();
+      if (change === "keyword")
+        fill(tree, "construction-keyword", "等待新范围");
+      if (change === "active") props.active = false;
+      tree = render();
+      if (change === "aba") {
+        props.projectId = 10;
+        tree = render();
+      }
+      expect(options.isCurrent?.()).toBe(false);
+      pending.reject(
+        Object.assign(new Error("旧详情已取消"), { code: "CANCELLED" })
+      );
+      await settle();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.info).toHaveBeenCalled();
+    }
+  );
+  it("单份严格加载失败不报告已送交，释放锁后可重试并重新读取照片", async () => {
+    await click(render(), "查看详情 / 照片");
+    vi.mocked(openA4PrintDocument).mockRejectedValueOnce(
+      new Error("照片加载失败")
+    );
+    await click(render(), "打印本份日报");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalled();
+    await click(render(), "打印本份日报");
+    expect(harness.printEvidence).toHaveBeenCalledTimes(2);
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+  it("单份照片签名失败不降级为无图打印", async () => {
+    await click(render(), "查看详情 / 照片");
+    harness.printEvidence.mockRejectedValueOnce(new Error("照片签名失败"));
+    await click(render(), "打印本份日报");
+    expect(openA4PrintDocument).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalled();
   });
   it("快速双击只读取一次，读取失败不给假成功且可重试", async () => {
     await click(render(), "查看详情 / 照片");
@@ -924,6 +1307,7 @@ describe("施工详情单份竖版受控打印", () => {
       pending.resolve([report(1)]);
       await settle();
       expect(openA4PrintDocument).not.toHaveBeenCalled();
+      expect(harness.printEvidence).not.toHaveBeenCalled();
       expect(toast.success).not.toHaveBeenCalled();
     }
   );

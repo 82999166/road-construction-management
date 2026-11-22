@@ -156,6 +156,78 @@ export interface ConstructionPrintMetadata {
   batchLabel?: string;
 }
 
+export interface ConstructionPrintPhoto {
+  id: number;
+  projectId: number;
+  reportId: number;
+  fileName: string | null;
+  capturedAt: Date | string | null;
+  description: string;
+  url: string;
+}
+export interface ConstructionPrintEvidence {
+  projectId: number;
+  reportIds: number[];
+  photos: ConstructionPrintPhoto[];
+}
+function assertPrintPhoto(
+  photo: ConstructionPrintPhoto,
+  reports: readonly ConstructionWorkspaceReport[]
+) {
+  const report = reports.find(report => report.id === photo.reportId);
+  let url: URL;
+  try {
+    url = new URL(photo.url);
+  } catch {
+    outputConflict();
+  }
+  if (
+    !report ||
+    report.projectId !== photo.projectId ||
+    !Number.isSafeInteger(photo.id) ||
+    photo.id < 1 ||
+    !["https:", "http:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    (photo.fileName !== null && typeof photo.fileName !== "string") ||
+    typeof photo.description !== "string" ||
+    (photo.capturedAt !== null &&
+      !Number.isFinite(new Date(photo.capturedAt).getTime()))
+  )
+    outputConflict();
+}
+/** 只接受本次服务端重新鉴权的影像清单，不从日报任意属性提取图片地址。 */
+export function constructionPrintEvidencePhotos(
+  evidence: ConstructionPrintEvidence,
+  reports: readonly ConstructionWorkspaceReport[]
+) {
+  const ids = new Set(reports.map(report => report.id));
+  if (
+    !reports.length ||
+    reports.some(report => report.projectId !== evidence?.projectId) ||
+    !Array.isArray(evidence?.reportIds) ||
+    !Array.isArray(evidence?.photos) ||
+    evidence.reportIds.length !== ids.size ||
+    new Set(evidence.reportIds).size !== ids.size ||
+    evidence.reportIds.some(id => !ids.has(id)) ||
+    new Set(evidence.photos.map(photo => photo.id)).size !==
+      evidence.photos.length
+  )
+    outputConflict();
+  evidence.photos.forEach(photo => assertPrintPhoto(photo, reports));
+  return evidence.photos.map(
+    ({ id, projectId, reportId, fileName, capturedAt, description, url }) => ({
+      id,
+      projectId,
+      reportId,
+      fileName,
+      capturedAt,
+      description,
+      url,
+    })
+  );
+}
+
 /**
  * 详情与独立打印文档共用。所有普通选择器均限定到 daily-report-sheet；
  * named page 仅由该表单启用，不改变其他模块的 @page 或打印表格。
@@ -325,8 +397,10 @@ export const CONSTRUCTION_REPORT_SHEET_CSS = `
 @media print {
   .daily-report-sheet {
     page: daily-construction-report;
-    max-width: none;
-    margin: 0;
+    width: 100%;
+    max-width: 184mm;
+    min-width: 0;
+    margin: 0 auto;
     font-size: 11pt;
     break-inside: auto;
     page-break-inside: auto;
@@ -352,6 +426,43 @@ export const CONSTRUCTION_REPORT_SHEET_CSS = `
 }
 `;
 
+/** 每份正文之后独立起影像页，每组最多两张；完整等比显示原图及水印。 */
+export const CONSTRUCTION_PRINT_PHOTO_CSS = `
+.daily-report-sheet .daily-report-evidence-page { margin-top: 12px; }
+.daily-report-sheet .daily-report-evidence-title { margin: 0 0 6mm; text-align: center; font-size: 16pt; }
+.daily-report-sheet .daily-report-evidence-heading { margin: 0 0 4mm; font-size: 10pt; white-space: pre-wrap; }
+.daily-report-sheet .daily-report-photo { margin: 0 0 5mm; padding: 2mm; border: 1px solid #000; min-width: 0; }
+.daily-report-sheet .daily-report-photo img { display: block; width: 100%; max-width: 100%; height: 95mm; object-fit: contain; object-position: center; break-inside: avoid; page-break-inside: avoid; }
+.daily-report-sheet .daily-report-photo figcaption { margin: 2mm 0 0; font-size: 9pt; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media print {
+  .daily-report-sheet .daily-report-evidence-page { break-before: page; page-break-before: always; margin-top: 0; }
+  .daily-report-sheet .daily-report-photo { break-inside: avoid; page-break-inside: avoid; }
+}
+`;
+
+function constructionPhotoPages(
+  report: ConstructionWorkspaceReport,
+  projectName: string,
+  photos: readonly ConstructionPrintPhoto[]
+) {
+  const h = escapePrintHtml;
+  const pages: string[] = [];
+  for (let offset = 0; offset < photos.length; offset += 2) {
+    pages.push(`<section class="daily-report-evidence-page" aria-label="日报 ${h(report.id)} 现场影像第 ${h(offset / 2 + 1)} 页">
+<h2 class="daily-report-evidence-title">施工日志 · 现场影像</h2>
+<p class="daily-report-evidence-heading">工程：${h(projectName)}　日期：${h(formatChinaDate(report.reportDate))}　日报编号：${h(report.id)}\n作业面：${h(report.workArea)}　记录人：${h(report.createdByName)}　关联照片：共 ${h(photos.length)} 张</p>
+${photos
+  .slice(offset, offset + 2)
+  .map(
+    (photo, index) =>
+      `<figure class="daily-report-photo" data-report-id="${h(report.id)}" data-photo-id="${h(photo.id)}"><img src="${h(photo.url)}" alt="${h(`日报 ${report.id} 现场照片 ${offset + index + 1}`)}" loading="eager" decoding="sync" referrerpolicy="no-referrer"><figcaption>照片 ${h(offset + index + 1)} / ${h(photos.length)}　拍摄时间：${h(photo.capturedAt ? formatChinaDateTime(photo.capturedAt) : "未记录")}\n${h(photo.description)}${photo.fileName ? `\n文件：${h(photo.fileName)}` : ""}</figcaption></figure>`
+  )
+  .join("\n")}
+</section>`);
+  }
+  return pages.join("\n");
+}
+
 function reportSection(label: string, value: unknown, contentClass = "") {
   const text =
     value === null || value === undefined || value === "" ? "未填写" : value;
@@ -375,7 +486,8 @@ function reportIssueSection(report: ConstructionWorkspaceReport) {
 function renderConstructionReportSheet(
   report: ConstructionWorkspaceReport,
   projectName: string,
-  outputMetadataHtml = ""
+  outputMetadataHtml = "",
+  photoPagesHtml = ""
 ) {
   const h = escapePrintHtml;
   const reviewer =
@@ -399,7 +511,7 @@ ${reportIssueSection(report)}
 <tr class="daily-report-time-row"><th scope="row">创建时间</th><td>${h(formatChinaDateTime(report.createdAt))}</td><th scope="row">更新时间</th><td>${h(formatChinaDateTime(report.updatedAt))}</td></tr>
 </tbody></table>
 <p class="daily-report-caution">审核通过或归档不等同于问题已整改。</p>
-${outputMetadataHtml}</section>`;
+${outputMetadataHtml}${photoPagesHtml}</section>`;
 }
 
 /** 安全的纯报告 HTML（不含筛选、批次等输出元数据）；搭配共享 CSS 使用。 */
@@ -413,9 +525,13 @@ export function constructionReportSheetHtml(
 /** 完整打印 body：共享样式 + 每份独立日志 + 原有筛选/数量/批次/生成时间说明。 */
 export function constructionPrintBody(
   reports: readonly ConstructionWorkspaceReport[],
-  metadata: ConstructionPrintMetadata
+  metadata: ConstructionPrintMetadata,
+  photos: readonly ConstructionPrintPhoto[] = []
 ) {
   const h = escapePrintHtml;
+  if (new Set(photos.map(photo => photo.id)).size !== photos.length)
+    outputConflict();
+  photos.forEach(photo => assertPrintPhoto(photo, reports));
   const generatedAt = formatChinaDateTime(new Date());
   const outputMetadata = (
     index?: number
@@ -429,12 +545,17 @@ export function constructionPrintBody(
           renderConstructionReportSheet(
             report,
             metadata.projectName,
-            outputMetadata(index)
+            outputMetadata(index),
+            constructionPhotoPages(
+              report,
+              metadata.projectName,
+              photos.filter(photo => photo.reportId === report.id)
+            )
           )
         )
         .join("\n")
     : `<section class="daily-report-sheet"><h1 class="daily-report-title">施工日志</h1><p class="daily-report-empty">当前筛选暂无日报</p>${outputMetadata()}</section>`;
-  return `<style>${CONSTRUCTION_REPORT_SHEET_CSS}</style>\n${sheets}`;
+  return `<style>${CONSTRUCTION_REPORT_SHEET_CSS}${CONSTRUCTION_PRINT_PHOTO_CSS}</style>\n${sheets}`;
 }
 function csvCell(value: unknown) {
   const text = String(value ?? "");

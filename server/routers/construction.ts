@@ -261,6 +261,51 @@ const constructionReportProjection = {
   updatedAt: constructionDailyReports.updatedAt,
 };
 
+/** 仅读取签名和展示所需字段，原始文件地址、OCR及定位元数据不进入输出。 */
+const constructionEvidenceProjection = {
+  id: evidenceRecords.id,
+  projectId: evidenceRecords.projectId,
+  sourceId: evidenceRecords.sourceId,
+  fileKey: evidenceRecords.fileKey,
+  fileName: evidenceRecords.fileName,
+  capturedAt: evidenceRecords.capturedAt,
+  watermarkJson: evidenceRecords.watermarkJson,
+};
+
+async function toSignedReportEvidence(
+  row: Pick<
+    typeof evidenceRecords.$inferSelect,
+    "id" | "sourceId" | "fileKey" | "fileName" | "capturedAt" | "watermarkJson"
+  >
+) {
+  let description = "施工日报现场影像";
+  try {
+    const metadata: unknown = row.watermarkJson
+      ? JSON.parse(row.watermarkJson)
+      : null;
+    if (
+      metadata &&
+      typeof metadata === "object" &&
+      "description" in metadata &&
+      typeof metadata.description === "string" &&
+      metadata.description
+    )
+      description = metadata.description;
+  } catch {
+    /* 损坏元数据不阻断受控影像读取，仅回退说明文字。 */
+  }
+  return {
+    id: row.id,
+    reportId: Number(
+      String(row.sourceId || "").replace("construction-report-", "")
+    ),
+    fileName: row.fileName,
+    capturedAt: row.capturedAt,
+    description,
+    url: await storageGetSignedUrl(row.fileKey),
+  };
+}
+
 function withSubmitterDisplayName<
   T extends {
     createdBy: number;
@@ -676,7 +721,7 @@ export const constructionRouter = router({
       if (!db) return [];
       const sourceIds = input.reportIds.map(id => `construction-report-${id}`);
       const rows = await db
-        .select()
+        .select(constructionEvidenceProjection)
         .from(evidenceRecords)
         .where(
           and(
@@ -689,29 +734,7 @@ export const constructionRouter = router({
           desc(evidenceRecords.capturedAt),
           desc(evidenceRecords.createdAt)
         );
-      return Promise.all(
-        rows.map(async row => {
-          let description = "施工日报现场影像";
-          try {
-            description = row.watermarkJson
-              ? (JSON.parse(row.watermarkJson) as { description?: string })
-                  .description || description
-              : description;
-          } catch {
-            /* 损坏元数据不阻断受控影像读取 */
-          }
-          return {
-            id: row.id,
-            reportId: Number(
-              String(row.sourceId || "").replace("construction-report-", "")
-            ),
-            fileName: row.fileName,
-            capturedAt: row.capturedAt,
-            description,
-            url: await storageGetSignedUrl(row.fileKey),
-          };
-        })
-      );
+      return Promise.all(rows.map(toSignedReportEvidence));
     }),
 
   summary: protectedProcedure
@@ -788,6 +811,48 @@ export const constructionRouter = router({
   printReports: protectedProcedure
     .input(outputInput)
     .query(({ ctx, input }) => readOutputReports(ctx, input, "print")),
+
+  /** 先复核真实打印权限和完整清单，再签名全部关联照片；读取或签名失败绝不输出残缺批次。 */
+  printEvidence: protectedProcedure
+    .input(outputInput)
+    .query(async ({ ctx, input }) => {
+      const reports = await readOutputReports(ctx, input, "print");
+      const reportIds = reports.map(report => report.id);
+      const db = await getDb();
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "数据库连接暂不可用",
+        });
+      if (!reportIds.length)
+        return { projectId: input.projectId, reportIds, photos: [] };
+      const rows = await db
+        .select(constructionEvidenceProjection)
+        .from(evidenceRecords)
+        .where(
+          and(
+            eq(evidenceRecords.projectId, input.projectId),
+            eq(evidenceRecords.sourceType, "site_photo"),
+            inArray(
+              evidenceRecords.sourceId,
+              reportIds.map(id => `construction-report-${id}`)
+            )
+          )
+        )
+        .orderBy(
+          desc(evidenceRecords.capturedAt),
+          desc(evidenceRecords.createdAt),
+          desc(evidenceRecords.id)
+        );
+      const photos = await Promise.all(
+        rows.map(async row => ({
+          ...(await toSignedReportEvidence(row)),
+          projectId: input.projectId,
+        }))
+      );
+      return { projectId: input.projectId, reportIds, photos };
+    }),
+
   exportReports: protectedProcedure
     .input(outputInput)
     .query(({ ctx, input }) => readOutputReports(ctx, input, "export")),

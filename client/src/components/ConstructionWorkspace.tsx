@@ -40,6 +40,7 @@ import {
   constructionOutputBatchRows,
   constructionCsv,
   constructionPrintBody,
+  constructionPrintEvidencePhotos,
   downloadConstructionCsv,
   CONSTRUCTION_WEATHER,
   type ConstructionWorkspaceReport,
@@ -129,7 +130,7 @@ export function ConstructionReportDetail({
       <section>
         <h3 className="font-semibold">关联现场照片</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          仅在本详情打开时申请短时签名影像，站内预览；不进入打印或导出。
+          详情打开时申请短时签名影像供站内预览；打印会重新核验并包含全部关联照片；CSV仅文字。
         </p>
         {evidence.isError ? (
           <div className="mt-2 rounded border p-3 text-sm" role="alert">
@@ -307,6 +308,7 @@ export default function ConstructionWorkspace({
   useEffect(
     () => () => {
       detailContext.current.revision += 1;
+      outputContext.current.revision += 1;
     },
     []
   );
@@ -409,6 +411,8 @@ export default function ConstructionWorkspace({
       return;
     outputBatchLock.current = true;
     const contextRevision = plan.contextRevision;
+    const isCurrent = () =>
+      enabled && active && outputContext.current.revision === contextRevision;
     setOutputBusy(true);
     try {
       const currentManifest = await utils.construction.outputManifest.fetch({
@@ -443,13 +447,30 @@ export default function ConstructionWorkspace({
         offset: batch.from - 1,
         batchLabel: `第${batch.batch}/${plan.batches.length}批（${batch.from}–${batch.to}）`,
       };
-      if (plan.action === "print")
-        openA4PrintDocument({
+      if (plan.action === "print") {
+        const evidence = await utils.construction.printEvidence.fetch(request);
+        if (!isCurrent()) {
+          toast.info(
+            "项目、栏目、筛选或权限已变化，本批照片打印已取消，请重新生成"
+          );
+          return;
+        }
+        const photos = constructionPrintEvidencePhotos(evidence, outputRows);
+        await openA4PrintDocument({
           title: "施工日志批量打印",
           orientation: "portrait",
-          bodyHtml: constructionPrintBody(outputRows, metadata),
+          marginMm: 12,
+          waitForImages: true,
+          isCurrent,
+          bodyHtml: constructionPrintBody(outputRows, metadata, photos),
         });
-      else
+        if (!isCurrent()) {
+          toast.info(
+            "项目、栏目、筛选或权限已变化，本批打印已取消，请重新生成"
+          );
+          return;
+        }
+      } else
         downloadConstructionCsv(
           `施工日报-${plan.input.dateFrom || "不限日期"}-第${batch.batch}批.csv`,
           constructionCsv(outputRows, metadata)
@@ -473,6 +494,10 @@ export default function ConstructionWorkspace({
       const code =
         (error as { code?: string; data?: { code?: string } } | null)?.data
           ?.code ?? (error as { code?: string } | null)?.code;
+      if (code === "CANCELLED") {
+        toast.info("项目、栏目、筛选或权限已变化，本批打印已取消，请重新生成");
+        return;
+      }
       if (code === "CONFLICT" || code === "FORBIDDEN") setOutputPlan(null);
       toast.error(
         getUserFacingErrorMessage(error, "本批输出未生成，请刷新清单后重试")
@@ -556,33 +581,67 @@ export default function ConstructionWorkspace({
       return;
     outputBatchLock.current = true;
     setOutputBusy(true);
+    const isCurrent = () =>
+      enabled &&
+      active &&
+      detailContext.current.revision === revision &&
+      outputContext.current.revision === contextRevision;
     try {
-      const latest = await utils.construction.printReports.fetch({
+      const request = {
         ...input,
         reportIds: [report.id],
-      });
-      if (
-        detailContext.current.revision !== revision ||
-        outputContext.current.revision !== contextRevision
-      ) {
+      };
+      const latest = await utils.construction.printReports.fetch(request);
+      if (!isCurrent()) {
         toast.info(
           "详情、项目、筛选或权限已变化，本份打印已取消，请重新打开详情"
         );
         return;
       }
       const rows = constructionOutputBatchRows(latest, [report.id], projectId);
-      openA4PrintDocument({
+      const evidence = await utils.construction.printEvidence.fetch(request);
+      if (!isCurrent()) {
+        toast.info(
+          "详情、项目、筛选或权限已变化，本份照片打印已取消，请重新打开详情"
+        );
+        return;
+      }
+      const photos = constructionPrintEvidencePhotos(evidence, rows);
+      await openA4PrintDocument({
         title: "施工日报",
         orientation: "portrait",
-        bodyHtml: constructionPrintBody(rows, {
-          projectName,
-          filterText: "单份详情",
-          total: 1,
-          batchLabel: "施工日报详情",
-        }),
+        marginMm: 12,
+        waitForImages: true,
+        isCurrent,
+        bodyHtml: constructionPrintBody(
+          rows,
+          {
+            projectName,
+            filterText: "单份详情",
+            total: 1,
+            batchLabel: "施工日报详情",
+          },
+          photos
+        ),
       });
+      if (!isCurrent()) {
+        toast.info(
+          "详情、项目、筛选或权限已变化，本份打印已取消，请重新打开详情"
+        );
+        return;
+      }
       toast.success("施工日报已送交打印，请在打印对话框选择A4竖版或保存PDF");
     } catch (error) {
+      const code =
+        (error as { code?: string; data?: { code?: string } } | null)?.data
+          ?.code ?? (error as { code?: string } | null)?.code;
+      if (code === "CANCELLED") {
+        toast.info(
+          "详情、项目、筛选或权限已变化，本份打印已取消，请重新打开详情"
+        );
+        return;
+      }
+      if (code === "CONFLICT" || code === "FORBIDDEN") setOutputPlan(null);
       toast.error(
         getUserFacingErrorMessage(error, "施工日报打印失败，请刷新后重试")
       );
@@ -1286,7 +1345,7 @@ export default function ConstructionWorkspace({
             <section>
               <h3 className="font-semibold">4. 打印和 CSV 范围</h3>
               <p>
-                批量A4竖版打印及CSV包含当前项目、栏目、筛选的全部日报，不只当前页；超过250份按完整清单逐批输出。项目、筛选或权限变化会取消旧输出。单份详情打印重新读取本份完整日报；照片仅在详情内受控预览，不进入打印或导出。PC列表为摘要，手机正文与详情保留完整文字。
+                批量A4竖版打印及CSV包含当前项目、栏目、筛选的全部日报，不只当前页；超过250份按完整清单逐批输出。项目、筛选或权限变化会取消旧输出。单份详情打印重新读取本份完整日报；打印会重新核验并包含全部关联照片；CSV仅文字。打印等待全部照片加载完成，失败或取消不会标记完成。PC列表为摘要，手机正文与详情保留完整文字。
               </p>
             </section>
             <section>

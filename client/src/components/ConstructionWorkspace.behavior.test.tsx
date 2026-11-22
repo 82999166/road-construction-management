@@ -287,6 +287,14 @@ describe("施工真实组件及屏幕分页行为", () => {
     });
     expect(mock.evidence.mock.calls[0][1].enabled).toBe(false);
   });
+  it("详情说明明确打印重新核验全部关联照片，CSV仅文字，不再提示照片不进入打印", () => {
+    const html = renderToStaticMarkup(
+      <ConstructionReportDetail report={report()} />
+    );
+    expect(html).toContain("打印会重新核验并包含全部关联照片；CSV仅文字");
+    expect(html).not.toContain("不进入打印或导出");
+    expect(html).toContain("站内预览");
+  });
   it("照片或列表错误必须真实提示，不以空记录掩盖错误", () => {
     mock.evidence.mockReturnValue({ ...result([]), isError: true });
     expect(
