@@ -115,6 +115,11 @@ describe("施工工作区服务端统一筛选与授权", () => {
     expect(mock.predicates[0].sql).toContain("NOT (");
     expect(mock.predicates[0].sql).toContain("reviewReply");
     expect(mock.predicates[0].params).toContain("%\\%\\_\\\\整改%");
+    expect(mock.predicates[0].params).toContain("2026-10-01");
+    expect(mock.predicates[0].params).toContain("2026-10-31");
+    expect(mock.predicates[0].params.some(value => value instanceof Date)).toBe(
+      false
+    );
     expect(assertDepartmentBusinessAccess).toHaveBeenCalledWith(
       expect.anything(),
       "CONSTRUCTION",

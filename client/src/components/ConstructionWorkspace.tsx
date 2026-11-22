@@ -57,10 +57,21 @@ import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { toast } from "sonner";
 
 export type { ConstructionWorkspaceReport } from "@/lib/constructionOutput";
+const COLUMN_SCOPE = {
+  ledger: "全部符合条件日报（含草稿、问题及安全记录）",
+  review: "仅已提交、待审核日报",
+  issues: "仅原日报填写了问题或安全记录的子视图",
+  archive: "仅已归档日报",
+} as const;
+function pcExcerpt(value: string | null | undefined, limit = 120) {
+  const content = value?.trim();
+  if (!content) return "未填写";
+  return content.length > limit ? `${content.slice(0, limit)}…` : content;
+}
 function initialFilter(
   tab: ConstructionWorkspaceTab
 ): ConstructionWorkspaceFilter {
-  const date = tab === "ledger" ? toChinaDateInput() : "";
+  const date = tab === "ledger" || tab === "issues" ? toChinaDateInput() : "";
   return {
     dateFrom: date,
     dateTo: date,
@@ -187,6 +198,7 @@ export default function ConstructionWorkspace({
   const [detail, setDetail] = useState<ConstructionWorkspaceReport | null>(
     null
   );
+  const [helpOpen, setHelpOpen] = useState(false);
   const [outputBusy, setOutputBusy] = useState(false);
   const [outputPlan, setOutputPlan] = useState<{
     action: "print" | "export";
@@ -208,20 +220,27 @@ export default function ConstructionWorkspace({
   const outputBatchLock = useRef(false);
   const enabled =
     active &&
+    Number.isInteger(projectId) &&
     projectId > 0 &&
     !(filter.dateFrom && filter.dateTo && filter.dateFrom > filter.dateTo);
   const reports = trpc.construction.listReports.useQuery(input, {
     enabled,
     retry: false,
+    placeholderData: undefined,
   });
   const summary = trpc.construction.summary.useQuery(input, {
     enabled,
     retry: false,
+    placeholderData: undefined,
   });
   const submitterInput = useMemo(() => ({ projectId }), [projectId]);
   const submitters = trpc.construction.reportSubmitterOptions.useQuery(
     submitterInput,
-    { enabled: active && projectId > 0, retry: false }
+    {
+      enabled: active && Number.isInteger(projectId) && projectId > 0,
+      retry: false,
+      placeholderData: undefined,
+    }
   );
   const capabilityInput = useMemo(
     () => ({
@@ -232,9 +251,45 @@ export default function ConstructionWorkspace({
   );
   const capabilities = trpc.construction.capabilities.useQuery(
     capabilityInput,
-    { enabled: active && projectId > 0, retry: false }
+    {
+      enabled: active && Number.isInteger(projectId) && projectId > 0,
+      retry: false,
+      placeholderData: undefined,
+    }
   );
-  const caps = capabilities.isError ? undefined : capabilities.data;
+  const capabilityReady =
+    active &&
+    Number.isInteger(projectId) &&
+    projectId > 0 &&
+    !capabilities.isLoading &&
+    !capabilities.isFetching &&
+    !capabilities.isError &&
+    !capabilities.isPlaceholderData &&
+    Boolean(capabilities.data);
+  const caps = capabilityReady ? capabilities.data : undefined;
+  // 项目切换时拒绝上一项目的占位/缓存行；未知、加载和错误均不冒充真实零条。
+  const wrongProjectRows = Boolean(
+    reports.data?.some(row => row.projectId !== projectId)
+  );
+  const listReady =
+    enabled &&
+    capabilityReady &&
+    !wrongProjectRows &&
+    !reports.isLoading &&
+    !reports.isFetching &&
+    !reports.isError &&
+    !reports.isPlaceholderData &&
+    reports.data !== undefined;
+  const summaryReady =
+    enabled &&
+    capabilityReady &&
+    !wrongProjectRows &&
+    !summary.isLoading &&
+    !summary.isFetching &&
+    !summary.isError &&
+    !summary.isPlaceholderData &&
+    summary.data !== undefined;
+  const statistics = summaryReady ? summary.data : undefined;
   const detailContext = useRef({ key: "", revision: 0 });
   const detailContextKey = JSON.stringify([
     active,
@@ -269,7 +324,17 @@ export default function ConstructionWorkspace({
   useEffect(() => {
     setOutputPlan(null);
   }, [outputContextKey]);
-  const rows = reports.data ?? [];
+  const rows = useMemo(
+    () =>
+      listReady
+        ? [...(reports.data ?? [])].sort((a, b) =>
+            formatChinaDate(b.reportDate).localeCompare(
+              formatChinaDate(a.reportDate)
+            )
+          )
+        : [],
+    [listReady, reports.data]
+  );
   const pagination = useFinancePagination(rows, JSON.stringify(input));
   useEffect(() => {
     setDetail(null);
@@ -296,8 +361,33 @@ export default function ConstructionWorkspace({
       ...current,
       [tab]: { ...current[tab], ...patch },
     }));
+  const clearDates = () => patchFilter({ dateFrom: "", dateTo: "" });
+  function returnToLedger() {
+    setFilters(current => ({
+      ...current,
+      ledger: { ...current.issues, issueScope: "all" },
+    }));
+    setTab("ledger");
+  }
+  const columnLabel = CONSTRUCTION_WORKSPACE_TABS.find(
+    item => item.value === tab
+  )?.label;
+  const dateRangeText =
+    !filter.dateFrom && !filter.dateTo
+      ? "不限日期"
+      : filter.dateFrom === filter.dateTo
+        ? `${filter.dateFrom}（北京时间）`
+        : `${filter.dateFrom || "不限开始"} 至 ${filter.dateTo || "不限结束"}（北京时间）`;
+  const refresh = () =>
+    void Promise.all([
+      reports.refetch(),
+      summary.refetch(),
+      submitters.refetch(),
+      capabilities.refetch(),
+    ]);
   const filterText = `${CONSTRUCTION_WORKSPACE_TABS.find(item => item.value === tab)?.label}；日期 ${filter.dateFrom || "不限"} 至 ${filter.dateTo || "不限"}；提交管理员 ${submitters.data?.find(item => String(item.id) === filter.createdBy)?.name || "全部"}；状态 ${filter.status === "all" ? "全部（按栏目范围）" : getBusinessStatusLabel(filter.status)}；问题范围 ${{ all: "全部（按栏目范围）", recorded: "仅有问题/安全记录", quality: "质量/协调问题", safety: "安全记录", unreplied: "未回复", replied: "已有回复" }[filter.issueScope]}；关键词 ${filter.keyword.trim() || "全部"}`;
   function drillReview() {
+    if (!summaryReady || !statistics?.submitted) return;
     setFilters(current => ({
       ...current,
       review: constructionReviewDrillFilter(tab, filter),
@@ -394,7 +484,8 @@ export default function ConstructionWorkspace({
     if (
       outputLock.current ||
       outputBatchLock.current ||
-      !enabled ||
+      !listReady ||
+      outputContext.current.key !== outputContextKey ||
       !(action === "print" ? caps?.canPrint : caps?.canExport)
     )
       return;
@@ -505,7 +596,14 @@ export default function ConstructionWorkspace({
     });
     return (
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => setDetail(report)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!listReady}
+          onClick={() => {
+            if (listReady && report.projectId === projectId) setDetail(report);
+          }}
+        >
           查看详情 / 照片
         </Button>
         {!mobile && onEdit && permission.edit ? (
@@ -564,23 +662,33 @@ export default function ConstructionWorkspace({
   }
   return (
     <section
-      className="w-full min-w-0 space-y-4 [overflow-wrap:anywhere]"
+      className="w-full min-w-0 max-w-full space-y-3 [overflow-wrap:anywhere]"
       aria-label="施工四栏目工作区"
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold">
             施工日报、现场影像与审核台账
           </h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            按当前栏目读取授权数据。问题视图仅说明原日报记录了问题或安全情况；不猜测整改结论。
+          <p className="text-xs leading-5 text-muted-foreground">
+            日报台账包含全部符合条件日报，现场问题只是子视图，不搬走原日报。
           </p>
         </div>
-        {onCreate && caps?.canCreate ? (
-          <Button disabled={!enabled} onClick={onCreate}>
-            新建施工日报
+        <div className="flex items-center gap-2">
+          {onCreate && caps?.canCreate ? (
+            <Button size="sm" disabled={!enabled} onClick={onCreate}>
+              新建施工日报
+            </Button>
+          ) : null}
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label="施工管理帮助教程"
+            onClick={() => setHelpOpen(true)}
+          >
+            ? 帮助
           </Button>
-        ) : null}
+        </div>
       </div>
       <BusinessWorkspaceNavigation
         tabs={CONSTRUCTION_WORKSPACE_TABS}
@@ -588,15 +696,26 @@ export default function ConstructionWorkspace({
         onValueChange={setTab}
         label="施工工作区栏目"
       />
-      {!projectId ? (
+      {!Number.isInteger(projectId) || projectId <= 0 ? (
         <p className="rounded-lg border p-4 text-sm">
           请先选择已授权项目，未选择项目不会加载施工记录。
         </p>
       ) : (
         <>
           <Card>
-            <CardContent className="space-y-3 p-4">
-              <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <CardContent className="space-y-2 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <p>
+                  <strong>{columnLabel}范围：</strong>
+                  {COLUMN_SCOPE[tab]} · {dateRangeText}
+                </p>
+                {tab === "issues" ? (
+                  <Button size="sm" variant="outline" onClick={returnToLedger}>
+                    在日报台账查看
+                  </Button>
+                ) : null}
+              </div>
+              <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-6">
                 <div>
                   <Label htmlFor="construction-date-from">日报开始日期</Label>
                   <Input
@@ -736,11 +855,7 @@ export default function ConstructionWorkspace({
                 >
                   恢复当天
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => patchFilter({ dateFrom: "", dateTo: "" })}
-                >
+                <Button size="sm" variant="outline" onClick={clearDates}>
                   不限日期
                 </Button>
                 <Button
@@ -758,24 +873,22 @@ export default function ConstructionWorkspace({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!enabled || reports.isFetching}
-                  onClick={() =>
-                    void Promise.all([
-                      reports.refetch(),
-                      summary.refetch(),
-                      submitters.refetch(),
-                      capabilities.refetch(),
-                    ])
+                  disabled={
+                    !enabled ||
+                    reports.isFetching ||
+                    summary.isFetching ||
+                    capabilities.isFetching
                   }
+                  onClick={refresh}
                 >
                   刷新台账
                 </Button>
               </div>
               <p className="text-xs leading-5 text-muted-foreground">
-                列表、统计、打印及导出都采用当前栏目的完整服务端筛选；每页条数只改变屏幕，不改变输出范围。
+                四栏筛选独立保存；列表、统计、打印及导出采用当前栏目的完整筛选，每页条数不改变输出范围。
                 {tab === "archive" || tab === "review"
                   ? "本栏目默认不限业务日期，避免遗漏历史待办/归档。"
-                  : ""}
+                  : "本栏目默认北京时间当天；查看历史请主动选择“不限日期”。"}
               </p>
               {filter.dateFrom &&
               filter.dateTo &&
@@ -790,99 +903,142 @@ export default function ConstructionWorkspace({
             <p role="alert" className="rounded border p-3 text-sm">
               操作授权暂无法读取，已隐藏操作入口；请刷新重试。
             </p>
-          ) : !mobile && capabilities.data && !capabilities.data.canEdit ? (
-            <p className="rounded border bg-muted/30 p-3 text-xs">
-              普通管理人员仅可在授权范围内新增和查看。PC
-              历史编辑、提交、审核、退回、归档入口仅对符合原权限的超级管理员显示，服务端仍逐次校验。
+          ) : !capabilityReady ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              正在确认当前项目操作授权，未确认前不显示旧项目数据或开放操作。
             </p>
           ) : null}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div
+            className="grid grid-cols-2 gap-2 lg:grid-cols-4"
+            aria-label="当前筛选汇总"
+            aria-busy={enabled && !summaryReady && !summary.isError}
+          >
             <Card>
-              <CardContent className="p-3">
+              <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">当前筛选日报</p>
-                <p className="mt-1 text-xl font-semibold">
-                  {summary.data?.total ?? 0}
+                <p className="text-lg font-semibold tabular-nums">
+                  {statistics?.total ?? "—"}
                 </p>
               </CardContent>
             </Card>
             <button
               type="button"
               aria-label="下钻当前筛选待审核日报"
-              disabled={
-                !enabled || summary.isFetching || !summary.data?.submitted
-              }
+              disabled={!summaryReady || !statistics?.submitted}
               onClick={drillReview}
-              className="rounded-xl border bg-card p-3 text-left shadow-sm focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-xl border bg-card p-2 text-left shadow-sm focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed"
             >
               <p className="text-xs text-muted-foreground">
                 待审核日报 · 点击下钻
               </p>
-              <p className="mt-1 text-xl font-semibold">
-                {summary.data?.submitted ?? 0}
+              <p className="text-lg font-semibold tabular-nums">
+                {statistics?.submitted ?? "—"}
               </p>
             </button>
             <Card>
-              <CardContent className="p-3">
+              <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">已归档 / 已退回</p>
-                <p className="mt-1 text-xl font-semibold">
-                  {summary.data?.locked ?? 0} / {summary.data?.rejected ?? 0}
+                <p className="text-lg font-semibold tabular-nums">
+                  {statistics?.locked ?? "—"} / {statistics?.rejected ?? "—"}
                 </p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="p-3">
+              <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">
                   平均申报累计进度
                 </p>
-                <p className="mt-1 text-xl font-semibold">
-                  {summary.data?.averageProgressPercent ?? 0}%
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  平均申报值，非项目实际综合进度
+                <p className="text-lg font-semibold tabular-nums">
+                  {statistics ? `${statistics.averageProgressPercent}%` : "—"}
                 </p>
               </CardContent>
             </Card>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {caps?.canPrint ? (
+          {summary.isError ? (
+            <p
+              role="alert"
+              className="flex flex-wrap items-center gap-2 text-sm text-destructive"
+            >
+              汇总读取失败，— 表示未知而非 0；请重试，不影响已成功读取的列表。
               <Button
                 size="sm"
                 variant="outline"
-                disabled={!enabled || outputBusy || reports.isFetching}
-                onClick={() => void beginOutput("print")}
+                disabled={!enabled || summary.isFetching}
+                onClick={() => void summary.refetch()}
               >
-                批量打印当前筛选日报
+                重试汇总
               </Button>
-            ) : null}
-            {caps?.canExport ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!enabled || outputBusy || reports.isFetching}
-                onClick={() => void beginOutput("export")}
-              >
-                导出当前筛选 CSV
-              </Button>
-            ) : null}
-            {outputBusy ? (
-              <span role="status" className="text-sm">
-                正在读取受控输出…
-              </span>
-            ) : null}
+            </p>
+          ) : !summaryReady && enabled ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              正在读取当前筛选汇总，— 表示尚未确认。
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="font-semibold" aria-label="当前栏目列表标题">
+                {columnLabel}列表 · 当前 {listReady ? rows.length : "—"} 份
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                {dateRangeText} · 日期倒序 · 平均申报值非项目实际综合进度
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {caps?.canPrint ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!listReady || outputBusy}
+                  onClick={() => void beginOutput("print")}
+                >
+                  批量打印当前筛选日报
+                </Button>
+              ) : null}
+              {caps?.canExport ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!listReady || outputBusy}
+                  onClick={() => void beginOutput("export")}
+                >
+                  导出当前筛选 CSV
+                </Button>
+              ) : null}
+              {outputBusy ? (
+                <span role="status" className="text-sm">
+                  正在读取受控输出…
+                </span>
+              ) : null}
+            </div>
           </div>
-          {reports.isError || summary.isError ? (
+          {reports.isError ? (
             <div role="alert" className="rounded border p-4 text-sm">
               施工数据读取失败，不能视为空台账。请确认授权后点击“刷新台账”。
             </div>
-          ) : reports.isFetching || summary.isFetching ? (
+          ) : enabled && !listReady ? (
             <p role="status" className="rounded border p-4 text-sm">
               正在读取当前栏目真实施工日报…
             </p>
-          ) : enabled && !rows.length ? (
-            <p className="rounded border border-dashed p-5 text-sm text-muted-foreground">
-              当前筛选暂无施工日报，请调整栏目或筛选。不会生成演示记录。
-            </p>
-          ) : enabled ? (
+          ) : listReady && !rows.length ? (
+            <div className="space-y-2 rounded border border-dashed p-4 text-sm text-muted-foreground">
+              <p>
+                {columnLabel}在 {dateRangeText}{" "}
+                按当前提交人、状态、关键词及问题范围筛选暂无日报；不代表其他日期没有日报。
+              </p>
+              <p className="text-xs">
+                {COLUMN_SCOPE[tab]}。不会自动切换日期或生成演示记录。
+              </p>
+              {filter.dateFrom || filter.dateTo ? (
+                <Button size="sm" variant="outline" onClick={clearDates}>
+                  查看历史日报（不限日期）
+                </Button>
+              ) : (
+                <p className="text-xs">
+                  当前已不限日期，请核对提交人、状态或关键词等其他筛选条件。
+                </p>
+              )}
+            </div>
+          ) : listReady ? (
             mobile ? (
               <div className="space-y-3">
                 {pagination.pageRows.map(report => (
@@ -924,13 +1080,27 @@ export default function ConstructionWorkspace({
                 ))}
               </div>
             ) : (
-              <div className="w-full min-w-0 overflow-x-auto rounded-lg border">
-                <table className="w-full min-w-[860px] text-left text-sm">
+              <div
+                className="w-full min-w-0 max-w-full overflow-x-auto rounded-lg border [contain:inline-size]"
+                role="region"
+                aria-label="施工日报可横向滚动表格"
+                tabIndex={0}
+              >
+                <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[140px]" />
+                    <col className="w-[160px]" />
+                    <col className="w-[320px]" />
+                    <col className="w-[90px]" />
+                    <col className="w-[200px]" />
+                    <col className="w-[170px]" />
+                  </colgroup>
                   <thead className="bg-muted/40">
                     <tr>
                       {[
                         "日期 / 提交人",
                         "作业面 / 天气",
+                        "施工内容摘要 / 施工计划",
                         "累计进度",
                         "状态 / 问题",
                         "操作",
@@ -958,6 +1128,17 @@ export default function ConstructionWorkspace({
                             {CONSTRUCTION_WEATHER[report.weather]}
                           </p>
                         </td>
+                        <td className="p-3">
+                          <p className="whitespace-pre-wrap text-sm leading-5">
+                            {pcExcerpt(report.workContent)}
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
+                            施工计划：{pcExcerpt(report.constructionPlan, 80)}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            摘要展示，完整内容见详情
+                          </p>
+                        </td>
                         <td className="p-3 tabular-nums">
                           {Number(report.progressPercent).toFixed(2)}%
                         </td>
@@ -971,6 +1152,16 @@ export default function ConstructionWorkspace({
                                 : "有记录 · 未回复"
                               : "未记录问题"}
                           </p>
+                          {tab === "issues" && report.issueNotes?.trim() ? (
+                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5">
+                              问题：{pcExcerpt(report.issueNotes, 90)}
+                            </p>
+                          ) : null}
+                          {tab === "issues" && report.safetyNotes?.trim() ? (
+                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5">
+                              安全：{pcExcerpt(report.safetyNotes, 90)}
+                            </p>
+                          ) : null}
                         </td>
                         <td className="p-3">{actions(report)}</td>
                       </tr>
@@ -980,18 +1171,71 @@ export default function ConstructionWorkspace({
               </div>
             )
           ) : null}
-          <FinancePagination
-            page={pagination.page}
-            pageSize={pagination.pageSize}
-            total={pagination.total}
-            onPageChange={pagination.setPage}
-            onPageSizeChange={pagination.setPageSize}
-            label="施工日报"
-          />
+          {listReady ? (
+            <FinancePagination
+              page={pagination.page}
+              pageSize={pagination.pageSize}
+              total={pagination.total}
+              onPageChange={pagination.setPage}
+              onPageSizeChange={pagination.setPageSize}
+              label="施工日报"
+            />
+          ) : null}
+          {!mobile && caps && !caps.canEdit ? (
+            <p className="text-xs text-muted-foreground">
+              普通管理人员仅可在授权范围内新增和查看。PC
+              历史编辑、提交、审核、退回、归档入口仍按原权限控制。
+            </p>
+          ) : null}
         </>
       )}
+      <Dialog open={active && helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent className="max-h-[88dvh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>施工管理帮助教程</DialogTitle>
+            <DialogDescription>
+              先确认项目、栏目和日期，再查看明细或输出。栏目不会搬走或更改原日报。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm leading-6">
+            <section>
+              <h3 className="font-semibold">1. 四个栏目看什么</h3>
+              <p>
+                日报台账包含全部符合条件日报，包括草稿及有问题的日报；审核待办仅看已提交待审核；现场问题仅看原日报的问题/安全记录子集；归档查询仅看已归档。问题和安全文字不代表已整改，“已回复”只代表填写了审核回复。
+              </p>
+            </section>
+            <section>
+              <h3 className="font-semibold">2. 独立日期与历史日报</h3>
+              <p>
+                日报台账与现场问题默认北京时间当天。审核待办、归档查询默认不限日期，以免遗漏历史待办/归档。四栏分别保存筛选；点击“不限日期”或空态“查看历史日报”只清除当前栏的日期，保留其他条件，不自动展示全历史。现场问题的“在日报台账查看”保留日期、提交人、关键词、状态，清除问题子集约束。
+              </p>
+            </section>
+            <section>
+              <h3 className="font-semibold">3. 审核状态与操作权限</h3>
+              <p>
+                草稿、待审核、已审核、已退回、已归档按原业务状态显示。普通管理人员仅可在授权范围内新增和查看。PC
+                历史编辑、提交、审核、退回、归档入口仅对符合原权限的超级管理员显示；手机主管审核仍按原权限，服务端逐次校验。加载或错误时“—”表示未知，不是零条。
+              </p>
+            </section>
+            <section>
+              <h3 className="font-semibold">4. 打印和 CSV 范围</h3>
+              <p>
+                批量A4竖版打印及CSV包含当前项目、栏目、筛选的全部日报，不只当前页；超过250份按完整清单逐批输出。项目、筛选或权限变化会取消旧输出。单份详情打印重新读取本份完整日报；照片仅在详情内受控预览，不进入打印或导出。PC列表为摘要，手机正文与详情保留完整文字。
+              </p>
+            </section>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setHelpOpen(false)}>知道了</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
-        open={active && Boolean(detail) && detail?.projectId === projectId}
+        open={
+          enabled &&
+          capabilityReady &&
+          Boolean(detail) &&
+          detail?.projectId === projectId
+        }
         onOpenChange={open => {
           if (!open) setDetail(null);
         }}
@@ -1003,7 +1247,10 @@ export default function ConstructionWorkspace({
               只读集中查看日报、审核人及时间、完整问题与回复、关联照片；详情不授予编辑或审核权限。
             </DialogDescription>
           </DialogHeader>
-          {detail && detail.projectId === projectId ? (
+          {enabled &&
+          capabilityReady &&
+          detail &&
+          detail.projectId === projectId ? (
             <ConstructionReportDetail
               report={detail}
               active={active}
@@ -1011,7 +1258,10 @@ export default function ConstructionWorkspace({
             />
           ) : null}
           <DialogFooter>
-            {detail && detail.projectId === projectId && caps?.canPrint ? (
+            {enabled &&
+            detail &&
+            detail.projectId === projectId &&
+            caps?.canPrint ? (
               <Button
                 variant="outline"
                 disabled={outputBusy}

@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => {
   let dirty = false;
   const data: Record<string, any> = {};
   const queries: Record<string, any[]> = {};
+  const refetches: Record<string, ReturnType<typeof vi.fn>> = {};
   const same = (a?: unknown[], b?: unknown[]) =>
     Boolean(
       a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]))
@@ -14,6 +15,7 @@ const harness = vi.hoisted(() => {
   return {
     data,
     queries,
+    refetches,
     manifest: vi.fn(),
     print: vi.fn(),
     export: vi.fn(),
@@ -24,6 +26,7 @@ const harness = vi.hoisted(() => {
       dirty = false;
       Object.keys(data).forEach(k => delete data[k]);
       Object.keys(queries).forEach(k => delete queries[k]);
+      Object.keys(refetches).forEach(k => delete refetches[k]);
     },
     render<T>(fn: () => T): T {
       let tree!: T;
@@ -79,10 +82,11 @@ const harness = vi.hoisted(() => {
       (queries[name] ??= []).push({ input, options });
       return {
         data: data[name],
-        isFetching: false,
-        isLoading: false,
+        isFetching: Boolean(data[`${name}Fetching`]),
+        isLoading: Boolean(data[`${name}Loading`]),
         isError: Boolean(data[`${name}Error`]),
-        refetch: vi.fn(),
+        isPlaceholderData: Boolean(data[`${name}Placeholder`]),
+        refetch: (refetches[name] ??= vi.fn()),
       };
     },
   };
@@ -153,6 +157,7 @@ import {
   type ConstructionWorkspaceReport,
 } from "@/lib/constructionOutput";
 import { constructionOutputBatches } from "@shared/constructionWorkspace";
+import { toChinaDateInput } from "@/lib/businessTime";
 import { toast } from "sonner";
 type Node = ReactElement<any>;
 function walk(value: unknown): Node[] {
@@ -273,6 +278,250 @@ beforeEach(() => {
   );
 });
 describe("施工真实组件回调调用级行为（不浏览器、不实际DB）", () => {
+  it("日报及现场问题默认北京时间当天，审核和归档保留不限日期，切栏目不暗改筛选", () => {
+    let tree = render();
+    const today = toChinaDateInput();
+    expect(harness.queries.listReports.at(-1).input).toMatchObject({
+      scope: "ledger",
+      dateFrom: today,
+      dateTo: today,
+      issueScope: "all",
+    });
+    for (const value of ["issues", "review", "archive", "ledger"]) {
+      tab(tree, value);
+      tree = render();
+      const input = harness.queries.listReports.at(-1).input;
+      expect(input).toEqual(harness.queries.summary.at(-1).input);
+      expect(input).toMatchObject({
+        scope: value,
+        dateFrom: value === "issues" || value === "ledger" ? today : undefined,
+        dateTo: value === "issues" || value === "ledger" ? today : undefined,
+      });
+    }
+  });
+  it("现场问题显式回台账保留日期、提交人、关键词和状态，只清除问题子集约束", async () => {
+    let tree = render();
+    tab(tree, "issues");
+    tree = render();
+    for (const [id, value] of [
+      ["construction-date-from", "2026-11-20"],
+      ["construction-date-to", "2026-11-22"],
+      ["construction-submitter", "2"],
+      ["construction-keyword", "  现场原问题  "],
+      ["construction-status", "draft"],
+      ["construction-issue-scope", "unreplied"],
+    ]) {
+      fill(tree, id, value);
+      tree = render();
+    }
+    await click(tree, "在日报台账查看");
+    tree = render();
+    const expected = {
+      projectId: 10,
+      scope: "ledger",
+      dateFrom: "2026-11-20",
+      dateTo: "2026-11-22",
+      createdBy: 2,
+      keyword: "现场原问题",
+      status: "draft",
+      issueScope: "all",
+    };
+    expect(harness.queries.listReports.at(-1).input).toEqual(expected);
+    expect(harness.queries.summary.at(-1).input).toEqual(expected);
+    expect(text(tree)).toContain("日报台账列表 · 当前 501 份");
+    expect(text(walk(tree).find(n => n.type === "table"))).not.toContain(
+      "已整改"
+    );
+    await click(tree, "导出当前筛选 CSV");
+    expect(harness.manifest.mock.calls[0][0]).toEqual({
+      ...expected,
+      action: "export",
+    });
+    tab(render(), "issues");
+    render();
+    expect(harness.queries.listReports.at(-1).input.issueScope).toBe(
+      "unreplied"
+    );
+  });
+  it("空态说明当前日期筛选，历史按钮显式仅清除当前栏日期，不自动读取全历史", async () => {
+    harness.data.listReports = [];
+    let tree = render();
+    fill(tree, "construction-submitter", "2");
+    tree = render();
+    fill(tree, "construction-keyword", "检验");
+    tree = render();
+    expect(text(tree)).toContain(toChinaDateInput());
+    expect(text(tree)).toContain("不代表其他日期没有日报");
+    expect(harness.queries.listReports.at(-1).input.dateFrom).toBe(
+      toChinaDateInput()
+    );
+    await click(tree, "查看历史日报（不限日期）");
+    tree = render();
+    expect(harness.queries.listReports.at(-1).input).toMatchObject({
+      scope: "ledger",
+      dateFrom: undefined,
+      dateTo: undefined,
+      createdBy: 2,
+      keyword: "检验",
+    });
+    expect(text(tree)).toContain("当前已不限日期");
+    tab(tree, "issues");
+    render();
+    expect(harness.queries.listReports.at(-1).input.dateFrom).toBe(
+      toChinaDateInput()
+    );
+  });
+  it.each(["Loading", "Fetching", "Error", "Placeholder"])(
+    "汇总%s即使有旧缓存也显示—不显示假0，可成功列表仍可见",
+    state => {
+      harness.data[`summary${state}`] = true;
+      const tree = render();
+      const metrics = walk(tree).find(
+        n => n.props["aria-label"] === "当前筛选汇总"
+      )!;
+      expect(text(metrics)).toContain("当前筛选日报—");
+      expect(text(metrics)).toContain("已归档 / 已退回— / —");
+      expect(text(metrics)).not.toContain("501");
+      expect(
+        walk(tree).find(
+          n => n.props["aria-label"] === "下钻当前筛选待审核日报"
+        )!.props.disabled
+      ).toBe(true);
+      expect(walk(tree).some(n => n.type === "table")).toBe(true);
+      if (state === "Error") {
+        expect(text(tree)).toContain("汇总读取失败");
+        button(tree, "重试汇总").props.onClick();
+        expect(harness.refetches.summary).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
+  it.each(["Loading", "Fetching", "Error", "Placeholder"])(
+    "列表%s不显示旧正文、假数量或分页零条",
+    state => {
+      harness.data[`listReports${state}`] = true;
+      const tree = render();
+      expect(
+        text(walk(tree).find(n => n.props["aria-label"] === "当前栏目列表标题"))
+      ).toBe("日报台账列表 · 当前 — 份");
+      expect(
+        walk(tree).some(n => n.type === "table" || n.type === FinancePagination)
+      ).toBe(false);
+      expect(button(tree, "导出当前筛选 CSV").props.disabled).toBe(true);
+      expect(text(tree)).not.toContain("施工正文1");
+      expect(text(tree)).not.toContain("查看历史日报（不限日期）");
+    }
+  );
+  it("未知项目或未知权限不复用旧权限和数据，切项目旧项目行也不可见", () => {
+    render();
+    props.projectId = 20;
+    let tree = render();
+    expect(walk(tree).some(n => n.type === "table")).toBe(false);
+    expect(
+      text(walk(tree).find(n => n.props["aria-label"] === "当前筛选汇总"))
+    ).not.toContain("501");
+    expect(button(tree, "导出当前筛选 CSV").props.disabled).toBe(true);
+    harness.data.capabilitiesLoading = true;
+    tree = render();
+    for (const label of [
+      "新建施工日报",
+      "导出当前筛选 CSV",
+      "批量打印当前筛选日报",
+    ])
+      expect(walk(tree).some(n => n.type === Button && text(n) === label)).toBe(
+        false
+      );
+    props.projectId = 0;
+    tree = render();
+    expect(text(tree)).toContain("请先选择已授权项目");
+    for (const name of [
+      "listReports",
+      "summary",
+      "reportSubmitterOptions",
+      "capabilities",
+    ])
+      expect(harness.queries[name].at(-1).options.enabled).toBe(false);
+  });
+  it("加载态输出回调不启动，筛选变化后旧入口也不能重新生成旧清单", async () => {
+    const oldTree = render();
+    const oldOutput = button(oldTree, "导出当前筛选 CSV");
+    fill(oldTree, "construction-keyword", "新的筛选");
+    render();
+    oldOutput.props.onClick();
+    await settle();
+    expect(harness.manifest).not.toHaveBeenCalled();
+    harness.data.listReportsFetching = true;
+    const tree = render();
+    const output = button(tree, "导出当前筛选 CSV");
+    expect(output.props.disabled).toBe(true);
+    output.props.onClick();
+    await settle();
+    expect(harness.manifest).not.toHaveBeenCalled();
+  });
+  it("日期倒序输入禁用查询、统计及输出，修正前不显示缓存行", () => {
+    let tree = render();
+    fill(tree, "construction-date-from", "2026-12-01");
+    tree = render();
+    fill(tree, "construction-date-to", "2026-11-01");
+    tree = render();
+    expect(text(tree)).toContain("开始日期不能晚于结束日期");
+    expect(harness.queries.listReports.at(-1).options.enabled).toBe(false);
+    expect(harness.queries.summary.at(-1).options.enabled).toBe(false);
+    expect(
+      text(walk(tree).find(n => n.props["aria-label"] === "当前筛选汇总"))
+    ).not.toContain("501");
+    expect(
+      walk(tree).some(n => n.type === "table" || n.type === FinancePagination)
+    ).toBe(false);
+    expect(button(tree, "导出当前筛选 CSV").props.disabled).toBe(true);
+  });
+  it.each(["ledger", "review", "issues", "archive"])(
+    "%s刷新四种请求且列表统计持续同口径",
+    async value => {
+      let tree = render();
+      tab(tree, value);
+      tree = render();
+      await click(tree, "刷新台账");
+      for (const name of [
+        "listReports",
+        "summary",
+        "reportSubmitterOptions",
+        "capabilities",
+      ])
+        expect(harness.refetches[name]).toHaveBeenCalledTimes(1);
+      expect(harness.queries.listReports.at(-1).input).toEqual(
+        harness.queries.summary.at(-1).input
+      );
+    }
+  );
+  it("PC问题视图显示真实问题、安全和施工计划摘要；帮助由用户显式打开", async () => {
+    let tree = render();
+    tab(tree, "issues");
+    tree = render();
+    expect(text(tree)).toContain("问题：原问题");
+    expect(text(tree)).toContain("安全：安全说明");
+    expect(text(tree)).toContain("施工计划：完成下一段路基施工计划");
+    const help = walk(tree).find(
+      n => n.props["aria-label"] === "施工管理帮助教程"
+    )!;
+    expect(
+      walk(tree).find(
+        n => n.props.open === false && text(n).includes("施工管理帮助教程")
+      )
+    ).toBeTruthy();
+    help.props.onClick();
+    tree = render();
+    expect(
+      walk(tree).find(
+        n => n.props.open === true && text(n).includes("独立日期与历史日报")
+      )
+    ).toBeTruthy();
+    await click(tree, "知道了");
+    expect(
+      walk(render()).find(
+        n => n.props.open === true && text(n).includes("施工管理帮助教程")
+      )
+    ).toBeUndefined();
+  });
   it.each([0, 250])(
     "%i份实际点击边界准确，零份不输出，250份一次完整输出",
     async total => {

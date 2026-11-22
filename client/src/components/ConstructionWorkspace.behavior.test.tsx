@@ -16,6 +16,7 @@ import {
   type ConstructionWorkspaceReport,
 } from "@/lib/constructionOutput";
 import { paginateFinanceRows } from "@/lib/financePagination";
+import { toChinaDateInput } from "@/lib/businessTime";
 const mock = vi.hoisted(() => ({
   list: vi.fn(),
   summary: vi.fn(),
@@ -99,6 +100,104 @@ beforeEach(() => {
   mock.evidence.mockReturnValue(result([]));
 });
 describe("施工真实组件及屏幕分页行为", () => {
+  it("真实台账默认当天且全部状态、全部问题scope，不因问题记录将日报搬走", () => {
+    const html = renderToStaticMarkup(<ConstructionWorkspace projectId={10} />);
+    expect(mock.list.mock.calls[0][0]).toMatchObject({
+      scope: "ledger",
+      dateFrom: toChinaDateInput(),
+      dateTo: toChinaDateInput(),
+      status: undefined,
+      issueScope: "all",
+    });
+    expect(mock.list.mock.calls[0][0]).toEqual(mock.summary.mock.calls[0][0]);
+    expect(html).toContain(
+      "日报台账包含全部符合条件日报，现场问题只是子视图，不搬走原日报"
+    );
+    expect(html).toContain("日报台账列表");
+    expect(html).toContain('aria-label="施工管理帮助教程"');
+    expect(html).toContain("全部符合条件日报（含草稿、问题及安全记录）");
+  });
+  it("PC真实正文与计划仅为有界摘要、容器内横滚，按真实日期倒序且不修改输入记录", () => {
+    const old = {
+      ...report(1),
+      workContent: "施工开头" + "施".repeat(8000) + "施工末尾",
+      constructionPlan: "计划开头" + "计".repeat(1000) + "计划末尾",
+    };
+    const latest = { ...report(2), reportDate: "2026-11-22T00:00:00Z" };
+    const inputRows = [old, latest];
+    mock.list.mockReturnValue(result(inputRows));
+    const html = renderToStaticMarkup(<ConstructionWorkspace projectId={10} />);
+    expect(html).toContain("施工内容摘要 / 施工计划");
+    expect(html).toContain("施工开头");
+    expect(html).toContain("施工计划：计划开头");
+    expect(html).not.toContain("施工末尾");
+    expect(html).not.toContain("计划末尾");
+    expect(html).toContain("max-w-full overflow-x-auto");
+    expect(html).toContain("contain:inline-size");
+    expect(html).toContain("table-fixed");
+    expect(html.indexOf("工区2")).toBeLessThan(html.indexOf("工区1"));
+    expect(inputRows).toEqual([old, latest]);
+  });
+  it.each(["isLoading", "isFetching", "isError"])(
+    "真实汇总%s时不显示缓存55或假0，成功列表仍显示",
+    state => {
+      mock.summary.mockReturnValue({
+        ...result({
+          total: 55,
+          submitted: 8,
+          locked: 0,
+          rejected: 0,
+          averageProgressPercent: 0,
+        }),
+        [state]: true,
+      });
+      const html = renderToStaticMarkup(
+        <ConstructionWorkspace projectId={10} />
+      );
+      expect(html).toMatch(/当前筛选日报<\/p><p[^>]*>—<\/p>/);
+      expect(html).toMatch(/已归档 \/ 已退回<\/p><p[^>]*>— \/ —<\/p>/);
+      expect(html).toContain("工区1");
+      if (state === "isError") {
+        expect(html).toContain("汇总读取失败");
+        expect(html).toContain("重试汇总");
+      }
+    }
+  );
+  it("真实列表加载不渲染缓存正文及假零分页，空态以当前日期筛选解释且给显式历史入口", () => {
+    mock.list.mockReturnValue({ ...result([report()]), isFetching: true });
+    let html = renderToStaticMarkup(<ConstructionWorkspace projectId={10} />);
+    expect(html).not.toContain("工区1");
+    expect(html).not.toContain("共 0 条");
+    expect(html).toContain("正在读取当前栏目真实施工日报");
+    expect(html).toContain("当前 — 份");
+    mock.list.mockReturnValue(result([]));
+    html = renderToStaticMarkup(<ConstructionWorkspace projectId={10} />);
+    expect(html).toContain(toChinaDateInput());
+    expect(html).toContain("不代表其他日期没有日报");
+    expect(html).toContain("查看历史日报（不限日期）");
+    expect(html).toContain("不会自动切换日期");
+  });
+  it("真实权限未知即使有缓存也不开放操作或显示旧列表，未选择项目不显示缓存汇总", () => {
+    mock.capabilities.mockReturnValue({
+      ...result({ canCreate: true, canPrint: true, canExport: true }),
+      isLoading: true,
+    });
+    let html = renderToStaticMarkup(
+      <ConstructionWorkspace projectId={10} onCreate={vi.fn()} />
+    );
+    for (const label of [
+      "新建施工日报",
+      "导出当前筛选 CSV",
+      "批量打印当前筛选日报",
+      "工区1",
+    ])
+      expect(html).not.toContain(label);
+    expect(html).toContain("未确认前不显示旧项目数据或开放操作");
+    html = renderToStaticMarkup(<ConstructionWorkspace projectId={0} />);
+    expect(html).toContain("请先选择已授权项目");
+    expect(html).not.toContain("当前筛选日报");
+    expect(html).not.toContain("工区1");
+  });
   it("实际React工作区渲染四栏目、可下钻指标和20/50/100分页，55条仅显示前20条", () => {
     const html = renderToStaticMarkup(
       <ConstructionWorkspace

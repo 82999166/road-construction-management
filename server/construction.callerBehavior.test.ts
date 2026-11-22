@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { getTableName, sql, type SQL } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { TRPCError } from "@trpc/server";
+import { format as formatMysql } from "mysql2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 vi.mock("./db", () => ({ getDb: vi.fn() }));
@@ -102,7 +103,8 @@ function memoryDb(records: Report[]) {
   const params = (values: unknown[]): SQLInputValue[] =>
     values.map(value =>
       value instanceof Date
-        ? value.toISOString().slice(0, 10)
+        ? // 使用真实mysql2的+08:00参数编码，不能ISO.slice把日期筛选时区缺陷藏起来。
+          formatMysql("?", [value], false, "+08:00").slice(1, -1)
         : (value as SQLInputValue)
     );
   const select = vi.fn((projection: Record<string, unknown>) => ({
@@ -321,6 +323,127 @@ describe("施工真实路由调用与内存SQL筛选结果（不连接实际DB�
           await caller.outputManifest({ ...filter, action: "export" })
         ).batches.flatMap(batch => batch.ids)
       ).toEqual([1]);
+    }
+  );
+  it("DATE当天台账不能被mysql2北京时间参数移至08点排除，有问题日报仍保留", async () => {
+    expect(
+      formatMysql("?", [new Date("2026-11-22T00:00:00.000Z")], false, "+08:00")
+    ).toBe("'2026-11-22 08:00:00.000'");
+    const store = memoryDb([
+      report(16, { reportDate: "2026-11-22", status: "draft" }),
+      report(15, {
+        reportDate: "2026-11-20",
+        status: "draft",
+        issueNotes: null,
+      }),
+      report(14, { reportDate: "2026-11-19", status: "locked" }),
+      report(17, { reportDate: "2026-11-23" }),
+      report(18, { reportDate: "2026-11-22", projectId: 20 }),
+    ]);
+    vi.mocked(getDb).mockResolvedValue(store.db as never);
+    const caller = constructionRouter.createCaller(context);
+    const filter = {
+      projectId: 10,
+      dateFrom: "2026-11-22",
+      dateTo: "2026-11-22",
+      createdBy: 2,
+      keyword: "真实",
+    };
+    expect((await caller.listReports(filter)).map(row => row.id)).toEqual([16]);
+    expect(await caller.summary(filter)).toMatchObject({
+      total: 1,
+      draft: 1,
+      issues: 1,
+    });
+    expect((await caller.printReports(filter)).map(row => row.id)).toEqual([
+      16,
+    ]);
+    expect((await caller.exportReports(filter)).map(row => row.id)).toEqual([
+      16,
+    ]);
+    expect(
+      (
+        await caller.outputManifest({ ...filter, action: "export" })
+      ).batches.flatMap(batch => batch.ids)
+    ).toEqual([16]);
+    expect(
+      (await caller.listReports({ ...filter, dateTo: undefined })).map(
+        row => row.id
+      )
+    ).toEqual([17, 16]);
+    expect(
+      (await caller.listReports({ ...filter, dateFrom: undefined })).map(
+        row => row.id
+      )
+    ).toEqual([16, 15, 14]);
+    expect(
+      (await caller.listReports({ projectId: 10 })).map(row => row.id).sort()
+    ).toEqual([14, 15, 16, 17]);
+  });
+  it.each([
+    ["ledger", [9, 4, 3, 2, 1]],
+    ["review", [9, 2]],
+    ["archive", [3]],
+    ["issues", [4, 3, 2, 1]],
+  ] as const)(
+    "%s栏目当天/管理员/关键词的五接口一致，不把问题记录从台账移走",
+    async (scope, expected) => {
+      const store = memoryDb([
+        report(1, { reportDate: "2026-11-22", status: "draft" }),
+        report(2, { reportDate: "2026-11-22" }),
+        report(3, {
+          reportDate: "2026-11-22",
+          status: "locked",
+          issueNotes: null,
+          safetyNotes: "安全情况",
+          reviewReply: "主管回复",
+        }),
+        report(4, {
+          reportDate: "2026-11-22",
+          status: "rejected",
+          reviewReply: " \t\n",
+        }),
+        report(5, { reportDate: "2026-11-21" }),
+        report(6, { reportDate: "2026-11-22", createdBy: 3 }),
+        report(7, { reportDate: "2026-11-22", workContent: "其他正文" }),
+        report(8, { reportDate: "2026-11-22", projectId: 20 }),
+        report(9, {
+          reportDate: "2026-11-22",
+          issueNotes: " \t\n",
+          safetyNotes: null,
+        }),
+      ]);
+      vi.mocked(getDb).mockResolvedValue(store.db as never);
+      const caller = constructionRouter.createCaller(context);
+      const filter = {
+        projectId: 10,
+        scope,
+        dateFrom: "2026-11-22",
+        dateTo: "2026-11-22",
+        createdBy: 2,
+        keyword: "真实",
+      };
+      const list = await caller.listReports(filter);
+      const summary = await caller.summary(filter);
+      const printed = await caller.printReports(filter);
+      const exported = await caller.exportReports(filter);
+      const manifest = await caller.outputManifest({
+        ...filter,
+        action: "export",
+      });
+      expect(list.map(row => row.id).sort((a, b) => b - a)).toEqual(expected);
+      expect(printed.map(row => row.id)).toEqual(expected);
+      expect(exported.map(row => row.id)).toEqual(expected);
+      expect(manifest.batches.flatMap(batch => batch.ids)).toEqual(expected);
+      expect(summary.total).toBe(expected.length);
+      expect(summary.issues).toBe(expected.filter(id => id !== 9).length);
+      expect(summary.unreplied).toBe(
+        expected.filter(id => id !== 9 && id !== 3).length
+      );
+      expect(summary.submitted).toBe(
+        expected.filter(id => id === 9 || id === 2).length
+      );
+      expect(summary.locked).toBe(expected.some(id => id === 3) ? 1 : 0);
     }
   );
   it("日期含端点、提交人和栏目/status交集实际生效，不能扩大范围", async () => {

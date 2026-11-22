@@ -178,13 +178,15 @@ function escapeLikeKeyword(value: string) {
 
 function getConstructionReportPredicates(input: ConstructionReportFilter) {
   const predicates = [eq(constructionDailyReports.projectId, input.projectId)];
+  // reportDate是自然日DATE。Date(00Z)会被mysql2的+08:00连接编码成08点，
+  // 导致开始日期漏掉当天记录；日期字符串不经过时间戳/时区转换，保留索引与含端点比较。
   if (input.dateFrom)
     predicates.push(
-      gte(constructionDailyReports.reportDate, toBusinessDate(input.dateFrom))
+      gte(constructionDailyReports.reportDate, sql`${input.dateFrom}`)
     );
   if (input.dateTo)
     predicates.push(
-      lte(constructionDailyReports.reportDate, toBusinessDate(input.dateTo))
+      lte(constructionDailyReports.reportDate, sql`${input.dateTo}`)
     );
   if (input.status)
     predicates.push(eq(constructionDailyReports.status, input.status));
