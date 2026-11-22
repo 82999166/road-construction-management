@@ -1005,7 +1005,7 @@ export async function verifyOfficialAccountBindingFollowStatus(
   }
 }
 
-async function resolveSupervisorRecipientIds(
+export async function resolveSupervisorRecipientIds(
   event: OfficialAccountBusinessEvent
 ) {
   const db = await getDb();

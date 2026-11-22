@@ -1,3 +1,4 @@
+import { PortalMessagesButton } from "@/components/PortalMessagesButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -67,7 +68,7 @@ export default function DriverPortalPage() {
     <div className="mx-auto min-h-screen max-w-xl bg-[#fdf7ee] pb-8 shadow-[0_0_50px_rgba(74,42,29,.12)]">
       <header className="relative overflow-hidden bg-[#3a2117] px-5 pb-8 pt-6 text-[#fff7ea]">
         <div className="pointer-events-none absolute -right-14 -top-14 h-44 w-44 rounded-full bg-[#c9854a]/20 blur-2xl" />
-        <div className="relative flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.24)]"><Truck className="h-5 w-5" /></span><div><p className="text-sm font-semibold">悦信云智管</p><p className="mt-0.5 text-xs text-[#e8cfb2]">微信司机运输工作台</p></div></div><button type="button" aria-label="查看账单使用说明" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3 text-xs font-medium transition-colors hover:bg-white/20" onClick={() => setNoticeOpen(true)}><CircleHelp className="h-4 w-4" />使用说明</button></div>
+        <div className="relative flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#c9854a] shadow-[0_8px_18px_rgba(0,0,0,.24)]"><Truck className="h-5 w-5" /></span><div><p className="text-sm font-semibold">悦信云智管</p><p className="mt-0.5 text-xs text-[#e8cfb2]">微信司机运输工作台</p></div></div><div className="flex shrink-0 items-center gap-2">{isLocalDriver ? <PortalMessagesButton isAuthenticated={isLocalDriver} /> : null}<button type="button" aria-label="查看账单使用说明" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3 text-xs font-medium transition-colors hover:bg-white/20" onClick={() => setNoticeOpen(true)}><CircleHelp className="h-4 w-4" />使用说明</button></div></div>
         <div className="relative mt-7"><p className="text-sm text-[#e8cfb2]">当前绑定车辆</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">{summary?.vehicle.plateNo ?? "司机运输账单"}</h1><p className="mt-2 text-xs leading-5 text-[#e8cfb2]">{summary?.vehicle.projectName ?? "正在核验微信绑定车辆…"}{summary?.vehicle.driverName ? ` · ${summary.vehicle.driverName}` : ""}</p></div>
       </header>
 

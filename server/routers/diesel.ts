@@ -19,6 +19,7 @@ import {
 } from "../access";
 import { getDb } from "../db";
 import { chinaBusinessDate } from "../services/chinaBusinessTime";
+import { notifyRefuelCompletedSafely } from "../services/refuelCompletionNotifier";
 import {
   lockMachineFuelLedger,
   assertNoDuplicateMachineFuel,
@@ -618,6 +619,17 @@ export const dieselRouter = router({
           summary: `移动柴油领用登记：${input.assetType === "vehicle" ? "车辆" : "机械"} · ${input.liters}L · ¥${amount}${input.deductFromFreight ? " · 运输扣油" : ""}`,
         });
       });
+      // 必须先完成主业务事务；短信/站内信异常不可造成已入账记录被误报保存失败。
+      await notifyRefuelCompletedSafely({
+        actorUserId: user.id,
+        projectId: input.projectId,
+        recordId,
+        assetType: input.assetType,
+        assetId: input.assetId,
+        liters: input.liters,
+        amount,
+        refueledAt,
+      }).catch(() => undefined);
       return {
         success: true,
         id: recordId,
