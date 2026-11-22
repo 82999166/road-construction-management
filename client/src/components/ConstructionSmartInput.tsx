@@ -23,6 +23,8 @@ export interface ConstructionSmartInputProps {
   onChange: (value: string) => void;
   maxLength: number;
   active: boolean;
+  /** 作业面已有常用下拉时隐藏重复历史入口，其余字段默认保留。 */
+  historyVisible?: boolean;
 }
 
 interface Preview {
@@ -41,15 +43,23 @@ const panelClass =
 export function ConstructionSmartInput(props: ConstructionSmartInputProps) {
   return (
     <ConstructionSmartInputSession
-      key={`${props.projectId}:${props.userId}:${props.field}:${props.active}`}
+      key={`${props.projectId}:${props.userId}:${props.field}:${props.active}:${props.historyVisible !== false}`}
       {...props}
     />
   );
 }
 
 function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
-  const { projectId, userId, field, value, onChange, maxLength, active } =
-    props;
+  const {
+    projectId,
+    userId,
+    field,
+    value,
+    onChange,
+    maxLength,
+    active,
+    historyVisible = true,
+  } = props;
   const enabled = active && projectId > 0 && userId > 0;
   const scopeKey = `${projectId}:${userId}:${field}`;
   const id = useId();
@@ -144,7 +154,7 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
       return;
     }
     adoptedValue.current = null;
-    if (!enabled || !autoHistory) return;
+    if (!enabled || !autoHistory || !historyVisible) return;
     const nextKeyword = constructionHistoryKeyword(value);
     if (nextKeyword !== keyword) {
       setKeyword(nextKeyword);
@@ -152,7 +162,7 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
       setHistoryLoading(true);
     }
     setHistoryOpen(true);
-  }, [value, enabled, autoHistory, keyword]);
+  }, [value, enabled, autoHistory, keyword, historyVisible]);
 
   useEffect(() => {
     if (keyword === debouncedKeyword) return;
@@ -163,6 +173,7 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
   useEffect(() => {
     if (
       !enabled ||
+      !historyVisible ||
       !historyOpen ||
       !status?.historyEnabled ||
       keyword !== debouncedKeyword
@@ -194,6 +205,7 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
     };
   }, [
     enabled,
+    historyVisible,
     historyOpen,
     status?.historyEnabled,
     keyword,
@@ -362,16 +374,18 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
       aria-label="施工日志智能录入"
     >
       <div className="flex min-w-0 flex-wrap items-center gap-1">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-8 px-2 text-xs text-[#9f582b]"
-          aria-expanded={historyOpen}
-          onClick={() => setHistoryOpen(open => !open)}
-        >
-          最近内容
-        </Button>
+        {historyVisible ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 px-2 text-xs text-[#9f582b]"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen(open => !open)}
+          >
+            最近内容
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="sm"
@@ -480,7 +494,7 @@ function ConstructionSmartInputSession(props: ConstructionSmartInputProps) {
         </section>
       )}
 
-      {historyOpen && (
+      {historyVisible && historyOpen && (
         <section className={panelClass} aria-label="最近内容面板">
           <p>本人 · 当前项目 · 最近内容最多 5 条</p>
           {!status ? (

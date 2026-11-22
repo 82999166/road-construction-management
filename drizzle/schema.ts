@@ -549,6 +549,8 @@ export const constructionDailyReports = mysqlTable(
     constructionPlan: text("constructionPlan"),
     safetyNotes: varchar("safetyNotes", { length: 1000 }),
     issueNotes: varchar("issueNotes", { length: 1000 }),
+    /** 历史 NULL 保持未分级；仅真实非空问题由用户显式分级。 */
+    issuePriority: mysqlEnum("issuePriority", ["normal", "urgent"]),
     /** 由现场管理人员申报的累计完成比例，范围由服务端校验为 0 至 100。 */
     progressPercent: decimal("progressPercent", { precision: 5, scale: 2 })
       .default("0")

@@ -218,6 +218,37 @@ afterEach(async () => {
 });
 
 describe("施工智能录入真实组件", () => {
+  it("作业面隐藏重复历史后仍有AI和语音，手动变更不再触发历史请求", async () => {
+    await mount({ field: "workArea", maxLength: 200, historyVisible: false });
+    expect(button("最近内容")).toBeUndefined();
+    expect(button("AI整理")).toBeDefined();
+    expect(button("语音录入")).toBeDefined();
+    await update({ value: "K12+500 已从常用下拉选择" });
+    await advance(350);
+    expect(rpc.history).not.toHaveBeenCalled();
+    expect(text()).not.toContain("最近内容面板");
+    await update({ historyVisible: true });
+    expect(button("最近内容")).toBeDefined();
+  });
+  it("隐藏历史销毁旧会话并丢弃迟到历史，不影响重新开启", async () => {
+    const pending = deferred<{
+      data: { items: Array<{ id: number; content: string; usedAt: string }> };
+    }>();
+    rpc.history.mockReturnValueOnce(pending.promise);
+    await mount({ field: "workArea", maxLength: 200 });
+    await click("最近内容");
+    await update({ historyVisible: false });
+    await act(async () =>
+      pending.resolve({
+        data: {
+          items: [{ id: 1, content: "旧历史迟到内容", usedAt: "2026-11-22" }],
+        },
+      })
+    );
+    expect(text()).not.toContain("旧历史迟到内容");
+    expect(button("最近内容")).toBeUndefined();
+    expect(button("AI整理")).toBeDefined();
+  });
   it("inactive 不读接口；面板不取代主输入，容器具备移动宽度保护", async () => {
     await mount({ active: false });
     expect(rpc.status).not.toHaveBeenCalled();

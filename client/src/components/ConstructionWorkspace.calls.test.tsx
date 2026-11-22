@@ -278,6 +278,64 @@ beforeEach(() => {
   );
 });
 describe("施工真实组件回调调用级行为（不浏览器、不实际DB）", () => {
+  it("问题等级筛选贯通列表汇总清单与CSV，回台账清除等级但保留日期条件", async () => {
+    harness.manifest.mockResolvedValue(manifest([1]));
+    let tree = render();
+    tab(tree, "issues");
+    tree = render();
+    fill(tree, "construction-issue-priority", "urgent");
+    tree = render();
+    const input = harness.queries.listReports.at(-1).input;
+    expect(input).toMatchObject({
+      scope: "issues",
+      issuePriority: "urgent",
+      dateFrom: toChinaDateInput(),
+      dateTo: toChinaDateInput(),
+    });
+    expect(input).toEqual(harness.queries.summary.at(-1).input);
+    await click(tree, "导出当前筛选 CSV");
+    expect(harness.manifest.mock.calls[0][0]).toMatchObject({
+      ...input,
+      action: "export",
+    });
+    expect(harness.export.mock.calls[0][0]).toMatchObject({
+      ...input,
+      reportIds: [1],
+    });
+    expect(vi.mocked(downloadConstructionCsv).mock.calls[0][1]).toContain(
+      "问题等级 紧急"
+    );
+    await click(render(), "在日报台账查看");
+    render();
+    expect(harness.queries.listReports.at(-1).input).toMatchObject({
+      scope: "ledger",
+      issueScope: "all",
+      issuePriority: "all",
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+    });
+  });
+  it("问题等级变化也取消迟到输出，不生成上一等级的CSV", async () => {
+    const pending = deferred<ReturnType<typeof manifest>>();
+    harness.manifest.mockReturnValueOnce(pending.promise);
+    let tree = render();
+    tab(tree, "issues");
+    tree = render();
+    fill(tree, "construction-issue-priority", "urgent");
+    tree = render();
+    const running = click(tree, "导出当前筛选 CSV");
+    tree = render();
+    fill(tree, "construction-issue-priority", "normal");
+    render();
+    pending.resolve(manifest([1]));
+    await running;
+    expect(harness.export).not.toHaveBeenCalled();
+    expect(downloadConstructionCsv).not.toHaveBeenCalled();
+    expect(harness.queries.listReports.at(-1).input.issuePriority).toBe(
+      "normal"
+    );
+    expect(toast.info).toHaveBeenCalled();
+  });
   it("日报及现场问题默认北京时间当天，审核和归档保留不限日期，切栏目不暗改筛选", () => {
     let tree = render();
     const today = toChinaDateInput();
@@ -325,6 +383,7 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       keyword: "现场原问题",
       status: "draft",
       issueScope: "all",
+      issuePriority: "all",
     };
     expect(harness.queries.listReports.at(-1).input).toEqual(expected);
     expect(harness.queries.summary.at(-1).input).toEqual(expected);
@@ -493,12 +552,13 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       );
     }
   );
-  it("PC问题视图显示真实问题、安全和施工计划摘要；帮助由用户显式打开", async () => {
+  it("PC问题视图显示真实问题和计划摘要，历史安全改为详情提示；帮助由用户显式打开", async () => {
     let tree = render();
     tab(tree, "issues");
     tree = render();
     expect(text(tree)).toContain("问题：原问题");
-    expect(text(tree)).toContain("安全：安全说明");
+    expect(text(tree)).toContain("历史安全资料见详情");
+    expect(text(tree)).not.toContain("安全：安全说明");
     expect(text(tree)).toContain("施工计划：完成下一段路基施工计划");
     const help = walk(tree).find(
       n => n.props["aria-label"] === "施工管理帮助教程"
@@ -676,6 +736,7 @@ describe("施工真实组件回调调用级行为（不浏览器、不实际DB�
       createdBy: 2,
       keyword: "%_\\整改",
       issueScope: "unreplied",
+      issuePriority: "all",
       status: undefined,
     };
     expect(harness.queries.listReports.at(-1).input).toEqual(expected);

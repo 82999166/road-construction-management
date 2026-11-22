@@ -87,17 +87,18 @@ describe("施工新版后台实际集成契约", () => {
     expect(node).toContain("projectId:workspaceProjectId");
     expect(node).toContain("nextStatus,");
   });
-  it("原录入字段全部保留，不把新版台账变成仅可查看", () => {
+  it("现场录入保留业务字段与显式等级，安全说明仅历史读取不再录入", () => {
     for (const field of [
       "reportDate",
       "workArea",
       "weather",
       "workContent",
-      "safetyNotes",
       "issueNotes",
+      "issuePriority",
       "progressPercent",
     ])
       expect(compact).toContain("constructionReportEditor." + field);
+    expect(compact).not.toContain("constructionReportEditor.safetyNotes");
     expect(compact).toContain("saveConstructionReport.mutate({");
     expect(compact).toContain(
       "constructionReportEditor?.projectId===workspaceProjectId"

@@ -2,6 +2,10 @@ import { escapePrintHtml } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime } from "@/lib/businessTime";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import type { ConstructionStatus } from "@shared/constructionWorkspace";
+import {
+  getConstructionIssuePriorityLabel,
+  type ConstructionIssuePriority,
+} from "@shared/constructionIssuePriority";
 export interface ConstructionWorkspaceReport {
   id: number;
   projectId: number;
@@ -12,6 +16,8 @@ export interface ConstructionWorkspaceReport {
   constructionPlan: string | null;
   safetyNotes: string | null;
   issueNotes: string | null;
+  /** 可空兼容旧日报；未分级不自动判为一般。 */
+  issuePriority?: ConstructionIssuePriority | null;
   progressPercent: string | number;
   status: ConstructionStatus;
   createdBy: number;
@@ -41,8 +47,9 @@ export const CONSTRUCTION_OUTPUT_HEADERS = [
   "审核结果",
   "施工计划",
   "施工内容",
-  "安全情况",
-  "质量/协调问题",
+  "历史安全记录",
+  "问题记录",
+  "问题等级",
   "审核回复",
   "审核人",
   "审核时间",
@@ -132,6 +139,9 @@ export function constructionOutputRows(
     report.workContent,
     report.safetyNotes || "—",
     report.issueNotes || "—",
+    report.issueNotes?.trim()
+      ? getConstructionIssuePriorityLabel(report.issuePriority)
+      : "—",
     report.reviewReply || "—",
     report.reviewedByName ||
       (report.reviewedBy ? `管理员 #${report.reviewedBy}` : "未审核"),
@@ -266,6 +276,19 @@ export const CONSTRUCTION_REPORT_SHEET_CSS = `
 }
 .daily-report-sheet .daily-report-table .daily-report-progress-content { min-height: 110px; }
 .daily-report-sheet .daily-report-table .daily-report-plan-content { min-height: 94px; }
+.daily-report-sheet .daily-report-issue-priority {
+  display: inline-block;
+  margin: 0 0 6px;
+  padding: 1px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+  background: #f3f4f6;
+}
+.daily-report-sheet .daily-report-issue-priority.urgent { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
+.daily-report-sheet .daily-report-issue-priority.normal { color: #713f12; background: #fef9c3; border-color: #fef08a; }
 .daily-report-sheet .daily-report-table .daily-report-review-result {
   margin: 0 0 4px;
   font-weight: 700;
@@ -335,6 +358,19 @@ function reportSection(label: string, value: unknown, contentClass = "") {
   return `<tr><th scope="row" class="daily-report-section-label"><span class="daily-report-vertical-label">${escapePrintHtml(label)}</span></th><td colspan="3"><div class="daily-report-content ${contentClass}">${escapePrintHtml(text)}</div></td></tr>`;
 }
 
+function reportIssueSection(report: ConstructionWorkspaceReport) {
+  const h = escapePrintHtml;
+  const priority =
+    report.issuePriority === "urgent" || report.issuePriority === "normal"
+      ? report.issuePriority
+      : "unclassified";
+  const label = getConstructionIssuePriorityLabel(report.issuePriority);
+  const badge = report.issueNotes?.trim()
+    ? `<span class="daily-report-issue-priority ${priority}" data-issue-priority="${priority}" aria-label="问题等级：${h(label)}">${h(label)}</span>`
+    : "";
+  return `<tr><th scope="row" class="daily-report-section-label"><span class="daily-report-vertical-label">问题记录</span></th><td colspan="3">${badge}<div class="daily-report-content">${h(report.issueNotes?.trim() ? report.issueNotes : "未填写")}</div></td></tr>`;
+}
+
 /** 只显式投影已有日报业务字段，绝不序列化附件、URL 或额外的账户属性。 */
 function renderConstructionReportSheet(
   report: ConstructionWorkspaceReport,
@@ -355,8 +391,8 @@ function renderConstructionReportSheet(
 <tr><th scope="row">累计进度</th><td>${h(Number(report.progressPercent).toFixed(2))}%</td><th scope="row">状态</th><td>${h(status)}</td></tr>
 ${reportSection("施工进度情况", report.workContent, "daily-report-progress-content")}
 ${reportSection("施工计划", report.constructionPlan, "daily-report-plan-content")}
-${reportSection("安全情况", report.safetyNotes)}
-${reportSection("质量/协调问题", report.issueNotes)}
+${report.safetyNotes?.trim() ? reportSection("历史安全记录", report.safetyNotes) : ""}
+${reportIssueSection(report)}
 <tr><th scope="row" class="daily-report-section-label"><span class="daily-report-vertical-label">审核结果与回复</span></th><td colspan="3"><div class="daily-report-content"><p class="daily-report-review-result">审核结果：${h(status)}</p>${h(report.reviewReply || "未填写")}</div></td></tr>
 <tr><th scope="row">记录人</th><td>${h(report.createdByName)}</td><th scope="row">审核人</th><td>${h(reviewer)}</td></tr>
 <tr class="daily-report-time-row"><th scope="row">审核时间</th><td colspan="3">${h(report.reviewedAt ? formatChinaDateTime(report.reviewedAt) : "未审核")}</td></tr>

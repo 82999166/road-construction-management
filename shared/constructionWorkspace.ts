@@ -1,3 +1,5 @@
+import type { ConstructionIssuePriorityFilter } from "./constructionIssuePriority";
+
 export type ConstructionWorkspaceTab =
   | "ledger"
   | "review"
@@ -29,6 +31,7 @@ export interface ConstructionWorkspaceFilter {
   keyword: string;
   status: "all" | ConstructionStatus;
   issueScope: ConstructionIssueScope;
+  issuePriority?: ConstructionIssuePriorityFilter;
 }
 export function constructionFilterInput(
   projectId: number,
@@ -45,6 +48,7 @@ export function constructionFilterInput(
     keyword: filter.keyword.trim() || undefined,
     status: filter.status === "all" ? undefined : filter.status,
     issueScope: filter.issueScope,
+    issuePriority: filter.issuePriority ?? "all",
   };
 }
 /** 仅存在待审记录时允许下钻；保留日期/提交人/关键词/问题交集，状态交给待审栏目固定约束。 */

@@ -687,6 +687,13 @@
       "when": 1794581481267,
       "tag": "0097_late_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "5",
+      "when": 1795361428524,
+      "tag": "0098_clumsy_big_bertha",
+      "breakpoints": true
     }
   ]
 }

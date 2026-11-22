@@ -1,3 +1,7 @@
+import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInput";
+import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
+import { ConstructionIssuePriorityBadge } from "@/components/ConstructionIssuePriorityBadge";
+import type { ConstructionIssuePriority } from "@shared/constructionIssuePriority";
 import { ConstructionAssistantSettings } from "@/components/ConstructionAssistantSettings";
 import {
   DieselPriceHistory,
@@ -846,6 +850,7 @@ type ConstructionReportEditor = {
   constructionPlan: string;
   safetyNotes: string;
   issueNotes: string;
+  issuePriority: ConstructionIssuePriority | null;
   progressPercent: string;
 };
 type SubcontractTeamForm = {
@@ -2095,7 +2100,9 @@ function displayUnitQuantity(
   unit: string
 ) {
   if (value === null || value === undefined || value === "") return "—";
-  return /^(piece|set|件|个|套|台|人|条|趟|天|日|辆|次|张|笔)$/.test(unit.trim())
+  return /^(piece|set|件|个|套|台|人|条|趟|天|日|辆|次|张|笔)$/.test(
+    unit.trim()
+  )
     ? String(value)
     : formatQuantity(value);
 }
@@ -6386,21 +6393,23 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
-  const batchVerifyTransportTrips = trpc.transport.batchVerifyTrips.useMutation({
-    onSuccess: async result => {
-      await transportTrips.refetch();
-      const summary = `一键核验完成：成功 ${result.verified.length} 单，跳过 ${result.skipped.length} 单，失败 ${result.failed.length} 单`;
-      if (result.failed.length) toast.warning(summary);
-      else if (result.skipped.length) toast.info(summary);
-      else toast.success(summary);
-      const detail = [...result.skipped, ...result.failed]
-        .slice(0, 3)
-        .map(item => `${item.tripNo}：${item.reason}`)
-        .join("；");
-      if (detail) toast.info(`未放行明细：${detail}`);
-    },
-    onError: error => toast.error(getUserFacingErrorMessage(error)),
-  });
+  const batchVerifyTransportTrips = trpc.transport.batchVerifyTrips.useMutation(
+    {
+      onSuccess: async result => {
+        await transportTrips.refetch();
+        const summary = `一键核验完成：成功 ${result.verified.length} 单，跳过 ${result.skipped.length} 单，失败 ${result.failed.length} 单`;
+        if (result.failed.length) toast.warning(summary);
+        else if (result.skipped.length) toast.info(summary);
+        else toast.success(summary);
+        const detail = [...result.skipped, ...result.failed]
+          .slice(0, 3)
+          .map(item => `${item.tripNo}：${item.reason}`)
+          .join("；");
+        if (detail) toast.info(`未放行明细：${detail}`);
+      },
+      onError: error => toast.error(getUserFacingErrorMessage(error)),
+    }
+  );
 
   const permissionModuleLabels: Record<string, string> = {
     admin: "后台治理",
@@ -12457,6 +12466,7 @@ export default function AdminPage({
             constructionPlan: item.constructionPlan ?? "",
             safetyNotes: item.safetyNotes ?? "",
             issueNotes: item.issueNotes ?? "",
+            issuePriority: item.issuePriority ?? null,
             progressPercent: String(item.progressPercent),
           }
         : {
@@ -12469,6 +12479,7 @@ export default function AdminPage({
             constructionPlan: "",
             safetyNotes: "",
             issueNotes: "",
+            issuePriority: "normal",
             progressPercent: "0",
           };
       setConstructionEditorSnapshot(JSON.stringify(next));
@@ -12646,15 +12657,22 @@ export default function AdminPage({
               </div>
               <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
                 <Field label="施工部位 / 作业面">
-                  <Input
-                    maxLength={200}
+                  <ConstructionWorkAreaInput
+                    projectId={workspaceProjectId}
+                    userId={user?.id ?? 0}
+                    active={
+                      canQuery &&
+                      isConstruction &&
+                      Boolean(constructionReportEditor) &&
+                      hasBusinessWorkspaceProject
+                    }
                     value={constructionReportEditor?.workArea ?? ""}
-                    disabled={!editorCanEdit}
-                    onChange={event =>
+                    disabled={
+                      !editorCanEdit || saveConstructionReport.isPending
+                    }
+                    onChange={workArea =>
                       setConstructionReportEditor(current =>
-                        current
-                          ? { ...current, workArea: event.target.value }
-                          : current
+                        current ? { ...current, workArea } : current
                       )
                     }
                   />
@@ -12680,6 +12698,21 @@ export default function AdminPage({
                   />
                 </Field>
               </div>
+              <Field label="当日施工内容">
+                <Textarea
+                  className="min-h-32"
+                  maxLength={8000}
+                  value={constructionReportEditor?.workContent ?? ""}
+                  disabled={!editorCanEdit}
+                  onChange={event =>
+                    setConstructionReportEditor(current =>
+                      current
+                        ? { ...current, workContent: event.target.value }
+                        : current
+                    )
+                  }
+                />
+              </Field>
               <Field label="施工计划（可选）">
                 <Textarea
                   className="min-h-24"
@@ -12696,51 +12729,40 @@ export default function AdminPage({
                   }
                 />
               </Field>
-              <Field label="当日施工内容">
+              <fieldset className="space-y-3 rounded-lg border p-3">
+                <legend className="px-1 text-sm font-medium">
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    问题记录（可选）
+                    <ConstructionIssuePriorityBadge
+                      priority={constructionReportEditor?.issuePriority}
+                      issueNotes={constructionReportEditor?.issueNotes}
+                    />
+                  </span>
+                </legend>
+                <ConstructionIssuePriorityInput
+                  value={constructionReportEditor?.issuePriority ?? null}
+                  disabled={!editorCanEdit || saveConstructionReport.isPending}
+                  onChange={issuePriority =>
+                    setConstructionReportEditor(current =>
+                      current ? { ...current, issuePriority } : current
+                    )
+                  }
+                />
                 <Textarea
-                  className="min-h-32"
-                  maxLength={8000}
-                  value={constructionReportEditor?.workContent ?? ""}
-                  disabled={!editorCanEdit}
+                  aria-label="问题记录"
+                  className="min-h-24"
+                  maxLength={1000}
+                  value={constructionReportEditor?.issueNotes ?? ""}
+                  disabled={!editorCanEdit || saveConstructionReport.isPending}
                   onChange={event =>
                     setConstructionReportEditor(current =>
                       current
-                        ? { ...current, workContent: event.target.value }
+                        ? { ...current, issueNotes: event.target.value }
                         : current
                     )
                   }
                 />
-              </Field>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field label="安全记录（可选）">
-                  <Textarea
-                    maxLength={1000}
-                    value={constructionReportEditor?.safetyNotes ?? ""}
-                    disabled={!editorCanEdit}
-                    onChange={event =>
-                      setConstructionReportEditor(current =>
-                        current
-                          ? { ...current, safetyNotes: event.target.value }
-                          : current
-                      )
-                    }
-                  />
-                </Field>
-                <Field label="问题记录（可选）">
-                  <Textarea
-                    maxLength={1000}
-                    value={constructionReportEditor?.issueNotes ?? ""}
-                    disabled={!editorCanEdit}
-                    onChange={event =>
-                      setConstructionReportEditor(current =>
-                        current
-                          ? { ...current, issueNotes: event.target.value }
-                          : current
-                      )
-                    }
-                  />
-                </Field>
-              </div>
+              </fieldset>
             </div>
             <DialogFooter>
               <Button
@@ -12774,10 +12796,11 @@ export default function AdminPage({
                       constructionPlan:
                         constructionReportEditor.constructionPlan.trim() ||
                         null,
-                      safetyNotes:
-                        constructionReportEditor.safetyNotes.trim() || null,
                       issueNotes:
                         constructionReportEditor.issueNotes.trim() || null,
+                      issuePriority: constructionReportEditor.issueNotes.trim()
+                        ? constructionReportEditor.issuePriority
+                        : null,
                       progressPercent: Number(
                         constructionReportEditor.progressPercent
                       ),
@@ -13592,7 +13615,8 @@ export default function AdminPage({
                               </p>
                             </TableCell>
                             <TableCell>
-                              {displayUnitQuantity(item.quantity, item.unit)} {item.unit}
+                              {displayUnitQuantity(item.quantity, item.unit)}{" "}
+                              {item.unit}
                             </TableCell>
                             <TableCell>
                               <p>¥{displayMoney(item.upstreamAmount)}</p>
@@ -14020,7 +14044,8 @@ export default function AdminPage({
                       {takeoffs.map(takeoff => (
                         <SelectItem key={takeoff.id} value={String(takeoff.id)}>
                           {takeoff.takeoffNo} · {takeoff.workItem} · 可分配{" "}
-                          {displayUnitQuantity(takeoff.quantity, takeoff.unit)} {takeoff.unit}
+                          {displayUnitQuantity(takeoff.quantity, takeoff.unit)}{" "}
+                          {takeoff.unit}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -17295,13 +17320,17 @@ export default function AdminPage({
                 />
                 <MetricCard
                   title="已开票金额"
-                  value={displayMoney(financeInvoices.data?.summary.totalAmount)}
+                  value={displayMoney(
+                    financeInvoices.data?.summary.totalAmount
+                  )}
                   description="不含作废与红冲"
                   icon={ScrollText}
                 />
                 <MetricCard
                   title="待认证发票"
-                  value={displayMoney(financeInvoices.data?.summary.pendingAmount)}
+                  value={displayMoney(
+                    financeInvoices.data?.summary.pendingAmount
+                  )}
                   description="须会计复核"
                   icon={ScrollText}
                 />

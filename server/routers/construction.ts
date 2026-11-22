@@ -69,6 +69,9 @@ const constructionReportFilterShape = {
   issueScope: z
     .enum(["all", "recorded", "quality", "safety", "unreplied", "replied"])
     .default("all"),
+  issuePriority: z
+    .enum(["all", "urgent", "normal", "unclassified"])
+    .default("all"),
 };
 const constructionReportFilterInput = z
   .object(constructionReportFilterShape)
@@ -161,6 +164,7 @@ const dailyReportInput = z.object({
   constructionPlan: z.string().trim().max(8000).nullable().optional(),
   safetyNotes: z.string().trim().max(1000).nullable().optional(),
   issueNotes: z.string().trim().max(1000).nullable().optional(),
+  issuePriority: z.enum(["normal", "urgent"]).nullable().optional(),
   progressPercent: z
     .number()
     .min(0, "累计完成比例不能小于 0")
@@ -205,6 +209,15 @@ function getConstructionReportPredicates(input: ConstructionReportFilter) {
   if (input.issueScope === "safety") predicates.push(safety);
   if (input.issueScope === "unreplied") predicates.push(sql`NOT (${hasReply})`);
   if (input.issueScope === "replied") predicates.push(hasReply);
+  // 等级仅属于真实问题原文；历史NULL不归一般，安全-only不归未分级问题。
+  if (input.issuePriority !== "all") {
+    predicates.push(quality);
+    predicates.push(
+      input.issuePriority === "unclassified"
+        ? isNull(constructionDailyReports.issuePriority)
+        : eq(constructionDailyReports.issuePriority, input.issuePriority)
+    );
+  }
   if (input.createdBy)
     predicates.push(eq(constructionDailyReports.createdBy, input.createdBy));
   if (input.keyword) {
@@ -233,6 +246,7 @@ const constructionReportProjection = {
   constructionPlan: constructionDailyReports.constructionPlan,
   safetyNotes: constructionDailyReports.safetyNotes,
   issueNotes: constructionDailyReports.issueNotes,
+  issuePriority: constructionDailyReports.issuePriority,
   progressPercent: constructionDailyReports.progressPercent,
   status: constructionDailyReports.status,
   createdBy: constructionDailyReports.createdBy,
@@ -430,6 +444,49 @@ export const constructionRouter = router({
     await assertConstructionAccess(ctx);
     return listConstructionProjects(ctx);
   }),
+
+  /** 只从当前授权项目真实已保存日报聚合，不依赖AI开关、当天筛选或提交人历史。 */
+  workAreaOptions: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.number().int().positive(),
+        keyword: z
+          .string()
+          .trim()
+          .max(200, "关键词不得超过 200 个字符")
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      await assertConstructionAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const db = await getDb();
+      if (!db) return { items: [] };
+      const area = sql<string>`TRIM(${constructionDailyReports.workArea})`;
+      const predicates = [
+        eq(constructionDailyReports.projectId, input.projectId),
+        sql`CHAR_LENGTH(${area}) > 0 AND ${constructionDailyReports.workArea} REGEXP '[^[:space:]]'`,
+      ];
+      if (input.keyword)
+        predicates.push(
+          like(
+            constructionDailyReports.workArea,
+            `%${escapeLikeKeyword(input.keyword)}%`
+          )
+        );
+      const count = sql<number>`COUNT(*)`;
+      const latest = sql<string>`CAST(MAX(${constructionDailyReports.reportDate}) AS CHAR)`;
+      const rows = await db
+        .select({ workArea: area, useCount: count, lastUsedAt: latest })
+        .from(constructionDailyReports)
+        .where(and(...predicates))
+        .groupBy(area)
+        .orderBy(desc(count), desc(latest), area)
+        .limit(30);
+      return {
+        items: rows.map(row => ({ ...row, useCount: Number(row.useCount) })),
+      };
+    }),
 
   /** 只用于前端收敛按钮，所有实际操作仍独立鉴权；PC历史编辑与状态流转依旧仅限超级管理员。 */
   capabilities: protectedProcedure
@@ -673,6 +730,9 @@ export const constructionRouter = router({
           locked: 0,
           issues: 0,
           unreplied: 0,
+          urgentIssues: 0,
+          normalIssues: 0,
+          unclassifiedIssues: 0,
           averageProgressPercent: 0,
         };
       const rows = await db
@@ -680,6 +740,7 @@ export const constructionRouter = router({
           status: constructionDailyReports.status,
           progressPercent: constructionDailyReports.progressPercent,
           issueNotes: constructionDailyReports.issueNotes,
+          issuePriority: constructionDailyReports.issuePriority,
           safetyNotes: constructionDailyReports.safetyNotes,
           reviewReply: constructionDailyReports.reviewReply,
         })
@@ -700,6 +761,15 @@ export const constructionRouter = router({
           row =>
             (row.issueNotes?.trim() || row.safetyNotes?.trim()) &&
             !row.reviewReply?.trim()
+        ).length,
+        urgentIssues: rows.filter(
+          row => row.issueNotes?.trim() && row.issuePriority === "urgent"
+        ).length,
+        normalIssues: rows.filter(
+          row => row.issueNotes?.trim() && row.issuePriority === "normal"
+        ).length,
+        unclassifiedIssues: rows.filter(
+          row => row.issueNotes?.trim() && row.issuePriority == null
         ).length,
         averageProgressPercent: total
           ? Math.round(
@@ -744,8 +814,13 @@ export const constructionRouter = router({
         ...(input.constructionPlan !== undefined
           ? { constructionPlan: input.constructionPlan || null }
           : {}),
-        safetyNotes: input.safetyNotes || null,
-        issueNotes: input.issueNotes || null,
+        // 新表单不再录入安全说明，省略时不覆盖历史原文；旧客户端显式传入仍兼容。
+        ...(input.safetyNotes !== undefined
+          ? { safetyNotes: input.safetyNotes || null }
+          : {}),
+        ...(input.issueNotes !== undefined
+          ? { issueNotes: input.issueNotes || null }
+          : {}),
         progressPercent: String(input.progressPercent),
       };
 
@@ -773,6 +848,14 @@ export const constructionRouter = router({
           .update(constructionDailyReports)
           .set({
             ...values,
+            issuePriority: (input.issueNotes === undefined
+              ? existing.issueNotes
+              : values.issueNotes
+            )?.trim()
+              ? input.issuePriority === undefined
+                ? existing.issuePriority
+                : input.issuePriority
+              : null,
             status: existing.status === "rejected" ? "draft" : existing.status,
             reviewReply:
               existing.status === "rejected" ? null : existing.reviewReply,
@@ -813,7 +896,15 @@ export const constructionRouter = router({
 
       const [created] = await db
         .insert(constructionDailyReports)
-        .values({ ...values, createdBy: user.id })
+        .values({
+          ...values,
+          issuePriority: values.issueNotes
+            ? input.issuePriority === undefined
+              ? "normal"
+              : input.issuePriority
+            : null,
+          createdBy: user.id,
+        })
         .$returningId();
       const id = Number(created?.id);
       await db.insert(auditLogs).values({

@@ -44,6 +44,7 @@ interface Report {
   workContent: string;
   safetyNotes: string | null;
   issueNotes: string | null;
+  issuePriority: "normal" | "urgent" | null;
   reviewReply: string | null;
 }
 const report = (id: number, patch: Partial<Report> = {}): Report => ({
@@ -56,6 +57,7 @@ const report = (id: number, patch: Partial<Report> = {}): Report => ({
   workContent: "真实施工正文",
   safetyNotes: null,
   issueNotes: "质量问题",
+  issuePriority: null,
   reviewReply: null,
   ...patch,
 });
@@ -77,13 +79,13 @@ function memoryDb(records: Report[]) {
   );
   memory.exec(`CREATE TABLE construction_daily_reports (
     id INTEGER PRIMARY KEY, projectId INTEGER, reportDate TEXT, workArea TEXT, weather TEXT DEFAULT 'sunny',
-    workContent TEXT, constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, progressPercent TEXT DEFAULT '25', status TEXT,
+    workContent TEXT, constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, issuePriority TEXT, progressPercent TEXT DEFAULT '25', status TEXT,
     createdBy INTEGER, reviewReply TEXT, reviewedBy INTEGER DEFAULT 3, reviewedAt TEXT,
     createdAt TEXT DEFAULT '2026-10-15', updatedAt TEXT DEFAULT '2026-10-15');
     CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT);
     INSERT INTO users VALUES(2,'填报乙'),(3,'主管丙');`);
   const insert = memory.prepare(
-    `INSERT INTO construction_daily_reports(id,projectId,reportDate,status,createdBy,workArea,workContent,safetyNotes,issueNotes,reviewReply) VALUES(?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO construction_daily_reports(id,projectId,reportDate,status,createdBy,workArea,workContent,safetyNotes,issueNotes,issuePriority,reviewReply) VALUES(?,?,?,?,?,?,?,?,?,?,?)`
   );
   records.forEach(row =>
     insert.run(
@@ -96,6 +98,7 @@ function memoryDb(records: Report[]) {
       row.workContent,
       row.safetyNotes,
       row.issueNotes,
+      row.issuePriority,
       row.reviewReply
     )
   );
@@ -112,6 +115,7 @@ function memoryDb(records: Report[]) {
       let predicate: SQL | undefined;
       let limit: number | undefined;
       let order: SQL[] = [];
+      let group: SQL[] = [];
       let join = false;
       const execute = () => {
         const expressions = Object.entries(projection).map(
@@ -123,6 +127,8 @@ function memoryDb(records: Report[]) {
             sql` left join users on construction_daily_reports.createdBy = users.id`
           );
         if (predicate) query.append(sql` where ${predicate}`);
+        if (group.length)
+          query.append(sql` group by ${sql.join(group, sql`, `)}`);
         if (order.length)
           query.append(sql` order by ${sql.join(order, sql`, `)}`);
         if (limit) query.append(sql` limit ${limit}`);
@@ -141,6 +147,10 @@ function memoryDb(records: Report[]) {
         },
         where(value: SQL) {
           predicate = value;
+          return chain;
+        },
+        groupBy(...value: SQL[]) {
+          group = value;
           return chain;
         },
         orderBy(...value: SQL[]) {
@@ -581,6 +591,269 @@ describe("施工真实路由调用与内存SQL筛选结果（不连接实际DB�
           reportIds: [1],
         })
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(store.select).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("问题等级五接口与真实作业面历史SQL", () => {
+  function useReports(rows: Report[]) {
+    const store = memoryDb(rows);
+    vi.mocked(getDb).mockResolvedValue(store.db as never);
+    return store;
+  }
+  it.each(["all", "urgent", "normal", "unclassified"] as const)(
+    "等级%s五接口同口径含当天端点，安全-only/空白问题不产生等级",
+    async issuePriority => {
+      useReports([
+        report(1, {
+          reportDate: "2026-11-22",
+          issuePriority: "urgent",
+          issueNotes: "普通措辞问题",
+        }),
+        report(2, {
+          reportDate: "2026-11-22",
+          issuePriority: "normal",
+          issueNotes: "紧急字样不推断，已整改不推断",
+        }),
+        report(3, { reportDate: "2026-11-22", issuePriority: null }),
+        report(4, {
+          reportDate: "2026-11-22",
+          issueNotes: null,
+          safetyNotes: "仅历史安全",
+          issuePriority: "urgent",
+        }),
+        report(5, {
+          reportDate: "2026-11-22",
+          issueNotes: " \t\n",
+          issuePriority: "normal",
+        }),
+        report(6, { reportDate: "2026-11-21", issuePriority: "urgent" }),
+        report(7, { reportDate: "2026-11-23", issuePriority: "urgent" }),
+        report(8, {
+          reportDate: "2026-11-22",
+          projectId: 20,
+          issuePriority: "urgent",
+        }),
+        report(9, {
+          reportDate: "2026-11-22",
+          createdBy: 3,
+          issuePriority: "urgent",
+        }),
+        report(10, {
+          reportDate: "2026-11-22",
+          workContent: "其他内容",
+          issuePriority: "urgent",
+        }),
+      ]);
+      const api = constructionRouter.createCaller(context);
+      const filter = {
+        projectId: 10,
+        dateFrom: "2026-11-22",
+        dateTo: "2026-11-22",
+        createdBy: 2,
+        keyword: "真实",
+        issuePriority,
+      };
+      const expected = {
+        all: [5, 4, 3, 2, 1],
+        urgent: [1],
+        normal: [2],
+        unclassified: [3],
+      }[issuePriority];
+      const list = await api.listReports(filter);
+      const printed = await api.printReports(filter);
+      const exported = await api.exportReports(filter);
+      const manifest = await api.outputManifest({
+        ...filter,
+        action: "export",
+      });
+      const summary = await api.summary(filter);
+      expect(list.map(row => row.id).sort((a, b) => b - a)).toEqual(expected);
+      expect(printed.map(row => row.id)).toEqual(expected);
+      expect(exported.map(row => row.id)).toEqual(expected);
+      expect(manifest.batches.flatMap(batch => batch.ids)).toEqual(expected);
+      expect(summary).toMatchObject({
+        total: expected.length,
+        urgentIssues: expected.includes(1) ? 1 : 0,
+        normalIssues: expected.includes(2) ? 1 : 0,
+        unclassifiedIssues: expected.includes(3) ? 1 : 0,
+      });
+      for (const row of printed)
+        expect(exported.find(item => item.id === row.id)?.issuePriority).toBe(
+          row.issuePriority
+        );
+      expect(exported.find(row => row.id === 3)?.issuePriority).toBe(
+        issuePriority === "all" || issuePriority === "unclassified"
+          ? null
+          : undefined
+      );
+    }
+  );
+  it.each(["print", "export"] as const)(
+    "等级变更使%s原清单批次明确CONFLICT",
+    async action => {
+      const store = useReports([report(1, { issuePriority: "urgent" })]);
+      const api = constructionRouter.createCaller(context);
+      const filter = { projectId: 10, issuePriority: "urgent" as const };
+      const manifest = await api.outputManifest({ ...filter, action });
+      store.memory.exec(
+        "UPDATE construction_daily_reports SET issuePriority='normal' WHERE id=1"
+      );
+      await expect(
+        api[action === "print" ? "printReports" : "exportReports"]({
+          ...filter,
+          reportIds: manifest.batches[0].ids,
+        })
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+    }
+  );
+  it.each([
+    "listReports",
+    "summary",
+    "printReports",
+    "exportReports",
+    "outputManifest",
+  ] as const)("%s非法等级筛选在读取前拒绝", async method => {
+    const store = useReports([]);
+    await expect(
+      constructionRouter
+        .createCaller(context)
+        [
+          method
+        ]({ projectId: 10, issuePriority: "critical", action: "export" } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(getDb).not.toHaveBeenCalled();
+    expect(store.select).not.toHaveBeenCalled();
+  });
+  it("真实历史跨日期、状态、提交人去重，使用次数优先及最近日报日排序，仅当前项目", async () => {
+    useReports([
+      report(1, {
+        workArea: "常用工区",
+        reportDate: "2026-01-01",
+        status: "locked",
+      }),
+      report(2, {
+        workArea: "常用工区",
+        reportDate: "2026-01-02",
+        createdBy: 3,
+      }),
+      report(3, {
+        workArea: "常用工区",
+        reportDate: "2026-01-03",
+        status: "rejected",
+      }),
+      report(4, { workArea: "最近工区", reportDate: "2026-11-22" }),
+      report(5, { workArea: "最近工区", reportDate: "2026-11-21" }),
+      report(6, { workArea: "旧日工区", reportDate: "2026-06-01" }),
+      report(7, { workArea: "旧日工区", reportDate: "2026-05-01" }),
+      report(8, {
+        workArea: "常用工区",
+        projectId: 20,
+        reportDate: "2026-11-23",
+      }),
+      report(9, { workArea: "跨项目不可见", projectId: 20 }),
+      report(10, { workArea: " \t\n" }),
+    ]);
+    const result = await constructionRouter
+      .createCaller(context)
+      .workAreaOptions({ projectId: 10 });
+    expect(result).toEqual({
+      items: [
+        { workArea: "常用工区", useCount: 3, lastUsedAt: "2026-01-03" },
+        { workArea: "最近工区", useCount: 2, lastUsedAt: "2026-11-22" },
+        { workArea: "旧日工区", useCount: 2, lastUsedAt: "2026-06-01" },
+      ],
+    });
+    expect(assertDepartmentBusinessAccess).toHaveBeenCalledWith(
+      expect.anything(),
+      "CONSTRUCTION",
+      "read"
+    );
+    expect(assertProjectInCurrentScope).toHaveBeenCalledWith(
+      expect.anything(),
+      10
+    );
+    result.items.forEach(row =>
+      expect(Object.keys(row).sort()).toEqual([
+        "lastUsedAt",
+        "useCount",
+        "workArea",
+      ])
+    );
+  });
+  it("历史最多30个真实选项，按次数与最近日选择，不制造空历史演示项", async () => {
+    useReports(
+      Array.from({ length: 35 }, (_, index) =>
+        report(index + 1, {
+          workArea: `作业面${String(index).padStart(2, "0")}`,
+          reportDate: index >= 30 ? "2026-11-22" : "2026-01-01",
+        })
+      )
+    );
+    const api = constructionRouter.createCaller(context);
+    const result = await api.workAreaOptions({ projectId: 10 });
+    expect(result.items).toHaveLength(30);
+    expect(new Set(result.items.map(row => row.workArea)).size).toBe(30);
+    expect(result.items.slice(0, 5).map(row => row.workArea)).toEqual([
+      "作业面30",
+      "作业面31",
+      "作业面32",
+      "作业面33",
+      "作业面34",
+    ]);
+    expect(await api.workAreaOptions({ projectId: 99 })).toEqual({ items: [] });
+  });
+  it("历史关键词百分号/下划线/反斜杠按字面查找，200字符有效而201拒绝", async () => {
+    const needle = "%_\\工区";
+    useReports([
+      report(1, { workArea: `前缀${needle}尾部` }),
+      report(2, { workArea: "任意工区" }),
+      report(3, { workArea: needle, projectId: 20 }),
+      report(4, { workArea: "区".repeat(200) }),
+    ]);
+    const api = constructionRouter.createCaller(context);
+    expect(
+      await api.workAreaOptions({ projectId: 10, keyword: ` ${needle} ` })
+    ).toEqual({
+      items: [
+        {
+          workArea: `前缀${needle}尾部`,
+          useCount: 1,
+          lastUsedAt: "2026-10-15",
+        },
+      ],
+    });
+    expect(
+      (await api.workAreaOptions({ projectId: 10, keyword: "区".repeat(200) }))
+        .items
+    ).toHaveLength(1);
+    vi.mocked(getDb).mockClear();
+    await expect(
+      api.workAreaOptions({ projectId: 10, keyword: "区".repeat(201) })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(getDb).not.toHaveBeenCalled();
+  });
+  it.each(["role", "module", "project"])(
+    "历史%s越权在读取前拒绝",
+    async restriction => {
+      const store = useReports([report(1)]);
+      if (restriction === "role")
+        vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
+      if (restriction === "module")
+        vi.mocked(assertDepartmentBusinessAccess).mockRejectedValue(
+          new TRPCError({ code: "FORBIDDEN" })
+        );
+      if (restriction === "project")
+        vi.mocked(assertProjectInCurrentScope).mockRejectedValue(
+          new TRPCError({ code: "FORBIDDEN" })
+        );
+      await expect(
+        constructionRouter
+          .createCaller(context)
+          .workAreaOptions({ projectId: 10 })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(getDb).not.toHaveBeenCalled();
       expect(store.select).not.toHaveBeenCalled();
     }
   );

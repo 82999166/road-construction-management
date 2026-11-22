@@ -95,6 +95,7 @@ describe("施工工作区服务端统一筛选与授权", () => {
       scope: "issues" as const,
       status: "submitted" as const,
       issueScope: "unreplied" as const,
+      issuePriority: "urgent" as const,
       dateFrom: "2026-10-01",
       dateTo: "2026-10-31",
       createdBy: 1,
@@ -114,6 +115,8 @@ describe("施工工作区服务端统一筛选与授权", () => {
     expect(mock.predicates[0].sql).toContain("CHAR_LENGTH(TRIM(COALESCE");
     expect(mock.predicates[0].sql).toContain("NOT (");
     expect(mock.predicates[0].sql).toContain("reviewReply");
+    expect(mock.predicates[0].sql).toContain("`issuePriority` = ?");
+    expect(mock.predicates[0].params).toContain("urgent");
     expect(mock.predicates[0].params).toContain("%\\%\\_\\\\整改%");
     expect(mock.predicates[0].params).toContain("2026-10-01");
     expect(mock.predicates[0].params).toContain("2026-10-31");

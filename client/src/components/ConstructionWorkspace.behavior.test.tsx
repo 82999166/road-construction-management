@@ -317,6 +317,7 @@ describe("施工筛选、动作和输出纯行为", () => {
       keyword: "整改",
       status: "rejected",
       issueScope: "unreplied",
+      issuePriority: "all",
     });
     expect(
       constructionFilterInput(10, "archive", {
@@ -429,7 +430,7 @@ describe("施工筛选、动作和输出纯行为", () => {
     });
     expect(html).toContain("施".repeat(8000));
     expect(html).toContain("正文末尾&lt;script&gt;");
-    expect(html).toContain("质量/协调问题");
+    expect(html).toContain("问题记录");
     expect(html).toContain("审核结果与回复");
     expect(html).toContain("原问题尾部</div></td></tr>");
     expect(html).toContain("审核回复尾部</div></td></tr>");

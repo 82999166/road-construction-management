@@ -55,12 +55,13 @@ import {
 } from "@shared/constructionWorkspace";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { toast } from "sonner";
+import { ConstructionIssuePriorityBadge } from "./ConstructionIssuePriorityBadge";
 
 export type { ConstructionWorkspaceReport } from "@/lib/constructionOutput";
 const COLUMN_SCOPE = {
   ledger: "全部符合条件日报（含草稿、问题及安全记录）",
   review: "仅已提交、待审核日报",
-  issues: "仅原日报填写了问题或安全记录的子视图",
+  issues: "原日报问题记录子视图（兼容历史安全资料）",
   archive: "仅已归档日报",
 } as const;
 function pcExcerpt(value: string | null | undefined, limit = 120) {
@@ -79,6 +80,7 @@ function initialFilter(
     keyword: "",
     status: "all",
     issueScope: "all",
+    issuePriority: "all",
   };
 }
 export interface ConstructionWorkspaceProps {
@@ -365,7 +367,7 @@ export default function ConstructionWorkspace({
   function returnToLedger() {
     setFilters(current => ({
       ...current,
-      ledger: { ...current.issues, issueScope: "all" },
+      ledger: { ...current.issues, issueScope: "all", issuePriority: "all" },
     }));
     setTab("ledger");
   }
@@ -385,7 +387,7 @@ export default function ConstructionWorkspace({
       submitters.refetch(),
       capabilities.refetch(),
     ]);
-  const filterText = `${CONSTRUCTION_WORKSPACE_TABS.find(item => item.value === tab)?.label}；日期 ${filter.dateFrom || "不限"} 至 ${filter.dateTo || "不限"}；提交管理员 ${submitters.data?.find(item => String(item.id) === filter.createdBy)?.name || "全部"}；状态 ${filter.status === "all" ? "全部（按栏目范围）" : getBusinessStatusLabel(filter.status)}；问题范围 ${{ all: "全部（按栏目范围）", recorded: "仅有问题/安全记录", quality: "质量/协调问题", safety: "安全记录", unreplied: "未回复", replied: "已有回复" }[filter.issueScope]}；关键词 ${filter.keyword.trim() || "全部"}`;
+  const filterText = `${CONSTRUCTION_WORKSPACE_TABS.find(item => item.value === tab)?.label}；日期 ${filter.dateFrom || "不限"} 至 ${filter.dateTo || "不限"}；提交管理员 ${submitters.data?.find(item => String(item.id) === filter.createdBy)?.name || "全部"}；状态 ${filter.status === "all" ? "全部（按栏目范围）" : getBusinessStatusLabel(filter.status)}；问题范围 ${{ all: "全部（按栏目范围）", recorded: "仅有问题/历史记录", quality: "问题记录", safety: "历史安全资料", unreplied: "未回复", replied: "已有回复" }[filter.issueScope]}；问题等级 ${{ all: "全部", urgent: "紧急", normal: "一般", unclassified: "未分级" }[filter.issuePriority ?? "all"]}；关键词 ${filter.keyword.trim() || "全部"}`;
   function drillReview() {
     if (!summaryReady || !statistics?.submitted) return;
     setFilters(current => ({
@@ -715,12 +717,14 @@ export default function ConstructionWorkspace({
                   </Button>
                 ) : null}
               </div>
-              <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-6">
+              <div
+                className={`grid min-w-0 grid-cols-2 gap-2 [&>div]:min-w-0 ${tab === "issues" || filter.issueScope !== "all" || (filter.issuePriority ?? "all") !== "all" ? "xl:grid-cols-8" : "xl:grid-cols-6"}`}
+              >
                 <div>
                   <Label htmlFor="construction-date-from">日报开始日期</Label>
                   <Input
                     id="construction-date-from"
-                    className="mt-1 min-w-0"
+                    className="mt-1 h-9 w-full min-w-0 max-w-full px-1.5 text-[13px] sm:px-2 sm:text-sm"
                     type="date"
                     value={filter.dateFrom}
                     max={filter.dateTo || undefined}
@@ -733,7 +737,7 @@ export default function ConstructionWorkspace({
                   <Label htmlFor="construction-date-to">日报结束日期</Label>
                   <Input
                     id="construction-date-to"
-                    className="mt-1 min-w-0"
+                    className="mt-1 h-9 w-full min-w-0 max-w-full px-1.5 text-[13px] sm:px-2 sm:text-sm"
                     type="date"
                     value={filter.dateTo}
                     min={filter.dateFrom || undefined}
@@ -818,24 +822,50 @@ export default function ConstructionWorkspace({
                       }
                     >
                       <option value="all">
-                        {tab === "issues" ? "全部问题 / 安全记录" : "全部日报"}
+                        {tab === "issues" ? "全部现场记录" : "全部日报"}
                       </option>
-                      <option value="recorded">仅有问题 / 安全记录</option>
-                      <option value="quality">质量 / 协调问题</option>
-                      <option value="safety">安全记录</option>
+                      <option value="recorded">有问题 / 历史记录</option>
+                      <option value="quality">问题记录</option>
+                      {filter.issueScope === "safety" ? (
+                        <option value="safety">历史安全资料（只读）</option>
+                      ) : null}
                       <option value="unreplied">未填写审核回复</option>
                       <option value="replied">已填写审核回复</option>
                     </select>
                   </div>
                 ) : null}
-                <div>
+                {tab === "issues" ||
+                (filter.issuePriority ?? "all") !== "all" ? (
+                  <div>
+                    <Label htmlFor="construction-issue-priority">
+                      问题等级
+                    </Label>
+                    <select
+                      id="construction-issue-priority"
+                      className={`${selectClass} mt-1`}
+                      value={filter.issuePriority ?? "all"}
+                      onChange={event =>
+                        patchFilter({
+                          issuePriority: event.target
+                            .value as ConstructionWorkspaceFilter["issuePriority"],
+                        })
+                      }
+                    >
+                      <option value="all">全部等级</option>
+                      <option value="urgent">紧急（红色）</option>
+                      <option value="normal">一般（黄色）</option>
+                      <option value="unclassified">历史未分级</option>
+                    </select>
+                  </div>
+                ) : null}
+                <div className="col-span-2">
                   <Label htmlFor="construction-keyword">关键字查询</Label>
                   <Input
                     id="construction-keyword"
                     className="mt-1"
                     value={filter.keyword}
                     maxLength={100}
-                    placeholder="作业面、内容、安全、问题或回复"
+                    placeholder="作业面、施工内容、计划、问题或回复"
                     onChange={event =>
                       patchFilter({ keyword: event.target.value })
                     }
@@ -954,6 +984,23 @@ export default function ConstructionWorkspace({
               </CardContent>
             </Card>
           </div>
+          {tab === "issues" ? (
+            <div
+              className="flex flex-wrap items-center gap-2 text-xs"
+              aria-label="当前筛选问题等级汇总"
+            >
+              <span className="rounded-md border border-red-200 bg-red-100 px-2 py-1 font-semibold text-red-900">
+                紧急 {statistics?.urgentIssues ?? "—"} 份
+              </span>
+              <span className="rounded-md border border-yellow-200 bg-yellow-100 px-2 py-1 font-semibold text-yellow-900">
+                一般 {statistics?.normalIssues ?? "—"} 份
+              </span>
+              <span className="text-muted-foreground">
+                未分级 {statistics?.unclassifiedIssues ?? "—"} 份 ·
+                等级按填报选择，不代表整改结论
+              </span>
+            </div>
+          ) : null}
           {summary.isError ? (
             <p
               role="alert"
@@ -1059,14 +1106,27 @@ export default function ConstructionWorkspace({
                       <p className="whitespace-pre-wrap text-sm leading-6">
                         {report.workContent}
                       </p>
-                      {report.safetyNotes ? (
-                        <p className="whitespace-pre-wrap rounded border p-2 text-sm leading-6">
-                          安全：{report.safetyNotes}
-                        </p>
+                      {report.issueNotes?.trim() ? (
+                        <div
+                          className={`space-y-1.5 rounded-lg border p-2.5 ${report.issuePriority === "urgent" ? "border-red-200 bg-red-50" : report.issuePriority === "normal" ? "border-yellow-200 bg-yellow-50" : "border-border bg-muted/30"}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium">
+                              问题记录
+                            </span>
+                            <ConstructionIssuePriorityBadge
+                              priority={report.issuePriority}
+                              issueNotes={report.issueNotes}
+                            />
+                          </div>
+                          <p className="whitespace-pre-wrap text-sm leading-6">
+                            {report.issueNotes}
+                          </p>
+                        </div>
                       ) : null}
-                      {report.issueNotes ? (
-                        <p className="whitespace-pre-wrap rounded border p-2 text-sm leading-6">
-                          问题：{report.issueNotes}
+                      {report.safetyNotes?.trim() ? (
+                        <p className="text-xs text-muted-foreground">
+                          历史安全资料已保留，可在详情查看。
                         </p>
                       ) : null}
                       {report.reviewReply ? (
@@ -1144,6 +1204,12 @@ export default function ConstructionWorkspace({
                         </td>
                         <td className="p-3">
                           <BusinessStatusBadge status={report.status} />
+                          <div className="mt-1">
+                            <ConstructionIssuePriorityBadge
+                              priority={report.issuePriority}
+                              issueNotes={report.issueNotes}
+                            />
+                          </div>
                           <p className="mt-1 text-xs text-muted-foreground">
                             {report.issueNotes?.trim() ||
                             report.safetyNotes?.trim()
@@ -1158,8 +1224,8 @@ export default function ConstructionWorkspace({
                             </p>
                           ) : null}
                           {tab === "issues" && report.safetyNotes?.trim() ? (
-                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5">
-                              安全：{pcExcerpt(report.safetyNotes, 90)}
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                              历史安全资料见详情
                             </p>
                           ) : null}
                         </td>
@@ -1221,6 +1287,12 @@ export default function ConstructionWorkspace({
               <h3 className="font-semibold">4. 打印和 CSV 范围</h3>
               <p>
                 批量A4竖版打印及CSV包含当前项目、栏目、筛选的全部日报，不只当前页；超过250份按完整清单逐批输出。项目、筛选或权限变化会取消旧输出。单份详情打印重新读取本份完整日报；照片仅在详情内受控预览，不进入打印或导出。PC列表为摘要，手机正文与详情保留完整文字。
+              </p>
+            </section>
+            <section>
+              <h3 className="font-semibold">5. 快捷录入与问题等级</h3>
+              <p>
+                新建或编辑日报时，点击作业面右侧的常用下拉，选择本项目已保存过的作业面即可回填，也可直接手动输入。先填写当日施工内容，再填施工计划。问题记录选择“一般”（黄色）或“紧急”（红色），现场问题可按等级筛选，列表、详情、A4和CSV保持一致；空问题不显示等级，旧日报未选择等级时保持“未分级”，不自动判定。安全录入口已移除，历史安全内容仍在详情及输出中保留，修改其他字段不会清空旧内容。
               </p>
             </section>
           </div>

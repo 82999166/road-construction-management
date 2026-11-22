@@ -1,3 +1,7 @@
+import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInput";
+import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
+import { ConstructionIssuePriorityBadge } from "@/components/ConstructionIssuePriorityBadge";
+import type { ConstructionIssuePriority } from "@shared/constructionIssuePriority";
 import { ConstructionSmartInput } from "@/components/ConstructionSmartInput";
 import {
   CONSTRUCTION_ASSISTANT_FIELDS,
@@ -84,8 +88,51 @@ const emptyDraft = {
   constructionPlan: "",
   safetyNotes: "",
   issueNotes: "",
+  issuePriority: "normal" as ConstructionIssuePriority | null,
   progressPercent: "0",
 };
+
+/** Version 2 adds priority; legacy drafts without it remain explicitly unclassified. */
+export function parseConstructionReportDraft(value: Record<string, unknown>) {
+  const result: Partial<typeof emptyDraft> = {};
+  for (const field of [
+    "workArea",
+    "workContent",
+    "constructionPlan",
+    "safetyNotes",
+    "issueNotes",
+  ] as const) {
+    if (
+      typeof value[field] === "string" &&
+      value[field].length <= CONSTRUCTION_ASSISTANT_FIELD_LIMITS[field]
+    )
+      result[field] = value[field];
+  }
+  if (
+    typeof value.reportDate === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value.reportDate)
+  )
+    result.reportDate = value.reportDate;
+  if (
+    ["sunny", "cloudy", "rainy", "snowy", "windy", "other"].includes(
+      String(value.weather)
+    )
+  )
+    result.weather = value.weather as Weather;
+  if (
+    typeof value.progressPercent === "string" &&
+    value.progressPercent.trim() &&
+    Number.isFinite(Number(value.progressPercent)) &&
+    Number(value.progressPercent) >= 0 &&
+    Number(value.progressPercent) <= 100
+  )
+    result.progressPercent = value.progressPercent;
+  result.issuePriority =
+    value.issuePriority === "urgent" || value.issuePriority === "normal"
+      ? value.issuePriority
+      : null;
+  return result;
+}
 
 function getTodayText() {
   return toDeviceDateInput();
@@ -263,10 +310,14 @@ export default function MobileConstructionPage() {
       Record<ConstructionAssistantField, string | null | undefined>
     >
   ) {
-    const entries = CONSTRUCTION_ASSISTANT_FIELDS.map(field => ({
-      field,
-      content: String(content[field] ?? "").trim(),
-    })).filter(entry => entry.content);
+    const entries = CONSTRUCTION_ASSISTANT_FIELDS.filter(
+      field => field !== "safetyNotes"
+    )
+      .map(field => ({
+        field,
+        content: String(content[field] ?? "").trim(),
+      }))
+      .filter(entry => entry.content);
     if (!entries.length || !user?.id) return;
     try {
       await rememberInput.mutateAsync({ projectId: savedProjectId, entries });
@@ -306,6 +357,7 @@ export default function MobileConstructionPage() {
   const deviceDraftKey = `construction-report:${user?.id ?? "pending-user"}:${projectId ?? "pending"}:${editingId ?? "new"}`;
   const localDraftPayload = useMemo(
     () => ({
+      draftVersion: 2,
       reportDate: draft.reportDate,
       workArea: draft.workArea,
       weather: draft.weather,
@@ -313,6 +365,7 @@ export default function MobileConstructionPage() {
       constructionPlan: draft.constructionPlan,
       safetyNotes: draft.safetyNotes,
       issueNotes: draft.issueNotes,
+      issuePriority: draft.issuePriority,
       progressPercent: draft.progressPercent,
     }),
     [draft]
@@ -323,8 +376,11 @@ export default function MobileConstructionPage() {
       "reportDate",
       "weather",
       "progressPercent",
+      "issuePriority",
+      "draftVersion",
     ]) ||
       draft.progressPercent !== "0" ||
+      draft.issuePriority === "urgent" ||
       pendingEvidenceFiles.length > 0);
 
   function resetReportForm() {
@@ -444,7 +500,8 @@ export default function MobileConstructionPage() {
     if (!dialogOpen) return;
     const saved = readMobileDraft<typeof localDraftPayload>(deviceDraftKey);
     if (!saved || !hasMobileDraftContent(saved.value)) return;
-    setDraft(current => ({ ...current, ...saved.value }));
+    const restored = parseConstructionReportDraft(saved.value);
+    setDraft(current => ({ ...current, ...restored }));
     toast.info("已恢复这台设备上未提交的施工日报文字草稿；照片需重新选择。");
     // 仅在表单首次打开或切换编辑记录时恢复，避免输入中被重复覆盖。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -635,6 +692,7 @@ export default function MobileConstructionPage() {
       constructionPlan: report.constructionPlan ?? "",
       safetyNotes: report.safetyNotes ?? "",
       issueNotes: report.issueNotes ?? "",
+      issuePriority: report.issuePriority ?? null,
       progressPercent: String(report.progressPercent ?? 0),
     });
     setReportCapturedAt(new Date());
@@ -704,8 +762,8 @@ export default function MobileConstructionPage() {
       weather: draft.weather,
       workContent: draft.workContent,
       constructionPlan: draft.constructionPlan || null,
-      safetyNotes: draft.safetyNotes || null,
-      issueNotes: draft.issueNotes || null,
+      issueNotes: draft.issueNotes.trim() || null,
+      issuePriority: draft.issueNotes.trim() ? draft.issuePriority : null,
       progressPercent,
     });
   }
@@ -968,15 +1026,18 @@ export default function MobileConstructionPage() {
             </div>
             <div>
               <Label htmlFor="report-area">施工部位 / 作业面</Label>
-              <Input
+              <ConstructionWorkAreaInput
                 id="report-area"
+                projectId={selectedProjectId}
+                userId={user?.id ?? 0}
+                active={dialogOpen && isAuthenticated}
+                disabled={saveReport.isPending}
                 value={draft.workArea}
-                maxLength={200}
                 placeholder="例如：K12+500 路基填筑作业面"
-                onChange={event =>
+                onChange={workArea =>
                   setDraft(current => ({
                     ...current,
-                    workArea: event.target.value,
+                    workArea,
                   }))
                 }
               />
@@ -984,6 +1045,7 @@ export default function MobileConstructionPage() {
                 projectId={selectedProjectId ?? 0}
                 userId={user?.id ?? 0}
                 field="workArea"
+                historyVisible={false}
                 value={draft.workArea}
                 onChange={value =>
                   setDraft(current => ({ ...current, workArea: value }))
@@ -1007,32 +1069,6 @@ export default function MobileConstructionPage() {
                     progressPercent: event.target.value,
                   }))
                 }
-              />
-            </div>
-            <div>
-              <Label htmlFor="report-plan">施工计划（可选）</Label>
-              <Textarea
-                id="report-plan"
-                value={draft.constructionPlan}
-                maxLength={8000}
-                placeholder="填写计划工序、作业安排或下一步施工计划"
-                onChange={event =>
-                  setDraft(current => ({
-                    ...current,
-                    constructionPlan: event.target.value,
-                  }))
-                }
-              />
-              <ConstructionSmartInput
-                projectId={selectedProjectId ?? 0}
-                userId={user?.id ?? 0}
-                field="constructionPlan"
-                value={draft.constructionPlan}
-                onChange={value =>
-                  setDraft(current => ({ ...current, constructionPlan: value }))
-                }
-                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.constructionPlan}
-                active={dialogOpen && isAuthenticated && !saveReport.isPending}
               />
             </div>
             <div>
@@ -1062,35 +1098,56 @@ export default function MobileConstructionPage() {
               />
             </div>
             <div>
-              <Label htmlFor="report-safety">安全情况（可选）</Label>
+              <Label htmlFor="report-plan">施工计划（可选）</Label>
               <Textarea
-                id="report-safety"
-                value={draft.safetyNotes}
-                maxLength={1000}
-                placeholder="不得填写个人敏感信息。"
+                id="report-plan"
+                value={draft.constructionPlan}
+                maxLength={8000}
+                placeholder="填写计划工序、作业安排或下一步施工计划"
                 onChange={event =>
                   setDraft(current => ({
                     ...current,
-                    safetyNotes: event.target.value,
+                    constructionPlan: event.target.value,
                   }))
                 }
               />
               <ConstructionSmartInput
                 projectId={selectedProjectId ?? 0}
                 userId={user?.id ?? 0}
-                field="safetyNotes"
-                value={draft.safetyNotes}
+                field="constructionPlan"
+                value={draft.constructionPlan}
                 onChange={value =>
-                  setDraft(current => ({ ...current, safetyNotes: value }))
+                  setDraft(current => ({ ...current, constructionPlan: value }))
                 }
-                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.safetyNotes}
+                maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.constructionPlan}
                 active={dialogOpen && isAuthenticated && !saveReport.isPending}
               />
             </div>
-            <div>
-              <Label htmlFor="report-issues">质量 / 协调问题（可选）</Label>
+            <fieldset className="space-y-3 rounded-lg border border-[#ead9c8] p-3">
+              <legend className="px-1 text-sm font-medium">
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  问题记录（可选）
+                  <ConstructionIssuePriorityBadge
+                    priority={draft.issuePriority}
+                    issueNotes={draft.issueNotes}
+                  />
+                </span>
+              </legend>
+              <ConstructionIssuePriorityInput
+                value={draft.issuePriority}
+                disabled={saveReport.isPending}
+                onChange={issuePriority =>
+                  setDraft(current => ({ ...current, issuePriority }))
+                }
+              />
+              <Label htmlFor="report-issues" className="sr-only">
+                质量 / 协调问题
+              </Label>
               <Textarea
                 id="report-issues"
+                aria-label="问题记录"
+                disabled={saveReport.isPending}
+                className="min-h-24"
                 value={draft.issueNotes}
                 maxLength={1000}
                 placeholder="不得填写个人敏感信息；现场照片将统一固化管理员、项目、定位、日期、时间和天气水印。"
@@ -1112,7 +1169,7 @@ export default function MobileConstructionPage() {
                 maxLength={CONSTRUCTION_ASSISTANT_FIELD_LIMITS.issueNotes}
                 active={dialogOpen && isAuthenticated && !saveReport.isPending}
               />
-            </div>
+            </fieldset>
             <div className="rounded-xl border border-dashed border-[#d8bca5] bg-[#fffaf5] p-3">
               <div className="flex items-center justify-between gap-3">
                 <div>

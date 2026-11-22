@@ -80,6 +80,7 @@ const report = (patch: Record<string, unknown> = {}) => ({
   ...input(),
   progressPercent: "35.5",
   constructionPlan: originalPlan,
+  issuePriority: null,
   status: "draft",
   createdBy: 2,
   reviewReply: "原审核回复",
@@ -111,7 +112,7 @@ function memoryDb(records: Record<string, unknown>[] = []) {
     CREATE TABLE construction_daily_reports (
       id INTEGER PRIMARY KEY, projectId INTEGER NOT NULL, reportDate TEXT NOT NULL,
       workArea TEXT NOT NULL, weather TEXT NOT NULL DEFAULT 'other', workContent TEXT NOT NULL,
-      constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, progressPercent TEXT NOT NULL DEFAULT '0',
+      constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, issuePriority TEXT, progressPercent TEXT NOT NULL DEFAULT '0',
       status TEXT NOT NULL DEFAULT 'draft', createdBy INTEGER NOT NULL, reviewReply TEXT,
       reviewedBy INTEGER, reviewedAt TEXT, createdAt TEXT DEFAULT '2026-11-13T08:00:00.000Z',
       updatedAt TEXT DEFAULT '2026-11-13T08:00:00.000Z');
@@ -659,6 +660,209 @@ describe("可选施工计划：真实 scoped caller 与内存 SQL 回归", () =>
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(store.db.update).not.toHaveBeenCalled();
+    expect(store.raw()).toEqual(before);
+  });
+});
+
+describe("显式问题等级与历史安全原文：真实 scoped caller", () => {
+  it.each([
+    { patch: {}, priority: "normal" },
+    { patch: { issuePriority: "urgent" as const }, priority: "urgent" },
+    { patch: { issuePriority: "normal" as const }, priority: "normal" },
+    { patch: { issuePriority: null }, priority: null },
+    {
+      patch: { issueNotes: null, issuePriority: "urgent" as const },
+      priority: null,
+    },
+    {
+      patch: { issueNotes: " \t\n", issuePriority: "normal" as const },
+      priority: null,
+    },
+    {
+      patch: { issueNotes: undefined, issuePriority: "urgent" as const },
+      priority: null,
+    },
+  ])(
+    "新建patch=$patch仅真实问题保存显式等级$priority",
+    async ({ patch, priority }) => {
+      const store = useDb();
+      const saved = await caller(context(1, "user")).saveReport({
+        ...input(),
+        ...patch,
+      });
+      expect(store.raw(saved.id)).toMatchObject({
+        issuePriority: priority,
+        safetyNotes: input().safetyNotes,
+        status: "draft",
+      });
+      expect(store.audits()).toHaveLength(1);
+    }
+  );
+  it("自由文字含紧急/整改仍默认一般，只有显式urgent才为紧急", async () => {
+    const store = useDb();
+    const saved = await caller().saveReport({
+      ...input(),
+      issueNotes: "紧急待处理，随后完成整改",
+      safetyNotes: undefined,
+    });
+    expect(store.raw(saved.id)).toMatchObject({
+      issuePriority: "normal",
+      safetyNotes: null,
+      status: "draft",
+    });
+  });
+  it.each(["urgent", "normal", null] as const)(
+    "编辑省略等级和安全字段保留旧等级%s及逐字安全原文",
+    async issuePriority => {
+      const safetyNotes = " \n历史安全原文  不得被新表单删除\t";
+      const store = useDb([report({ issuePriority, safetyNotes })]);
+      const before = { ...store.raw() };
+      await caller().saveReport({ ...input(), id: 71, safetyNotes: undefined });
+      expect(store.raw()).toEqual(before);
+      expect(store.audits()).toHaveLength(1);
+    }
+  );
+  it.each([
+    {
+      patch: { issuePriority: null },
+      priority: null,
+      notes: input().issueNotes,
+    },
+    {
+      patch: { issuePriority: "normal" as const },
+      priority: "normal",
+      notes: input().issueNotes,
+    },
+    { patch: { issueNotes: null }, priority: null, notes: null },
+    {
+      patch: { issueNotes: " \n\t", issuePriority: "urgent" as const },
+      priority: null,
+      notes: null,
+    },
+  ])(
+    "编辑显式NULL/等级或清空问题 $patch",
+    async ({ patch, priority, notes }) => {
+      const store = useDb([report({ issuePriority: "urgent" })]);
+      const before = { ...store.raw() };
+      await caller().saveReport({
+        ...input(),
+        id: 71,
+        safetyNotes: undefined,
+        ...patch,
+      });
+      expect(store.raw()).toEqual({
+        ...before,
+        issueNotes: notes,
+        issuePriority: priority,
+      });
+    }
+  );
+  it.each([null, "旧客户端显式修改的安全说明"])(
+    "旧客户端显式安全字段%j继续兼容",
+    async safetyNotes => {
+      const store = useDb([report({ issuePriority: "urgent" })]);
+      const before = { ...store.raw() };
+      await caller().saveReport({ ...input(), id: 71, safetyNotes });
+      expect(store.raw()).toEqual({ ...before, safetyNotes });
+    }
+  );
+  it.each(["critical", "all", "unclassified", "", 1, {}])(
+    "拒绝非法等级%j，发生于读取与写入前",
+    async issuePriority => {
+      const store = useDb([report()]);
+      const before = { ...store.raw() };
+      await expect(
+        caller().saveReport({ ...input(), issuePriority } as never)
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(getDb).not.toHaveBeenCalled();
+      expect(store.db.insert).not.toHaveBeenCalled();
+      expect(store.db.update).not.toHaveBeenCalled();
+      expect(store.raw()).toEqual(before);
+    }
+  );
+  it("普通用户不能以新等级字段绕过历史编辑权限", async () => {
+    const store = useDb([report({ issuePriority: null })]);
+    const before = { ...store.raw() };
+    await expect(
+      caller(context(1, "user")).saveReport({
+        ...input(),
+        id: 71,
+        issuePriority: "urgent",
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(store.raw()).toEqual(before);
+    expect(store.db.update).not.toHaveBeenCalled();
+  });
+  it.each(["submitted", "approved", "locked"])(
+    "等级编辑不能改变%s状态锁定",
+    async status => {
+      const store = useDb([report({ status, issuePriority: "urgent" })]);
+      const before = { ...store.raw() };
+      await expect(
+        caller().saveReport({ ...input(), id: 71, issuePriority: "normal" })
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(store.raw()).toEqual(before);
+      expect(store.audits()).toEqual([]);
+    }
+  );
+  it("并发状态CAS冲突不写入等级也不追加审计", async () => {
+    const store = useDb([report({ issuePriority: "normal" })]);
+    store.beforeNextUpdate(() =>
+      store.memory.exec(
+        "UPDATE construction_daily_reports SET status='submitted' WHERE id=71"
+      )
+    );
+    await expect(
+      caller().saveReport({ ...input(), id: 71, issuePriority: "urgent" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(store.raw()).toMatchObject({
+      issuePriority: "normal",
+      status: "submitted",
+    });
+    expect(store.audits()).toEqual([]);
+  });
+});
+
+describe("编辑问题原文省略与等级联动", () => {
+  it("同时省略问题、安全及等级字段逐字保留历史原文与urgent", async () => {
+    const store = useDb([
+      report({
+        issueNotes: " \n历史问题原文\t",
+        safetyNotes: " \n历史安全原文\t",
+        issuePriority: "urgent",
+      }),
+    ]);
+    const before = { ...store.raw() };
+    await caller().saveReport({
+      ...input(),
+      id: 71,
+      issueNotes: undefined,
+      safetyNotes: undefined,
+    });
+    expect(store.raw()).toEqual(before);
+  });
+  it("省略问题原文但显式传入NULL等级保留正文与安全，保持未分级", async () => {
+    const store = useDb([report({ issuePriority: "urgent" })]);
+    const before = { ...store.raw() };
+    await caller().saveReport({
+      ...input(),
+      id: 71,
+      issueNotes: undefined,
+      safetyNotes: undefined,
+      issuePriority: null,
+    });
+    expect(store.raw()).toEqual({ ...before, issuePriority: null });
+  });
+  it("历史问题为空即使省略正文并显式urgent也不能产生孤立等级", async () => {
+    const store = useDb([report({ issueNotes: " \t\n", issuePriority: null })]);
+    const before = { ...store.raw() };
+    await caller().saveReport({
+      ...input(),
+      id: 71,
+      issueNotes: undefined,
+      safetyNotes: undefined,
+      issuePriority: "urgent",
+    });
     expect(store.raw()).toEqual(before);
   });
 });
