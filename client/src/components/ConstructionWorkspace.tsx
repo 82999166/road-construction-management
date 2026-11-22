@@ -702,7 +702,7 @@ export default function ConstructionWorkspace({
         </p>
       ) : (
         <>
-          <Card>
+          <Card className="gap-0 py-0">
             <CardContent className="space-y-2 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <p>
@@ -913,7 +913,7 @@ export default function ConstructionWorkspace({
             aria-label="当前筛选汇总"
             aria-busy={enabled && !summaryReady && !summary.isError}
           >
-            <Card>
+            <Card className="gap-0 py-0">
               <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">当前筛选日报</p>
                 <p className="text-lg font-semibold tabular-nums">
@@ -935,7 +935,7 @@ export default function ConstructionWorkspace({
                 {statistics?.submitted ?? "—"}
               </p>
             </button>
-            <Card>
+            <Card className="gap-0 py-0">
               <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">已归档 / 已退回</p>
                 <p className="text-lg font-semibold tabular-nums">
@@ -943,7 +943,7 @@ export default function ConstructionWorkspace({
                 </p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="gap-0 py-0">
               <CardContent className="p-2">
                 <p className="text-xs text-muted-foreground">
                   平均申报累计进度
