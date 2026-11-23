@@ -9,6 +9,11 @@ import {
   DieselSupplierReport,
 } from "@/components/DieselSupportingReports";
 import { DieselReceiptLedger } from "@/components/DieselReceiptLedger";
+import { DieselRecordActions } from "@/components/DieselRecordActions";
+import {
+  createDieselEditForm,
+  dieselRefueledAtForSave,
+} from "@/lib/dieselRecordCorrection";
 import RfidBridgeReadinessPanel from "@/components/RfidBridgeReadinessPanel";
 import FullDatabaseBackupHistory from "@/components/FullDatabaseBackupHistory";
 import {
@@ -677,6 +682,11 @@ type DieselPriceForm = {
 };
 type DieselRefuelForm = {
   id?: number;
+  expectedUpdatedAt?: string;
+  evidenceId?: number | null;
+  originalRefueledAt?: string;
+  originalRefueledAtInput?: string;
+  originalReceipt?: { url: string | null; fileName: string | null; mimeType: string | null } | null;
   projectId: string;
   assetType: "vehicle" | "machine";
   vehicleId: string;
@@ -2172,6 +2182,7 @@ type LedgerTableRow = {
   onOpen?: () => void;
   onEdit?: () => void;
   onRemove?: () => void;
+  actions?: ReactNode;
 };
 
 /**
@@ -2188,6 +2199,7 @@ function LedgerTable({
   onBulkRemove,
   removeLabel = "删除",
   bulkRemoveLabel = "批量受控删除",
+  stickyActions = false,
 }: {
   title: string;
   description: string;
@@ -2198,6 +2210,7 @@ function LedgerTable({
   onBulkRemove?: (rows: LedgerTableRow[]) => void;
   removeLabel?: string;
   bulkRemoveLabel?: string;
+  stickyActions?: boolean;
 }) {
   const removableRows = rows.filter(row => Boolean(row.onRemove));
   const [selectedIds, setSelectedIds] = useState<Array<string | number>>([]);
@@ -2266,7 +2279,7 @@ function LedgerTable({
                   {column}
                 </TableHead>
               ))}
-              <TableHead className="h-11 px-4 text-right font-semibold text-[#46615a]">
+              <TableHead className={`h-11 px-4 text-right font-semibold text-[#46615a] ${stickyActions ? "sticky right-0 z-10 min-w-[174px] !px-2 bg-[#edf1ed]" : ""}`}>
                 操作
               </TableHead>
             </TableRow>
@@ -2311,7 +2324,7 @@ function LedgerTable({
                       {cell}
                     </TableCell>
                   ))}
-                  <TableCell className="px-4 py-3 text-right">
+                  <TableCell className={`px-4 py-3 text-right ${stickyActions ? "sticky right-0 z-10 min-w-[174px] !px-2 bg-white shadow-[-3px_0_5px_-3px_rgba(0,0,0,0.15)]" : ""}`}>
                     <div className="flex justify-end gap-1">
                       {row.onOpen ? (
                         <Button
@@ -2322,6 +2335,7 @@ function LedgerTable({
                           详情
                         </Button>
                       ) : null}
+                      {row.actions}
                       {row.onEdit ? (
                         <Button
                           size="sm"
@@ -3688,6 +3702,20 @@ export default function AdminPage({
   const refreshDieselLedger = async () => {
     await trpcUtils.admin.diesel.invalidate();
   };
+  const refreshDieselCorrectionData = async () => {
+    setDieselPrintOpen(false);
+    await Promise.all([
+      refreshDieselLedger(),
+      trpcUtils.machinery.listCosts.invalidate(),
+      trpcUtils.machinery.listCostSummaries.invalidate(),
+      trpcUtils.machinery.getMachineAnalysis.invalidate(),
+      trpcUtils.machinery.previewMonthlyStatement.invalidate(),
+      trpcUtils.finance.businessSummary.invalidate(),
+      trpcUtils.finance.summary.invalidate(),
+      trpcUtils.projectRisk.financeCategoryAnalysis.invalidate(),
+      trpcUtils.projectRisk.financeCategoryDetails.invalidate(),
+    ]);
+  };
   const stopDieselCamera = () => {
     dieselCameraStream?.getTracks().forEach(track => track.stop());
     setDieselCameraStream(null);
@@ -3794,7 +3822,7 @@ export default function AdminPage({
     {
       onSuccess: async result => {
         toast.success(
-          `柴油领用已保存：¥${displayMoney(result.amount)}，适用单价 ¥${displayMoney(result.appliedUnitPrice)}/L`
+          `柴油领用${dieselRefuelForm.id ? "修改" : "登记"}已保存：¥${displayMoney(result.amount)}，适用单价 ¥${displayMoney(result.appliedUnitPrice)}/L`
         );
         if (result.priceAlert?.isAlert)
           toast.warning(
@@ -3803,14 +3831,14 @@ export default function AdminPage({
         setDieselRefuelDialogOpen(false);
         setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM);
         resetDieselReceiptCapture();
-        await refreshDieselLedger();
+        await refreshDieselCorrectionData();
       },
       onError: error => toast.error(getUserFacingErrorMessage(error)),
     }
   );
   const submitDieselRefuel = async () => {
     try {
-      let evidenceId: number | null = null;
+      let evidenceId: number | null = dieselRefuelForm.evidenceId ?? null;
       if (
         !dieselRefuelForm.id &&
         dieselDuplicateCandidates.length > 0 &&
@@ -3893,6 +3921,7 @@ export default function AdminPage({
       }
       await saveDieselRefuelRecord.mutateAsync({
         id: dieselRefuelForm.id,
+        expectedUpdatedAt: dieselRefuelForm.expectedUpdatedAt,
         projectId: Number(dieselRefuelForm.projectId),
         assetType: dieselRefuelForm.assetType,
         vehicleId:
@@ -3903,7 +3932,9 @@ export default function AdminPage({
           dieselRefuelForm.assetType === "machine" && dieselRefuelForm.machineId
             ? Number(dieselRefuelForm.machineId)
             : null,
-        transportTripId: null,
+        transportTripId: dieselRefuelForm.transportTripId
+          ? Number(dieselRefuelForm.transportTripId)
+          : null,
         supplyMethod: dieselRefuelForm.supplyMethod,
         stationOrSupplierName:
           dieselRefuelForm.stationOrSupplierName.trim() || null,
@@ -3916,7 +3947,7 @@ export default function AdminPage({
         deductFromFreight:
           dieselRefuelForm.assetType === "vehicle" &&
           dieselRefuelForm.deductFromFreight,
-        refueledAt: new Date(dieselRefuelForm.refueledAt).toISOString(),
+        refueledAt: dieselRefueledAtForSave(dieselRefuelForm),
         meterReading: dieselRefuelForm.meterReading
           ? Number(dieselRefuelForm.meterReading)
           : null,
@@ -19189,6 +19220,7 @@ export default function AdminPage({
                       <LedgerTable
                         title="每日柴油领用明细"
                         description="项目部供油按指导价快照，加油站现金加油按实际单价快照；小票影像、价格预警和供应商对账均保留审计链。已结算车辆油款会锁定并在运输净结算中体现。"
+                        stickyActions
                         loading={
                           dieselRefuelRecords.isLoading ||
                           dieselRefuelRecords.isFetching
@@ -19205,6 +19237,22 @@ export default function AdminPage({
                         ]}
                         rows={dieselLedgerPagination.pageRows.map(item => ({
                           id: Number(item.id),
+                          actions: (
+                            <DieselRecordActions
+                              record={item}
+                              disabled={
+                                dieselRefuelDialogOpen ||
+                                saveDieselRefuelRecord.isPending ||
+                                uploadDieselReceipt.isPending
+                              }
+                              onEdit={() => {
+                                resetDieselReceiptCapture();
+                                setDieselRefuelForm(createDieselEditForm(item));
+                                setDieselRefuelDialogOpen(true);
+                              }}
+                              onDeleted={refreshDieselCorrectionData}
+                            />
+                          ),
                           cells: [
                             <div>
                               <p>{item.recordNo}</p>
@@ -23425,6 +23473,11 @@ export default function AdminPage({
         <Dialog
           open={dieselRefuelDialogOpen}
           onOpenChange={open => {
+            if (
+              saveDieselRefuelRecord.isPending ||
+              uploadDieselReceipt.isPending
+            )
+              return;
             setDieselRefuelDialogOpen(open);
             if (!open) {
               setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM);
@@ -23434,7 +23487,9 @@ export default function AdminPage({
         >
           <DialogContent className="max-h-[90vh] w-[calc(100vw-3rem)] max-w-4xl xl:max-w-5xl overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>登记柴油领用</DialogTitle>
+              <DialogTitle>
+                {dieselRefuelForm.id ? "修改柴油领用" : "登记柴油领用"}
+              </DialogTitle>
               <DialogDescription>
                 项目部供油按加油日期匹配有效指导价；加油站现金加油必须录入当天实际单价与升数。两种方式均由服务端计算并固化金额快照；每笔领用必须后置相机现场直拍加油表并自动归档工程水印。车辆扣油由该车辆运输结算总额统一归集，不再逐趟选择。
               </DialogDescription>
@@ -23472,6 +23527,7 @@ export default function AdminPage({
                 </Field>
                 <Field label="领用对象">
                   <Select
+                    disabled={Boolean(dieselRefuelForm.id)}
                     value={dieselRefuelForm.assetType}
                     onValueChange={value =>
                       setDieselRefuelForm(current => ({
@@ -23499,6 +23555,7 @@ export default function AdminPage({
                   }
                 >
                   <Select
+                    disabled={Boolean(dieselRefuelForm.id)}
                     value={
                       (dieselRefuelForm.assetType === "vehicle"
                         ? dieselRefuelForm.vehicleId
@@ -23699,8 +23756,27 @@ export default function AdminPage({
                     }
                   />
                 </Field>
-                <Field label="加油表现场照片（必拍）">
+                <Field
+                  label={
+                    dieselRefuelForm.id
+                      ? "加油表现场照片（不重拍则保留原照片）"
+                      : "加油表现场照片（必拍）"
+                  }
+                >
                   <div className="space-y-2">
+                    {dieselRefuelForm.id ? (
+                      <p className="text-xs text-emerald-700">
+                        本次修改保留原始照片；如需替换，可重新拍摄，不会删除原归档影像。
+                      </p>
+                    ) : null}
+                    {dieselRefuelForm.originalReceipt?.url ? (
+                      <ProtectedImagePreview
+                        file={{ ...dieselRefuelForm.originalReceipt, url: dieselRefuelForm.originalReceipt.url }}
+                        title="原始柴油加油照片"
+                        description="原归档照片仅作站内查看；未重新拍摄时继续关联原凭证。"
+                        className="text-xs font-medium text-[#2b6660] underline"
+                      >查看原照片</ProtectedImagePreview>
+                    ) : null}
                     <p className="text-xs leading-5 text-emerald-700">
                       仅支持后置相机现场直拍，不提供相册选择；保存时自动写入项目、加油时间、详细地点、操作人与防伪编号水印。
                     </p>
@@ -23819,9 +23895,6 @@ export default function AdminPage({
                       <SelectItem value="approved">
                         已直接记账，立即纳入成本/结算
                       </SelectItem>
-                      {dieselRefuelForm.id ? (
-                        <SelectItem value="void">作废（仅限纠错）</SelectItem>
-                      ) : null}
                     </SelectContent>
                   </Select>
                   <p className="mt-1 text-xs leading-5 text-emerald-700">
@@ -23845,7 +23918,15 @@ export default function AdminPage({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setDieselRefuelDialogOpen(false)}
+                  disabled={
+                    saveDieselRefuelRecord.isPending ||
+                    uploadDieselReceipt.isPending
+                  }
+                  onClick={() => {
+                    setDieselRefuelDialogOpen(false);
+                    setDieselRefuelForm(EMPTY_DIESEL_REFUEL_FORM);
+                    resetDieselReceiptCapture();
+                  }}
                 >
                   取消
                 </Button>
@@ -23871,8 +23952,10 @@ export default function AdminPage({
                   {uploadDieselReceipt.isPending
                     ? "正在归档加油表照片…"
                     : saveDieselRefuelRecord.isPending
-                      ? "正在直接记账…"
-                      : "保存并直接记账"}
+                      ? "正在保存…"
+                      : dieselRefuelForm.id
+                        ? "保存修改"
+                        : "保存并直接记账"}
                 </Button>
               </DialogFooter>
             </form>

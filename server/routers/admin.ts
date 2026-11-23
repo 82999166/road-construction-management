@@ -192,6 +192,13 @@ import {
   lockMachineFuelLedger,
   assertNoDuplicateMachineFuel,
 } from "../services/machineFuelLedger";
+import {
+  deleteDieselRefuelRecord,
+  lockDieselRecordForCorrection,
+  dieselCorrectionWhere,
+  dieselCostCorrectionWhere,
+  nextDieselUpdatedAt,
+} from "../services/dieselRecordCorrection";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createInAppMessage } from "./messages";
 
@@ -322,6 +329,7 @@ const dieselGuidelinePriceInput = z
 const dieselRefuelInput = z
   .object({
     id: z.number().int().positive().optional(),
+    expectedUpdatedAt: z.string().datetime("原记录版本时间格式错误").optional(),
     projectId: z.number().int().positive(),
     assetType: z.enum(["vehicle", "machine"]),
     vehicleId: z.number().int().positive().nullable().optional(),
@@ -4196,6 +4204,19 @@ export const adminRouter = router({
           records: rows,
         };
       }),
+    deleteRefuelRecord: protectedProcedure
+      .input(z.object({
+        id: z.number().int().positive(),
+        projectId: z.number().int().positive(),
+        expectedUpdatedAt: z.string().datetime("原记录版本时间格式错误"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const admin = await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db)
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        return deleteDieselRefuelRecord(db, input, admin.id);
+      }),
     saveRefuelRecord: protectedProcedure
       .input(dieselRefuelInput)
       .mutation(async ({ ctx, input }) => {
@@ -4240,68 +4261,32 @@ export const adminRouter = router({
           priceAlert,
           effectiveStatus,
         } = await db.transaction(async tx => {
-          const [hint] = input.id
-            ? await tx
-                .select()
-                .from(dieselRefuelRecords)
-                .where(eq(dieselRefuelRecords.id, input.id))
-                .limit(1)
-            : [];
+          const locked = input.id
+            ? await lockDieselRecordForCorrection(
+                tx,
+                { id: input.id, projectId: input.projectId, expectedUpdatedAt: input.expectedUpdatedAt },
+                "edit"
+              )
+            : undefined;
+          const existing = locked?.existing;
+          const existingCost = locked?.existingCost;
           if (
-            hint &&
-            (hint.projectId !== input.projectId ||
-              hint.assetType !== input.assetType ||
-              (hint.assetType === "machine" &&
-                hint.machineId !== input.machineId) ||
-              (hint.assetType === "vehicle" &&
-                hint.vehicleId !== input.vehicleId))
+            existing &&
+            (existing.projectId !== input.projectId ||
+              existing.assetType !== input.assetType ||
+              (existing.assetType === "machine" &&
+                existing.machineId !== input.machineId) ||
+              (existing.assetType === "vehicle" &&
+                existing.vehicleId !== input.vehicleId))
           )
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "已有柴油记录不得更换项目或车辆机械，避免破坏原费用关联",
             });
-          if (input.assetType === "machine")
+          if (!input.id && input.assetType === "machine")
             await lockMachineFuelLedger(tx, {
               machineId: input.machineId!,
               projectId: input.projectId,
-            });
-          const [existing] = input.id
-            ? await tx
-                .select()
-                .from(dieselRefuelRecords)
-                .where(eq(dieselRefuelRecords.id, input.id))
-                .limit(1)
-                .for("update")
-            : [];
-          if (input.id && !existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "柴油领用记录不存在",
-            });
-          if (existing?.recordNo.startsWith("DS-MC-"))
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message:
-                "该柴油记录由机械成本同步，只读展示；请前往机械管理原成本记录办理修改、审核、结算或作废，不得在柴油管理绕过机械原办理权限",
-            });
-          if (existing?.status === "settled")
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "已结算柴油记录不得修改或作废",
-            });
-          const [existingCost] = existing
-            ? await tx
-                .select()
-                .from(machineCostRecords)
-                .where(eq(machineCostRecords.dieselRefuelRecordId, existing.id))
-                .limit(1)
-                .for("update")
-            : [];
-          if (existingCost?.status === "settled")
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "关联机械成本已结算，不得修改或作废柴油记录；请前往机械管理核对原结算",
             });
           if (
             input.assetType === "vehicle" &&
@@ -4428,8 +4413,18 @@ export const adminRouter = router({
               });
           }
           const refuelDate = chinaBusinessDate(input.refueledAt);
+          const preservePriceSnapshot = Boolean(
+            existing &&
+              chinaBusinessDate(existing.refueledAt) === refuelDate &&
+              existing.supplyMethod === input.supplyMethod &&
+              (existing.actualUnitPrice === null ? null : Number(existing.actualUnitPrice)) ===
+                (input.actualUnitPrice == null ? null : input.actualUnitPrice) &&
+              Number(existing.appliedUnitPrice) > 0
+          );
           let appliedUnitPrice = input.actualUnitPrice ?? 0;
-          if (input.supplyMethod === "project_supply") {
+          if (preservePriceSnapshot) {
+            appliedUnitPrice = Number(existing!.appliedUnitPrice);
+          } else if (input.supplyMethod === "project_supply") {
             const prices = await tx
               .select()
               .from(dieselGuidelinePrices)
@@ -4477,6 +4472,9 @@ export const adminRouter = router({
               liters: input.liters,
               refueledAt: new Date(input.refueledAt),
             });
+          const evidenceId = input.evidenceId === undefined
+            ? (existing?.evidenceId ?? null)
+            : input.evidenceId;
           const values = {
             projectId: input.projectId,
             assetType: input.assetType,
@@ -4505,24 +4503,20 @@ export const adminRouter = router({
                 ? null
                 : String(input.meterReading),
             receiptNo: input.receiptNo ?? null,
-            evidenceId: input.evidenceId ?? null,
+            evidenceId,
             remarks: input.remarks ?? null,
             status: effectiveStatus,
             createdBy: existing?.createdBy ?? admin.id,
             approvedBy: effectiveStatus === "approved" ? admin.id : null,
             approvedAt: effectiveStatus === "approved" ? new Date() : null,
+            ...(existing ? { updatedAt: nextDieselUpdatedAt(existing) } : {}),
           };
           let recordId = input.id;
           if (existing) {
             const updated = await tx
               .update(dieselRefuelRecords)
               .set(values)
-              .where(
-                and(
-                  eq(dieselRefuelRecords.id, existing.id),
-                  eq(dieselRefuelRecords.status, existing.status)
-                )
-              );
+              .where(dieselCorrectionWhere(existing));
             assertRefuelWrite(updated);
           } else {
             const recordNo = `DS${input.projectId}-${randomBytes(12).toString("hex")}`;
@@ -4563,7 +4557,7 @@ export const adminRouter = router({
               amount: String(amount),
               dieselRefuelRecordId: recordId,
               occurredAt: new Date(input.refueledAt),
-              evidenceId: input.evidenceId ?? null,
+              evidenceId,
               status:
                 effectiveStatus === "void"
                   ? ("void" as const)
@@ -4574,13 +4568,7 @@ export const adminRouter = router({
               const updated = await tx
                 .update(machineCostRecords)
                 .set(costValues)
-                .where(
-                  and(
-                    eq(machineCostRecords.id, existingCost.id),
-                    eq(machineCostRecords.dieselRefuelRecordId, recordId),
-                    eq(machineCostRecords.status, existingCost.status)
-                  )
-                );
+                .where(dieselCostCorrectionWhere(existingCost, recordId));
               assertRefuelWrite(updated);
             } else if (effectiveStatus !== "void") {
               const created = await tx
@@ -4605,6 +4593,10 @@ export const adminRouter = router({
                 targetType: "machine_cost",
                 targetId: String(costId),
                 summary: `柴油台账 #${recordId} 同步机械油料成本：¥${amount}，${costValues.status === "void" ? "已作废" : "已记账"}`,
+                ...(existingCost ? {
+                  beforeJson: JSON.stringify(existingCost),
+                  afterJson: JSON.stringify({ ...existingCost, ...costValues }),
+                } : {}),
               });
           }
           await tx.insert(auditLogs).values({
@@ -4614,6 +4606,10 @@ export const adminRouter = router({
             targetType: "diesel_refuel",
             targetId: String(recordId),
             summary: `${input.assetType === "vehicle" ? "车辆" : "机械"}${input.supplyMethod === "project_supply" ? "项目部供油" : "加油站加油"}：${input.liters}L，¥${amount}${effectiveStatus === "void" ? "，已作废" : "，直接记账生效"}${input.deductFromFreight ? "，结算扣油" : ""}`,
+            ...(existing ? {
+              beforeJson: JSON.stringify(existing),
+              afterJson: JSON.stringify({ ...existing, ...values }),
+            } : {}),
           });
           if (priceAlert.isAlert)
             await tx.insert(auditLogs).values({
