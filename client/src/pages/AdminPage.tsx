@@ -9964,7 +9964,7 @@ export default function AdminPage({
         description: "短信、公众号、外部 AI 与受控连接",
       },
       media: { label: "影像与资料", description: "照片存储与现场水印" },
-      onsite: { label: "现场大屏", description: "项目录像、工地天气地点与商业天气接入" },
+      onsite: { label: "现场大屏", description: "项目录像、工地天气地点与免费/商业天气接入" },
       governance: {
         label: "版本与治理",
         description: "配置清单、发布记录与安全回滚",
