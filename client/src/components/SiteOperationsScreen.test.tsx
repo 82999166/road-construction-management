@@ -229,6 +229,9 @@ describe("现场大屏真实行为", () => {
     expect(s).toContain("天气服务待配置");
     expect(s).toContain("整改状态未跟踪");
     expect(s).toContain("数据不足（非异常结论）");
+    expect(s).toContain("智能风控预警");
+    expect(s).toContain("车辆登记资料");
+    expect(s).toContain("规则辅助 · 不替代人工判断");
   });
   it("错误隐藏缓存成功数且分区重试不破坏视频天气", async () => {
     const p = props();

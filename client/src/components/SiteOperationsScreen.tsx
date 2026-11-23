@@ -894,7 +894,7 @@ export default function SiteOperationsScreen({
         <div className="so-section-title">
           <h2>
             <ShieldAlert size={17} />
-            车辆待核查与登记资料
+            现场风险总览
           </h2>
           <span>
             {d?.risks.enabled
@@ -912,59 +912,90 @@ export default function SiteOperationsScreen({
         </div>
         {d ? (
           <div className="so-risk-workspace">
-            <div className="so-risk-list">
-              {d.risks.status === "disabled" ? (
-                <p className="so-muted">项目风险规则已禁用，未作风险判断。</p>
-              ) : d.risks.items.length ? (
-                d.risks.items.map(r => (
-                  <button
-                    className={`so-risk so-risk-${r.severity}`}
-                    key={r.key}
-                    onClick={() => setDetail({ kind: "risk", item: r })}
-                  >
-                    <strong className="so-plate">{r.plate}</strong>
-                    <span className="so-risk-level">
-                      {severityText[r.severity]}
-                    </span>
-                    <p>{r.reason}</p>
-                    <small>
-                      {siteTime(r.occurredAt, true)} · {routeText(r.route)} ·{" "}
-                      {reviewText[r.reviewStatus]}
-                      {r.basis === "current_snapshot" ? " · 当前快照" : ""}
-                    </small>
-                  </button>
-                ))
-              ) : (
-                <p className="so-muted">
-                  真实查询成功，当前范围暂无已支持规则的待核查事项；不代表油耗或效率正常。
-                </p>
-              )}
-              {d.risks.truncated && (
-                <p className="so-list-note">
-                  共 {d.risks.total} 条 · 展示上限 {d.risks.limit} 条，已截断。
-                </p>
-              )}
-            </div>
-            <div className="so-vehicle-list">
-              {d.vehicles.length ? (
-                d.vehicles.map(v => (
-                  <button
-                    className="so-vehicle"
-                    key={v.vehicleId}
-                    onClick={() => setDetail({ kind: "vehicle", item: v })}
-                  >
-                    <strong className="so-plate">{v.plate}</strong>
-                    <span>
-                      登记加油 <b>{formatQuantity(v.registeredFuelLiters)} L</b> · 有效完成{" "}
-                      <b>{v.normalCompletedTrips} 趟</b>
-                    </span>
-                    <small>真实油耗 / 趟数效率：数据不足（非异常结论）</small>
-                  </button>
-                ))
-              ) : (
-                <p className="so-muted">项目暂无车辆登记资料。</p>
-              )}
-            </div>
+            <section className="so-risk-alert-panel" aria-labelledby="site-risk-alert-title">
+              <div className="so-risk-inner-title">
+                <h3 id="site-risk-alert-title">
+                  <ShieldAlert size={15} /> 智能风控预警
+                </h3>
+                <span>规则辅助 · 不替代人工判断</span>
+              </div>
+              <div className="so-risk-summary">
+                <div className={d.risks.total ? "so-risk-summary-alert" : ""}>
+                  <strong>{d.risks.total}</strong>
+                  <span>待核查事项</span>
+                </div>
+                <div>
+                  <strong>{d.vehicles.length}</strong>
+                  <span>纳入车辆</span>
+                </div>
+                <div className="so-risk-summary-wide">
+                  <strong>数据边界</strong>
+                  <span>油耗 / 趟数效率不足以作异常结论</span>
+                </div>
+              </div>
+              <div className="so-risk-explain">
+                {d.risks.status === "disabled"
+                  ? "项目风险规则已禁用，未作风险判断。"
+                  : d.risks.items.length
+                    ? `已发现 ${d.risks.total} 条需人工关注的现场规则提示，请点击查看依据。`
+                    : "当前范围暂无已支持规则的待核查事项；不代表油耗或效率正常。"}
+              </div>
+              <div className="so-risk-list">
+                {d.risks.status !== "disabled" && d.risks.items.length
+                  ? d.risks.items.map(r => (
+                      <button
+                        className={`so-risk so-risk-${r.severity}`}
+                        key={r.key}
+                        onClick={() => setDetail({ kind: "risk", item: r })}
+                      >
+                        <strong className="so-plate">{r.plate}</strong>
+                        <span className="so-risk-level">
+                          {severityText[r.severity]}
+                        </span>
+                        <p>{r.reason}</p>
+                        <small>
+                          {siteTime(r.occurredAt, true)} · {routeText(r.route)} ·{" "}
+                          {reviewText[r.reviewStatus]}
+                          {r.basis === "current_snapshot" ? " · 当前快照" : ""}
+                        </small>
+                      </button>
+                    ))
+                  : null}
+                {d.risks.truncated && (
+                  <p className="so-list-note">
+                    共 {d.risks.total} 条 · 展示上限 {d.risks.limit} 条，已截断。
+                  </p>
+                )}
+              </div>
+            </section>
+            <section className="so-vehicle-panel" aria-labelledby="site-vehicle-title">
+              <div className="so-risk-inner-title">
+                <h3 id="site-vehicle-title">
+                  <Truck size={15} /> 车辆登记资料
+                </h3>
+                <span>{d.vehicles.length} 辆</span>
+              </div>
+              <div className="so-vehicle-list">
+                {d.vehicles.length ? (
+                  d.vehicles.map(v => (
+                    <button
+                      className="so-vehicle"
+                      key={v.vehicleId}
+                      onClick={() => setDetail({ kind: "vehicle", item: v })}
+                    >
+                      <strong className="so-plate">{v.plate}</strong>
+                      <span>
+                        登记加油 <b>{formatQuantity(v.registeredFuelLiters)} L</b> · 有效完成{" "}
+                        <b>{v.normalCompletedTrips} 趟</b>
+                      </span>
+                      <small>真实油耗 / 趟数效率：数据不足（非异常结论）</small>
+                    </button>
+                  ))
+                ) : (
+                  <p className="so-muted">项目暂无车辆登记资料。</p>
+                )}
+              </div>
+            </section>
           </div>
         ) : (
           <SitePlaceholder query={dashboard} label="车辆风险与资料" />
