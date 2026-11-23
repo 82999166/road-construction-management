@@ -12,11 +12,12 @@ import { ENV } from "./_core/env";
 import { registerStorageProxy } from "./_core/storageProxy";
 import { storagePut } from "./storage";
 
-type StorageRouteRequest = { params: Record<string, string | string[]> };
+type StorageRouteRequest = { params: Record<string, string | string[]>; headers?: Record<string, string | undefined> };
 type StorageRouteResponse = {
   set: ReturnType<typeof vi.fn>;
   status: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
+  end?: ReturnType<typeof vi.fn>;
   redirect?: ReturnType<typeof vi.fn>;
 };
 
@@ -75,6 +76,27 @@ describe("存储代理影像读取", () => {
     expect(response.set).toHaveBeenCalledWith("Content-Type", "image/jpeg");
     expect(response.set).toHaveBeenCalledWith("Cache-Control", "private, max-age=300");
     expect(response.send).toHaveBeenCalledWith(Buffer.from([7, 8, 9]));
+  }, 10_000);
+
+  it("媒体对象支持单段Range并对越界Range返回416", async () => {
+    const storageDir = await fs.mkdtemp(path.join(os.tmpdir(), "yx-self-host-storage-"));
+    ENV.selfHostStorageDir = storageDir;
+    const written = await storagePut("site-operations-sample/video.mp4", Buffer.from([0, 1, 2, 3, 4]), "video/mp4");
+    const get = vi.fn();
+    registerStorageProxy({ get } as never);
+    const handler = get.mock.calls[0]?.[1] as (request: StorageRouteRequest, response: StorageRouteResponse) => Promise<void>;
+    const response = { set: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn(), end: vi.fn() };
+
+    await handler({ params: { key: written.key.split("/") }, headers: { range: "bytes=1-3" } }, response);
+    expect(response.status).toHaveBeenCalledWith(206);
+    expect(response.set).toHaveBeenCalledWith({ "Content-Range": "bytes 1-3/5", "Content-Length": "3" });
+    expect(response.send).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
+
+    const invalidResponse = { set: vi.fn().mockReturnThis(), status: vi.fn().mockReturnThis(), send: vi.fn(), end: vi.fn() };
+    await handler({ params: { key: written.key.split("/") }, headers: { range: "bytes=20-30" } }, invalidResponse);
+    expect(invalidResponse.status).toHaveBeenCalledWith(416);
+    expect(invalidResponse.set).toHaveBeenCalledWith("Content-Range", "bytes */5");
+    expect(invalidResponse.end).toHaveBeenCalled();
   }, 10_000);
 
   it("自建本地存储拒绝通过相对路径读取存储根目录外文件", async () => {

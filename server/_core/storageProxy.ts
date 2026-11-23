@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Response } from "express";
 import fs from "fs/promises";
 import path from "path";
 import { ENV } from "./env";
@@ -27,6 +27,35 @@ function resolveSelfHostStoragePath(key: string) {
     throw new Error("Invalid storage key path");
   }
   return filePath;
+}
+
+type StorageByteRange = { start: number; end: number };
+
+function parseStorageRange(header: string | undefined, size: number): StorageByteRange | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match || (!match[1] && !match[2])) throw new Error("invalid_range");
+  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+  const end = match[1] ? (match[2] ? Math.min(size - 1, Number(match[2])) : size - 1) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) throw new Error("invalid_range");
+  return { start, end };
+}
+
+function sendStorageBuffer(res: Response, buffer: Buffer, contentType: string, rangeHeader: string | undefined) {
+  res.set("Content-Type", contentType);
+  res.set("Accept-Ranges", "bytes");
+  try {
+    const range = parseStorageRange(rangeHeader, buffer.length);
+    if (!range) {
+      res.set("Content-Length", String(buffer.length));
+      res.send(buffer);
+      return;
+    }
+    res.status(206).set({ "Content-Range": `bytes ${range.start}-${range.end}/${buffer.length}`, "Content-Length": String(range.end - range.start + 1) });
+    res.send(buffer.subarray(range.start, range.end + 1));
+  } catch {
+    res.status(416).set("Content-Range", `bytes */${buffer.length}`).end();
+  }
 }
 
 export function registerStorageProxy(app: Express) {
@@ -58,8 +87,7 @@ export function registerStorageProxy(app: Express) {
         ]);
         const meta = JSON.parse(metaRaw) as { contentType?: string };
         res.set("Cache-Control", "private, max-age=300");
-        res.set("Content-Type", meta.contentType || "application/octet-stream");
-        res.send(fileBuffer);
+        sendStorageBuffer(res, fileBuffer, meta.contentType || "application/octet-stream", req.headers?.range);
         return;
       } catch (err) {
         if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
@@ -115,9 +143,9 @@ export function registerStorageProxy(app: Express) {
       const contentType = objectResp.headers.get("content-type") || "application/octet-stream";
       const contentLength = objectResp.headers.get("content-length");
       res.set("Cache-Control", "private, max-age=300");
-      res.set("Content-Type", contentType);
-      if (contentLength) res.set("Content-Length", contentLength);
-      res.send(Buffer.from(await objectResp.arrayBuffer()));
+      const objectBuffer = Buffer.from(await objectResp.arrayBuffer());
+      if (!req.headers?.range && contentLength) res.set("Content-Length", contentLength);
+      sendStorageBuffer(res, objectBuffer, contentType, req.headers?.range);
     } catch (err) {
       console.error("[StorageProxy] failed:", err);
       res.status(502).send("Storage proxy error");
