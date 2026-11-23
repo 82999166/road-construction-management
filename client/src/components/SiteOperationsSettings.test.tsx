@@ -288,6 +288,7 @@ describe("现场大屏后台配置真实行为", () => {
   it("全局密钥密码不回显，空保持，显式清空确认与CAS独立保存", async () => {
     await mount();
     await click("天气接入");
+    await change("天气服务", "open_meteo_commercial");
     expect(input("商业天气 API 密钥").props).toMatchObject({
       type: "password",
       value: "",
@@ -355,5 +356,115 @@ describe("现场大屏后台配置真实行为", () => {
     await act(async () => tree.update(<Settings />));
     expect(button("保存配置").props.disabled).toBe(true);
     expect(text(tree.root)).toContain("项目配置读取失败");
+  });
+});
+
+describe("免费天气授权与直达配置", () => {
+  it("选择免费方案不会预勾选条款或填造联系信息，商业key仅商业时显示", async () => {
+    await mount();
+    await click("天气接入");
+    expect(input("天气服务").props.value).toBe("disabled");
+    expect(
+      tree.root.findAllByProps({ "aria-label": "商业天气 API 密钥" })
+    ).toHaveLength(0);
+    await change("天气服务", "met_norway");
+    expect(input("管理员确认 MET Norway 服务条款").props.checked).toBe(false);
+    expect(input("MET Norway 联系信息").props.value).toBe("");
+    expect(
+      tree.root
+        .findAllByType("a")
+        .some(a => a.props.href === "https://api.met.no/doc/TermsOfService")
+    ).toBe(true);
+    expect(text(tree.root)).toContain("AI 不得代为接受");
+    expect(text(tree.root)).toContain("无需 API Key");
+    expect(m.save).not.toHaveBeenCalled();
+    expect(m.saveKey).not.toHaveBeenCalled();
+    expect(refetch).not.toHaveBeenCalled();
+    await click("保存配置");
+    expect(m.save.mock.calls.at(-1)?.[0].configuration.weather).toMatchObject({
+      provider: "met_norway",
+    });
+    expect(
+      m.save.mock.calls.at(-1)?.[0].configuration.weather.metNorway
+    ).toBeUndefined();
+  });
+  it("条款确认与真实联系信息按项目显式保存回读，格式非法禁保存、切换provider不清商业key", async () => {
+    await mount();
+    await click("天气接入");
+    await change("天气服务", "open_meteo_commercial");
+    await change("商业天气 API 密钥", "pending-commercial-key");
+    await change("天气服务", "met_norway");
+    await change("MET Norway 联系信息", "fake@example.com");
+    expect(button("保存配置").props.disabled).toBe(true);
+    await change("MET Norway 联系信息", "https://github.com/private/repo");
+    expect(button("保存配置").props.disabled).toBe(true);
+    await change("MET Norway 联系信息", "https://yx.maomaoyx.com/support");
+    await change("管理员确认 MET Norway 服务条款", true, true);
+    await click("保存配置");
+    expect(m.save.mock.calls.at(-1)?.[0]).toMatchObject({
+      projectId: 1,
+      expectedVersion: 4,
+      configuration: {
+        weather: {
+          provider: "met_norway",
+          metNorway: {
+            termsAccepted: true,
+            contact: "https://yx.maomaoyx.com/support",
+          },
+        },
+      },
+    });
+    expect(input("管理员确认 MET Norway 服务条款").props.checked).toBe(true);
+    expect(m.saveKey).not.toHaveBeenCalled();
+    await change("天气服务", "open_meteo_commercial");
+    expect(input("商业天气 API 密钥").props.value).toBe(
+      "pending-commercial-key"
+    );
+    await change("配置所属项目", "2");
+    await change("天气服务", "met_norway");
+    expect(input("管理员确认 MET Norway 服务条款").props.checked).toBe(false);
+    expect(input("MET Norway 联系信息").props.value).toBe("");
+  });
+  it("siteTab=weather和合法siteProjectId首次初始化，手动切换不被URL覆盖", async () => {
+    (window as any).location = {
+      search: "?category=onsite&siteTab=weather&siteProjectId=2",
+    };
+    await mount();
+    expect(input("配置所属项目").props.value).toBe(2);
+    expect(input("天气服务").props.value).toBe("disabled");
+    await change("配置所属项目", "1");
+    await act(async () => tree.update(<Settings />));
+    expect(input("配置所属项目").props.value).toBe(1);
+    await click("视频管理");
+    await act(async () => tree.update(<Settings />));
+    expect(input("上传现场录像")).toBeTruthy();
+  });
+  it.each(["999", "-1", "0", "2.0", "nonsense"])(
+    "非法或未授权URL项目%s忽略",
+    async siteProjectId => {
+      (window as any).location = {
+        search: `?siteTab=weather&siteProjectId=${siteProjectId}`,
+      };
+      await mount();
+      expect(input("配置所属项目").props.value).toBe(1);
+    }
+  );
+  it("项目列表迟到时再应用URL项目一次", async () => {
+    (window as any).location = { search: "?siteTab=weather&siteProjectId=2" };
+    m.projects.mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: true,
+    });
+    await mount();
+    m.projects.mockReturnValue({
+      data: [
+        { id: 1, name: "工地甲", status: "active" },
+        { id: 2, name: "工地乙", status: "active" },
+      ],
+      isError: false,
+    });
+    await act(async () => tree.update(<Settings />));
+    expect(input("配置所属项目").props.value).toBe(2);
   });
 });

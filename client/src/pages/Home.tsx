@@ -165,7 +165,7 @@ export default function Home() {
           <h1>交通施工指挥中心</h1>
           <h2>让现场情况，一屏清晰。</h2>
           <p>
-            运输数量、装卸动态、施工日报、现场录像与天气作业提示，按授权项目与北京时间业务日展示。仅超级管理员可查看现场大屏，未经授权不查询现场数据。
+            运输数量、施工日报、双窗口现场录像与天气作业提示，按授权项目与北京时间业务日展示。仅超级管理员可查看现场大屏，未经授权不查询现场数据。
           </p>
           <div className="so-entry-buttons">
             {loading ? (
@@ -198,7 +198,7 @@ export default function Home() {
           </button>
         </div>
         <div className="so-entry-footer">
-          <span>01 / 运输与动态</span>
+          <span>01 / 运输运行</span>
           <span>02 / 现场影像</span>
           <span>03 / 天气与作业提示</span>
           <span>04 / 车辆待核查</span>

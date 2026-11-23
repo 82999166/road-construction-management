@@ -31,14 +31,14 @@ describe("超级管理员系统设置和菜单结构", () => {
     expect(source).toContain("只读取保留探测对象元数据");
   });
 
-  it("将权限管理下移至平台治理并按运营类别分组", () => {
+  it("将权限管理归入系统与工具并按业务类别分组", () => {
     expect(source).toContain(
-      '{ icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "平台治理" }'
+      '{ icon: UsersRound, label: "权限管理", path: "/admin/permission", section: "系统与工具" }'
     );
-    expect(source).toContain('section: "经营业务"');
-    expect(source).toContain('section: "资源与现场"');
-    expect(source).toContain('section: "业财结算"');
-    expect(source).toContain('section: "风险与通知"');
+    expect(source).toContain('section: "总览工作台"');
+    expect(source).toContain('section: "项目与人员"');
+    expect(source).toContain('section: "设备与运输"');
+    expect(source).toContain('section: "采购与结算"');
   });
 
   it("将低频配置清单放入可折叠设置组而不移除原有回滚入口", () => {

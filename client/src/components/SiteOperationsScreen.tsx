@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState, type ReactNode } from "react";
+import React, {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Activity,
   ArrowUpRight,
@@ -19,12 +25,10 @@ import {
   type SiteDashboard,
   type SiteProject,
   type SiteRisk,
-  type SiteTransportEvent,
   type SiteTransportMetric,
   type SiteWeather,
 } from "@shared/siteOperations";
 import {
-  eventTarget,
   getChinaBusinessDate,
   riskTarget,
   siteDetailPath,
@@ -125,12 +129,6 @@ export function SiteModal({
 }
 const routeText = (r: { load: string | null; unload: string | null }) =>
   `${r.load || "装土点未记录"} → ${r.unload || "卸土点未记录"}`;
-const statusText = {
-  issued: "已发车",
-  accepted: "有效事件",
-  needs_review: "待业务核验",
-  rejected: "未通过",
-};
 const severityText = {
   critical: "紧急",
   warning: "待核查",
@@ -173,6 +171,7 @@ export function SiteVideoPlayer({
   item: SiteConfigurationResult["videos"][number];
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const metadataId = useId();
   const [failed, setFailed] = useState(item.playbackStatus !== "ready");
   const [ready, setReady] = useState(false);
   const [manual, setManual] = useState(false);
@@ -287,9 +286,10 @@ export function SiteVideoPlayer({
       {item.attribution && (
         <p
           className="so-video-meta so-visually-hidden"
-          id={`video-meta-${item.id}`}
+          id={`video-meta-${metadataId}`}
         >
-          {item.attribution.label} · {item.attribution.author} · {item.attribution.license}
+          {item.attribution.label} · {item.attribution.author} ·{" "}
+          {item.attribution.license}
           {" · "}
           <a href={item.attribution.sourceUrl}>素材来源</a>
           {" · "}
@@ -299,51 +299,86 @@ export function SiteVideoPlayer({
     </div>
   );
 }
-function VideoPanel({
+export function VideoPanel({
   query,
   identity,
+  onConfigure,
 }: {
   query: SiteQuery<SiteConfigurationResult>;
   identity: string;
+  onConfigure: () => void;
 }) {
-  const [choice, setChoice] = useState("");
+  const [leftChoice, setLeftChoice] = useState<string | null>(null);
+  const [rightChoice, setRightChoice] = useState<string | null>(null);
   const enabled =
     query.data?.videos
       .filter(v => v.enabled)
       .sort((a, b) => a.sortOrder - b.sortOrder) || [];
   const items = enabled.length ? enabled : [sampleVideo];
-  const selected =
-    items.find(v => v.id === choice) || items.find(v => v.default) || items[0];
+  const left =
+    leftChoice === null
+      ? items.find(v => v.default) || items[0]
+      : items.find(v => v.id === leftChoice);
+  const right =
+    rightChoice === null
+      ? items.find(v => v.id !== left?.id)
+      : items.find(v => v.id === rightChoice);
   return (
-    <section className="so-panel so-video">
+    <section className="so-panel so-video" aria-labelledby="site-video-title">
       <div className="so-section-title">
-        <h2>
+        <h2 id="site-video-title">
           <Video size={17} />
           现场影像
         </h2>
-        {!query.isError && query.data && (
-          <select
-            aria-label="视频点位"
-            value={selected.id}
-            onChange={e => setChoice(e.target.value)}
-          >
-            {items.map(v => (
-              <option key={v.id} value={v.id}>
-                {v.name} · {v.pointLabel}
-              </option>
-            ))}
-          </select>
-        )}
+        <button className="so-text-button" onClick={onConfigure}>
+          配置视频
+        </button>
       </div>
       {query.isError || !query.data ? (
         <SitePlaceholder query={query} label="视频配置" />
       ) : (
-        <>
-          <SiteVideoPlayer
-            key={`${identity}:${selected.id}:${selected.playbackUrl}`}
-            item={selected}
-          />
-        </>
+        <div className="so-video-grid">
+          {(
+            [
+              ["left", "左侧", left, setLeftChoice],
+              ["right", "右侧", right, setRightChoice],
+            ] as const
+          ).map(([slot, label, selected, setChoice]) => (
+            <section
+              className="so-video-window"
+              key={slot}
+              aria-label={`${label}视频窗口`}
+            >
+              <div className="so-video-window-title">
+                <span>{label}窗口</span>
+                <select
+                  aria-label={`${label}视频点位`}
+                  value={selected?.id || ""}
+                  onChange={e => setChoice(e.target.value)}
+                >
+                  <option value="">未配置视频</option>
+                  {items.map(v => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} · {v.pointLabel}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {selected ? (
+                <SiteVideoPlayer
+                  key={`${identity}:${slot}:${selected.id}:${selected.playbackUrl}`}
+                  item={selected}
+                />
+              ) : (
+                <div className="so-video-frame so-video-empty">
+                  <Video size={30} />
+                  <strong>{label}视频待配置</strong>
+                  <button onClick={onConfigure}>添加视频点位</button>
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
       )}
     </section>
   );
@@ -351,11 +386,14 @@ function VideoPanel({
 export function SiteWeatherPanel({
   query,
   location,
+  onConfigure,
 }: {
   query: SiteQuery<SiteWeather>;
   location?: string;
+  onConfigure?: () => void;
 }) {
   const w = !query.isError ? query.data : undefined;
+  const isMet = w?.source === "met_norway";
   const ok = w && (w.status === "ready" || w.status === "stale") && w.current;
   const value = (v: number | null | undefined, unit: string) =>
     v == null ? "未提供" : `${v}${unit}`;
@@ -384,83 +422,134 @@ export function SiteWeatherPanel({
           <CloudSun size={17} />
           工地天气
         </h2>
-        <span>{location || "地点待配置"}</span>
+        {onConfigure && (
+          <button className="so-text-button" onClick={onConfigure}>
+            天气配置
+          </button>
+        )}
       </div>
-      {query.isError || !w ? (
-        <SitePlaceholder query={query} label="天气" />
-      ) : !ok ? (
-        <div className="so-placeholder">
-          <CloudSun size={32} />
-          <strong>
-            {w.status === "disabled" || w.status === "not_configured"
-              ? "天气服务待配置"
-              : "天气服务暂不可用"}
-          </strong>
-          <span>仅接入商业授权服务，不使用设备定位。</span>
-          {w.status === "unavailable" && (
-            <button onClick={() => query.refetch()}>重试天气</button>
-          )}
-        </div>
-      ) : (
-        <>
-          {w.status === "stale" && (
-            <p className="so-warning">
-              天气数据已过期 · 待更新{" "}
-              <button onClick={() => query.refetch()}>更新</button>
+      <p className="so-weather-location">{location || "地点待配置"}</p>
+      <div className="so-weather-content">
+        {query.isError || !w ? (
+          <SitePlaceholder query={query} label="天气" />
+        ) : !ok ? (
+          <div className="so-placeholder">
+            <CloudSun size={32} />
+            <strong>
+              {w.status === "disabled" || w.status === "not_configured"
+                ? "天气服务待配置"
+                : "天气服务暂不可用"}
+            </strong>
+            <span>可选免费商用天气，不使用设备定位。</span>
+            {onConfigure && <button onClick={onConfigure}>设置工地天气</button>}
+            {w.status === "unavailable" && (
+              <button onClick={() => query.refetch()}>重试天气</button>
+            )}
+          </div>
+        ) : (
+          <>
+            {w.status === "stale" && (
+              <p className="so-warning">
+                天气数据已过期 · 待更新{" "}
+                <button onClick={() => query.refetch()}>更新</button>
+              </p>
+            )}
+            <div className="so-weather-head">
+              <strong>{value(w.current!.temperatureC, "°C")}</strong>
+              <div>
+                {w.weatherDescription || weatherCode(w.current!.weatherCode)}
+                <small>
+                  体感 {value(w.current!.apparentTemperatureC, "°C")}
+                </small>
+              </div>
+            </div>
+            <div className="so-weather-grid">
+              {[
+                ["相对湿度", value(w.current!.humidityPercent, "%")],
+                ["风速", value(w.current!.windKmh, " km/h")],
+                ["风向", value(w.current!.windDirectionDegrees, "°")],
+                ["阵风", value(w.current!.gustKmh, " km/h")],
+                [
+                  isMet ? "1小时预报雨量" : "降水量",
+                  value(
+                    isMet
+                      ? w.predictive?.precipitationMm
+                      : w.current!.precipitationMm,
+                    " mm"
+                  ),
+                ],
+                [
+                  isMet ? "今日剩余预报高 / 低" : "今日高 / 低",
+                  `${value(w.daily?.maximumC, "°C")} / ${value(w.daily?.minimumC, "°C")}`,
+                ],
+              ].map(([k, v]) => (
+                <div key={k}>
+                  <small>{k}</small>
+                  <b>{v}</b>
+                </div>
+              ))}
+            </div>
+            {isMet && w.predictive?.periodStart && w.predictive?.periodEnd && (
+              <p className="so-source">
+                雨量预报时段：{siteTime(w.predictive.periodStart, true)} —{" "}
+                {siteTime(w.predictive.periodEnd, true)}，非现场实测。
+              </p>
+            )}
+            <h3 className="so-subtitle">
+              {isMet ? "后续预报趋势 · 最多12时点" : "未来 12 小时趋势"}
+            </h3>
+            <div className="so-hourly">
+              <div className="so-hour-row so-muted">
+                <span>北京时间</span>
+                <span>气温</span>
+                <span>降雨概率</span>
+                <span>雨量 / 能见度</span>
+              </div>
+              {w.hourly.slice(0, 12).map(h => (
+                <div key={h.time} className="so-hour-row">
+                  <span>{siteTime(h.time).slice(0, 5)}</span>
+                  <span>{value(h.temperatureC, "°C")}</span>
+                  <span>{value(h.precipitationProbability, "%")}</span>
+                  <span>
+                    {value(h.precipitationMm, "mm")} /{" "}
+                    {value(h.visibilityMeters, "m")}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="so-source">
+              {isMet
+                ? "免费天气模型预报 · 非工地实测"
+                : "商业天气模型预报 · 非工地实测"}
+              {isMet && w.attribution && (
+                <>
+                  <br />
+                  <a
+                    href={w.attribution.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    MET Norway
+                  </a>
+                  {" · "}
+                  <a
+                    href={w.attribution.licenseUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    CC BY 4.0
+                  </a>
+                  {" · 单位换算与系统提示由本系统生成"}
+                </>
+              )}
+              <br />
+              预报时点 {siteTime(w.current!.time, true)}
+              <br />
+              更新时间 {siteTime(w.updatedAt || w.fetchedAt, true)}
             </p>
-          )}
-          <div className="so-weather-head">
-            <strong>{value(w.current!.temperatureC, "°C")}</strong>
-            <div>
-              {weatherCode(w.current!.weatherCode)}
-              <small>体感 {value(w.current!.apparentTemperatureC, "°C")}</small>
-            </div>
-          </div>
-          <div className="so-weather-grid">
-            {[
-              ["相对湿度", value(w.current!.humidityPercent, "%")],
-              ["风速", value(w.current!.windKmh, " km/h")],
-              ["风向", value(w.current!.windDirectionDegrees, "°")],
-              ["阵风", value(w.current!.gustKmh, " km/h")],
-              ["降水量", value(w.current!.precipitationMm, " mm")],
-              [
-                "今日高 / 低",
-                `${value(w.daily?.maximumC, "°C")} / ${value(w.daily?.minimumC, "°C")}`,
-              ],
-            ].map(([k, v]) => (
-              <div key={k}>
-                <small>{k}</small>
-                <b>{v}</b>
-              </div>
-            ))}
-          </div>
-          <h3 className="so-subtitle">未来 12 小时趋势</h3>
-          <div className="so-hourly">
-            <div className="so-hour-row so-muted">
-              <span>北京时间</span>
-              <span>气温</span>
-              <span>降雨概率</span>
-              <span>雨量 / 能见度</span>
-            </div>
-            {w.hourly.slice(0, 12).map(h => (
-              <div key={h.time} className="so-hour-row">
-                <span>{siteTime(h.time).slice(0, 5)}</span>
-                <span>{value(h.temperatureC, "°C")}</span>
-                <span>{value(h.precipitationProbability, "%")}</span>
-                <span>
-                  {value(h.precipitationMm, "mm")} /{" "}
-                  {value(h.visibilityMeters, "m")}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="so-source">
-            商业天气模型预报 · 非工地实测
-            <br />
-            更新时间 {siteTime(w.updatedAt || w.fetchedAt, true)}
-          </p>
-        </>
-      )}
+          </>
+        )}
+      </div>
       <div className="so-work-hints">
         <h3>系统作业提示</h3>
         {ok ? (
@@ -483,7 +572,6 @@ export function SiteWeatherPanel({
 }
 type Detail =
   | { kind: "metric"; metric: SiteTransportMetric; title: string }
-  | { kind: "event"; item: SiteTransportEvent }
   | { kind: "risk"; item: SiteRisk }
   | { kind: "vehicle"; item: SiteDashboard["vehicles"][number] }
   | { kind: "help" };
@@ -498,17 +586,26 @@ function MetricDetail({
   date: string;
   onNavigate: (p: string) => void;
 }) {
-  const input = React.useMemo(() => ({ projectId, businessDate: date, metric }), [projectId, date, metric]);
+  const input = React.useMemo(
+    () => ({ projectId, businessDate: date, metric }),
+    [projectId, date, metric]
+  );
   const q = trpc.siteOperations.transportDetails.useQuery(input, {
     retry: false,
     placeholderData: undefined,
   });
   const rows =
-    !q.isError && q.data?.projectId === projectId && q.data.businessDate === date && q.data.metric === metric ? q.data.rows : undefined;
+    !q.isError &&
+    q.data?.projectId === projectId &&
+    q.data.businessDate === date &&
+    q.data.metric === metric
+      ? q.data.rows
+      : undefined;
   return (
     <>
       <p className="so-muted">
-        同项目 · {date}（北京时间）；独立查询完整现场运单，不使用最近动态截断列表，响应不含金额。
+        同项目 · {date}
+        （北京时间）；独立查询完整现场运单，不使用截断列表，响应不含金额。
         {metric === "currentInTransitVehicles" &&
           "当前在途按车辆去重，下面列出对应当前运单，不是历史快照。"}
       </p>
@@ -599,13 +696,11 @@ export default function SiteOperationsScreen({
   const title =
     detail?.kind === "metric"
       ? detail.title
-      : detail?.kind === "event"
-        ? "现场事件依据"
-        : detail?.kind === "risk"
-          ? "车辆待核查依据"
-          : detail?.kind === "vehicle"
-            ? "车辆登记资料"
-            : "现场大屏使用说明";
+      : detail?.kind === "risk"
+        ? "车辆待核查依据"
+        : detail?.kind === "vehicle"
+          ? "车辆登记资料"
+          : "现场大屏使用说明";
   return (
     <main className="site-operations-screen" ref={root}>
       <header className="so-header">
@@ -692,221 +787,166 @@ export default function SiteOperationsScreen({
           · 每 45 秒刷新
         </span>
       </div>
-      <div className="so-main-grid">
-        <div className="so-left-column">
-          <section className="so-panel">
-            <div className="so-section-title">
-              <h2>
-                <Truck size={17} />
-                运输运行
-              </h2>
-              <span>数量 · 非金额</span>
-            </div>
-            {d ? (
-              <>
-                <div className="so-metrics">
-                  {metricMeta.map(([key, label, note, Icon]) => (
-                    <button
-                      key={key}
-                      className={`so-metric ${key === "pendingReview" ? "so-metric-amber" : ""}`}
-                      onClick={() =>
-                        setDetail({
-                          kind: "metric",
-                          metric: key,
-                          title: `${label}明细`,
-                        })
-                      }
-                    >
-                      <span>
-                        <Icon size={15} />
-                        {label}
-                        <ArrowUpRight size={13} />
-                      </span>
-                      <strong>{d.transport[key]}</strong>
-                      <small>{note}</small>
-                    </button>
-                  ))}
-                </div>
+      <section className="so-panel so-transport">
+        <div className="so-section-title">
+          <h2>
+            <Truck size={17} />
+            运输运行
+          </h2>
+          <span>数量 · 非金额</span>
+        </div>
+        {d ? (
+          <>
+            <div className="so-metrics">
+              {metricMeta.map(([key, label, note, Icon]) => (
                 <button
-                  className="so-special"
+                  key={key}
+                  className={`so-metric ${key === "pendingReview" ? "so-metric-amber" : ""}`}
                   onClick={() =>
                     setDetail({
                       kind: "metric",
-                      metric: "specialClosures",
-                      title: "特殊闭环明细",
+                      metric: key,
+                      title: `${label}明细`,
                     })
                   }
                 >
-                  特殊闭环 {d.transport.specialClosures} 趟 ·
-                  单列，不计真实卸土完成 <ArrowUpRight size={13} />
+                  <span>
+                    <Icon size={15} />
+                    {label}
+                    <ArrowUpRight size={13} />
+                  </span>
+                  <strong>{d.transport[key]}</strong>
+                  <small>{note}</small>
                 </button>
-                <p className="so-snapshot">
-                  当前在途快照 {siteTime(d.transport.inTransitAsOf, true)}
-                </p>
-              </>
-            ) : (
-              <SitePlaceholder query={dashboard} label="运输数量" />
-            )}
-          </section>
-          <section className="so-panel so-events">
-            <div className="so-section-title">
-              <h2>
-                <Activity size={17} />
-                最近现场动态
-              </h2>
-              <span>北京时间</span>
+              ))}
             </div>
-            <div className="so-scroll">
-              {d ? (
-                d.transport.events.length ? (
-                  d.transport.events.map(e => (
-                    <button
-                      className="so-event"
-                      key={e.key}
-                      onClick={() => setDetail({ kind: "event", item: e })}
-                    >
-                      <div>
-                        <strong className="so-plate">{e.plate}</strong>
-                        <time>{siteTime(e.occurredAt)}</time>
-                      </div>
-                      <p>{routeText(e.route)}</p>
-                      <span
-                        className={
-                          e.status === "needs_review"
-                            ? "so-warning-text"
-                            : "so-muted"
-                        }
-                      >
-                        {e.type === "departure"
-                          ? "发车"
-                          : e.type === "review"
-                            ? "核验"
-                            : "卸土"}{" "}
-                        · {statusText[e.status]}
-                        {e.closureKind !== "normal"
-                          ? " · 特殊闭环"
-                          : e.normalCompletion
-                            ? " · 真实完成"
-                            : ""}
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="so-placeholder">
-                    真实查询成功，当日暂无现场事件。
-                  </div>
-                )
-              ) : (
-                <SitePlaceholder query={dashboard} label="现场动态" />
-              )}
-            </div>
-            {d && (
-              <p className="so-list-note">
-                共 {d.transport.eventTotal} 条 · 展示最近{" "}
-                {d.transport.events.length} 条 · 上限 {d.transport.eventLimit}
-                {d.transport.eventsTruncated
-                  ? " · 已截断，请点击数量卡查询完整明细"
-                  : ""}
-              </p>
-            )}
-          </section>
-        </div>
-        <div className="so-center-column">
-          <VideoPanel
-            key={`${projectId}:${businessDate}`}
-            identity={`${projectId}:${businessDate}`}
-            query={{ ...configuration, data: c }}
-          />
-          <section className="so-panel so-reports">
-            <div className="so-section-title">
-              <h2>
-                <HardHat size={17} />
-                施工日报与计划
-              </h2>
-              <span>{d ? `${d.construction.total} 份日报` : ""}</span>
-            </div>
-            <div className="so-scroll">
-              {d ? (
-                d.construction.reports.length ? (
-                  d.construction.reports.map(r => (
-                    <article className="so-report" key={r.id}>
-                      <h3>
-                        {r.workArea}
-                        <small>{siteTime(r.updatedAt)}</small>
-                      </h3>
-                      <p>{r.workContent}</p>
-                      {r.constructionPlan && (
-                        <p>
-                          <span className="so-muted">施工计划 / </span>
-                          {r.constructionPlan}
-                        </p>
-                      )}
-                      {r.issueNotes && (
-                        <p
-                          className={
-                            r.issuePriority === "urgent"
-                              ? "so-critical"
-                              : "so-warning-text"
-                          }
-                        >
-                          <b>
-                            {r.issuePriority === "urgent"
-                              ? "紧急问题"
-                              : r.issuePriority === "normal"
-                                ? "一般问题"
-                                : "未分级问题"}{" "}
-                            /{" "}
-                          </b>
-                          {r.issueNotes}
-                          <small>整改状态未跟踪</small>
-                        </p>
-                      )}
-                    </article>
-                  ))
-                ) : (
-                  <div className="so-placeholder">当日暂无非草稿施工日报。</div>
-                )
-              ) : (
-                <SitePlaceholder query={dashboard} label="施工日报" />
-              )}
-            </div>
-            {d?.construction.truncated && (
-              <p className="so-list-note">
-                共 {d.construction.total} 份 · 展示上限 {d.construction.limit}{" "}
-                份，已截断。
-              </p>
-            )}
-          </section>
-        </div>
-        <SiteWeatherPanel
+            <button
+              className="so-special"
+              onClick={() =>
+                setDetail({
+                  kind: "metric",
+                  metric: "specialClosures",
+                  title: "特殊闭环明细",
+                })
+              }
+            >
+              特殊闭环 {d.transport.specialClosures} 趟 · 单列，不计真实卸土完成{" "}
+              <ArrowUpRight size={13} />
+            </button>
+            <p className="so-snapshot">
+              当前在途快照 {siteTime(d.transport.inTransitAsOf, true)}
+            </p>
+          </>
+        ) : (
+          <SitePlaceholder query={dashboard} label="运输数量" />
+        )}
+      </section>
+      <div className="so-main-grid">
+        <VideoPanel
           key={`${projectId}:${businessDate}`}
+          identity={`${projectId}:${businessDate}`}
+          query={{ ...configuration, data: c }}
+          onConfigure={() =>
+            onNavigate(
+              `/admin/settings?category=onsite&siteProjectId=${projectId}&siteTab=video`
+            )
+          }
+        />
+        <SiteWeatherPanel
+          key={`weather:${projectId}:${businessDate}`}
           query={weather}
           location={c?.configuration.location?.label}
+          onConfigure={() =>
+            onNavigate(
+              `/admin/settings?category=onsite&siteTab=weather&siteProjectId=${projectId}`
+            )
+          }
         />
-      </div>
-      <section className="so-panel so-risk-panel">
-        <div className="so-section-title">
-          <h2>
-            <ShieldAlert size={17} />
-            现场风险总览
-          </h2>
-          <span>
-            {d?.risks.enabled
-              ? `共 ${d.risks.total} 条待核查`
-              : d
-                ? "风险规则已禁用"
-                : "状态未就绪"}
-          </span>
-          <button
-            className="so-text-button"
-            onClick={() => setDetail({ kind: "help" })}
-          >
-            口径 ?
-          </button>
-        </div>
-        {d ? (
-          <div className="so-risk-workspace">
-            <section className="so-risk-alert-panel" aria-labelledby="site-risk-alert-title">
+        <section className="so-panel so-reports">
+          <div className="so-section-title">
+            <h2>
+              <HardHat size={17} />
+              施工日报与计划
+            </h2>
+            <span>{d ? `${d.construction.total} 份日报` : ""}</span>
+          </div>
+          <div className="so-scroll">
+            {d ? (
+              d.construction.reports.length ? (
+                d.construction.reports.map(r => (
+                  <article className="so-report" key={r.id}>
+                    <h3>
+                      {r.workArea}
+                      <small>{siteTime(r.updatedAt)}</small>
+                    </h3>
+                    <p>{r.workContent}</p>
+                    {r.constructionPlan && (
+                      <p>
+                        <span className="so-muted">施工计划 / </span>
+                        {r.constructionPlan}
+                      </p>
+                    )}
+                    {r.issueNotes && (
+                      <p
+                        className={
+                          r.issuePriority === "urgent"
+                            ? "so-critical"
+                            : "so-warning-text"
+                        }
+                      >
+                        <b>
+                          {r.issuePriority === "urgent"
+                            ? "紧急问题"
+                            : r.issuePriority === "normal"
+                              ? "一般问题"
+                              : "未分级问题"}{" "}
+                          /{" "}
+                        </b>
+                        {r.issueNotes}
+                        <small>整改状态未跟踪</small>
+                      </p>
+                    )}
+                  </article>
+                ))
+              ) : (
+                <div className="so-placeholder">当日暂无非草稿施工日报。</div>
+              )
+            ) : (
+              <SitePlaceholder query={dashboard} label="施工日报" />
+            )}
+          </div>
+          {d?.construction.truncated && (
+            <p className="so-list-note">
+              共 {d.construction.total} 份 · 展示上限 {d.construction.limit}{" "}
+              份，已截断。
+            </p>
+          )}
+        </section>
+        <section className="so-panel so-risk-panel">
+          <div className="so-section-title">
+            <h2>
+              <ShieldAlert size={17} />
+              现场风险总览
+            </h2>
+            <span>
+              {d?.risks.enabled
+                ? `共 ${d.risks.total} 条待核查`
+                : d
+                  ? "风险规则已禁用"
+                  : "状态未就绪"}
+            </span>
+            <button
+              className="so-text-button"
+              onClick={() => setDetail({ kind: "help" })}
+            >
+              口径 ?
+            </button>
+          </div>
+          {d ? (
+            <div
+              className="so-risk-alert-panel"
+              aria-labelledby="site-risk-alert-title"
+            >
               <div className="so-risk-inner-title">
                 <h3 id="site-risk-alert-title">
                   <ShieldAlert size={15} /> 智能风控预警
@@ -948,8 +988,8 @@ export default function SiteOperationsScreen({
                         </span>
                         <p>{r.reason}</p>
                         <small>
-                          {siteTime(r.occurredAt, true)} · {routeText(r.route)} ·{" "}
-                          {reviewText[r.reviewStatus]}
+                          {siteTime(r.occurredAt, true)} · {routeText(r.route)}{" "}
+                          · {reviewText[r.reviewStatus]}
                           {r.basis === "current_snapshot" ? " · 当前快照" : ""}
                         </small>
                       </button>
@@ -957,44 +997,60 @@ export default function SiteOperationsScreen({
                   : null}
                 {d.risks.truncated && (
                   <p className="so-list-note">
-                    共 {d.risks.total} 条 · 展示上限 {d.risks.limit} 条，已截断。
+                    共 {d.risks.total} 条 · 展示上限 {d.risks.limit}{" "}
+                    条，已截断。
                   </p>
                 )}
               </div>
-            </section>
-            <section className="so-vehicle-panel" aria-labelledby="site-vehicle-title">
-              <div className="so-risk-inner-title">
-                <h3 id="site-vehicle-title">
-                  <Truck size={15} /> 车辆登记资料
-                </h3>
-                <span>{d.vehicles.length} 辆</span>
-              </div>
-              <div className="so-vehicle-list">
-                {d.vehicles.length ? (
-                  d.vehicles.map(v => (
-                    <button
-                      className="so-vehicle"
-                      key={v.vehicleId}
-                      onClick={() => setDetail({ kind: "vehicle", item: v })}
-                    >
-                      <strong className="so-plate">{v.plate}</strong>
-                      <span>
-                        登记加油 <b>{formatQuantity(v.registeredFuelLiters)} L</b> · 有效完成{" "}
-                        <b>{v.normalCompletedTrips} 趟</b>
-                      </span>
-                      <small>真实油耗 / 趟数效率：数据不足（非异常结论）</small>
-                    </button>
-                  ))
-                ) : (
-                  <p className="so-muted">项目暂无车辆登记资料。</p>
-                )}
-              </div>
-            </section>
-          </div>
+            </div>
+          ) : (
+            <SitePlaceholder query={dashboard} label="车辆风险" />
+          )}
+        </section>
+        {d ? (
+          <section
+            className="so-panel so-vehicle-panel"
+            aria-labelledby="site-vehicle-title"
+          >
+            <div className="so-section-title">
+              <h2 id="site-vehicle-title">
+                <Truck size={15} /> 车辆登记资料
+              </h2>
+              <span>{d.vehicles.length} 辆</span>
+            </div>
+            <div className="so-vehicle-list">
+              {d.vehicles.length ? (
+                d.vehicles.map(v => (
+                  <button
+                    className="so-vehicle"
+                    key={v.vehicleId}
+                    onClick={() => setDetail({ kind: "vehicle", item: v })}
+                  >
+                    <strong className="so-plate">{v.plate}</strong>
+                    <span>
+                      登记加油 <b>{formatQuantity(v.registeredFuelLiters)} L</b>{" "}
+                      · 有效完成 <b>{v.normalCompletedTrips} 趟</b>
+                    </span>
+                    <small>真实油耗 / 趟数效率：数据不足（非异常结论）</small>
+                  </button>
+                ))
+              ) : (
+                <p className="so-muted">项目暂无车辆登记资料。</p>
+              )}
+            </div>
+          </section>
         ) : (
-          <SitePlaceholder query={dashboard} label="车辆风险与资料" />
+          <section className="so-panel so-vehicle-panel">
+            <div className="so-section-title">
+              <h2>
+                <Truck size={17} />
+                车辆登记资料
+              </h2>
+            </div>
+            <SitePlaceholder query={dashboard} label="车辆资料" />
+          </section>
         )}
-      </section>
+      </div>
       {detail && (
         <SiteModal title={title} onClose={() => setDetail(null)}>
           {detail.kind === "help" ? (
@@ -1004,7 +1060,7 @@ export default function SiteOperationsScreen({
                 发车按当日开票；真实完成依据有效卸土事件和核验。跨夜卸土归卸土日。当前在途始终是此刻快照，不伪造历史；特殊闭环单列。各卡不是可相加的分类。
               </p>
               <p>
-                日报问题尚未跟踪整改完成。天气来自商业模型而非传感器，官方预警未接入；系统提示不自动停工。
+                日报问题尚未跟踪整改完成。天气来自授权模型预报而非传感器，官方预警未接入；系统提示不自动停工。
               </p>
               <p>
                 登记加油量不是实际油耗。油箱容量、有效里程、有效耗油周期或班次基线不足时，不判断油耗或趟数效率。正常重复提交不构成风险，不认定偷油或违规。
@@ -1025,34 +1081,6 @@ export default function SiteOperationsScreen({
               date={businessDate}
               onNavigate={onNavigate}
             />
-          ) : detail.kind === "event" ? (
-            <>
-              <strong className="so-plate">{detail.item.plate}</strong>
-              <p>
-                {siteTime(detail.item.occurredAt, true)} ·{" "}
-                {statusText[detail.item.status]}
-              </p>
-              <p>{routeText(detail.item.route)}</p>
-              <p>
-                原运单 #{detail.item.tripId} · 原事件{" "}
-                {detail.item.eventId ?? "未关联"} ·{" "}
-                {detail.item.closureKind === "normal"
-                  ? "普通装卸闭环"
-                  : "特殊闭环（非正常卸土完成）"}
-              </p>
-              <button
-                onClick={() =>
-                  onNavigate(
-                    siteDetailPath(
-                      eventTarget(detail.item, projectId),
-                      businessDate
-                    )
-                  )
-                }
-              >
-                定位原运单与装卸凭据
-              </button>
-            </>
           ) : detail.kind === "risk" ? (
             <>
               <strong className="so-plate">{detail.item.plate}</strong>

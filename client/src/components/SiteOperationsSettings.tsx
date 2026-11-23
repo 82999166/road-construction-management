@@ -4,6 +4,8 @@ import { trpc } from "@/lib/trpc";
 import {
   SITE_SAMPLE_METADATA,
   SITE_VIDEO_MAX_BYTES,
+  SITE_MET_NORWAY_TERMS_URL,
+  SITE_MET_NORWAY_ATTRIBUTION,
   siteConfigurationSchema,
   type SiteConfiguration,
   type SiteVideo,
@@ -48,8 +50,18 @@ export default function SiteOperationsSettings({
     retry: false,
     placeholderData: undefined,
   });
+  const initialNavigation = useRef(
+    new URLSearchParams(
+      typeof window !== "undefined" ? (window.location?.search ?? "") : ""
+    )
+  );
+  const initialProjectApplied = useRef(false);
   const [projectId, setProjectId] = useState(0);
-  const [tab, setTab] = useState<(typeof tabs)[number]>("视频管理");
+  const [tab, setTab] = useState<(typeof tabs)[number]>(() =>
+    initialNavigation.current.get("siteTab") === "weather"
+      ? "天气接入"
+      : "视频管理"
+  );
   const [draft, setDraft] = useState<Draft | null>(null);
   const [message, setMessage] = useState("");
   const [success, setSuccess] = useState(false);
@@ -123,8 +135,18 @@ export default function SiteOperationsSettings({
       projects.data.some(p => p.id === projectId)
     )
       return;
+    const requested = initialNavigation.current.get("siteProjectId");
+    const linkedProject =
+      !initialProjectApplied.current &&
+      requested &&
+      /^[1-9]\d*$/.test(requested)
+        ? projects.data.find(p => p.id === Number(requested))
+        : undefined;
+    initialProjectApplied.current = true;
     const p =
-      projects.data.find(p => p.status === "active") || projects.data[0];
+      linkedProject ||
+      projects.data.find(p => p.status === "active") ||
+      projects.data[0];
     currentProject.current = p.id;
     setProjectId(p.id);
   }, [allowed, projects.data, projects.isError, projectId]);
@@ -756,7 +778,7 @@ export default function SiteOperationsSettings({
                     <label>
                       天气服务
                       <select
-                        aria-label="商业天气服务"
+                        aria-label="天气服务"
                         value={draft!.configuration.weather.provider}
                         onChange={e =>
                           update(c => ({
@@ -770,6 +792,9 @@ export default function SiteOperationsSettings({
                         }
                       >
                         <option value="disabled">停用 / 天气服务待配置</option>
+                        <option value="met_norway">
+                          MET Norway 免费模型预报（无需 API Key）
+                        </option>
                         <option value="open_meteo_commercial">
                           Open-Meteo 商业授权服务
                         </option>
@@ -806,17 +831,117 @@ export default function SiteOperationsSettings({
                   <p className="so-muted">
                     阈值仅用于系统作业提示，低能见度为低于阈值，其余按对应高低温
                     /
-                    风雨条件判断；不自动停工。商业服务须自行取得授权，不调用免费接口。
+                    风雨条件判断；不自动停工，不是官方预警。商业服务须自行取得授权；MET
+                    Norway 免费方案需下方人工确认与真实联系方式。
                   </p>
+                  {draft!.configuration.weather.provider === "met_norway" && (
+                    <section className="so-settings-credential">
+                      <h3>免费天气 · MET Norway Locationforecast</h3>
+                      <p>
+                        无需 API
+                        Key，允许商用。请有权限的真人管理员自行阅读并理解
+                        <a
+                          href={SITE_MET_NORWAY_TERMS_URL}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          MET Norway 服务条款
+                        </a>
+                        后决定是否接受；AI
+                        不得代为接受。未确认条款或未填有效联系信息时，不发送任何天气请求。
+                      </p>
+                      <label>
+                        公司邮箱或可联系技术支持的公开 HTTPS 页面
+                        <input
+                          aria-label="MET Norway 联系信息"
+                          type="text"
+                          maxLength={512}
+                          value={
+                            draft!.configuration.weather.metNorway?.contact ??
+                            ""
+                          }
+                          placeholder="填写您公司真实、可联系的技术支持信息"
+                          onChange={e =>
+                            update(c => ({
+                              ...c,
+                              weather: {
+                                ...c.weather,
+                                metNorway: {
+                                  termsAccepted:
+                                    c.weather.metNorway?.termsAccepted ?? false,
+                                  contact: e.target.value,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <p className="so-muted">
+                        联系方式会随服务器 User-Agent 发送给 MET
+                        Norway，标识域名为
+                        yx.maomaoyx.com。公开页面须无需登录且有技术支持联系方式；不允许虚构邮箱、占位域名或私有
+                        GitHub。此页面仅校验格式，管理员须核实可联系性。
+                      </p>
+                      <label>
+                        <input
+                          aria-label="管理员确认 MET Norway 服务条款"
+                          type="checkbox"
+                          checked={
+                            draft!.configuration.weather.metNorway
+                              ?.termsAccepted ?? false
+                          }
+                          onChange={e =>
+                            update(c => ({
+                              ...c,
+                              weather: {
+                                ...c.weather,
+                                metNorway: {
+                                  contact: c.weather.metNorway?.contact ?? "",
+                                  termsAccepted: e.target.checked,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                        我是有权限的真人管理员，已阅读、理解并接受服务条款，确认所填公司联系方式真实且可联系。
+                      </label>
+                      <p className="so-attribution">
+                        数据来源：
+                        <a
+                          href={SITE_MET_NORWAY_ATTRIBUTION.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          MET Norway
+                        </a>{" "}
+                        ·{" "}
+                        <a
+                          href={SITE_MET_NORWAY_ATTRIBUTION.licenseUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          CC BY 4.0
+                        </a>
+                        。{SITE_MET_NORWAY_ATTRIBUTION.modification}。
+                      </p>
+                      <p className="so-muted">
+                        只使用已保存的项目工地坐标，不读取设备
+                        GPS。显示模型预报而非现场实测；雨量指预报点之后 1
+                        小时，不是实时雨量。免费方案缺少的能见度、阵风、降水概率及体感温度不补造数据；当天高低温只根据当天剩余预报点估算。中国地点请求至少间隔
+                        3 小时，遵守供应商 Expires 缓存。
+                      </p>
+                    </section>
+                  )}
                   <button
                     disabled={testWeather.isFetching}
                     onClick={async () => {
                       const r = await testWeather.refetch();
                       const labels = {
                         disabled: "天气服务待配置（已停用）",
-                        not_configured: "天气服务待配置（地点或凭据未配置）",
+                        not_configured:
+                          "天气服务待配置（地点、条款确认、联系信息或商业凭据未配置）",
                         unavailable: "天气服务不可用",
-                        ready: "已取得商业模型天气数据（非实测）",
+                        ready: "已取得模型预报数据（非现场实测）",
                         stale: "天气数据已过期，待更新",
                       };
                       setMessage(
@@ -831,57 +956,60 @@ export default function SiteOperationsSettings({
                   >
                     测试天气（已保存配置）
                   </button>
-                  <section className="so-settings-credential">
-                    <h3>全局商业天气密钥 · 独立保存</h3>
-                    <p>
-                      此密钥供所有使用该商业服务的项目共享，不属于当前单个项目。仅返回配置状态，绝不回显原密钥；密码输入留空保持原值。
-                    </p>
-                    {credential.isError || !credential.data ? (
-                      <SitePlaceholder
-                        query={credential}
-                        label="全局密钥状态"
-                      />
-                    ) : (
-                      <>
-                        <p>
-                          当前：
-                          {credential.data.keyConfigured
-                            ? "已配置（原值不回显）"
-                            : "未配置"}{" "}
-                          · 版本 {credential.data.version ?? "未创建"}
-                        </p>
-                        <input
-                          aria-label="商业天气 API 密钥"
-                          type="password"
-                          autoComplete="new-password"
-                          value={key}
-                          placeholder="留空保持，输入新值才更新"
-                          onChange={e => setKey(e.target.value)}
+                  {draft!.configuration.weather.provider ===
+                    "open_meteo_commercial" && (
+                    <section className="so-settings-credential">
+                      <h3>全局商业天气密钥 · 独立保存</h3>
+                      <p>
+                        此密钥供所有使用该商业服务的项目共享，不属于当前单个项目。仅返回配置状态，绝不回显原密钥；密码输入留空保持原值。
+                      </p>
+                      {credential.isError || !credential.data ? (
+                        <SitePlaceholder
+                          query={credential}
+                          label="全局密钥状态"
                         />
-                        <button
-                          disabled={
-                            saveKey.isPending ||
-                            credential.isLoading ||
-                            credential.isError
-                          }
-                          onClick={() => void saveCredential()}
-                        >
-                          独立保存密钥
-                        </button>
-                        <button
-                          disabled={
-                            saveKey.isPending ||
-                            credential.isLoading ||
-                            credential.isError
-                          }
-                          onClick={() => void saveCredential(true)}
-                        >
-                          显式清空全局密钥
-                        </button>
-                      </>
-                    )}
-                    {keyMessage && <p role="status">{keyMessage}</p>}
-                  </section>
+                      ) : (
+                        <>
+                          <p>
+                            当前：
+                            {credential.data.keyConfigured
+                              ? "已配置（原值不回显）"
+                              : "未配置"}{" "}
+                            · 版本 {credential.data.version ?? "未创建"}
+                          </p>
+                          <input
+                            aria-label="商业天气 API 密钥"
+                            type="password"
+                            autoComplete="new-password"
+                            value={key}
+                            placeholder="留空保持，输入新值才更新"
+                            onChange={e => setKey(e.target.value)}
+                          />
+                          <button
+                            disabled={
+                              saveKey.isPending ||
+                              credential.isLoading ||
+                              credential.isError
+                            }
+                            onClick={() => void saveCredential()}
+                          >
+                            独立保存密钥
+                          </button>
+                          <button
+                            disabled={
+                              saveKey.isPending ||
+                              credential.isLoading ||
+                              credential.isError
+                            }
+                            onClick={() => void saveCredential(true)}
+                          >
+                            显式清空全局密钥
+                          </button>
+                        </>
+                      )}
+                      {keyMessage && <p role="status">{keyMessage}</p>}
+                    </section>
+                  )}
                 </>
               )}
               {tab === "使用说明" && (
@@ -897,7 +1025,12 @@ export default function SiteOperationsSettings({
                   </p>
                   <h3>天气与系统提示</h3>
                   <p>
-                    天气默认停用，尚无商业服务时显示待配置。天气由模型预报，不是传感器实测；降雨概率（%）与雨量（mm）分别展示。过期数据不当正常结果，官方预警未接入；现场负责人按制度判断作业安排。
+                    配置入口：后台设置 →
+                    现场大屏（/admin/settings?category=onsite），选择项目后打开“天气地点”和“天气接入”。天气默认停用；可选择无需密钥的
+                    MET Norway
+                    免费方案，由真人管理员接受条款并填写真实联系方式后保存，或保留商业授权服务。切换免费方案不会清空原商业密钥。天气由模型预报，不是传感器实测；降雨概率（%）与雨量（mm）分别展示，MET
+                    雨量为未来 1
+                    小时。缺项不补造；过期数据不当正常结果，官方预警未接入；现场负责人按制度判断作业安排。
                   </p>
                 </div>
               )}

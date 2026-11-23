@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BarChart3,
   Calculator,
+  Camera,
   FileText,
   FolderKanban,
   Fuel,
@@ -30,6 +31,7 @@ describe("普通 PC 管理员侧栏安全投影", () => {
       "TRANSPORT",
       "MACHINERY",
       "CONSTRUCTION",
+      "EVIDENCE",
     ];
     const items = buildScopedAdministratorNavigation(
       codes.map(code => ({ code, title: "系统设置", path: "/admin/settings" })),
@@ -40,62 +42,102 @@ describe("普通 PC 管理员侧栏安全投影", () => {
         icon: FolderKanban,
         label: "施工管理",
         path: "/admin/construction",
-        section: "经营业务",
+        section: "项目与人员",
       },
       {
-        icon: Settings2,
-        label: "机械管理",
-        path: "/admin/machinery",
-        section: "资源与现场",
-      },
-      {
-        icon: Truck,
-        label: "运输管理",
-        path: "/admin/transport",
-        section: "资源与现场",
+        icon: Camera,
+        label: "现场取证",
+        path: "/admin/evidence",
+        section: "项目与人员",
       },
       {
         icon: UsersRound,
         label: "劳务工资",
         path: "/admin/labor",
-        section: "资源与现场",
+        section: "项目与人员",
+      },
+      {
+        icon: Settings2,
+        label: "机械管理",
+        path: "/admin/machinery",
+        section: "设备与运输",
+      },
+      {
+        icon: Truck,
+        label: "运输管理",
+        path: "/admin/transport",
+        section: "设备与运输",
       },
       {
         icon: Fuel,
         label: "柴油管理",
         path: "/admin/diesel",
-        section: "资源与现场",
-      },
-      {
-        icon: BarChart3,
-        label: "财务管理",
-        path: "/admin/finance",
-        section: "业财结算",
+        section: "设备与运输",
       },
       {
         icon: ShoppingCart,
         label: "采购仓储",
         path: "/admin/purchasing",
-        section: "业财结算",
+        section: "采购与结算",
       },
       {
-        icon: Calculator,
-        label: "工具知识",
-        path: "/tools",
-        section: "业财结算",
+        icon: BarChart3,
+        label: "财务管理",
+        path: "/admin/finance",
+        section: "采购与结算",
       },
       {
         icon: FolderKanban,
         label: "结算分包",
         path: "/admin/subcontract",
-        section: "业财结算",
+        section: "采购与结算",
       },
       {
         icon: FileText,
         label: "合同管理",
         path: "/admin/contracts",
-        section: "业财结算",
+        section: "采购与结算",
       },
+      {
+        icon: Calculator,
+        label: "工具知识",
+        path: "/tools",
+        section: "系统与工具",
+      },
+    ]);
+  });
+
+  it("总览、工具消息教程和授权业务采用同一套紧凑分类，入口保持唯一", () => {
+    const items = buildScopedAdministratorNavigation(
+      [
+        "CONSTRUCTION",
+        "EVIDENCE",
+        "LABOR",
+        "MACHINERY",
+        "TRANSPORT",
+        "DIESEL",
+        "PURCHASING",
+        "FINANCE",
+        "MEASUREMENT",
+        "CONTRACT",
+        "TOOL_KNOWLEDGE",
+        "MESSAGES",
+        "CONSTRUCTION",
+      ].map(code => ({ code })),
+      ["PROJECT_MANAGER"]
+    );
+    expect(Array.from(new Set(items.map(item => item.section)))).toEqual([
+      "总览工作台",
+      "项目与人员",
+      "设备与运输",
+      "采购与结算",
+      "系统与工具",
+    ]);
+    expect(new Set(items.map(item => item.path)).size).toBe(items.length);
+    expect(items.slice(-3).map(item => [item.path, item.section])).toEqual([
+      ["/tools", "系统与工具"],
+      ["/mobile/messages", "系统与工具"],
+      ["/help", "系统与工具"],
     ]);
   });
 

@@ -6,6 +6,7 @@ import type { ReactTestRenderer, ReactTestInstance } from "react-test-renderer";
 import {
   DEFAULT_SITE_CONFIGURATION,
   SITE_SAMPLE_METADATA,
+  SITE_MET_NORWAY_ATTRIBUTION,
   type SiteDashboard,
   type SiteConfigurationResult,
   type SiteWeather,
@@ -16,10 +17,13 @@ const { create, act } = createRequire(import.meta.url)(
 const { query } = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock("@/lib/trpc", () => ({
   trpc: {
-    siteOperations: { transportDetails: { useQuery: (...a: unknown[]) => query(...a) } },
+    siteOperations: {
+      transportDetails: { useQuery: (...a: unknown[]) => query(...a) },
+    },
   },
 }));
 import Screen, {
+  VideoPanel,
   SiteVideoPlayer,
   SiteWeatherPanel,
 } from "./SiteOperationsScreen";
@@ -198,7 +202,16 @@ function props() {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("document", { activeElement: null });
-  query.mockReturnValue(result({projectId:1,businessDate:"2026-11-23",metric:"departures",count:0,vehicleCount:0,rows:[]}));
+  query.mockReturnValue(
+    result({
+      projectId: 1,
+      businessDate: "2026-11-23",
+      metric: "departures",
+      count: 0,
+      vehicleCount: 0,
+      rows: [],
+    })
+  );
 });
 afterEach(async () => {
   if (tree) await act(async () => tree.unmount());
@@ -219,9 +232,9 @@ describe("现场大屏真实行为", () => {
     const s = text(tree.root);
     expect(s).toContain("75");
     expect(s).toContain("真实完成0");
-    expect(s).toContain("共 75 条");
-    expect(s).toContain("上限 50");
-    expect(s).toContain("已截断");
+    expect(s).not.toContain("最近现场动态");
+    expect(tree.root.findAllByProps({ className: "so-event" })).toHaveLength(0);
+    expect(s).toContain("明日铺设");
     expect(s).toContain("待业务核验");
     expect(s).toContain("KaiKemmann");
     expect(s).toContain("CC BY-SA 4.0");
@@ -257,25 +270,132 @@ describe("现场大屏真实行为", () => {
     );
     expect(text(tree.root)).not.toContain("粤A12345");
   });
-  it("事件点击定位同项目业务日原运单/事件而不是管理首页", async () => {
+  it("移除最近动态并将天气与视频配置定位到当前项目", async () => {
     const p = props();
     await act(async () => {
       tree = create(<Screen {...p} />);
     });
+    expect(text(tree.root)).not.toContain("最近现场动态");
+    await act(async () => button("天气配置").props.onClick());
+    expect(p.onNavigate).toHaveBeenLastCalledWith(
+      "/admin/settings?category=onsite&siteTab=weather&siteProjectId=1"
+    );
+    await act(async () => button("配置视频").props.onClick());
+    expect(p.onNavigate).toHaveBeenLastCalledWith(
+      "/admin/settings?category=onsite&siteProjectId=1&siteTab=video"
+    );
+  });
+  it("未配置第二视频时保留两个窗口但不伪造另一点位", async () => {
+    const onConfigure = vi.fn();
+    await act(async () => {
+      tree = create(
+        <VideoPanel
+          query={result(config)}
+          identity="1"
+          onConfigure={onConfigure}
+        />
+      );
+    });
+    expect(
+      tree.root.findAllByProps({ className: "so-video-window" })
+    ).toHaveLength(2);
+    expect(tree.root.findAllByType("video")).toHaveLength(1);
+    expect(text(tree.root)).toContain("右侧视频待配置");
+    await act(async () => button("添加视频点位").props.onClick());
+    expect(onConfigure).toHaveBeenCalledOnce();
+  });
+  it("左右视频独立选源，默认选不同启用点位，停用项不显示", async () => {
+    const videos = ["a", "b", "c", "disabled"].map((id, i) => ({
+      id,
+      name: `录像${id}`,
+      pointLabel: `点位${id}`,
+      kind: "sample" as const,
+      sampleAsset: "excavator_cc_by_sa_4" as const,
+      recordedAt: null,
+      enabled: id !== "disabled",
+      default: id === "b",
+      sortOrder: i,
+      playbackUrl: `/sample-${id}.mp4`,
+      playbackStatus: "ready" as const,
+      attribution: SITE_SAMPLE_METADATA,
+    }));
+    await act(async () => {
+      tree = create(
+        <VideoPanel
+          query={result({ ...config, videos })}
+          identity="1"
+          onConfigure={vi.fn()}
+        />
+      );
+    });
+    const left = tree.root.findByProps({ "aria-label": "左侧视频点位" });
+    const right = tree.root.findByProps({ "aria-label": "右侧视频点位" });
+    expect(left.props.value).toBe("b");
+    expect(right.props.value).toBe("a");
+    expect(tree.root.findAllByType("video").map(v => v.props.src)).toEqual([
+      "/sample-b.mp4",
+      "/sample-a.mp4",
+    ]);
+    expect(text(tree.root)).not.toContain("录像disabled");
+    await act(async () => right.props.onChange({ target: { value: "c" } }));
+    expect(tree.root.findAllByType("video").map(v => v.props.src)).toEqual([
+      "/sample-b.mp4",
+      "/sample-c.mp4",
+    ]);
+    await act(async () => left.props.onChange({ target: { value: "a" } }));
+    expect(
+      tree.root.findByProps({ "aria-label": "右侧视频点位" }).props.value
+    ).toBe("c");
+  });
+  it("视频配置错误时隐藏缓存画面并保持本区重试", async () => {
+    const q = { ...result(config), isError: true };
+    await act(async () => {
+      tree = create(
+        <VideoPanel query={q} identity="1" onConfigure={vi.fn()} />
+      );
+    });
+    expect(tree.root.findAllByType("video")).toHaveLength(0);
+    await act(async () => button("重试本区").props.onClick());
+    expect(q.refetch).toHaveBeenCalledOnce();
+  });
+  it("移除所选点位后不继续播放被撤销的视频", async () => {
+    const v = {
+      id: "a",
+      name: "现场",
+      pointLabel: "点位",
+      kind: "sample" as const,
+      sampleAsset: "excavator_cc_by_sa_4" as const,
+      recordedAt: null,
+      enabled: true,
+      default: true,
+      sortOrder: 0,
+      playbackUrl: "/old-a.mp4",
+      playbackStatus: "ready" as const,
+      attribution: SITE_SAMPLE_METADATA,
+    };
+    await act(async () => {
+      tree = create(
+        <VideoPanel
+          query={result({ ...config, videos: [v] })}
+          identity="1"
+          onConfigure={vi.fn()}
+        />
+      );
+    });
     await act(async () =>
       tree.root
-        .findAllByType("button")
-        .find(b => b.props.className === "so-event")!
-        .props.onClick()
+        .findByProps({ "aria-label": "左侧视频点位" })
+        .props.onChange({ target: { value: "a" } })
     );
-    await act(async () => button("定位原运单").props.onClick());
-    const q = new URL(p.onNavigate.mock.calls[0][0], "https://site.cn")
-      .searchParams;
-    expect(q.get("projectId")).toBe("1");
-    expect(q.get("businessDate")).toBe("2026-11-23");
-    expect(q.get("vehicleId")).toBe("9");
-    expect(q.get("tripId")).toBe("91");
-    expect(q.get("eventId")).toBe("92");
+    await act(async () =>
+      tree.update(
+        <VideoPanel query={result(config)} identity="1" onConfigure={vi.fn()} />
+      )
+    );
+    expect(
+      tree.root.findAllByType("video").some(v => v.props.src === "/old-a.mp4")
+    ).toBe(false);
+    expect(text(tree.root)).toContain("左侧视频待配置");
   });
   it("风险和车辆详情有真实字段及准确加油记录入口", async () => {
     const p = props();
@@ -307,7 +427,23 @@ describe("现场大屏真实行为", () => {
   it("数量卡独立查询完整运单，不用最近50条冒充全部", async () => {
     const p = props();
     query.mockReturnValue(
-      result({projectId:1,businessDate:"2026-11-23",metric:"departures",count:1,vehicleCount:1,rows:[{tripId:190,vehicleId:9,tripNo:"T190",plate:"粤A12345",occurredAt:"2026-11-23T00:00:00Z",route:{load:"A",unload:"B"}}]})
+      result({
+        projectId: 1,
+        businessDate: "2026-11-23",
+        metric: "departures",
+        count: 1,
+        vehicleCount: 1,
+        rows: [
+          {
+            tripId: 190,
+            vehicleId: 9,
+            tripNo: "T190",
+            plate: "粤A12345",
+            occurredAt: "2026-11-23T00:00:00Z",
+            route: { load: "A", unload: "B" },
+          },
+        ],
+      })
     );
     await act(async () => {
       tree = create(<Screen {...p} />);
@@ -370,6 +506,64 @@ describe("现场大屏真实行为", () => {
       tree.root.findByProps({ "data-source": "system_work_hint" })
     ).toBeTruthy();
   });
+  it("免费天气显示授权来源和预测雨量，不伪造体感阵风概率能见度", async () => {
+    const w: SiteWeather = {
+      ...weather,
+      source: "met_norway",
+      status: "ready",
+      attribution: SITE_MET_NORWAY_ATTRIBUTION,
+      weatherDescription: "小雨",
+      current: {
+        time: "2026-11-23T01:00:00Z",
+        temperatureC: 20,
+        apparentTemperatureC: null,
+        humidityPercent: 80,
+        weatherCode: null,
+        windKmh: 18,
+        windDirectionDegrees: 90,
+        gustKmh: null,
+        precipitationMm: null,
+      },
+      predictive: {
+        label: "模型预报·非现场实测",
+        precipitationPeriod: "next_1_hour",
+        precipitationMm: 2,
+        periodStart: "2026-11-23T01:00:00Z",
+        periodEnd: "2026-11-23T02:00:00Z",
+        dailyBasis: "remaining_forecast_points",
+      },
+      daily: { date: "2026-11-23", maximumC: 24, minimumC: 18 },
+      hourly: [
+        {
+          time: "2026-11-23T02:00:00Z",
+          temperatureC: 21,
+          precipitationProbability: null,
+          visibilityMeters: null,
+          windKmh: 18,
+          precipitationMm: 1,
+        },
+      ],
+    };
+    await act(async () => {
+      tree = create(<SiteWeatherPanel query={result(w)} location="工地" />);
+    });
+    const s = text(tree.root);
+    expect(s).toContain("小雨");
+    expect(s).toContain("体感 未提供");
+    expect(s).toContain("阵风未提供");
+    expect(s).toContain("1小时预报雨量2 mm");
+    expect(s).toContain("今日剩余预报高 / 低");
+    expect(s).toContain("09:00:00");
+    expect(s).toContain("10:00:00");
+    expect(s).toContain("免费天气模型预报 · 非工地实测");
+    expect(s).toContain("MET Norway");
+    expect(s).toContain("CC BY 4.0");
+    expect(tree.root.findAllByType("a").map(x => x.props.href)).toEqual([
+      SITE_MET_NORWAY_ATTRIBUTION.sourceUrl,
+      SITE_MET_NORWAY_ATTRIBUTION.licenseUrl,
+    ]);
+    expect(s).not.toContain("商业天气模型");
+  });
   it("播放器保留控件，自动播放失败手动fallback，加载错误重试和源切换暂停旧画面", async () => {
     const play = vi.fn().mockRejectedValue(new Error("blocked")),
       pause = vi.fn();
@@ -401,8 +595,12 @@ describe("现场大屏真实行为", () => {
     });
     expect(text(tree.root)).toContain("录播 · 非实时");
     expect(text(tree.root)).not.toContain("录像时间未记录");
-    expect(tree.root.findAllByProps({ className: "so-attribution" })).toHaveLength(0);
-    expect(tree.root.findAllByProps({ className: "so-sample-note" })).toHaveLength(0);
+    expect(
+      tree.root.findAllByProps({ className: "so-attribution" })
+    ).toHaveLength(0);
+    expect(
+      tree.root.findAllByProps({ className: "so-sample-note" })
+    ).toHaveLength(0);
     expect(video.props["aria-label"]).toContain("录播 · 非实时");
     await act(async () => video.props.onCanPlay());
     expect(text(tree.root)).toContain("自动播放被阻止");

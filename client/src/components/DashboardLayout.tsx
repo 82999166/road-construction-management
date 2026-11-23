@@ -27,13 +27,14 @@ import {
   requestDashboardNavigation,
 } from "@/lib/dashboardNavigation";
 import {
+  ChevronDown,
   LayoutDashboard,
   LogOut,
   PanelLeft,
   Users,
   type LucideIcon,
 } from "lucide-react";
-import { CSSProperties, useEffect, useRef, useState } from "react";
+import { CSSProperties, useEffect, useId, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
@@ -53,9 +54,44 @@ export type DashboardMenuItem = {
 };
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
+const MENU_GROUPS_KEY = "dashboard-menu-groups";
 const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
+
+function readSidebarWidth() {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const width = saved ? Number(saved) : DEFAULT_WIDTH;
+    return Number.isFinite(width) && width >= MIN_WIDTH && width <= MAX_WIDTH
+      ? width
+      : DEFAULT_WIDTH;
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
+
+function readMenuGroupPreferences(): Record<string, boolean> {
+  try {
+    const saved: unknown = JSON.parse(
+      localStorage.getItem(MENU_GROUPS_KEY) ?? "{}"
+    );
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+    return Object.fromEntries(
+      Object.entries(saved).filter(([, value]) => typeof value === "boolean")
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveSidebarPreference(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // 禁用存储或配额不足时仍使用内存状态，不能阻断菜单导航。
+  }
+}
 
 export default function DashboardLayout({
   children,
@@ -72,14 +108,11 @@ export default function DashboardLayout({
   fallbackSectionLabel?: string;
   onBeforeNavigate?: (path: string) => boolean;
 }) {
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
-  });
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const { loading, user } = useAuth();
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
+    saveSidebarPreference(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
   if (loading) {
@@ -154,13 +187,20 @@ function DashboardLayoutContent({
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
-  const isCollapsed = state === "collapsed";
+  const isMobile = useIsMobile();
+  const isCollapsed = state === "collapsed" && !isMobile;
+  const [expandedGroups, setExpandedGroups] = useState(
+    readMenuGroupPreferences
+  );
+  const menuId = useId();
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const activeMenuItem = menuItems.find(item =>
     isDashboardMenuActive(location, item.path)
   );
-  const isMobile = useIsMobile();
+  const activeGroup = activeMenuItem
+    ? (activeMenuItem.section ?? "工作台")
+    : undefined;
   const menuGroups = menuItems.reduce<
     Array<{ label: string; items: DashboardMenuItem[] }>
   >((groups, item) => {
@@ -170,6 +210,19 @@ function DashboardLayoutContent({
     else groups.push({ label, items: [item] });
     return groups;
   }, []);
+
+  useEffect(() => {
+    if (!activeGroup) return;
+    setExpandedGroups(current =>
+      current[activeGroup] === true
+        ? current
+        : { ...current, [activeGroup]: true }
+    );
+  }, [location, activeGroup]);
+
+  useEffect(() => {
+    saveSidebarPreference(MENU_GROUPS_KEY, JSON.stringify(expandedGroups));
+  }, [expandedGroups]);
 
   useEffect(() => {
     if (isCollapsed) {
@@ -237,43 +290,76 @@ function DashboardLayoutContent({
             </div>
           </SidebarHeader>
 
-          <SidebarContent className="gap-0 py-3">
-            {menuGroups.map(group => (
-              <div className="mb-3 last:mb-0" key={group.label}>
-                {!isCollapsed ? (
-                  <p className="px-5 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-[#829590]">
-                    {group.label}
-                  </p>
-                ) : null}
-                <SidebarMenu className="px-2">
-                  {group.items.map(item => {
-                    const isActive = isDashboardMenuActive(location, item.path);
-                    return (
-                      <SidebarMenuItem key={item.path}>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          onClick={() =>
-                            requestDashboardNavigation(
-                              location,
-                              item.path,
-                              setLocation,
-                              onBeforeNavigate
-                            )
-                          }
-                          tooltip={item.label}
-                          className="relative h-10 rounded-md px-3 text-slate-300 transition-colors hover:bg-white/10 hover:text-white data-[active=true]:bg-[#263a43] data-[active=true]:font-medium data-[active=true]:text-white data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-full data-[active=true]:before:bg-[#f3c64e]"
-                        >
-                          <item.icon
-                            className={`h-4 w-4 ${isActive ? "text-[#f3c64e]" : "text-[#a8b8b4]"}`}
-                          />
-                          <span>{item.label}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    );
-                  })}
-                </SidebarMenu>
-              </div>
-            ))}
+          <SidebarContent className="gap-0 overflow-x-hidden !overflow-y-auto py-2 group-data-[collapsible=icon]:!overflow-y-auto">
+            {menuGroups.map((group, index) => {
+              const isExpanded =
+                expandedGroups[group.label] ??
+                (group.label === activeGroup || index === 0);
+              const showItems = isCollapsed || isExpanded;
+              const groupId = `${menuId}-group-${index}`;
+              return (
+                <div className="mb-1 shrink-0 last:mb-0" key={group.label}>
+                  {!isCollapsed ? (
+                    <button
+                      type="button"
+                      aria-expanded={isExpanded}
+                      aria-controls={groupId}
+                      onClick={() =>
+                        setExpandedGroups(current => ({
+                          ...current,
+                          [group.label]: !isExpanded,
+                        }))
+                      }
+                      className="mx-2 flex h-8 w-[calc(100%-1rem)] items-center gap-2 rounded-md px-3 text-left text-xs font-semibold text-[#9fb1ad] transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f3c64e]"
+                    >
+                      <ChevronDown
+                        aria-hidden="true"
+                        className={`h-3.5 w-3.5 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${isExpanded ? "" : "-rotate-90"}`}
+                      />
+                      <span className="flex-1 truncate">{group.label}</span>
+                      <span className="text-[10px] font-normal tabular-nums text-[#829590]">
+                        {group.items.length}
+                      </span>
+                    </button>
+                  ) : null}
+                  <div id={groupId} hidden={!showItems}>
+                    <SidebarMenu className="gap-0.5 px-2">
+                      {group.items.map(item => {
+                        const isActive = isDashboardMenuActive(
+                          location,
+                          item.path
+                        );
+                        return (
+                          <SidebarMenuItem key={item.path}>
+                            <SidebarMenuButton
+                              isActive={isActive}
+                              aria-label={item.label}
+                              aria-current={isActive ? "page" : undefined}
+                              onClick={() =>
+                                requestDashboardNavigation(
+                                  location,
+                                  item.path,
+                                  setLocation,
+                                  onBeforeNavigate
+                                )
+                              }
+                              tooltip={item.label}
+                              className="relative h-9 rounded-md px-3 text-[13px] text-slate-300 transition-colors hover:bg-white/10 hover:text-white data-[active=true]:bg-[#263a43] data-[active=true]:font-medium data-[active=true]:text-white data-[active=true]:before:absolute data-[active=true]:before:inset-y-2 data-[active=true]:before:left-0 data-[active=true]:before:w-0.5 data-[active=true]:before:rounded-full data-[active=true]:before:bg-[#f3c64e]"
+                            >
+                              <item.icon
+                                aria-hidden="true"
+                                className={`h-4 w-4 ${isActive ? "text-[#f3c64e]" : "text-[#a8b8b4]"}`}
+                              />
+                              <span>{item.label}</span>
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        );
+                      })}
+                    </SidebarMenu>
+                  </div>
+                </div>
+              );
+            })}
           </SidebarContent>
 
           <SidebarFooter className="border-t border-white/10 p-3">

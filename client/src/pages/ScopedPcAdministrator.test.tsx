@@ -168,7 +168,7 @@ describe("普通 PC 首页的安全 DashboardLayout", () => {
     const html = renderToString(<ManagementPortal />);
     expect(html).toContain('data-layout="dashboard"');
     expect(html).toContain('href="/admin/construction"');
-    expect(html).toContain('data-section="经营业务"');
+    expect(html).toContain('data-section="项目与人员"');
     expect(html).toContain("PC 业务管理 · 已授权");
     expect(html).toContain("项目经理");
     expect(html).toContain("1 个组织范围内的项目");
@@ -288,11 +288,11 @@ describe("普通 PC 模块的授权后挂载", () => {
       expect(props.authorizedMenuItems.map((item: any) => item.path)).toEqual([
         "/admin",
         "/admin/construction",
+        "/admin/labor",
         "/admin/machinery",
         "/admin/transport",
-        "/admin/labor",
-        "/admin/finance",
         "/admin/purchasing",
+        "/admin/finance",
         "/admin/subcontract",
         "/admin/contracts",
         "/help",
