@@ -157,12 +157,12 @@ export function ConstructionReportDetail({
                 file={{ url: photo.url, fileName: photo.fileName }}
                 title={`施工日报照片 ${index + 1}`}
                 description="现场照片仅在授权项目范围内站内预览。"
-                className="block min-w-0 rounded-lg border p-2"
+                className="block w-full min-w-0 rounded-lg border p-2"
               >
                 <img
                   src={photo.url}
                   alt={photo.description || `施工日报照片 ${index + 1}`}
-                  className="aspect-square w-full rounded object-cover"
+                  className="aspect-[4/3] w-full rounded bg-slate-100 object-contain"
                 />
                 <p className="mt-1 whitespace-pre-wrap text-xs leading-5">
                   {photo.description} · {formatChinaDateTime(photo.capturedAt)}{" "}

@@ -1,3 +1,6 @@
+import { EngineeringWatermarkPreview } from "@/components/EngineeringWatermarkPreview";
+import { createEngineeringWatermarkedImage } from "@/lib/engineeringWatermark";
+import { formatWatermarkCoordinates } from "@/lib/watermarkCoordinates";
 import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInput";
 import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
 import { ConstructionIssuePriorityBadge } from "@/components/ConstructionIssuePriorityBadge";
@@ -167,116 +170,8 @@ function readImageAsBase64(file: File) {
   });
 }
 
-function createWatermarkedImage(
-  file: File,
-  watermarkLines: string[],
-  template: EvidenceWatermarkTemplate
-) {
-  return new Promise<File>((resolve, reject) => {
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(file);
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("水印影像生成失败"));
-    };
-    image.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("当前浏览器不支持水印绘制");
-        context.drawImage(image, 0, 0);
-        const fontSize = Math.max(
-          15,
-          Math.round(Math.min(canvas.width, canvas.height) / 34)
-        );
-        const lineHeight = Math.round(fontSize * 1.46);
-        const padding = Math.round(fontSize * 0.72);
-        const visibleLines = watermarkLines.filter(Boolean).slice(0, 8);
-        context.font = `600 ${fontSize}px sans-serif`;
-        const textWidth = Math.min(
-          canvas.width - padding * 2,
-          Math.max(
-            ...visibleLines.map(line => context.measureText(line).width),
-            canvas.width * 0.42
-          )
-        );
-        const headerHeight = Math.round(lineHeight * 1.35);
-        const footerHeight = Math.round(lineHeight * 1.1);
-        const boxHeight =
-          headerHeight +
-          visibleLines.length * lineHeight +
-          footerHeight +
-          padding * 2;
-        const boxY = canvas.height - boxHeight - padding;
-        context.fillStyle = "rgba(255, 255, 255, .88)";
-        context.fillRect(padding, boxY, textWidth + padding * 2, boxHeight);
-        context.fillStyle = "rgba(33, 119, 211, .9)";
-        context.fillRect(
-          padding,
-          boxY,
-          textWidth + padding * 2,
-          headerHeight + padding
-        );
-        context.fillStyle = "#ffffff";
-        context.font = `700 ${Math.round(fontSize * 1.08)}px sans-serif`;
-        context.fillText(
-          template.title,
-          padding * 2,
-          boxY + Math.round(padding * 0.55)
-        );
-        context.fillStyle = "#26333d";
-        context.font = `600 ${fontSize}px sans-serif`;
-        context.textBaseline = "top";
-        visibleLines.forEach((line, index) =>
-          context.fillText(
-            line,
-            padding * 2,
-            boxY + headerHeight + padding + index * lineHeight
-          )
-        );
-        context.fillStyle = "rgba(33, 119, 211, .92)";
-        context.fillRect(
-          padding,
-          boxY + boxHeight - footerHeight - padding,
-          textWidth + padding * 2,
-          footerHeight + padding
-        );
-        context.fillStyle = "#ffffff";
-        context.font = `600 ${Math.round(fontSize * 0.78)}px sans-serif`;
-        context.fillText(
-          template.footerLabel,
-          padding * 2,
-          boxY + boxHeight - footerHeight - Math.round(padding * 0.1)
-        );
-        canvas.toBlob(
-          blob => {
-            URL.revokeObjectURL(objectUrl);
-            if (!blob) return reject(new Error("水印影像生成失败"));
-            if (blob.size > 8 * 1024 * 1024)
-              return reject(
-                new Error("水印照片超过 8MB，请在相册中裁剪后重新选择")
-              );
-            const name =
-              file.name.replace(/\.(jpe?g|png)$/i, "") || "construction-photo";
-            resolve(
-              new File([blob], `${name}-watermark.jpg`, {
-                type: "image/jpeg",
-                lastModified: Date.now(),
-              })
-            );
-          },
-          "image/jpeg",
-          0.9
-        );
-      } catch (error) {
-        URL.revokeObjectURL(objectUrl);
-        reject(error instanceof Error ? error : new Error("水印影像生成失败"));
-      }
-    };
-    image.src = objectUrl;
-  });
+function createWatermarkedImage(file: File, watermarkLines: string[], template: EvidenceWatermarkTemplate) {
+  return createEngineeringWatermarkedImage(file, watermarkLines, template, { fallbackName: "construction-photo" });
 }
 
 function getStatusMeta(value: string) {
@@ -467,6 +362,7 @@ export default function MobileConstructionPage() {
     enabled: isAuthenticated,
     retry: false,
   });
+  const captureWatermarkTemplate = captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
   const evidenceUpload = trpc.evidence.upload.useMutation({
     onError: error =>
       toast.error(
@@ -527,11 +423,11 @@ export default function MobileConstructionPage() {
           const capturedAt = new Date();
           const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}`;
           const watermarkValues: Record<string, string> = {
-            capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`,
+            capturedAt: `记录时间：${formatChinaDateTime(capturedAt)}`,
             principal: `施工负责人：${user?.name || "当前管理员"}`,
             weather: `天气：${getWeatherLabel(draft.weather)}`,
             location: `详细地点：${weatherAddress || "未取得"}`,
-            coordinates: `详细地点：${weatherAddress || "未取得"}`,
+            coordinates: formatWatermarkCoordinates(weatherCoordinates),
             organization: `施工单位：${watermarkTemplate.organizationLabel}`,
             project: `项目名称：${selectedProject?.name || `项目 #${selectedProjectId}`}`,
             antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
@@ -1225,7 +1121,7 @@ export default function MobileConstructionPage() {
                       <img
                         src={url}
                         alt={`待关联日报照片 ${index + 1}`}
-                        className="aspect-square w-full rounded-lg object-cover"
+                        className="aspect-square w-full rounded-lg bg-slate-100 object-contain"
                       />
                       <button
                         aria-label={`移除照片 ${index + 1}`}
@@ -1238,6 +1134,27 @@ export default function MobileConstructionPage() {
                     </div>
                   ))}
                 </div>
+              ) : null}
+              {pendingEvidencePreviews.length ? (
+                <details className="mt-3 rounded-lg border border-[#ead9c8] bg-white p-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-[#80543d]">查看水印布局预览</summary>
+                  <EngineeringWatermarkPreview
+                    className="mt-2"
+                    template={captureWatermarkTemplate}
+                    imageUrl={pendingEvidencePreviews[0]}
+                    lines={captureWatermarkTemplate.fields.map(field => ({
+                      capturedAt: "记录时间：归档时记录",
+                      principal: `施工负责人：${user?.name || "当前管理员"}`,
+                      weather: `天气：${getWeatherLabel(draft.weather)}`,
+                      location: `详细地点：${weatherAddress || "未取得"}`,
+                      coordinates: formatWatermarkCoordinates(weatherCoordinates),
+                      organization: `施工单位：${captureWatermarkTemplate.organizationLabel}`,
+                      project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`,
+                      antiCounterfeit: "防伪编号：归档时生成",
+                    })[field])}
+                  />
+                  <p className="mt-2 text-[11px] leading-4 text-slate-500">完整原图预览；位置、大小随后台模板，新时间和防伪编号将在归档时记录，历史照片不改写。</p>
+                </details>
               ) : null}
             </div>
           </div>
@@ -1340,10 +1257,10 @@ export default function MobileConstructionPage() {
                         file={{ url: photo.url }}
                         title={`施工日报照片 ${index + 1}`}
                         description="现场水印照片仅在当前项目与审核授权范围内站内预览。"
-                        className="overflow-hidden rounded-lg border border-[#ead9c8] bg-white"
+                        className="block w-full min-w-0 overflow-hidden rounded-lg border border-[#ead9c8] bg-white"
                       >
                         <img
-                          className="aspect-square w-full object-cover"
+                          className="aspect-[4/3] w-full bg-slate-100 object-contain"
                           src={photo.url}
                           alt={photo.description || `施工日报照片 ${index + 1}`}
                         />

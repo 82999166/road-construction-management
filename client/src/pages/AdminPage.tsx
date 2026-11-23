@@ -56,6 +56,7 @@ import BusinessStatusBadge, {
 } from "@/components/BusinessStatusBadge";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
 import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
+import { EngineeringWatermarkPreview } from "@/components/EngineeringWatermarkPreview";
 import type { ScopedPcAdminSection } from "@/lib/scopedManagementWorkspace";
 import {
   getBusinessWorkspaceProjectState,
@@ -10609,7 +10610,7 @@ export default function AdminPage({
                         工程水印信息模板
                       </CardTitle>
                       <CardDescription className="mt-1">
-                        按参考图以工程信息卡覆盖在现场照片左下角。此处仅维护字段、顺序和文案；拍摄时间、负责人、项目、定位与天气均由现场采集生成并受审计。
+                        现场照片统一使用工程水印样式，默认左下紧凑，文字自动换行并保留边距。可配置位置、大小、字段顺序和文案；记录时间为归档记录时刻，相册照片不读取原始拍摄时间。负责人、项目、定位与天气由现场采集生成并受审计。保存后仅对新照片生效，历史照片不重写。
                       </CardDescription>
                     </div>
                     <Badge
@@ -10667,6 +10668,50 @@ export default function AdminPage({
                           }))
                         }
                       />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <Label htmlFor="watermark-position">水印位置</Label>
+                        <Select
+                          value={watermarkTemplateForm.position ?? "bottom_left"}
+                          onValueChange={value =>
+                            setWatermarkTemplateForm(current => ({
+                              ...current,
+                              position: value as EvidenceWatermarkTemplate["position"],
+                            }))
+                          }
+                        >
+                          <SelectTrigger id="watermark-position" className="mt-1 bg-white">
+                            <SelectValue placeholder="选择水印位置" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="bottom_left">左下角</SelectItem>
+                            <SelectItem value="bottom_right">右下角</SelectItem>
+                            <SelectItem value="top_left">左上角</SelectItem>
+                            <SelectItem value="top_right">右上角</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label htmlFor="watermark-size">水印大小</Label>
+                        <Select
+                          value={watermarkTemplateForm.size ?? "compact"}
+                          onValueChange={value =>
+                            setWatermarkTemplateForm(current => ({
+                              ...current,
+                              size: value as EvidenceWatermarkTemplate["size"],
+                            }))
+                          }
+                        >
+                          <SelectTrigger id="watermark-size" className="mt-1 bg-white">
+                            <SelectValue placeholder="选择水印大小" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="compact">紧凑</SelectItem>
+                            <SelectItem value="standard">标准</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div>
                       <Label>显示字段与顺序</Label>
@@ -10782,6 +10827,8 @@ export default function AdminPage({
                             watermarkTemplateForm.organizationLabel,
                           footerLabel: watermarkTemplateForm.footerLabel,
                           fields: watermarkTemplateForm.fields,
+                          position: watermarkTemplateForm.position ?? "bottom_left",
+                          size: watermarkTemplateForm.size ?? "compact",
                         })
                       }
                     >
@@ -10790,43 +10837,28 @@ export default function AdminPage({
                         : "保存并发布水印模板"}
                     </Button>
                   </div>
-                  <div className="rounded-2xl bg-[linear-gradient(145deg,#c9e4f8,#578fbe_55%,#235176)] p-5 shadow-inner">
-                    <p className="mb-3 text-xs font-semibold tracking-[0.12em] text-white/85">
+                  <div className="rounded-2xl border border-[#d9e6ef] bg-white p-5">
+                    <p className="mb-3 text-xs font-semibold tracking-[0.12em] text-slate-600">
                       现场照片水印预览
                     </p>
-                    <div className="min-h-72 rounded-xl bg-[radial-gradient(circle_at_75%_20%,#eaf7ff,transparent_25%),linear-gradient(135deg,#85c5f0,#24689d)] p-4">
-                      <div className="mt-24 max-w-[280px] overflow-hidden rounded-md border border-white/80 bg-white/90 shadow-lg">
-                        <div className="bg-[#2177d3] px-3 py-2 text-sm font-bold text-white">
-                          {watermarkTemplateForm.title || "工程水印"}
-                        </div>
-                        <div className="space-y-1.5 px-3 py-3 text-xs font-medium leading-5 text-[#263846]">
-                          {watermarkTemplateForm.fields.map(field => (
-                            <p key={field}>
-                              {
-                                (
-                                  {
-                                    capturedAt: "拍摄时间：2026/08/16 13:31",
-                                    principal: "施工负责人：现场管理员",
-                                    weather: "天气：晴 33℃",
-                                    location: "详细地点：当前现场地址",
-                                    coordinates: "详细地点：当前现场地址",
-                                    organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`,
-                                    project: "项目名称：当前授权项目",
-                                    antiCounterfeit: "防伪编号：归档时生成",
-                                  } as Record<string, string>
-                                )[field]
-                              }
-                            </p>
-                          ))}
-                        </div>
-                        <div className="bg-[#2177d3] px-3 py-1.5 text-[10px] font-semibold text-white">
-                          {watermarkTemplateForm.footerLabel ||
-                            "防伪水印 · 真实时间"}
-                        </div>
-                      </div>
-                    </div>
+                    <EngineeringWatermarkPreview
+                      template={watermarkTemplateForm}
+                      lines={watermarkTemplateForm.fields.map(field => (
+                        {
+                          capturedAt: "记录时间：2026/08/16 13:31:00（示例）",
+                          principal: "施工负责人：现场管理员（示例）",
+                          weather: "天气：晴 33℃（示例）",
+                          location: "详细地点：示例施工现场地址",
+                          coordinates: "经纬度：115.123456, 28.123456",
+                          organization: `施工单位：${watermarkTemplateForm.organizationLabel || "悦信云智管"}`,
+                          project: "项目名称：示例道路施工项目",
+                          antiCounterfeit: "防伪编号：示例编号",
+                        }
+                      )[field])}
+                      className="w-full rounded-xl"
+                    />
                     <p className="mt-3 text-xs leading-5 text-slate-600">
-                      预览仅展示样式。实际照片将以拍摄当时的管理员、项目、时间、天气和中文详细地址逐张写入像素水印，并同步保存审计元数据。
+                      预览仅为示例，不代表拍摄地点；位置和大小调整即时显示。记录时间为归档记录时刻，相册照片不读取原始拍摄时间。新照片按归档时记录的信息写入像素水印并保存审计元数据，历史照片不重写。
                     </p>
                   </div>
                 </CardContent>

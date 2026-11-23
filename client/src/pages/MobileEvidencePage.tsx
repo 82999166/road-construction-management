@@ -1,3 +1,6 @@
+import { EngineeringWatermarkPreview } from "@/components/EngineeringWatermarkPreview";
+import { createEngineeringWatermarkedImage } from "@/lib/engineeringWatermark";
+import { formatWatermarkCoordinates } from "@/lib/watermarkCoordinates";
 import { formatRecognizedAmount } from "@shared/numberFormat";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -75,112 +78,8 @@ function formatCapturedTime(value: Date | string | null | undefined) {
 }
 
 /** 将现场关键水印写入图片像素；原图只保留在当前浏览器，服务端仍保存独立审计元数据。 */
-function createWatermarkedImage(
-  file: File,
-  watermarkLines: string[],
-  template: EvidenceWatermarkTemplate
-) {
-  return new Promise<File>((resolve, reject) => {
-    const image = new Image();
-    const objectUrl = URL.createObjectURL(file);
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("水印影像生成失败"));
-    };
-    image.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("当前浏览器不支持水印绘制");
-        context.drawImage(image, 0, 0);
-        const fontSize = Math.max(
-          15,
-          Math.round(Math.min(canvas.width, canvas.height) / 34)
-        );
-        const lineHeight = Math.round(fontSize * 1.46);
-        const padding = Math.round(fontSize * 0.72);
-        const visibleLines = watermarkLines.filter(Boolean).slice(0, 8);
-        context.font = `600 ${fontSize}px sans-serif`;
-        const textWidth = Math.min(
-          canvas.width - padding * 2,
-          Math.max(
-            ...visibleLines.map(line => context.measureText(line).width),
-            canvas.width * 0.42
-          )
-        );
-        const headerHeight = Math.round(lineHeight * 1.35);
-        const footerHeight = Math.round(lineHeight * 1.1);
-        const boxHeight =
-          headerHeight +
-          visibleLines.length * lineHeight +
-          footerHeight +
-          padding * 2;
-        const boxY = canvas.height - boxHeight - padding;
-        context.fillStyle = "rgba(255, 255, 255, .88)";
-        context.fillRect(padding, boxY, textWidth + padding * 2, boxHeight);
-        context.fillStyle = "rgba(33, 119, 211, .9)";
-        context.fillRect(
-          padding,
-          boxY,
-          textWidth + padding * 2,
-          headerHeight + padding
-        );
-        context.fillStyle = "#ffffff";
-        context.font = `700 ${Math.round(fontSize * 1.08)}px sans-serif`;
-        context.fillText(
-          template.title,
-          padding * 2,
-          boxY + Math.round(padding * 0.55)
-        );
-        context.fillStyle = "#26333d";
-        context.font = `600 ${fontSize}px sans-serif`;
-        context.textBaseline = "top";
-        visibleLines.forEach((line, index) =>
-          context.fillText(
-            line,
-            padding * 2,
-            boxY + headerHeight + padding + index * lineHeight
-          )
-        );
-        context.fillStyle = "rgba(33, 119, 211, .92)";
-        context.fillRect(
-          padding,
-          boxY + boxHeight - footerHeight - padding,
-          textWidth + padding * 2,
-          footerHeight + padding
-        );
-        context.fillStyle = "#ffffff";
-        context.font = `600 ${Math.round(fontSize * 0.78)}px sans-serif`;
-        context.fillText(
-          template.footerLabel,
-          padding * 2,
-          boxY + boxHeight - footerHeight - Math.round(padding * 0.1)
-        );
-        canvas.toBlob(
-          blob => {
-            URL.revokeObjectURL(objectUrl);
-            if (!blob) return reject(new Error("水印影像生成失败"));
-            const name =
-              file.name.replace(/\.(jpe?g|png)$/i, "") || "site-photo";
-            resolve(
-              new File([blob], `${name}-watermark.jpg`, {
-                type: "image/jpeg",
-                lastModified: Date.now(),
-              })
-            );
-          },
-          "image/jpeg",
-          0.9
-        );
-      } catch (error) {
-        URL.revokeObjectURL(objectUrl);
-        reject(error instanceof Error ? error : new Error("水印影像生成失败"));
-      }
-    };
-    image.src = objectUrl;
-  });
+function createWatermarkedImage(file: File, watermarkLines: string[], template: EvidenceWatermarkTemplate) {
+  return createEngineeringWatermarkedImage(file, watermarkLines, template, { fallbackName: "site-photo" });
 }
 
 /**
@@ -406,11 +305,11 @@ export function EvidenceWorkspace({
           ?.name ?? `项目 #${selectedProjectId}`;
       const antiCounterfeitId = `${selectedProjectId}-${capturedAt.getTime().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
       const watermarkValues: Record<string, string> = {
-        capturedAt: `拍摄时间：${formatChinaDateTime(capturedAt)}`,
+        capturedAt: `记录时间：${formatChinaDateTime(capturedAt)}`,
         principal: `施工负责人：${user?.name || "当前管理员"}`,
         weather: `天气：${captureWeather || "未获取"}`,
         location: `详细地点：${locationAddress || "未取得"}`,
-        coordinates: `详细地点：${locationAddress || "未取得"}`,
+        coordinates: formatWatermarkCoordinates(coordinates),
         organization: `施工单位：${watermarkTemplate.organizationLabel}`,
         project: `项目名称：${projectName}`,
         antiCounterfeit: `防伪编号：${antiCounterfeitId}`,
@@ -646,34 +545,22 @@ export function EvidenceWorkspace({
                         读取定位
                       </button>
                     </div>
-                    <div className="mt-3 overflow-hidden rounded-lg border border-[#cfe0ef]">
-                      <div className="bg-[#2177d3] px-3 py-1.5 text-xs font-bold text-white">
-                        {watermarkTemplate.title}
-                      </div>
-                      <div className="space-y-1 bg-white/90 px-3 py-2 text-[11px] leading-4 text-[#2b3b48]">
-                        {watermarkTemplate.fields.slice(0, 4).map(field => (
-                          <p key={field}>
-                            {
-                              (
-                                {
-                                  capturedAt: `拍摄时间：${formatChinaDateTime(new Date())}`,
-                                  principal: `施工负责人：${user?.name || "当前管理员"}`,
-                                  weather: `天气：${captureWeather || "待获取"}`,
-                                  location: `详细地点：${locationAddress || "待获取"}`,
-                                  coordinates: `详细地点：${locationAddress || "待获取"}`,
-                                  organization: `施工单位：${watermarkTemplate.organizationLabel}`,
-                                  project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`,
-                                  antiCounterfeit: "防伪编号：归档时生成",
-                                } as Record<string, string>
-                              )[field]
-                            }
-                          </p>
-                        ))}
-                      </div>
-                      <div className="bg-[#2177d3] px-3 py-1 text-[10px] font-medium text-white">
-                        {watermarkTemplate.footerLabel}
-                      </div>
-                    </div>
+                    <EngineeringWatermarkPreview
+                      className="mt-3 border border-[#cfe0ef]"
+                      template={watermarkTemplate}
+                      imageUrl={previewUrls[0]}
+                      lines={watermarkTemplate.fields.map(field => ({
+                        capturedAt: "记录时间：归档时记录",
+                        principal: `施工负责人：${user?.name || "当前管理员"}`,
+                        weather: `天气：${captureWeather || "待获取"}`,
+                        location: `详细地点：${locationAddress || "未取得"}`,
+                        coordinates: formatWatermarkCoordinates(coordinates),
+                        organization: `施工单位：${watermarkTemplate.organizationLabel}`,
+                        project: `项目名称：${projectOptions.data?.find(project => project.id === selectedProjectId)?.name || "待选择"}`,
+                        antiCounterfeit: "防伪编号：归档时生成",
+                      })[field])}
+                    />
+                    <p className="mt-2 text-[11px] leading-4 text-slate-500">水印布局预览；时间和防伪编号在归档时记录。历史照片不改写。</p>
                   </div>
                 </CardContent>
               </Card>
@@ -723,7 +610,7 @@ export function EvidenceWorkspace({
                           key={`${url}-${index}`}
                           src={url}
                           alt={`待归档现场影像 ${index + 1}`}
-                          className="aspect-square w-full rounded-xl object-cover"
+                          className="aspect-square w-full rounded-xl bg-slate-100 object-contain"
                         />
                       ))}
                     </div>

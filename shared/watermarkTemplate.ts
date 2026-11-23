@@ -2,7 +2,7 @@
 export const WATERMARK_TEMPLATE_SETTING_KEY = "EVIDENCE_WATERMARK_TEMPLATE";
 
 export const WATERMARK_FIELD_OPTIONS = [
-  { id: "capturedAt", label: "拍摄时间" },
+  { id: "capturedAt", label: "记录时间" },
   { id: "principal", label: "施工负责人" },
   { id: "weather", label: "天气" },
   { id: "location", label: "地点" },
@@ -20,14 +20,18 @@ export type EvidenceWatermarkTemplate = {
   organizationLabel: string;
   footerLabel: string;
   fields: WatermarkTemplateField[];
+  position?: "bottom_left" | "bottom_right" | "top_left" | "top_right";
+  size?: "compact" | "standard";
 };
 
 export const DEFAULT_EVIDENCE_WATERMARK_TEMPLATE: EvidenceWatermarkTemplate = {
   style: "engineering_card",
   title: "工程水印",
   organizationLabel: "悦信云智管",
-  footerLabel: "防伪水印 · 真实时间",
+  footerLabel: "工程影像 · 归档留痕",
   fields: ["capturedAt", "principal", "weather", "location", "coordinates", "organization", "project", "antiCounterfeit"],
+  position: "bottom_left",
+  size: "compact",
 };
 
 /** 损坏或历史配置统一降级为默认模板，避免现场采集因后台文案配置问题中断。 */
@@ -44,5 +48,7 @@ export function normalizeEvidenceWatermarkTemplate(value: unknown): EvidenceWate
     organizationLabel: typeof candidate.organizationLabel === "string" && candidate.organizationLabel.trim() ? candidate.organizationLabel.trim().slice(0, 48) : DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.organizationLabel,
     footerLabel: typeof candidate.footerLabel === "string" && candidate.footerLabel.trim() ? candidate.footerLabel.trim().slice(0, 48) : DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.footerLabel,
     fields: fields.length >= 2 ? fields : [...DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.fields],
+    position: candidate.position === "bottom_left" || candidate.position === "bottom_right" || candidate.position === "top_left" || candidate.position === "top_right" ? candidate.position : DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.position,
+    size: candidate.size === "compact" || candidate.size === "standard" ? candidate.size : DEFAULT_EVIDENCE_WATERMARK_TEMPLATE.size,
   };
 }

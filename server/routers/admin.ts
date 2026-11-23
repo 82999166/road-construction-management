@@ -819,7 +819,7 @@ const settingDeleteInput = z.object({
   expectedVersion: z.number().int().positive(),
 });
 
-/** 工程水印模板仅允许维护展示字段与文案，实际时间、人员、项目、定位仍由取证端和服务端产生。 */
+/** 工程水印模板仅维护布局、展示字段与文案，实际时间、人员、项目、定位仍由取证端和服务端产生。 */
 const evidenceWatermarkTemplateInput = z
   .object({
     title: z.string().trim().min(2, "请填写水印标题").max(24),
@@ -840,6 +840,8 @@ const evidenceWatermarkTemplateInput = z
       )
       .min(2, "至少保留两项水印信息")
       .max(8),
+    position: z.enum(["bottom_left", "bottom_right", "top_left", "top_right"]).optional(),
+    size: z.enum(["compact", "standard"]).optional(),
   })
   .transform(value => normalizeEvidenceWatermarkTemplate(value));
 
@@ -8758,7 +8760,7 @@ export const adminRouter = router({
           message: `已将“${selected.title}”绑定到${input.module}模块，系统已自动完成字段映射并发布。`,
         };
       }),
-    /** 读取已发布的工程水印模板；模板仅控制显示顺序和文案，不接收或保存现场人员输入。 */
+    /** 读取已发布的工程水印模板；模板仅控制布局、显示顺序和文案，不接收或保存现场人员输入。 */
     evidenceWatermarkTemplate: protectedProcedure.query(async ({ ctx }) => {
       await assertSuperAdmin(ctx);
       const db = await getDb();
