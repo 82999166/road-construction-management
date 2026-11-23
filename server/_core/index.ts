@@ -1,4 +1,5 @@
 import express from "express";
+import { registerSiteOperationsVideo } from "../services/siteOperationsVideo";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -64,6 +65,7 @@ async function startServer() {
   app.use("/api/personnel-documents", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 30, message: "人员附件预览过于频繁，请稍后再试" }));
   registerPersonnelDocumentPreview(app);
   registerVehicleDocumentPreview(app);
+  registerSiteOperationsVideo(app);
   /**
    * 供本机 systemd 与正式发布脚本使用的无鉴权存活探针。
    * 必须在 SPA 静态回退之前注册，避免任意路径返回 index.html 被误判为健康。

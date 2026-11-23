@@ -62,6 +62,11 @@ describe("超级管理员系统设置和菜单结构", () => {
     expect(source).toContain("版本与治理");
     expect(source).toContain('settingsCategory === "media"');
     expect(source).toContain('settingsCategory === "governance"');
+    expect(source).toContain('value="onsite"');
+    expect(source).toContain('settingsCategory === "onsite"');
+    expect(source).toContain("SiteOperationsSettings");
+    expect(source).toContain('get("category") === "onsite"');
+    expect(source).toContain("onSiteOperationsDirtyChange");
   });
 
   it("将车辆维护与司机绑定的未知状态安全回退为中文", () => {

@@ -50,10 +50,11 @@ function createPublishedSettingsDb(rows: unknown[]) {
 
 /** 配置版本历史查询专用的轻量 Drizzle 链式桩。 */
 function createHistoryDb(rows: unknown[]) {
+  const query = { where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })) })) };
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })) })),
+        innerJoin: vi.fn(() => query),
       })),
     })),
   };

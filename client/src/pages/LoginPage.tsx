@@ -105,15 +105,15 @@ export default function LoginPage({ localAdminOnly = false }: LoginPageProps = {
               <div><p className="font-semibold tracking-tight">悦信云智管</p><p className="text-xs text-[#e6cdb0]">工程承包一体化管理平台</p></div>
             </div>
             <div className="mt-16 max-w-md">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />{localAdminOnly ? "全局治理专属入口" : "业务管理身份认证"}</span>
-            <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">{localAdminOnly ? "全局治理，独立授权。" : "按授权范围，进入业务管理。"}</h1>
-            <p className="mt-5 text-sm leading-7 text-[#ead4bc]">{localAdminOnly ? "此入口仅供超级管理员进行组织、权限、接口与审计治理。普通管理人员请返回业务登录入口。" : "此入口供普通管理员和业务人员登录。系统仅展示您已获授权的角色、部门、组织和项目业务版块。"}</p>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs text-[#f7dfc2]"><ShieldCheck className="h-3.5 w-3.5" />{localAdminOnly ? "现场指挥专属入口" : "业务管理身份认证"}</span>
+            <h1 className="mt-6 text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">{localAdminOnly ? "现场运行，一屏掌握。" : "按授权范围，进入业务管理。"}</h1>
+            <p className="mt-5 text-sm leading-7 text-[#ead4bc]">{localAdminOnly ? "此入口供超级管理员查看现场运输、施工日报、录像与天气，并进行组织、权限、接口与审计治理。普通管理人员请返回业务登录入口。" : "此入口供普通管理员和业务人员登录。系统仅展示您已获授权的角色、部门、组织和项目业务版块。"}</p>
             </div>
           </div>
           <div className="flex flex-col justify-center bg-[#fffaf3] p-6 text-[#3b2118] sm:p-12">
             <p className="text-sm font-semibold text-[#9a6036]">悦信云智管</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:mt-3 sm:text-3xl">{localAdminOnly ? "超级管理员登录" : "手机号账号登录"}</h2>
-            <p className="mt-4 hidden text-sm leading-6 text-slate-600 lg:block">{localAdminOnly ? "仅用于全局治理与应急管理。认证成功后在当前设备自动保持登录 30 天；主动退出、账号停用或会话到期后需重新认证。口令只在服务器端校验并受失败限流保护。" : "司机和管理人员均可使用已开通的手机号账号登录。认证成功后在当前设备自动保持登录 30 天；主动退出、账号停用或会话到期后需重新认证。系统仅返回您的角色、项目范围及本人可见的业务数据。"}</p>
+            <p className="mt-4 hidden text-sm leading-6 text-slate-600 lg:block">{localAdminOnly ? "用于现场运行指挥与全局治理。认证成功后在当前设备自动保持登录 30 天；主动退出、账号停用或会话到期后需重新认证。口令只在服务器端校验并受失败限流保护。" : "司机和管理人员均可使用已开通的手机号账号登录。认证成功后在当前设备自动保持登录 30 天；主动退出、账号停用或会话到期后需重新认证。系统仅返回您的角色、项目范围及本人可见的业务数据。"}</p>
             {!localAdminOnly ? <div className="mt-7 rounded-2xl border border-[#b8d8cf] bg-[#f1faf6] p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-[#245344]"><MessageCircle className="h-4 w-4" />微信授权登录</div>
               <p className="mt-1 text-xs leading-5 text-slate-600">请在已关注服务号且已完成系统绑定的微信内打开。微信只验证您已有的系统账号，不会自动创建账号或扩大权限。</p>

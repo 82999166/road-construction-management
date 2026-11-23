@@ -1,4 +1,6 @@
 import { TRPCError } from "@trpc/server";
+import { transportSnapshot } from "../services/transportWorkspace";
+import { siteChinaDayRange } from "../services/siteOperationsDashboard";
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -177,7 +179,8 @@ async function resolveRiskAssignees(project: { id: number; organizationId: numbe
 }
 
 export function detectTransportRisk(trip: typeof transportTrips.$inferSelect, rule: RiskRule): CandidateRisk[] {
-  if (!trip.endAt || trip.status === "void") return [];
+  const snapshot = transportSnapshot(trip.routeSnapshot);
+  if (!rule.enabled || !trip.endAt || ["draft", "void"].includes(trip.status) || snapshot.nfcSingleScanClosed === true || snapshot.unloadOnlyCardClose === true) return [];
   const distanceKm = Number(trip.actualDistanceKm ?? 0);
   const durationMinutes = (trip.endAt.getTime() - trip.startAt.getTime()) / 60_000;
   const sharedEvidence = { distanceKm: round(distanceKm, 3), durationMinutes: round(durationMinutes, 1), tripId: Number(trip.id) };
@@ -197,7 +200,7 @@ export function detectTransportRisk(trip: typeof transportTrips.$inferSelect, ru
 export function detectTransportIntegrityRisks(trips: Array<typeof transportTrips.$inferSelect>): CandidateRisk[] {
   const candidates: CandidateRisk[] = [];
   const byVehicle = new Map<number, Array<typeof transportTrips.$inferSelect>>();
-  for (const trip of trips.filter(item => item.status !== "void")) byVehicle.set(trip.vehicleId, [...(byVehicle.get(trip.vehicleId) ?? []), trip]);
+  for (const trip of trips.filter(item => !["draft", "void"].includes(item.status) && transportSnapshot(item.routeSnapshot).nfcSingleScanClosed !== true && transportSnapshot(item.routeSnapshot).unloadOnlyCardClose !== true)) byVehicle.set(trip.vehicleId, [...(byVehicle.get(trip.vehicleId) ?? []), trip]);
   for (const [vehicleId, vehicleTrips] of Array.from(byVehicle.entries())) {
     const openTrips = vehicleTrips.filter(trip => !trip.unloadConfirmedAt && trip.status !== "settled");
     if (openTrips.length > 1) candidates.push({ category: "transport", severity: "critical", ruleCode: "TRANSPORT_PARALLEL_OPEN_TRIPS", sourceType: "transport_vehicle", sourceId: String(vehicleId), title: "同一车辆存在并行未卸土运单", summary: `该车辆当前有 ${openTrips.length} 张未完成卸土的运输票据。该结果仅表示需要人工核验装卸现场、刷卡记录和调度安排，不代表已认定存在违规。`, evidence: { vehicleId, openTripCount: openTrips.length, tripNos: openTrips.map(trip => trip.tripNo).join("、") } });
@@ -218,9 +221,7 @@ export function detectTransportIntegrityRisks(trips: Array<typeof transportTrips
 
 async function buildRiskCandidates(projectId: number, businessDate: string, rule: RiskRule) {
   const { db } = await getProjectOrThrow(projectId);
-  const businessDateAt = businessDateValue(businessDate);
-  const nextDate = new Date(businessDateAt);
-  nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+  const { start: businessDateAt, end: nextDate } = siteChinaDayRange(businessDate);
   const now = new Date();
   const reportDeadline = new Date(now.getTime() - rule.maxPendingReportHours * 3_600_000);
   const checkInDeadline = new Date(now.getTime() - rule.maxOpenCheckInHours * 3_600_000);
@@ -257,7 +258,7 @@ async function buildRiskCandidates(projectId: number, businessDate: string, rule
   }
   for (const trip of trips) candidates.push(...detectTransportRisk(trip, rule));
   candidates.push(...detectTransportIntegrityRisks(trips));
-  return { candidates, scanned: { pendingConstructionReports: reports.length, openAttendanceCheckIns: checkIns.length, dieselRefuelRecords: dieselRows.filter(item => item.status !== "void").length, transportTrips: trips.filter(item => item.status !== "void").length } };
+  return { candidates, scanned: { pendingConstructionReports: reports.length, openAttendanceCheckIns: checkIns.length, dieselRefuelRecords: dieselRows.filter(item => item.status !== "void").length, transportTrips: trips.filter(item => !["draft", "void"].includes(item.status) && transportSnapshot(item.routeSnapshot).nfcSingleScanClosed !== true && transportSnapshot(item.routeSnapshot).unloadOnlyCardClose !== true).length } };
 }
 
 async function persistRiskCandidate(projectId: number, businessDate: string, candidate: CandidateRisk) {

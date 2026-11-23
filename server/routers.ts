@@ -35,6 +35,7 @@ import { vehicleManagementRouter } from "./routers/vehicleManagement";
 import { personnelRouter } from "./routers/personnel";
 import { administratorManagementRouter } from "./routers/administratorManagement";
 import { z } from "zod";
+import { siteOperationsRouter } from "./routers/siteOperations";
 
 /**
  * 将数据库/会话中的完整用户记录收敛为浏览器真正需要的最小资料。
@@ -100,6 +101,7 @@ export const appRouter = router({
       )
       .mutation(({ ctx, input }) => changeLocalManagerPassword(ctx, input)),
   }),
+  siteOperations: siteOperationsRouter,
   admin: adminRouter,
   construction: constructionRouter,
   constructionAssistant: constructionAssistantRouter,

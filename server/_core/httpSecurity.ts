@@ -8,6 +8,7 @@ const LARGE_TRPC_BODY_PROCEDURES = new Set([
   "settlementPayment.uploadProof",
   "personnel.uploadDocument",
   "vehicleManagement.uploadDocument",
+  "siteOperations.uploadVideo",
 ]);
 
 export function isLargeTrpcBodyRequest(req: Request) {

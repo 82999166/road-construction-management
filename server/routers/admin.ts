@@ -10,6 +10,7 @@ import { and, asc, count, desc, eq, inArray, or } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { parse as parseCookie } from "cookie";
 import { TRPCError } from "@trpc/server";
+import { isSiteOperationsSetting } from "../services/siteOperationsConfiguration";
 import { z } from "zod";
 import {
   assetMaintenanceRecords,
@@ -913,6 +914,7 @@ const NOTIFICATION_CHANNEL_SETTING_KEYS = [
 
 /** 用户已确认系统统一使用认证服务号，禁止旧企业微信机器人配置重新进入任何可生效流程。 */
 function assertSupportedSettingKey(settingKey: string) {
+  if (isSiteOperationsSetting(settingKey)) throw new TRPCError({ code: "BAD_REQUEST", message: "现场大屏配置仅允许通过 siteOperations 专用接口维护" });
   if (RETIRED_NOTIFICATION_SETTING_KEYS.has(settingKey)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -6582,7 +6584,7 @@ export const adminRouter = router({
         .from(systemSettings)
         .orderBy(systemSettings.category, systemSettings.settingKey);
       return settings.filter(
-        setting => !RETIRED_NOTIFICATION_SETTING_KEYS.has(setting.settingKey)
+        setting => !RETIRED_NOTIFICATION_SETTING_KEYS.has(setting.settingKey) && !isSiteOperationsSetting(setting.settingKey)
       );
     }),
     /**
@@ -8029,6 +8031,7 @@ export const adminRouter = router({
                 "既有配置的敏感等级不允许直接变更；请新建替代配置后删除旧项",
             });
 
+          assertSupportedSettingKey(existing.settingKey);
           const preserveExistingSecret =
             existing.isSensitive && !hasSubmittedValue;
           if (!preserveExistingSecret && !hasSubmittedValue)
@@ -8243,6 +8246,7 @@ export const adminRouter = router({
           .limit(1);
         if (!existing)
           throw new TRPCError({ code: "NOT_FOUND", message: "配置项不存在" });
+        assertSupportedSettingKey(existing.settingKey);
         assertExpectedSettingVersion(existing.version, input.expectedVersion);
         const nextVersion = existing.version + 1;
         const writeResult = await db
@@ -8307,6 +8311,7 @@ export const adminRouter = router({
               code: "NOT_FOUND",
               message: "配置项不存在或已删除",
             });
+          assertSupportedSettingKey(existing.settingKey);
           assertExpectedSettingVersion(existing.version, input.expectedVersion);
           const deleteResult = await tx
             .delete(systemSettings)
@@ -8879,13 +8884,15 @@ export const adminRouter = router({
         const db = await getDb();
         if (!db) return [];
         const logs = await db
-          .select()
+          .select({ id: configPublishLogs.id, settingId: configPublishLogs.settingId, operation: configPublishLogs.operation, version: configPublishLogs.version, operatorId: configPublishLogs.operatorId, reviewerId: configPublishLogs.reviewerId, snapshotJson: configPublishLogs.snapshotJson, createdAt: configPublishLogs.createdAt, settingKey: systemSettings.settingKey })
           .from(configPublishLogs)
+          .innerJoin(systemSettings, eq(configPublishLogs.settingId, systemSettings.id))
           .where(eq(configPublishLogs.settingId, input.settingId))
           .orderBy(desc(configPublishLogs.createdAt))
           .limit(30);
         // 使用解构彻底移除原始快照字段，避免即使值为 undefined 也被序列化工具或调用方枚举到。
-        return logs.map(({ snapshotJson, ...log }) => ({
+        if (logs.some(log => isSiteOperationsSetting(log.settingKey ?? ""))) throw new TRPCError({ code: "BAD_REQUEST", message: "现场大屏配置历史仅限专用接口" });
+        return logs.map(({ snapshotJson, settingKey: _key, ...log }) => ({
           ...log,
           snapshot: sanitizeConfigSnapshot(snapshotJson),
         }));

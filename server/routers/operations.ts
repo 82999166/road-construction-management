@@ -9860,7 +9860,9 @@ export const transportRouter = router({
       if (!db) return [];
       const predicates = [eq(transportTrips.projectId, input.projectId)];
       if (input.date) {
-        const { start, end } = getChinaBusinessDateRange(input.date);
+        const start = toBusinessDate(input.date);
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
         predicates.push(
           gte(transportTrips.startAt, start),
           lt(transportTrips.startAt, end)
@@ -11716,9 +11718,7 @@ export const transportRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
-      const start = toBusinessDate(input.date);
-      const end = new Date(start);
-      end.setUTCDate(end.getUTCDate() + 1);
+      const { start, end } = getChinaBusinessDateRange(input.date);
       const trips = await db
         .select({
           vehicleId: transportTrips.vehicleId,
@@ -13548,9 +13548,7 @@ export const transportRouter = router({
             pendingReviewCount: number;
           }[],
         };
-      const start = toBusinessDate(input.date);
-      const end = new Date(start);
-      end.setUTCDate(end.getUTCDate() + 1);
+      const { start, end } = getChinaBusinessDateRange(input.date);
       let rows = await db
         .select()
         .from(transportTrips)

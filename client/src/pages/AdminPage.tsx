@@ -1,3 +1,4 @@
+import { filterFocusedTrips, filterFocusedRefuels, parseOnsiteFocus } from "@/lib/siteOperations";
 import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInput";
 import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
 import { ConstructionIssuePriorityBadge } from "@/components/ConstructionIssuePriorityBadge";
@@ -211,6 +212,7 @@ const ContractManagementPanel = lazy(
 const RfidLocalWriterPanel = lazy(
   () => import("@/components/RfidLocalWriterPanel")
 );
+const SiteOperationsSettings = lazy(() => import("@/components/SiteOperationsSettings"));
 const TransportTripLedger = lazy(
   () => import("@/components/TransportTripLedger")
 );
@@ -802,7 +804,7 @@ type DailyDigestForm = {
   deliveryMinute: string;
   includeEmptyProjects: boolean;
 };
-type SettingsCategory = "business" | "integrations" | "media" | "governance";
+type SettingsCategory = "business" | "integrations" | "media" | "governance" | "onsite";
 type PermissionWorkspaceTab =
   | "accounts"
   | "authorization"
@@ -2378,7 +2380,15 @@ export default function AdminPage({
   const { isAuthenticated, user } = useAuth();
   const [location, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
-  const activeSection = scopedSection ?? (location.split("/")[2] || "overview");
+  const activeSection = scopedSection ?? (location.split(/[?#]/)[0].split("/")[2] || "overview");
+  const [siteSearch, setSiteSearch] = useState(() => window.location.search || "");
+  useEffect(() => {
+    const sync = () => setSiteSearch(window.location.search || "");
+    const events = ["popstate", "pushState", "replaceState"];
+    events.forEach(event => window.addEventListener(event, sync));
+    return () => events.forEach(event => window.removeEventListener(event, sync));
+  }, []);
+  const onsiteFocus = useMemo(() => parseOnsiteFocus(location.includes("?") ? location.slice(location.indexOf("?") + 1) : siteSearch), [location, siteSearch]);
   const scopedMenuItems: DashboardMenuItem[] = scopedSection
     ? (authorizedMenuItems ?? [
         {
@@ -2566,7 +2576,7 @@ export default function AdminPage({
     period: "",
   });
   const [businessWorkspaceProjectId, setBusinessWorkspaceProjectId] =
-    useState("");
+    useState(() => onsiteFocus ? String(onsiteFocus.projectId) : "");
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [machineDetailOpen, setMachineDetailOpen] = useState(false);
   // transport-workspace-v1: hooks are unconditional; each current-tab query is enabled explicitly.
@@ -2645,8 +2655,8 @@ export default function AdminPage({
       );
       if (
         href.origin !== window.location.origin ||
-        !href.pathname.startsWith("/admin") ||
-        href.pathname === window.location.pathname
+        (!workspaceDrafts["site-operations"] && !href.pathname.startsWith("/admin")) ||
+        (href.pathname === window.location.pathname && href.search === window.location.search)
       )
         return;
       if (
@@ -2664,7 +2674,7 @@ export default function AdminPage({
       window.removeEventListener("beforeunload", beforeUnload);
       document.removeEventListener("click", beforeNavigate, true);
     };
-  }, [hasWorkspaceDraft]);
+  }, [hasWorkspaceDraft, workspaceDrafts]);
 
   const [transportReviewView, setTransportReviewView] =
     useState<TransportReviewView>("pending");
@@ -2673,11 +2683,11 @@ export default function AdminPage({
   const [transportLedgerFilter, setTransportLedgerFilter] =
     useState<TransportLedgerFilter>({
       periodMode: "day",
-      date: toLocalDateInput(),
+      date: onsiteFocus?.businessDate || toLocalDateInput(),
       month: toChinaMonthInput(),
       dateFrom: toLocalDateInput(),
       dateTo: toLocalDateInput(),
-      vehicleId: "all",
+      vehicleId: onsiteFocus?.vehicleId ? String(onsiteFocus.vehicleId) : "all",
       status: "all",
       routePresetId: "all",
     });
@@ -2701,7 +2711,7 @@ export default function AdminPage({
     useState<MeasurementTakeoffForm>(EMPTY_MEASUREMENT_TAKEOFF_FORM);
   const [measurementTakeoffDialogOpen, setMeasurementTakeoffDialogOpen] =
     useState(false);
-  const [financeProjectId, setFinanceProjectId] = useState("");
+  const [financeProjectId, setFinanceProjectId] = useState(() => onsiteFocus ? String(onsiteFocus.projectId) : "");
   const financeUtils = trpc.useUtils();
   const [financePaymentTarget, setFinancePaymentTarget] = useState<{
     projectId: number;
@@ -2898,9 +2908,9 @@ export default function AdminPage({
       changeDieselLedgerFilter(current, "machineName", value)
     );
   useEffect(() => {
-    setDieselLedgerFilter(current => resetDieselProjectResourceFilter(current));
+    setDieselLedgerFilter(current => onsiteFocus && onsiteFocus.projectId === Number(financeProjectId) ? {...resetDieselProjectResourceFilter(current), plateNo: onsiteFocus.plate || "", assetType: "vehicle", dateFrom: onsiteFocus.businessDate, dateTo: onsiteFocus.businessDate, month: ""} : resetDieselProjectResourceFilter(current));
     setDieselPrintOpen(false);
-  }, [financeProjectId]);
+  }, [financeProjectId, onsiteFocus]);
   const [dieselPrintMode, setDieselPrintMode] = useState<
     "current" | "daily" | "vehicle" | "machine"
   >("current");
@@ -3063,19 +3073,19 @@ export default function AdminPage({
       reviewView:
         transportWorkspaceTab === "review" ? transportReviewView : undefined,
       date:
-        transportLedgerFilter.periodMode === "day"
+        !onsiteFocus && transportLedgerFilter.periodMode === "day"
           ? transportLedgerFilter.date || undefined
           : undefined,
       month:
-        transportLedgerFilter.periodMode === "month"
+        !onsiteFocus && transportLedgerFilter.periodMode === "month"
           ? transportLedgerFilter.month || undefined
           : undefined,
       dateFrom:
-        transportLedgerFilter.periodMode === "custom"
+        !onsiteFocus && transportLedgerFilter.periodMode === "custom"
           ? transportLedgerFilter.dateFrom || undefined
           : undefined,
       dateTo:
-        transportLedgerFilter.periodMode === "custom"
+        !onsiteFocus && transportLedgerFilter.periodMode === "custom"
           ? transportLedgerFilter.dateTo || undefined
           : undefined,
       vehicleId:
@@ -3098,6 +3108,7 @@ export default function AdminPage({
     }),
     [
       transportLedgerFilter,
+      onsiteFocus,
       workspaceProjectId,
       transportWorkspaceTab,
       transportReviewView,
@@ -3341,6 +3352,7 @@ export default function AdminPage({
         ["ledger", "review"].includes(transportWorkspaceTab),
     }
   );
+  const focusedTransportTrips = useMemo(() => filterFocusedTrips(transportTrips.data ?? [], onsiteFocus?.projectId === workspaceProjectId ? onsiteFocus : null), [transportTrips.data, onsiteFocus, workspaceProjectId]);
   const transportSites = trpc.transport.listSites.useQuery(
     workspaceProjectInput,
     {
@@ -3513,6 +3525,7 @@ export default function AdminPage({
         isDiesel &&
         (dieselTab === "ledger" || dieselTab === "receipts") &&
         Number(financeProjectId) > 0,
+      select: rows => filterFocusedRefuels(rows, onsiteFocus?.projectId === Number(financeProjectId) ? onsiteFocus : null),
     }
   );
   const dieselLedgerReady = isDieselLedgerDataReady(
@@ -4180,7 +4193,14 @@ export default function AdminPage({
   const [attendanceDeviceLimitDraft, setAttendanceDeviceLimitDraft] =
     useState("3");
   const [settingsCategory, setSettingsCategory] =
-    useState<SettingsCategory>("business");
+    useState<SettingsCategory>(() => new URLSearchParams(window.location.search).get("category") === "onsite" ? "onsite" : "business");
+  const onSiteOperationsDirtyChange = useCallback((dirty: boolean) => recordWorkspaceDirty("site-operations", dirty), [recordWorkspaceDirty]);
+  useEffect(() => {
+    const q = new URLSearchParams(location.includes("?") ? location.split("?")[1] : siteSearch);
+    if (activeSection === "settings" && q.get("category") === "onsite") setSettingsCategory("onsite");
+    if (onsiteFocus && isTransport) { setBusinessWorkspaceProjectId(String(onsiteFocus.projectId)); setTransportWorkspaceTab("ledger"); setTransportLedgerFilter(current => ({...current,periodMode:"day",date:onsiteFocus.businessDate,vehicleId:onsiteFocus.vehicleId ? String(onsiteFocus.vehicleId) : "all",status:"all"})); }
+    if (onsiteFocus && isDiesel) { setFinanceProjectId(String(onsiteFocus.projectId)); setDieselTab("ledger"); }
+  }, [location, siteSearch, onsiteFocus, activeSection, isTransport, isDiesel]);
   const [permissionWorkspaceTab, setPermissionWorkspaceTab] =
     useState<PermissionWorkspaceTab>("authorization");
   const [rolePermissionModule, setRolePermissionModule] = useState("all");
@@ -9913,6 +9933,7 @@ export default function AdminPage({
         description: "短信、公众号、外部 AI 与受控连接",
       },
       media: { label: "影像与资料", description: "照片存储与现场水印" },
+      onsite: { label: "现场大屏", description: "项目录像、工地天气地点与商业天气接入" },
       governance: {
         label: "版本与治理",
         description: "配置清单、发布记录与安全回滚",
@@ -9956,12 +9977,13 @@ export default function AdminPage({
             </div>
             <Tabs
               value={settingsCategory}
-              onValueChange={value =>
-                setSettingsCategory(value as SettingsCategory)
-              }
+              onValueChange={value => {
+                if (value !== settingsCategory && workspaceDrafts["site-operations"] && !window.confirm("现场大屏有未保存配置，切换将放弃草稿。确认切换吗？")) return;
+                setSettingsCategory(value as SettingsCategory);
+              }}
               className="w-full"
             >
-              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-xl bg-white/85 p-1 shadow-inner sm:grid-cols-4">
+              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-xl bg-white/85 p-1 shadow-inner sm:grid-cols-5">
                 <TabsTrigger
                   value="business"
                   className="min-h-10 px-3 text-xs sm:text-sm"
@@ -9986,6 +10008,7 @@ export default function AdminPage({
                 >
                   版本与治理
                 </TabsTrigger>
+                <TabsTrigger value="onsite" className="min-h-10 px-3 text-xs sm:text-sm">现场大屏</TabsTrigger>
               </TabsList>
             </Tabs>
           </CardContent>
@@ -9999,6 +10022,7 @@ export default function AdminPage({
           }
         >
           <section className="space-y-4">
+            {settingsCategory === "onsite" ? <Suspense fallback={<EmptyState text="正在加载现场大屏配置…" />}><SiteOperationsSettings onDirtyChange={onSiteOperationsDirtyChange} /></Suspense> : null}
             {/* 通知与接入中的短信组件必须可见；不改变其他系统配置布局。 */}
             {settingsCategory === "business" ? (
               <Card className="border-amber-200 bg-amber-50/60">
@@ -15354,7 +15378,8 @@ export default function AdminPage({
                   <TransportTripLedger
                     filter={transportLedgerFilter}
                     onFilterChange={setTransportLedgerFilter}
-                    trips={transportTrips.data ?? []}
+                    trips={focusedTransportTrips}
+                    focusTripId={onsiteFocus?.tripId ?? undefined}
                     vehicles={vehiclesForProject}
                     routePresets={transportRoutePresets.data ?? []}
                     loading={transportTrips.isLoading}
@@ -21503,12 +21528,14 @@ export default function AdminPage({
       }
     >
       <div className="mx-auto max-w-7xl space-y-6 py-3">
+        {onsiteFocus && (isTransport || isDiesel) ? <div role="status" className="rounded-lg border border-teal-200 bg-teal-50 p-3 text-sm text-teal-950">现场大屏定位：项目 #{onsiteFocus.projectId} · {onsiteFocus.businessDate} · 车辆 #{onsiteFocus.vehicleId || "全部"}{onsiteFocus.tripId ? ` · 原运单 #${onsiteFocus.tripId}` : ""}{onsiteFocus.refuelId ? ` · 原加油记录 #${onsiteFocus.refuelId}` : ""}{onsiteFocus.eventId ? ` · 原装卸事件 #${onsiteFocus.eventId}` : ""}（精确ID可跨夜，不按开票日丢失原记录）<Button variant="outline" size="sm" onClick={() => setLocation(`/admin/${activeSection}`)}>清除大屏定位</Button></div> : null}
         {!scopedSection ? (
           <Tabs
             value={activeSection}
-            onValueChange={value =>
-              setLocation(value === "overview" ? "/admin" : `/admin/${value}`)
-            }
+            onValueChange={value => {
+              if (hasWorkspaceDraft && !window.confirm("有尚未保存的业务资料，确认离开吗？")) return;
+              setLocation(value === "overview" ? "/admin" : `/admin/${value}`);
+            }}
             className="lg:hidden"
           >
             <TabsList

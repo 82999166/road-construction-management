@@ -2,6 +2,7 @@ import type { Express } from "express";
 import fs from "fs/promises";
 import path from "path";
 import { ENV } from "./env";
+import { isPrivateSiteVideoKey } from "../services/siteOperationsVideo";
 
 export function isPrivateInsuranceStorageKey(key: string) {
   let decoded = key;
@@ -41,7 +42,7 @@ export function registerStorageProxy(app: Express) {
       return;
     }
 
-    if (isPrivateInsuranceStorageKey(key)) {
+    if (isPrivateInsuranceStorageKey(key) || isPrivateSiteVideoKey(key)) {
       res.set("Cache-Control", "no-store");
       res.status(403).send("Insurance originals require controlled preview");
       return;

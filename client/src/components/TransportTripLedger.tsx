@@ -61,7 +61,7 @@ import {
   ReceiptText,
   Truck,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   getCardValidationStatusLabel,
   getSafeCardValidationReason,
@@ -79,6 +79,7 @@ export type TransportLedgerFilter = {
 };
 
 type Props = {
+  focusTripId?: number;
   filter: TransportLedgerFilter;
   onFilterChange: (next: TransportLedgerFilter) => void;
   trips: any[];
@@ -185,6 +186,7 @@ export default function TransportTripLedger({
   reviewMode = false,
   reviewView = "pending",
   onReviewViewChange,
+  focusTripId,
 }: Props) {
   const [selectedTrip, setSelectedTrip] = useState<any | null>(null);
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
@@ -208,6 +210,13 @@ export default function TransportTripLedger({
         : null
     );
   }, [sourceTrips]);
+  const openedFocus = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusTripId) { openedFocus.current = null; return; }
+    if (openedFocus.current === focusTripId) return;
+    const trip = sourceTrips.find(row => row.id === focusTripId);
+    if (trip) { openedFocus.current = focusTripId; setSelectedTrip(trip); setReviewConfirmed(false); }
+  }, [focusTripId, sourceTrips]);
   const activeTrips = trips;
   const overview = useMemo(
     () => ({
