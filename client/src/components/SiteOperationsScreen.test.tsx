@@ -400,7 +400,10 @@ describe("现场大屏真实行为", () => {
       controls: true,
     });
     expect(text(tree.root)).toContain("录播 · 非实时");
-    expect(text(tree.root)).toContain("录像时间未记录");
+    expect(text(tree.root)).not.toContain("录像时间未记录");
+    expect(tree.root.findAllByProps({ className: "so-attribution" })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ className: "so-sample-note" })).toHaveLength(0);
+    expect(video.props["aria-label"]).toContain("录播 · 非实时");
     await act(async () => video.props.onCanPlay());
     expect(text(tree.root)).toContain("自动播放被阻止");
     play.mockResolvedValue(undefined);

@@ -201,6 +201,11 @@ export function SiteVideoPlayer({
           key={`${item.id}:${attempt}`}
           ref={ref}
           src={item.playbackUrl || undefined}
+          aria-label={
+            item.kind === "sample"
+              ? `示例录像 · 非实时 · 非本项目工地 · 作者 ${item.attribution?.author || "未记录"} · ${item.attribution?.license || "授权素材"}`
+              : `${item.pointLabel} · 录播 · 非实时`
+          }
           poster={
             item.sampleAsset
               ? "/manus-storage/excavator-poster_1e75a874.jpg"
@@ -222,7 +227,14 @@ export function SiteVideoPlayer({
           onPlay={() => setPaused(false)}
           onPause={() => setPaused(true)}
         />
-        <span className="so-video-label">
+        <span
+          className="so-video-label"
+          title={
+            item.attribution
+              ? `${item.attribution.label} · 作者 ${item.attribution.author} · ${item.attribution.license} · 来源 ${item.attribution.sourceUrl}`
+              : undefined
+          }
+        >
           {item.kind === "sample" ? "示例录像 · 非实时" : "录播 · 非实时"}
         </span>
         {failed ? (
@@ -251,14 +263,6 @@ export function SiteVideoPlayer({
         ) : null}
       </div>
       <div className="so-video-toolbar">
-        <span>
-          {item.pointLabel} ·{" "}
-          {item.recordedAt
-            ? `录像时间 ${siteTime(item.recordedAt, true)}`
-            : item.sampleAsset
-              ? `素材拍摄日期 ${SITE_SAMPLE_METADATA.recordedDate}`
-              : "录像时间未记录"}
-        </span>
         <div>
           <button
             disabled={failed}
@@ -281,20 +285,15 @@ export function SiteVideoPlayer({
         </div>
       </div>
       {item.attribution && (
-        <p className="so-attribution">
-          {item.attribution.label} · 作者 {item.attribution.author} ·{" "}
-          <a href={item.attribution.sourceUrl} target="_blank" rel="noreferrer">
-            素材来源
-          </a>{" "}
-          ·{" "}
-          <a
-            href={item.attribution.licenseUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {item.attribution.license}
-          </a>{" "}
-          · {item.attribution.modification}
+        <p
+          className="so-video-meta so-visually-hidden"
+          id={`video-meta-${item.id}`}
+        >
+          {item.attribution.label} · {item.attribution.author} · {item.attribution.license}
+          {" · "}
+          <a href={item.attribution.sourceUrl}>素材来源</a>
+          {" · "}
+          <a href={item.attribution.licenseUrl}>{item.attribution.license}</a>
         </p>
       )}
     </div>
@@ -344,11 +343,6 @@ function VideoPanel({
             key={`${identity}:${selected.id}:${selected.playbackUrl}`}
             item={selected}
           />
-          {!enabled.length && (
-            <span className="so-sample-note">
-              项目视频待配置，当前仅播放授权样片。
-            </span>
-          )}
         </>
       )}
     </section>

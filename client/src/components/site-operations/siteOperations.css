@@ -31,3 +31,39 @@
 @media(min-width:1600px){.so-risk-panel{height:250px}.so-risk-workspace{gap:16px}.so-risk-alert-panel,.so-vehicle-panel{padding:12px}.so-risk-inner-title h3{font-size:13px}}
 @media(max-width:1099px){.so-risk-panel{height:auto;max-height:none}.so-risk-workspace{grid-template-columns:minmax(0,1fr);max-height:none}.so-risk-alert-panel,.so-vehicle-panel{min-height:180px}.so-risk-alert-panel .so-risk-list{max-height:220px}.so-vehicle-panel .so-vehicle-list{max-height:190px}}
 @media(max-width:640px){.so-risk-workspace{display:flex;flex-direction:column;gap:10px}.so-risk-alert-panel,.so-vehicle-panel{min-height:0}.so-risk-alert-panel .so-risk-list{max-height:300px}.so-vehicle-panel .so-vehicle-list{max-height:240px}.so-risk-inner-title{align-items:flex-start}.so-risk-summary-wide{grid-column:1/-1}}
+
+/* Video-first layout: keep the central imagery dominant and move attribution out of the visual area. */
+@media (min-width: 1100px) {
+  .so-main-grid {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 2.25fr) minmax(0, 0.95fr);
+  }
+  .so-center-column {
+    grid-template-rows: minmax(0, 2.65fr) minmax(120px, 0.8fr);
+  }
+  .so-video-toolbar {
+    justify-content: flex-end;
+  }
+  .so-video-toolbar > div {
+    margin-left: auto;
+  }
+}
+@media (min-width: 1600px) {
+  .so-main-grid {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 2.35fr) minmax(0, 0.95fr);
+  }
+  .so-center-column {
+    grid-template-rows: minmax(0, 2.9fr) minmax(120px, 0.75fr);
+  }
+}
+.so-video-meta,
+.so-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
