@@ -67,3 +67,17 @@
   white-space: nowrap !important;
   border: 0 !important;
 }
+
+/* Fixed video canvas: keep a stable 16:9 frame and fill it without side letterboxing. */
+.so-video-frame {
+  aspect-ratio: 16 / 9;
+}
+.so-video-frame video {
+  object-fit: cover;
+}
+@media (min-width: 1100px) {
+  .so-video-frame {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}

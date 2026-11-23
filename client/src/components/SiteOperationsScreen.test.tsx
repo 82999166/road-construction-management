@@ -490,6 +490,8 @@ describe("现场大屏真实行为", () => {
     expect(css).toContain("--so-green:#6bdac2");
     expect(css).toContain("grid-template-columns:repeat(2,minmax(0,1fr))");
     expect(css).toContain("overflow-x:clip");
+    expect(css).toContain("object-fit: cover");
+    expect(css).toContain("flex: 0 0 auto");
     expect(css).not.toMatch(
       /slide-in-from-bottom|translateY|bottom:0.*animation/
     );
