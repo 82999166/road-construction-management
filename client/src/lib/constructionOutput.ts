@@ -1,3 +1,4 @@
+import { documentNumberText } from "@/components/StoredDocumentNumber";
 import { escapePrintHtml } from "@/lib/a4Print";
 import { formatChinaDate, formatChinaDateTime } from "@/lib/businessTime";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
@@ -8,6 +9,7 @@ import {
 } from "@shared/constructionIssuePriority";
 export interface ConstructionWorkspaceReport {
   id: number;
+  documentNo?: string | null;
   projectId: number;
   reportDate: Date | string;
   workArea: string;
@@ -39,6 +41,7 @@ export const CONSTRUCTION_WEATHER = {
 };
 export const CONSTRUCTION_OUTPUT_HEADERS = [
   "序号",
+  "正式单号",
   "日报日期",
   "提交管理员",
   "作业面",
@@ -129,6 +132,7 @@ export function constructionOutputRows(
 ) {
   return reports.map((report, index) => [
     index + offset + 1,
+    documentNumberText(report),
     formatChinaDate(report.reportDate),
     report.createdByName,
     report.workArea,
@@ -450,7 +454,7 @@ function constructionPhotoPages(
   for (let offset = 0; offset < photos.length; offset += 2) {
     pages.push(`<section class="daily-report-evidence-page" aria-label="日报 ${h(report.id)} 现场影像第 ${h(offset / 2 + 1)} 页">
 <h2 class="daily-report-evidence-title">施工日志 · 现场影像</h2>
-<p class="daily-report-evidence-heading">工程：${h(projectName)}　日期：${h(formatChinaDate(report.reportDate))}　日报编号：${h(report.id)}\n作业面：${h(report.workArea)}　记录人：${h(report.createdByName)}　关联照片：共 ${h(photos.length)} 张</p>
+<p class="daily-report-evidence-heading">工程：${h(projectName)}　日期：${h(formatChinaDate(report.reportDate))}　日报编号：${h(report.documentNo ?? report.id)}${report.documentNo == null ? "（历史未编统一号）" : ""}\n作业面：${h(report.workArea)}　记录人：${h(report.createdByName)}　关联照片：共 ${h(photos.length)} 张</p>
 ${photos
   .slice(offset, offset + 2)
   .map(
@@ -496,7 +500,7 @@ function renderConstructionReportSheet(
   const status = getBusinessStatusLabel(report.status);
   return `<section class="daily-report-sheet" aria-label="施工日志 ${h(report.id)}">
 <h1 class="daily-report-title">施工日志</h1>
-<div class="daily-report-heading"><span>日期：${h(formatChinaDate(report.reportDate))}</span><span class="daily-report-number">日报编号：${h(report.id)}</span></div>
+<div class="daily-report-heading"><span>日期：${h(formatChinaDate(report.reportDate))}</span><span class="daily-report-number" style="font-family:monospace;word-break:break-all">日报编号：${h(report.documentNo ?? report.id)}${report.documentNo == null ? "（历史未编统一号）" : ""}</span></div>
 <table class="daily-report-table" aria-label="施工日志明细"><colgroup><col class="daily-report-label-column"><col><col class="daily-report-label-column"><col></colgroup><tbody>
 <tr><th scope="row">工程名称</th><td colspan="3">${h(projectName || "未填写")}</td></tr>
 <tr><th scope="row">作业面</th><td>${h(report.workArea)}</td><th scope="row">天气</th><td>${h(CONSTRUCTION_WEATHER[report.weather])}</td></tr>

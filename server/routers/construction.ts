@@ -1,3 +1,6 @@
+import { lockBusinessEvidenceBindings } from "../services/evidenceBinding";
+import { lockEvidenceProject } from "../services/evidenceIntegrity";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import {
   and,
   desc,
@@ -39,7 +42,7 @@ import {
 import { getDb } from "../db";
 import { storageGetSignedUrl } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
-import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely as notifyOfficialAccountBusinessEventSafelyImmediate } from "../services/businessNotifier";
 import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
 import { createInAppMessage } from "./messages";
 import { constructionOutputBatches } from "../../shared/constructionWorkspace";
@@ -237,7 +240,7 @@ function getConstructionReportPredicates(input: ConstructionReportFilter) {
 }
 
 const constructionReportProjection = {
-  id: constructionDailyReports.id,
+  id: constructionDailyReports.id, documentNo: constructionDailyReports.documentNo,
   projectId: constructionDailyReports.projectId,
   reportDate: constructionDailyReports.reportDate,
   workArea: constructionDailyReports.workArea,
@@ -484,6 +487,13 @@ async function notifyReportSupervisors(input: {
 }
 
 /** 施工日报路由：项目范围、岗位权限、终态锁定及审计均由服务端强制执行。 */
+async function lockDailyReportEvidence(tx: any, projectId: number, reportId: number, actorId: number) {
+  // No status filter: historical report photos remain protected and visible by original output rules.
+  await lockEvidenceProject(tx, projectId);
+  const photos = await tx.select({ evidenceId: evidenceRecords.id }).from(evidenceRecords).where(and(eq(evidenceRecords.projectId, projectId), eq(evidenceRecords.sourceType, "site_photo"), eq(evidenceRecords.sourceId, `construction-report-${reportId}`))).orderBy(evidenceRecords.id).for("update");
+  return lockBusinessEvidenceBindings(tx, { projectId, bindings: [], oldPointers: photos, retainedPointers: photos, parent: { table: constructionDailyReports, id: reportId }, actorId, module: "construction", targetType: "construction_daily_report", targetId: String(reportId) });
+}
+
 export const constructionRouter = router({
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertConstructionAccess(ctx);
@@ -859,7 +869,7 @@ export const constructionRouter = router({
 
   /** 新日报可由获授权现场岗位创建；更新既有日报仅限超级管理员，防止普通人员重写历史现场记录。 */
   saveReport: protectedProcedure
-    .input(dailyReportInput)
+    .input(z.intersection(dailyReportInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertConstructionAccess(ctx, input.id ? "edit" : "create");
@@ -870,6 +880,9 @@ export const constructionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "construction:saveReport", projectId: input.projectId, input , revalidate: async () => { await assertConstructionAccess(ctx, input.id ? "edit" : "create");
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const values = {
         projectId: input.projectId,
         reportDate: toBusinessDate(input.reportDate),
@@ -890,11 +903,12 @@ export const constructionRouter = router({
       };
 
       if (input.id) {
+        const binding = await lockDailyReportEvidence(db, input.projectId, input.id, user.id);
         const [existing] = await db
           .select()
           .from(constructionDailyReports)
           .where(eq(constructionDailyReports.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId) {
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -937,6 +951,7 @@ export const constructionRouter = router({
             )
           );
         assertConditionalDailyReportWrite(updateResult);
+        await binding.retain();
         await db.insert(auditLogs).values({
           userId: user.id,
           module: "construction",
@@ -962,6 +977,7 @@ export const constructionRouter = router({
       const [created] = await db
         .insert(constructionDailyReports)
         .values({
+            documentNo: await newBusinessDocumentNumber(db, "CR", { kind: "user", userId: user.id }, input.projectId, input),
           ...values,
           issuePriority: values.issueNotes
             ? input.issuePriority === undefined
@@ -992,6 +1008,8 @@ export const constructionRouter = router({
         deepLink: "/mobile/construction",
       }).catch(() => undefined);
       return { id, created: true };
+
+      });
     }),
 
   /** 现场填报人将草稿上报至本项目有效主管角色，提交后不可再直接编辑。 */
@@ -1012,11 +1030,13 @@ export const constructionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "construction:submitReportForReview", projectId: input.projectId, input, revalidate: async () => { await assertConstructionAccess(ctx, "submit"); await assertProjectInCurrentScope(ctx, input.projectId);  } }, async db => {
+      const binding = await lockDailyReportEvidence(db, input.projectId, input.id, user.id);
       const [existing] = await db
         .select()
         .from(constructionDailyReports)
         .where(eq(constructionDailyReports.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!existing || existing.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -1066,6 +1086,7 @@ export const constructionRouter = router({
           )
         );
       assertConditionalDailyReportWrite(updateResult);
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "construction",
@@ -1092,6 +1113,7 @@ export const constructionRouter = router({
         supervisorCount: supervisors.length,
         autoApproved: autoApprove,
       };
+      });
     }),
 
   /** 项目主管填写审核回复：确认通过即自动归档锁定，退回则回到填报人修改。 */
@@ -1118,11 +1140,13 @@ export const constructionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return runBusinessDocumentCreation(db, { actorId: reviewer.id, scope: "construction:reviewReport", projectId: input.projectId, input, revalidate: async () => { await assertConstructionAccess(ctx, "review"); await assertProjectInCurrentScope(ctx, input.projectId);  } }, async db => {
+      const binding = await lockDailyReportEvidence(db, input.projectId, input.id, reviewer.id);
       const [existing] = await db
         .select()
         .from(constructionDailyReports)
         .where(eq(constructionDailyReports.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!existing || existing.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -1180,6 +1204,7 @@ export const constructionRouter = router({
           )
         );
       assertConditionalDailyReportWrite(updateResult);
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: reviewer.id,
         module: "construction",
@@ -1220,6 +1245,7 @@ export const constructionRouter = router({
         deepLink: "/mobile/construction",
       }).catch(() => undefined);
       return { success: true, status: nextStatus };
+      });
     }),
 
   /** 日报提交、审核和归档属于高影响动作，仅超级管理员可处理，已锁定日报不支持回退。 */
@@ -1248,11 +1274,13 @@ export const constructionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "construction:transitionReport", projectId: input.projectId, input, revalidate: async () => { await assertConstructionAccess(ctx, input.nextStatus === "submitted" ? "submit" : input.nextStatus === "locked" ? "void" : "review"); await assertProjectInCurrentScope(ctx, input.projectId); await assertExistingBusinessRecordChangeAccess(ctx); } }, async db => {
+      const binding = await lockDailyReportEvidence(db, input.projectId, input.id, user.id);
       const [existing] = await db
         .select()
         .from(constructionDailyReports)
         .where(eq(constructionDailyReports.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!existing || existing.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -1287,6 +1315,7 @@ export const constructionRouter = router({
       assertConditionalDailyReportWrite(updateResult);
       const currentStatusLabel = getBusinessStatusLabel(existing.status);
       const nextStatusLabel = getBusinessStatusLabel(input.nextStatus);
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "construction",
@@ -1307,5 +1336,8 @@ export const constructionRouter = router({
         deepLink: "/mobile/construction",
       }).catch(() => undefined);
       return { success: true };
+      });
     }),
 });
+
+const notifyOfficialAccountBusinessEventSafely = afterBusinessDocumentCommit(notifyOfficialAccountBusinessEventSafelyImmediate);

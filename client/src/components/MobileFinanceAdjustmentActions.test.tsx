@@ -14,7 +14,7 @@ describe("移动端财务流水调整边界", () => {
     expect(getFinancialRecordAdjustmentAction({ sourceType: "measurement_payment", settlementStatus: "paid" })).toBeNull();
     expect(getFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "void" })).toBeNull();
     expect(getFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "unpaid" })).toBe("void");
-    expect(getFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "partial" })).toBe("void");
+    expect(getFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "partial" })).toBeNull();
     expect(getFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "paid" })).toBe("reverse");
     expect(getPermittedFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "paid" }, ["ACCOUNTANT"])).toBeNull();
     expect(getPermittedFinancialRecordAdjustmentAction({ sourceType: null, settlementStatus: "paid" }, ["FINANCE_MANAGER"])).toBe("reverse");

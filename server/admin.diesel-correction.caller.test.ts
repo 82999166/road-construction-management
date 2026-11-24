@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTableName } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
@@ -9,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   driver: vi.fn(),
   sms: vi.fn(),
 }));
-vi.mock("./db", () => ({ getDb: mocks.db }));
+vi.mock("./db", () => ({ getDb: async (...args: any[]) => withNumberingFixture(await mocks.db(...args)) }));
 vi.mock("./services/businessNotifier", () => ({
   notifyOfficialAccountBusinessEventSafely: mocks.notify,
 }));

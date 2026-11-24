@@ -1,3 +1,6 @@
+import { lockBusinessEvidenceBindings, evidencePointerIds } from "../services/evidenceBinding";
+import { lockEvidenceProject, assertEvidenceConditionalWrite } from "../services/evidenceIntegrity";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import {
   assertOrderClosure,
@@ -68,8 +71,10 @@ import {
   requireAuthenticatedUser,
 } from "../access";
 import { getDb } from "../db";
+import { allocateBusinessDocumentNumber } from "../services/businessDocumentNumber";
+import { BUSINESS_DOCUMENT_MODULES } from "../../shared/businessDocumentNumber";
 import { protectedProcedure, router } from "../_core/trpc";
-import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely as notifyOfficialAccountBusinessEventSafelyImmediate } from "../services/businessNotifier";
 import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
 import { isSupervisorReviewAutoApprove } from "../services/supervisorReview";
 import { storageGetSignedUrl, storagePut } from "../storage";
@@ -138,12 +143,6 @@ function createInvoiceOriginalFingerprint(
       ].join("|")
     )
     .digest("hex");
-}
-
-/** 生成具有日期和随机后缀的单据号，避免并发录入时使用客户端编号发生冲突。 */
-function createBusinessNo(prefix: string) {
-  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  return `${prefix}-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
 const SMALL_DIRECT_PURCHASE_LIMIT_KEY = "PURCHASING_SMALL_DIRECT_LIMIT";
@@ -245,6 +244,13 @@ function assertConditionalBusinessWrite(
   }
 }
 
+/** 纠错入口必须收到且仅收到一行成功更新，不能将未知数据库响应当成功。 */
+function assertCorrectionWrite(result: unknown) {
+  const header = Array.isArray(result) ? result[0] : result;
+  if (!header || typeof header !== "object" || !("affectedRows" in header) || Number((header as { affectedRows: unknown }).affectedRows) !== 1) {
+    throw new TRPCError({ code: "CONFLICT", message: "财务流水已被其他用户更新，请刷新后重试" });
+  }
+}
 /** 返回当前用户被授权的项目选项，组织范围授权仅覆盖其直属项目。 */
 async function listScopedProjects(
   ctx: Parameters<typeof requireAuthenticatedUser>[0]
@@ -393,7 +399,7 @@ function canReopenFinancialPeriod(roleCodes: readonly string[]) {
  * 防止仅依赖前端按钮导致封存日期仍可被后端接口补录或改写。
  */
 async function assertFinancialDayWritable(
-  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  db: Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">,
   projectId: number,
   occurredAt: Date,
   actionLabel: string
@@ -440,6 +446,7 @@ type TaxHandoffManifest = {
   };
   columns: string[];
   rows: string[][];
+  evidencePointers?: { evidenceId: number }[];
 };
 
 /** RFC 4180 风格转义：交接批次保留真实字段快照，浏览器只负责下载，不自行改算。 */
@@ -453,7 +460,7 @@ function toTaxHandoffCsv(manifest: TaxHandoffManifest) {
  * 金额来自既有业务事实或人工明确登记的辅助事项；本函数不计算个人所得税、增值税、印花税或预缴税额。
  */
 async function buildTaxHandoffManifest(
-  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  db: Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">,
   input: z.infer<typeof taxHandoffInput>
 ): Promise<TaxHandoffManifest> {
   const [profile] = await db
@@ -711,6 +718,8 @@ async function buildTaxHandoffManifest(
       "凭证/交接参考",
     ],
     rows,
+    // CSV reference strings do not expose machine-readable keys; retain explicit IDs in immutable JSON.
+    evidencePointers: Array.from(new Set(evidencePointerIds({ invoices, records, contracts, auxiliary }))).sort((a, b) => a - b).map(evidenceId => ({ evidenceId })),
   };
 }
 
@@ -737,7 +746,7 @@ function getResidentWageWithholdingBracket(taxableIncome: number) {
  * 本函数不读取或猜测专项附加扣除，相关数值必须由会计根据员工实际申报资料录入。
  */
 async function buildPayrollTaxWithholdingSnapshot(
-  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  db: Pick<NonNullable<Awaited<ReturnType<typeof getDb>>>, "select">,
   input: z.infer<typeof payrollTaxWithholdingInput>
 ) {
   const [profile, worker] = await Promise.all([
@@ -1851,7 +1860,7 @@ export const purchasingRouter = router({
 
   /** 保存采购草稿或被退回申请，已提交单据不得由申请人直接覆盖金额和说明。 */
   saveRequest: protectedProcedure
-    .input(purchaseRequestInput)
+    .input(z.intersection(purchaseRequestInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertPurchaseAccess(ctx);
@@ -1862,6 +1871,9 @@ export const purchasingRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveRequest", projectId: input.projectId, input , revalidate: async () => { await assertPurchaseAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const [category] = await db
         .select()
         .from(purchaseCategories)
@@ -1883,6 +1895,9 @@ export const purchasingRouter = router({
         amount: String(roundMoney(input.amount)),
         description: input.description,
       };
+      await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await assertProjectInCurrentScope(ctx, input.projectId);
       if (input.id) {
         const { request } = await getScopedPurchaseRequest(
           ctx,
@@ -1895,7 +1910,7 @@ export const purchasingRouter = router({
             message: "仅草稿或被退回采购申请可以修改",
           });
         }
-        const updateResult = await db
+        const updateResult = await tx
           .update(purchaseRequests)
           .set({ ...values, status: "draft" })
           .where(
@@ -1909,14 +1924,15 @@ export const purchasingRouter = router({
           "采购申请已被其他用户更新，请刷新后重试"
         );
       } else {
-        await db.insert(purchaseRequests).values({
+        await tx.insert(purchaseRequests).values({
           ...values,
-          requestNo: input.requestNo ?? createBusinessNo("PR"),
+          description: [input.description, input.requestNo ? `外部业务号：${input.requestNo}` : null].filter(Boolean).join("；"),
+          requestNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.purchaseRequest, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:purchase-request`, requestKey: businessCreationRequestKey(input) })).number,
           requesterId: user.id,
           status: "draft",
         });
       }
-      await db.insert(auditLogs).values({
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "purchasing",
         action: input.id ? "update_request" : "create_request",
@@ -1924,7 +1940,10 @@ export const purchasingRouter = router({
         targetId: String(input.id ?? input.requestNo ?? "draft"),
         summary: `${input.id ? "维护" : "新建"}采购申请`,
       });
+      });
       return { success: true };
+
+      });
     }),
 
   /** 采购申请状态由专用流转接口管理，审批、入库和关闭动作均记录责任人与时间。 */
@@ -2323,7 +2342,7 @@ export const purchasingRouter = router({
 
   /** 批量导入历史采购订单和库存收发流水：先预校验类别与外部单号，再在一个事务内写入草稿订单和不可变库存流水。 */
   importSpreadsheet: protectedProcedure
-    .input(purchaseSpreadsheetImportInput)
+    .input(z.intersection(purchaseSpreadsheetImportInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertSuperAdmin(ctx);
@@ -2340,6 +2359,15 @@ export const purchasingRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:importSpreadsheet", projectId: input.projectId, input , revalidate: async () => { await assertSuperAdmin(ctx);
+const roleCodes = await assertPurchaseAccess(ctx);
+if (input.inventoryTransactions.length && !canManageInventory(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无库存收发导入权限",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
 
       const normalizedOrderNos = input.orders
         .map(row => row.orderNo?.trim())
@@ -2487,10 +2515,15 @@ export const purchasingRouter = router({
           supplierIdByName.set(supplierName, supplierId);
           createdSuppliers += 1;
         }
+        const importKey = businessCreationRequestKey(input);
+        const orderNumbers: string[] = [];
+        const inventoryNumbers: string[] = [];
+        for (let index = 0; index < input.orders.length; index++) orderNumbers.push((await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.purchaseOrder, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:import-order`, requestKey: `${importKey}:order:${index}` })).number);
+        for (let index = 0; index < input.inventoryTransactions.length; index++) inventoryNumbers.push((await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.inventoryTransaction, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:import-inventory`, requestKey: `${importKey}:inventory:${index}` })).number);
         if (input.orders.length) {
           await tx.insert(purchaseOrders).values(
-            input.orders.map(row => ({
-              orderNo: row.orderNo?.trim() || createBusinessNo("IMP"),
+            input.orders.map((row, index) => ({
+              orderNo: orderNumbers[index],
               requestId: null,
               projectId: input.projectId,
               procurementMode: "imported" as const,
@@ -2507,7 +2540,7 @@ export const purchasingRouter = router({
               evidenceId: null,
               hasInvoice: row.hasInvoice,
               invoiceEvidenceId: null,
-              ocrSummary: row.remarks?.trim() || null,
+              ocrSummary: [row.orderNo?.trim() ? `原Excel单号：${row.orderNo.trim()}` : null, row.remarks?.trim()].filter(Boolean).join("；") || null,
               supplierId: row.supplierName?.trim()
                 ? (supplierIdByName.get(row.supplierName.trim()) ?? null)
                 : null,
@@ -2528,12 +2561,12 @@ export const purchasingRouter = router({
         }
         if (input.inventoryTransactions.length) {
           await tx.insert(inventoryTransactions).values(
-            input.inventoryTransactions.map(row => ({
+            input.inventoryTransactions.map((row, index) => ({
               projectId: input.projectId,
               requestId: null,
               purchaseOrderId: null,
               transactionNo:
-                row.transactionNo?.trim() || createBusinessNo("IMPINV"),
+                inventoryNumbers[index],
               transactionType: row.transactionType,
               itemName: row.itemName.trim(),
               unit: row.unit.trim(),
@@ -2542,7 +2575,7 @@ export const purchasingRouter = router({
               amount: String(roundMoney(row.quantity * row.unitCost)),
               occurredAt: new Date(row.occurredAt),
               operatorId: user.id,
-              remarks: row.remarks?.trim() || "历史 Excel 导入",
+              remarks: [row.transactionNo?.trim() ? `原Excel流水号：${row.transactionNo.trim()}` : null, row.remarks?.trim() || "历史 Excel 导入"].filter(Boolean).join("；"),
             }))
           );
           createdInventoryTransactions = input.inventoryTransactions.length;
@@ -2562,6 +2595,8 @@ export const purchasingRouter = router({
         createdInventoryTransactions,
         createdSuppliers,
       };
+
+      });
     }),
 
   /** 为历史/新订单单独登记验收依据，不改写订单数量、单价、金额。 */
@@ -2683,6 +2718,11 @@ export const purchasingRouter = router({
           .from(projects)
           .where(eq(projects.id, input.projectId))
           .for("update");
+        const freshRoles = await assertPurchaseAccess(ctx);
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: input.attachmentKind === "invoice" ? "invoiceEvidenceId" : "evidenceId", id: input.evidenceId, allowedSourceTypes: ["purchase"], ...(input.attachmentKind === "invoice" ? { sourceId: "small_direct_invoice" } : { sourcePattern: /^(?:small_direct_document)?$/ }) }], parent: { table: purchaseOrders, id: input.orderId }, actorId: user.id, module: "purchasing", targetType: "purchase_order", targetId: String(input.orderId) });
+        const lockedRoles = await assertPurchaseAccess(ctx);
+        await assertProjectInCurrentScope(ctx, input.projectId);
         const [order] = await tx
           .select()
           .from(purchaseOrders)
@@ -2692,7 +2732,7 @@ export const purchasingRouter = router({
               eq(purchaseOrders.projectId, input.projectId)
             )
           )
-          .limit(1);
+          .limit(1).for("update");
         if (!order)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -2700,8 +2740,8 @@ export const purchasingRouter = router({
           });
         if (
           order.createdBy !== user.id &&
-          !canApprovePurchase(roles) &&
-          !canManageInventory(roles)
+          !canApprovePurchase(lockedRoles) &&
+          !canManageInventory(lockedRoles)
         )
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -2734,7 +2774,7 @@ export const purchasingRouter = router({
           input.attachmentKind === "invoice"
             ? order.invoiceEvidenceId
             : order.evidenceId;
-        await tx
+        const bindingWrite = await tx
           .update(purchaseOrders)
           .set(
             input.attachmentKind === "invoice"
@@ -2742,6 +2782,8 @@ export const purchasingRouter = router({
               : { evidenceId: input.evidenceId }
           )
           .where(eq(purchaseOrders.id, order.id));
+        assertEvidenceConditionalWrite(bindingWrite);
+        await binding.retain();
         await appendIntegrityProtectedAudit(tx, {
           userId: user.id,
           module: "purchasing",
@@ -2896,7 +2938,7 @@ export const purchasingRouter = router({
 
   /** 小额物资关联普通单据照片；手动金额优先，否则由数量乘单价计算，并按后台开关直接入账。 */
   createSmallDirectOrder: protectedProcedure
-    .input(smallDirectPurchaseInput)
+    .input(z.intersection(smallDirectPurchaseInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertPurchaseAccess(ctx);
@@ -2907,6 +2949,13 @@ export const purchasingRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:createSmallDirectOrder", projectId: input.projectId, input , revalidate: async () => { await assertPurchaseAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      // 原影像采集页也支持 purchase+空来源；文档只兼容空值或专用 uploader 固定来源。
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["purchase"], sourcePattern: /^(?:small_direct_document)?$/ }, { field: "invoiceEvidenceId", id: input.hasInvoice ? input.invoiceEvidenceId : undefined, allowedSourceTypes: ["purchase"], sourceId: "small_direct_invoice" }], actorId: user.id, module: "purchasing", targetType: "purchase_order", targetId: "new" });
+      await assertPurchaseAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
       const calculatedAmount =
         input.quantity !== undefined && input.unitPrice !== undefined
           ? roundMoney(input.quantity * input.unitPrice)
@@ -3016,10 +3065,12 @@ export const purchasingRouter = router({
       const linkedAsset = await assertPurchaseAssetLink(db, input);
       const requiresSupervisorApproval =
         !(await isSupervisorReviewAutoApprove(db));
-      const [created] = await db
+      const orderId = await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+      const [created] = await tx
         .insert(purchaseOrders)
         .values({
-          orderNo: createBusinessNo("SPD"),
+          orderNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.purchaseOrder, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:small-direct-order`, requestKey: businessCreationRequestKey(input) })).number,
           requestId: null,
           projectId: input.projectId,
           procurementMode: "small_direct",
@@ -3049,7 +3100,8 @@ export const purchasingRouter = router({
         })
         .$returningId();
       const orderId = Number(created?.id);
-      await db.insert(auditLogs).values({
+      await binding.retain(String(orderId));
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "purchasing",
         action: requiresSupervisorApproval
@@ -3058,6 +3110,8 @@ export const purchasingRouter = router({
         targetType: "purchase_order",
         targetId: String(orderId),
         summary: `创建清单采购订单：¥${amount.toFixed(2)}，金额来源 ${isManualAmount ? "手动录入" : "数量×单价自动计算"}，数量 ${input.quantity ?? "未记录"}，单价 ${input.unitPrice ?? "未记录"}，发票 ${input.hasInvoice ? `已附 #${input.invoiceEvidenceId}` : "无发票"}，资产 ${linkedAsset ? `${input.assetType === "vehicle" ? "车辆" : "机械"} ${linkedAsset.label}` : "未关联"}，审批 ${requiresSupervisorApproval ? "待主管确认" : "统一上级主管审核开关开启后自动通过"}，已关联单据照片 #${input.evidenceId}`,
+      });
+        return orderId;
       });
       if (requiresSupervisorApproval)
         void notifyOfficialAccountBusinessEventSafely({
@@ -3079,6 +3133,8 @@ export const purchasingRouter = router({
         amount,
         amountSource: isManualAmount ? "manual" : "auto",
       };
+
+      });
     }),
 
   /** 返回由服务端汇总的采购订单结算明细和余额，禁止移动端自行累计金额。 */
@@ -3144,7 +3200,7 @@ export const purchasingRouter = router({
 
   /** 只有已批准采购申请可生成采购订单，订单金额不能超过申请金额。 */
   createOrder: protectedProcedure
-    .input(purchaseOrderInput)
+    .input(z.intersection(purchaseOrderInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertPurchaseAccess(ctx);
@@ -3158,6 +3214,14 @@ export const purchasingRouter = router({
         input.requestId,
         input.projectId
       );
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:createOrder", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertPurchaseAccess(ctx);
+if (!canApprovePurchase(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无创建采购订单权限",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       if (request.status !== "approved")
         throw new TRPCError({
           code: "CONFLICT",
@@ -3198,7 +3262,8 @@ export const purchasingRouter = router({
             message: "申请已被其他操作下单，请刷新",
           });
         await tx.insert(purchaseOrders).values({
-          orderNo: input.orderNo ?? createBusinessNo("PO"),
+          orderNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.purchaseOrder, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:purchase-order`, requestKey: `request:${input.requestId}` })).number,
+          ocrSummary: input.orderNo ? `外部业务号：${input.orderNo}` : null,
           requestId: input.requestId,
           projectId: input.projectId,
           supplierId: input.supplierId ?? null,
@@ -3223,6 +3288,8 @@ export const purchasingRouter = router({
         });
       });
       return { success: true };
+
+      });
     }),
 
   /** 采购订单状态受独立状态机约束，收货状态同步回采购申请。 */
@@ -3413,7 +3480,7 @@ export const purchasingRouter = router({
 
   /** 对已收货订单分次登记实际付款，并自动归集到项目费用流水，防止超额付款或跨项目串账。 */
   recordSettlement: protectedProcedure
-    .input(purchaseSettlementInput)
+    .input(z.intersection(purchaseSettlementInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertFinanceAccess(ctx);
@@ -3429,6 +3496,14 @@ export const purchasingRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:recordSettlement", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertFinanceAccess(ctx);
+if (!canRecordPurchaseSettlement(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无采购结算登记权限",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       await assertFinancialDayWritable(
         db,
         input.projectId,
@@ -3484,7 +3559,7 @@ export const purchasingRouter = router({
           });
         const nextRemainingAmount = roundMoney(remainingAmount - input.amount);
         await tx.insert(financialRecords).values({
-          recordNo: createBusinessNo("PSET"),
+          recordNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.financialRecord, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:purchase-settlement`, requestKey: businessCreationRequestKey(input) })).number,
           projectId: input.projectId,
           direction: "expense",
           category: "采购结算",
@@ -3519,6 +3594,8 @@ export const purchasingRouter = router({
         deepLink: "/mobile/purchasing",
       }).catch(() => undefined);
       return result;
+
+      });
     }),
 
   listInventory: protectedProcedure
@@ -3626,7 +3703,7 @@ export const purchasingRouter = router({
 
   /** 入库、领用、退库都以不可变流水记录；库存余额永远从服务端流水汇总得出。 */
   saveInventoryTransaction: protectedProcedure
-    .input(inventoryInput)
+    .input(z.intersection(inventoryInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertPurchaseAccess(ctx);
@@ -3642,7 +3719,20 @@ export const purchasingRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveInventoryTransaction", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertPurchaseAccess(ctx);
+if (!canManageInventory(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无库存收发操作权限",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const result = await db.transaction(async tx => {
+        const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["purchase"], sourcePattern: /^(?:small_direct_document)?$/ }], actorId: user.id, module: "purchasing", targetType: "inventory_transaction", targetId: "new" });
+        const freshRoles = await assertPurchaseAccess(ctx);
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        if (!canManageInventory(freshRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无库存收发操作权限" });
+        if (input.evidenceId && purchasingEvidenceKind(binding.rows.find(row => row.id === input.evidenceId)!) !== "document") throw new TRPCError({ code: "BAD_REQUEST", message: "库存凭证须使用采购单据或验收凭证，不能混绑发票" });
         // Lock an existing project row, even when the item has no transactions yet.
         await tx
           .select({ id: projects.id })
@@ -3688,7 +3778,7 @@ export const purchasingRouter = router({
           snapshot.value < 0;
         if (
           exceptional &&
-          (!canApprovePurchase(roleCodes) || !input.exceptionReason)
+          (!canApprovePurchase(freshRoles) || !input.exceptionReason)
         )
           throw new TRPCError({
             code: "FORBIDDEN",
@@ -3777,7 +3867,7 @@ export const purchasingRouter = router({
             costRuleVersion: PURCHASING_COST_RULE,
             costingUnitCost: String(calculation.costingUnitCost),
             exceptionReason: exceptional ? input.exceptionReason : null,
-            transactionNo: createBusinessNo("INV"),
+            transactionNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.inventoryTransaction, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:inventory-transaction`, requestKey: businessCreationRequestKey(input) })).number,
             transactionType: input.transactionType,
             itemName: input.itemName,
             unit: input.unit,
@@ -3818,6 +3908,7 @@ export const purchasingRouter = router({
                 )
               );
         }
+        await binding.retain(String(created.id));
         await appendIntegrityProtectedAudit(tx, {
           userId: user.id,
           module: "purchasing",
@@ -3850,6 +3941,8 @@ export const purchasingRouter = router({
         deepLink: "/mobile/purchasing",
       }).catch(() => undefined);
       return result;
+
+      });
     }),
 });
 
@@ -3911,7 +4004,7 @@ export const measurementRouter = router({
     }),
 
   saveTakeoff: protectedProcedure
-    .input(measurementTakeoffInput)
+    .input(z.intersection(measurementTakeoffInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertMeasurementAccess(ctx);
@@ -3927,6 +4020,14 @@ export const measurementRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveTakeoff", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertMeasurementAccess(ctx);
+if (!canSubmitTakeoff(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "项目经理或施工管理员方可维护收方草稿",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       if (input.measurementClaimId) {
         const [claim] = await db
           .select({
@@ -3960,9 +4061,12 @@ export const measurementRouter = router({
         declaredAmount: String(declaredAmount),
         takeoffDate: toBusinessDate(input.takeoffDate),
       };
+      return db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await assertProjectInCurrentScope(ctx, input.projectId);
       let takeoffId = input.id;
       if (input.id) {
-        const [existing] = await db
+        const [existing] = await tx
           .select()
           .from(measurementTakeoffRecords)
           .where(eq(measurementTakeoffRecords.id, input.id))
@@ -3977,7 +4081,7 @@ export const measurementRouter = router({
             code: "CONFLICT",
             message: "仅草稿或被退回收方记录可修改",
           });
-        const updateResult = await db
+        const updateResult = await tx
           .update(measurementTakeoffRecords)
           .set({ ...values, status: "draft", reviewNote: null })
           .where(
@@ -3991,21 +4095,21 @@ export const measurementRouter = router({
           "收方记录已被其他用户更新，请刷新后重试"
         );
       } else {
-        const takeoffNo = createBusinessNo("TO");
-        await db.insert(measurementTakeoffRecords).values({
+        const takeoffNo = (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.measurementTakeoff, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:measurement-takeoff`, requestKey: businessCreationRequestKey(input) })).number;
+        await tx.insert(measurementTakeoffRecords).values({
           ...values,
           takeoffNo,
           status: "draft",
           submittedBy: user.id,
         });
-        const [created] = await db
+        const [created] = await tx
           .select({ id: measurementTakeoffRecords.id })
           .from(measurementTakeoffRecords)
           .where(eq(measurementTakeoffRecords.takeoffNo, takeoffNo))
           .limit(1);
         takeoffId = created?.id;
       }
-      await db.insert(auditLogs).values({
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "measurement",
         action: input.id ? "update_takeoff" : "create_takeoff",
@@ -4014,6 +4118,10 @@ export const measurementRouter = router({
         summary: `${input.id ? "维护" : "新建"}项目计量收方：${input.workItem}`,
       });
       return { success: true, takeoffId, declaredAmount };
+      });
+
+
+      });
     }),
 
   transitionTakeoff: protectedProcedure
@@ -4129,6 +4237,16 @@ export const measurementRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await assertMeasurementAccess(ctx);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      // 移动收方卡片实际上传 takeoff-<id>；已归档未分配现场照片由原提交角色复用。
+      // 不接受其他收方、日报、任意 pending 或专用财务附件来源。
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["site_photo"], sourcePattern: new RegExp(`^(?:takeoff-${input.takeoffId})?$`) }], parent: { table: measurementTakeoffRecords, id: input.takeoffId }, actorId: user.id, module: "measurement", targetType: "measurement_takeoff", targetId: String(input.takeoffId) });
+      const freshRoles = await assertMeasurementAccess(ctx);
+      if (!canSubmitTakeoff(freshRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权关联收方附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+
       const [record] = await db
         .select({
           id: measurementTakeoffRecords.id,
@@ -4137,7 +4255,7 @@ export const measurementRouter = router({
         })
         .from(measurementTakeoffRecords)
         .where(eq(measurementTakeoffRecords.id, input.takeoffId))
-        .limit(1);
+        .limit(1).for("update");
       if (!record || record.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -4156,6 +4274,7 @@ export const measurementRouter = router({
           linkedBy: user.id,
         })
         .onDuplicateKeyUpdate({ set: { linkedBy: user.id } });
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "measurement",
@@ -4165,11 +4284,12 @@ export const measurementRouter = router({
         summary: "关联项目收方影像/签认凭证",
       });
       return { success: true };
+      });
     }),
 
   /** 保存工程计量草稿，已提交或已审核主张不得通过草稿接口改变申报金额。 */
   saveClaim: protectedProcedure
-    .input(measurementInput)
+    .input(z.intersection(measurementInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertMeasurementAccess(ctx);
@@ -4180,13 +4300,19 @@ export const measurementRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveClaim", projectId: input.projectId, input , revalidate: async () => { await assertMeasurementAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const values = {
         projectId: input.projectId,
         period: input.period,
         declaredAmount: String(roundMoney(input.declaredAmount)),
       };
+      await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await assertProjectInCurrentScope(ctx, input.projectId);
       if (input.id) {
-        const [claim] = await db
+        const [claim] = await tx
           .select()
           .from(measurementClaims)
           .where(eq(measurementClaims.id, input.id))
@@ -4201,7 +4327,7 @@ export const measurementRouter = router({
             code: "CONFLICT",
             message: "仅草稿或被退回计量申报可修改",
           });
-        const updateResult = await db
+        const updateResult = await tx
           .update(measurementClaims)
           .set({ ...values, status: "draft", reviewNote: null })
           .where(
@@ -4215,14 +4341,16 @@ export const measurementRouter = router({
           "工程计量申报已被其他用户更新，请刷新后重试"
         );
       } else {
-        await db.insert(measurementClaims).values({
+        await tx.insert(measurementClaims).values({
           ...values,
-          claimNo: input.claimNo ?? createBusinessNo("MC"),
+          claimNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.measurementClaim, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:measurement-claim`, requestKey: businessCreationRequestKey(input) })).number,
+          reviewNote: input.claimNo ? `外部业务号：${input.claimNo}` : null,
           submittedBy: user.id,
           status: "draft",
         });
       }
-      await db.insert(auditLogs).values({
+      if (!input.id && input.claimNo) await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "measurement", action: "retain_external_business_reference", targetType: "measurement_claim", targetId: input.claimNo, summary: "新建正式计量申报保留原外部业务号（正式单号由统一分配器生成）", afterJson: JSON.stringify({ externalClaimNo: input.claimNo }) });
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "measurement",
         action: input.id ? "update_claim" : "create_claim",
@@ -4230,7 +4358,10 @@ export const measurementRouter = router({
         targetId: String(input.id ?? input.claimNo ?? "draft"),
         summary: `${input.id ? "维护" : "新建"}工程计量申报`,
       });
+      });
       return { success: true };
+
+      });
     }),
 
   /** 计量状态流转含项目复核、会计审核、受控作废和收入确认，金额以审核接口传入的核定值为准。 */
@@ -4261,7 +4392,12 @@ export const measurementRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
-      const [claim] = await db
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:transitionClaim", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertMeasurementAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+      const [claim] = await tx
         .select()
         .from(measurementClaims)
         .where(eq(measurementClaims.id, input.id))
@@ -4313,7 +4449,7 @@ export const measurementRouter = router({
         patch.accountantId = user.id;
       }
       if (input.targetStatus === "settled") patch.settledAt = now;
-      const updateResult = await db
+      const updateResult = await tx
         .update(measurementClaims)
         .set(patch)
         .where(
@@ -4328,7 +4464,7 @@ export const measurementRouter = router({
       );
       if (input.targetStatus === "settled") {
         const sourceId = String(input.id);
-        const existing = await db
+        const existing = await tx
           .select({ id: financialRecords.id })
           .from(financialRecords)
           .where(
@@ -4342,8 +4478,8 @@ export const measurementRouter = router({
           const incomeAmount = Number(
             claim.approvedAmount ?? claim.declaredAmount
           );
-          await db.insert(financialRecords).values({
-            recordNo: createBusinessNo("FIN"),
+          await tx.insert(financialRecords).values({
+            recordNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.financialRecord, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:measurement-income`, requestKey: `claim:${input.id}` })).number,
             projectId: input.projectId,
             direction: "income",
             category: "工程计量收入",
@@ -4357,7 +4493,7 @@ export const measurementRouter = router({
         }
       }
       const measurementStatusLabel = getBusinessStatusLabel(input.targetStatus);
-      await db.insert(auditLogs).values({
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "measurement",
         action: "transition_claim",
@@ -4365,6 +4501,8 @@ export const measurementRouter = router({
         targetId: String(input.id),
         summary: `工程计量状态变更为：${measurementStatusLabel}`,
       });
+      });
+      const measurementStatusLabel = getBusinessStatusLabel(input.targetStatus);
       void notifyOfficialAccountBusinessEventSafely({
         userId: user.id,
         module: "measurement",
@@ -4375,6 +4513,8 @@ export const measurementRouter = router({
         deepLink: "/mobile/measurement",
       }).catch(() => undefined);
       return { success: true };
+
+      });
     }),
 
   /** 按项目与期间读取工程回款；移动端仅展示服务端汇总结果，不在客户端重算。 */
@@ -4418,7 +4558,7 @@ export const measurementRouter = router({
 
   /** 登记工程回款，并同步收入确认流水的结算状态，防止对已确认金额超额回款。 */
   recordPayment: protectedProcedure
-    .input(measurementPaymentInput)
+    .input(z.intersection(measurementPaymentInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertFinanceAccess(ctx);
@@ -4434,7 +4574,17 @@ export const measurementRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
-      const [claim] = await db
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:recordPayment", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertFinanceAccess(ctx);
+if (!canRecordMeasurementPayment(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无工程回款登记权限",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      const { receivedAmount, remainingAmount, sourceId } = await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+      const [claim] = await tx
         .select()
         .from(measurementClaims)
         .where(eq(measurementClaims.id, input.claimId))
@@ -4450,7 +4600,7 @@ export const measurementRouter = router({
           message: "仅已确认收入的工程计量可以登记回款",
         });
       const sourceId = String(input.claimId);
-      const payments = await db
+      const payments = await tx
         .select()
         .from(financialRecords)
         .where(
@@ -4476,8 +4626,8 @@ export const measurementRouter = router({
           message: "本次回款超过可回款余额",
         });
       const remainingAmount = roundMoney(availableAmount - input.amount);
-      await db.insert(financialRecords).values({
-        recordNo: createBusinessNo("PAY"),
+      await tx.insert(financialRecords).values({
+        recordNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.financialRecord, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:measurement-payment`, requestKey: businessCreationRequestKey(input) })).number,
         projectId: input.projectId,
         direction: "income",
         category: "工程计量回款",
@@ -4488,7 +4638,7 @@ export const measurementRouter = router({
         sourceId,
         remarks: input.remarks ?? null,
       });
-      const [incomeRecord] = await db
+      const [incomeRecord] = await tx
         .select({ id: financialRecords.id })
         .from(financialRecords)
         .where(
@@ -4499,17 +4649,19 @@ export const measurementRouter = router({
         )
         .limit(1);
       if (incomeRecord)
-        await db
+        await tx
           .update(financialRecords)
           .set({ settlementStatus: remainingAmount === 0 ? "paid" : "partial" })
           .where(eq(financialRecords.id, incomeRecord.id));
-      await db.insert(auditLogs).values({
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "measurement",
         action: "record_payment",
         targetType: "measurement_claim",
         targetId: sourceId,
         summary: `登记工程计量回款：${roundMoney(input.amount)}`,
+      });
+        return { receivedAmount, remainingAmount, sourceId };
       });
       void notifyOfficialAccountBusinessEventSafely({
         userId: user.id,
@@ -4525,6 +4677,8 @@ export const measurementRouter = router({
         receivedAmount: roundMoney(receivedAmount + input.amount),
         remainingAmount,
       };
+
+      });
     }),
 
   /** 按项目与期间汇总申报、核定和已结算金额，打印视图不依赖客户端自行重算。 */
@@ -4583,6 +4737,13 @@ export const measurementRouter = router({
 
 /** 项目日常开支、收入确认、现金流与利润统计。 */
 export const financeRouter = router({
+  /** 只读最小岗位投影：父页面用真实权限隐藏纠错按钮，写入仍独立重核。 */
+  correctionCapabilities: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertFinanceAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    return { roleCodes, canVoid: canVoidFinancialRecord(roleCodes), canReverse: canReverseFinancialRecord(roleCodes) };
+  }),
+
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertFinanceAccess(ctx);
     return listScopedProjects(ctx);
@@ -4864,6 +5025,13 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: taxAuxiliaryEntries, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "taxAuxiliaryEntries", targetId: String(input.id ?? "new") });
+
       const [profile] = await db
         .select({
           taxEntityId: projectTaxProfiles.taxEntityId,
@@ -4909,7 +5077,7 @@ export const financeRouter = router({
           .select()
           .from(taxAuxiliaryEntries)
           .where(eq(taxAuxiliaryEntries.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -4920,7 +5088,7 @@ export const financeRouter = router({
             code: "CONFLICT",
             message: "已交接、已登记回执或已作废的辅助事项不可直接修改",
           });
-        await db
+        const bindingWrite = await db
           .update(taxAuxiliaryEntries)
           .set(values)
           .where(
@@ -4929,11 +5097,13 @@ export const financeRouter = router({
               eq(taxAuxiliaryEntries.status, "pending")
             )
           );
+        assertEvidenceConditionalWrite(bindingWrite);
       } else {
         await db
           .insert(taxAuxiliaryEntries)
           .values({ ...values, status: "pending", createdBy: user.id });
       }
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -4945,6 +5115,7 @@ export const financeRouter = router({
         summary: `${input.id ? "维护" : "新增"}财税辅助事项：${input.subject}`,
       });
       return { success: true };
+      });
     }),
 
   /** 财税辅助事项交接状态不可回退；回执仅记录真实外部引用或受控证据，不伪造申报结果。 */
@@ -4965,11 +5136,18 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId ?? undefined, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: taxAuxiliaryEntries, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "taxAuxiliaryEntries", targetId: String(input.id ?? "new") });
+
       const [entry] = await db
         .select()
         .from(taxAuxiliaryEntries)
         .where(eq(taxAuxiliaryEntries.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!entry || entry.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -5013,6 +5191,7 @@ export const financeRouter = router({
         result,
         "财税辅助事项已被其他用户更新，请刷新后重试"
       );
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5022,11 +5201,12 @@ export const financeRouter = router({
         summary: `财税辅助事项状态变更为：${getBusinessStatusLabel(input.targetStatus)}`,
       });
       return { success: true };
+      });
     }),
 
   /** 生成正式财务软件/电子税务局资料交接CSV，并将完整字段快照和SHA-256写入批次审计链。 */
   createTaxHandoffBatch: protectedProcedure
-    .input(taxHandoffInput)
+    .input(z.intersection(taxHandoffInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertFinanceAccess(ctx);
@@ -5042,14 +5222,26 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:createTaxHandoffBatch", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertFinanceAccess(ctx);
+if (!canMaintainFinancialLedger(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "财税资料交接仅限会计或财务负责人生成",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const manifest = await buildTaxHandoffManifest(db, input);
+      const snapshotBinding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [], oldPointers: manifest, retainedPointers: manifest, actorId: user.id, module: "finance", targetType: "tax_handoff_batch", targetId: "new" });
       const snapshotJson = JSON.stringify(manifest);
       const snapshotHash = createHash("sha256")
         .update(snapshotJson)
         .digest("hex");
-      const batchNo = createBusinessNo("TAX");
+      return db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await assertProjectInCurrentScope(ctx, input.projectId);
+      const batchNo = (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.taxHandoffBatch, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:tax-handoff`, requestKey: businessCreationRequestKey(input) })).number;
       const generatedAt = new Date();
-      const [created] = await db
+      const [created] = await tx
         .insert(taxHandoffBatches)
         .values({
           batchNo,
@@ -5073,7 +5265,8 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "财税交接批次创建失败，请稍后重试",
         });
-      await db.insert(auditLogs).values({
+      await snapshotBinding.retain(String(batchId));
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
         action: "create_tax_handoff_batch",
@@ -5089,6 +5282,9 @@ export const financeRouter = router({
         recordCount: manifest.rows.length,
         csv: toTaxHandoffCsv(manifest),
       };
+      });
+
+      });
     }),
 
   /** 下载时只返回已保存批次的生成时快照，禁止用当前数据覆盖历史交接内容。 */
@@ -5146,11 +5342,18 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "receiptEvidenceId", id: input.receiptEvidenceId ?? undefined, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: taxHandoffBatches, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "taxHandoffBatches", targetId: String(input.id ?? "new") });
+
       const [batch] = await db
         .select()
         .from(taxHandoffBatches)
         .where(eq(taxHandoffBatches.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!batch || batch.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -5202,6 +5405,7 @@ export const financeRouter = router({
         result,
         "财税交接批次已被其他用户更新，请刷新后重试"
       );
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5211,6 +5415,7 @@ export const financeRouter = router({
         summary: `财税交接批次状态变更为：${getBusinessStatusLabel(input.targetStatus)}`,
       });
       return { success: true };
+      });
     }),
 
   /** 依据真实工资单和临时日结生成居民工资薪金累计预扣辅助测算，扣除资料和外部实际扣缴额必须由会计确认。 */
@@ -5231,6 +5436,13 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: payrollTaxWithholdingEntries, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "payrollTaxWithholdingEntries", targetId: String(input.id ?? "new") });
+
       const calculated = await buildPayrollTaxWithholdingSnapshot(db, input);
       const values = {
         workerId: input.workerId,
@@ -5290,7 +5502,7 @@ export const financeRouter = router({
           .select()
           .from(payrollTaxWithholdingEntries)
           .where(eq(payrollTaxWithholdingEntries.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -5301,7 +5513,7 @@ export const financeRouter = router({
             code: "CONFLICT",
             message: "已复核、已交接、已登记回执或已作废的测算不可直接修改",
           });
-        await db
+        const bindingWrite = await db
           .update(payrollTaxWithholdingEntries)
           .set(values)
           .where(
@@ -5310,11 +5522,13 @@ export const financeRouter = router({
               eq(payrollTaxWithholdingEntries.status, "draft")
             )
           );
+        assertEvidenceConditionalWrite(bindingWrite);
       } else {
         await db
           .insert(payrollTaxWithholdingEntries)
           .values({ ...values, status: "draft", createdBy: user.id });
       }
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5335,6 +5549,7 @@ export const financeRouter = router({
             input.incomeType === "resident_wage_salary",
         },
       };
+      });
     }),
 
   /** 薪税测算状态不能回退；登记回执只接受真实外部扣缴或交接引用。 */
@@ -5355,11 +5570,18 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId ?? undefined, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: payrollTaxWithholdingEntries, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "payrollTaxWithholdingEntries", targetId: String(input.id ?? "new") });
+
       const [entry] = await db
         .select()
         .from(payrollTaxWithholdingEntries)
         .where(eq(payrollTaxWithholdingEntries.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!entry || entry.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -5408,6 +5630,7 @@ export const financeRouter = router({
         result,
         "薪税辅助测算已被其他用户更新，请刷新后重试"
       );
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5417,6 +5640,7 @@ export const financeRouter = router({
         summary: `薪税辅助测算状态变更为：${getBusinessStatusLabel(input.targetStatus)}`,
       });
       return { success: true };
+      });
     }),
 
   /** 合同印花税资料必须从真实外包合同快照创建，避免在税务台账二次录入或伪造合同金额。 */
@@ -5437,6 +5661,16 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const [contractHint] = await db.select().from(outsourceContracts).where(eq(outsourceContracts.id, input.contractId)).limit(1);
+      if (!contractHint || contractHint.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目外包合同" });
+      // 合同附件只来自真实合同已存指针，锁后合同仍须重验；不以不存在的上传 marker 过滤旧归档。
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "paymentEvidenceId", id: input.paymentEvidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }, { field: "contractEvidenceId", id: contractHint.attachmentEvidenceId, allowedSourceTypes: ["other", "contract"] }], parent: input.id ? { table: contractTaxRegistrations, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "contractTaxRegistrations", targetId: String(input.id ?? "new") });
+
       const [[profile], [contract]] = await Promise.all([
         db
           .select()
@@ -5459,6 +5693,8 @@ export const financeRouter = router({
           code: "NOT_FOUND",
           message: "未找到当前项目外包合同",
         });
+      const [lockedContract] = await db.select().from(outsourceContracts).where(eq(outsourceContracts.id, input.contractId)).limit(1).for("update");
+      if (!lockedContract || lockedContract.projectId !== input.projectId || lockedContract.attachmentEvidenceId !== contractHint.attachmentEvidenceId) throw new TRPCError({ code: "CONFLICT", message: "合同原附件已变化，请刷新后重试" });
       const values = {
         contractId: input.contractId,
         projectId: input.projectId,
@@ -5493,7 +5729,7 @@ export const financeRouter = router({
           .select()
           .from(contractTaxRegistrations)
           .where(eq(contractTaxRegistrations.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -5505,7 +5741,7 @@ export const financeRouter = router({
             message:
               "已确认、已交接、已登记回执或已作废的合同税费资料不可直接修改",
           });
-        await db
+        const bindingWrite = await db
           .update(contractTaxRegistrations)
           .set(values)
           .where(
@@ -5514,11 +5750,13 @@ export const financeRouter = router({
               eq(contractTaxRegistrations.status, "pending_review")
             )
           );
+        assertEvidenceConditionalWrite(bindingWrite);
       } else {
         await db
           .insert(contractTaxRegistrations)
           .values({ ...values, status: "pending_review", createdBy: user.id });
       }
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5530,6 +5768,7 @@ export const financeRouter = router({
         summary: `维护合同税费辅助资料：${contract.contractNo}`,
       });
       return { success: true };
+      });
     }),
 
   transitionContractTaxRegistration: protectedProcedure
@@ -5549,11 +5788,18 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "paymentEvidenceId", id: input.paymentEvidenceId ?? undefined, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: contractTaxRegistrations, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "contractTaxRegistrations", targetId: String(input.id ?? "new") });
+
       const [entry] = await db
         .select()
         .from(contractTaxRegistrations)
         .where(eq(contractTaxRegistrations.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!entry || entry.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -5618,6 +5864,7 @@ export const financeRouter = router({
         result,
         "合同税费资料已被其他用户更新，请刷新后重试"
       );
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5627,6 +5874,7 @@ export const financeRouter = router({
         summary: `合同税费资料状态变更为：${getBusinessStatusLabel(input.targetStatus)}`,
       });
       return { success: true };
+      });
     }),
 
   /** 跨地区建筑服务预缴资料按项目和期间唯一；金额与凭证均由会计根据真实登记和完税资料登记。 */
@@ -5647,6 +5895,13 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "deductionEvidenceId", id: input.deductionEvidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }, { field: "taxPaymentEvidenceId", id: input.taxPaymentEvidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: crossRegionConstructionTaxLedgers, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "crossRegionConstructionTaxLedgers", targetId: String(input.id ?? "new") });
+
       const [profile] = await db
         .select()
         .from(projectTaxProfiles)
@@ -5698,7 +5953,7 @@ export const financeRouter = router({
           .select()
           .from(crossRegionConstructionTaxLedgers)
           .where(eq(crossRegionConstructionTaxLedgers.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -5709,7 +5964,7 @@ export const financeRouter = router({
             code: "CONFLICT",
             message: "已交接、已登记回执或已作废的跨地区预缴资料不可直接修改",
           });
-        await db
+        const bindingWrite = await db
           .update(crossRegionConstructionTaxLedgers)
           .set(values)
           .where(
@@ -5718,11 +5973,13 @@ export const financeRouter = router({
               eq(crossRegionConstructionTaxLedgers.status, "pending_review")
             )
           );
+        assertEvidenceConditionalWrite(bindingWrite);
       } else {
         await db
           .insert(crossRegionConstructionTaxLedgers)
           .values({ ...values, status: "pending_review", createdBy: user.id });
       }
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5734,6 +5991,7 @@ export const financeRouter = router({
         summary: `维护${input.period}跨地区建筑服务预缴辅助资料`,
       });
       return { success: true };
+      });
     }),
 
   transitionCrossRegionConstructionTaxLedger: protectedProcedure
@@ -5753,11 +6011,18 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "taxPaymentEvidenceId", id: input.taxPaymentEvidenceId ?? undefined, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: crossRegionConstructionTaxLedgers, id: input.id } : undefined, actorId: user.id, module: "finance", targetType: "crossRegionConstructionTaxLedgers", targetId: String(input.id ?? "new") });
+
       const [entry] = await db
         .select()
         .from(crossRegionConstructionTaxLedgers)
         .where(eq(crossRegionConstructionTaxLedgers.id, input.id))
-        .limit(1);
+        .limit(1).for("update");
       if (!entry || entry.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -5822,6 +6087,7 @@ export const financeRouter = router({
         result,
         "跨地区预缴资料已被其他用户更新，请刷新后重试"
       );
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -5831,6 +6097,7 @@ export const financeRouter = router({
         summary: `跨地区预缴资料状态变更为：${getBusinessStatusLabel(input.targetStatus)}`,
       });
       return { success: true };
+      });
     }),
 
   listRecords: protectedProcedure
@@ -6096,6 +6363,15 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return db.transaction(async db => {
+      await lockEvidenceProject(db, input.projectId);
+      const currentRoles = await assertFinanceAccess(ctx);
+      if (!canMaintainFinancialLedger(currentRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权维护财税附件" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const invoiceFingerprint = createInvoiceOriginalFingerprint(input);
+      const [originalHint] = await db.select().from(financialInvoiceOriginals).where(eq(financialInvoiceOriginals.originalFingerprint, invoiceFingerprint)).limit(1);
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], parent: input.id ? { table: financialInvoices, id: input.id } : undefined, oldPointers: originalHint, actorId: user.id, module: "finance", targetType: "financialInvoices", targetId: String(input.id ?? "new") });
+
       if (input.financialRecordId) {
         const [record] = await db
           .select({ projectId: financialRecords.projectId })
@@ -6138,7 +6414,7 @@ export const financeRouter = router({
           .select()
           .from(financialInvoices)
           .where(eq(financialInvoices.id, input.id))
-          .limit(1);
+          .limit(1).for("update");
         if (!existing || existing.projectId !== input.projectId)
           throw new TRPCError({
             code: "NOT_FOUND",
@@ -6157,8 +6433,9 @@ export const financeRouter = router({
               .select()
               .from(financialInvoiceOriginals)
               .where(eq(financialInvoiceOriginals.id, existing.originalId))
-              .limit(1)
+              .limit(1).for("update")
           : [];
+        if (originalHint && original?.evidenceId !== originalHint.evidenceId) throw new TRPCError({ code: "CONFLICT", message: "发票原件附件已变化，请刷新后重试" });
         if (!original || original.originalFingerprint !== originalFingerprint)
           throw new TRPCError({
             code: "CONFLICT",
@@ -6204,7 +6481,7 @@ export const financeRouter = router({
             message:
               "修改后会导致同一原件跨项目分摊超过原件金额，请先调整其它项目分摊",
           });
-        await db
+        const bindingWrite = await db
           .update(financialInvoices)
           .set(baseValues)
           .where(
@@ -6214,6 +6491,7 @@ export const financeRouter = router({
               eq(financialInvoices.allocationStatus, "active")
             )
           );
+        assertEvidenceConditionalWrite(bindingWrite);
       } else {
         await assertFinancialDayWritable(
           db,
@@ -6230,7 +6508,7 @@ export const financeRouter = router({
               originalFingerprint
             )
           )
-          .limit(1);
+          .limit(1).for("update");
         if (!original) {
           if (input.redFlushOriginalId) {
             const [blueOriginal] = await db
@@ -6282,6 +6560,7 @@ export const financeRouter = router({
             .where(eq(financialInvoiceOriginals.id, originalId))
             .limit(1);
         }
+        if (originalHint && original?.evidenceId !== originalHint.evidenceId) throw new TRPCError({ code: "CONFLICT", message: "发票原件附件已变化，请刷新后重试" });
         if (!original || ["void", "red_flushed"].includes(original.status))
           throw new TRPCError({
             code: "CONFLICT",
@@ -6316,6 +6595,7 @@ export const financeRouter = router({
           createdBy: user.id,
         });
       }
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
@@ -6327,6 +6607,7 @@ export const financeRouter = router({
         summary: `${input.id ? "维护" : "登记"}${input.direction === "expense" ? "成本" : "收入"}发票项目分摊：${input.invoiceNo}，金额 ${allocationAmount.toFixed(2)}`,
       });
       return { success: true };
+      });
     }),
 
   transitionInvoice: protectedProcedure
@@ -6485,6 +6766,14 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:closeDailyAccount", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertFinanceAccess(ctx);
+if (!canMaintainFinancialLedger(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "每日会计日结仅限会计或财务负责人",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const closingDate = toBusinessDate(input.closingDate);
       const endExclusive = new Date(closingDate.getTime() + 86_400_000);
       return db.transaction(async tx => {
@@ -6573,7 +6862,7 @@ export const financeRouter = router({
             .filter(record => record.direction === "expense")
             .reduce((sum, record) => sum + Number(record.amount), 0)
         );
-        const closingNo = existing?.closingNo ?? createBusinessNo("DAY");
+        const closingNo = existing?.closingNo ?? (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.dailyAccountingClosure, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:daily-closing`, requestKey: input.closingDate })).number;
         const now = new Date();
         let closureId = existing?.id;
         if (existing) {
@@ -6689,6 +6978,8 @@ export const financeRouter = router({
           totalExpense,
           recordCount: activeRecords.length,
         };
+      });
+
       });
     }),
 
@@ -6827,7 +7118,7 @@ export const financeRouter = router({
 
   /** 登记真实资金流水，项目、金额、发生时间和结算状态均经服务端校验并审计。 */
   saveRecord: protectedProcedure
-    .input(financialRecordInput)
+    .input(z.intersection(financialRecordInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertFinanceAccess(ctx);
@@ -6849,14 +7140,37 @@ export const financeRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveRecord", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertFinanceAccess(ctx);
+if (!canCreateFinancialRecord(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "审计只读岗位仅可查看财务资料，不可登记资金流水",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId);
+if (input.settlementStatus !== "unpaid" && !canExecutePayment(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "资金结清状态仅可由出纳执行确认",
+        }); }}, async db => {
+      if (input.sourceType || input.sourceId) throw new TRPCError({ code: "BAD_REQUEST", message: "人工流水不可指定系统业务来源，请回原业务模块办理" });
+      await db.transaction(async tx => {
+        const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], actorId: user.id, module: "finance", targetType: "financial_record", targetId: input.category });
+        const freshRoles = await assertFinanceAccess(ctx);
+        if (!canCreateFinancialRecord(freshRoles)) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权登记财务流水" });
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        const currentRoles = await assertFinanceAccess(ctx);
+        if (!canCreateFinancialRecord(currentRoles) || (input.settlementStatus !== "unpaid" && !canExecutePayment(currentRoles))) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权登记该资金状态" });
+        await assertProjectInCurrentScope(ctx, input.projectId);
       await assertFinancialDayWritable(
-        db,
+        tx,
         input.projectId,
         new Date(input.occurredAt),
         "登记财务流水"
       );
-      await db.insert(financialRecords).values({
-        recordNo: createBusinessNo("FIN"),
+      await tx.insert(financialRecords).values({
+        recordNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.financialRecord, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:manual-financial-record`, requestKey: businessCreationRequestKey(input) })).number,
         projectId: input.projectId,
         direction: input.direction,
         category: input.category,
@@ -6868,13 +7182,15 @@ export const financeRouter = router({
         evidenceId: input.evidenceId ?? null,
         remarks: input.remarks ?? null,
       });
-      await db.insert(auditLogs).values({
+      await binding.retain();
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "finance",
         action: "create_record",
         targetType: "financial_record",
         targetId: input.category,
         summary: `登记项目${input.direction === "income" ? "收入" : "支出"}流水：${input.category}`,
+      });
       });
       void notifyOfficialAccountBusinessEventSafely({
         userId: user.id,
@@ -6886,181 +7202,87 @@ export const financeRouter = router({
         deepLink: "/mobile/finance",
       }).catch(() => undefined);
       return { success: true };
+
+      });
     }),
 
-  /** 作废未支付的人工财务流水；来源于计量、采购等业务单据的自动流水不得在此入口调整。 */
+  /** 仅未付人工记录允许作废。项目锁与日结/付款共享，检查、CAS 和审计同事务。 */
   voidRecord: protectedProcedure
     .input(financialRecordVoidInput)
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
-      const roleCodes = await assertFinanceAccess(ctx);
-      if (!canVoidFinancialRecord(roleCodes))
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "财务流水作废仅限会计审查或财务负责人办理",
-        });
-      await assertProjectInCurrentScope(ctx, input.projectId);
+      const checkAccess = async () => {
+        const roles = await assertFinanceAccess(ctx);
+        if (!canVoidFinancialRecord(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "财务流水作废仅限会计审查或财务负责人办理" });
+        await assertProjectInCurrentScope(ctx, input.projectId);
+      };
+      await checkAccess();
       const db = await getDb();
-      if (!db)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "数据库连接暂不可用",
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+      const outcome = await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await checkAccess();
+        const [record] = await tx.select().from(financialRecords).where(and(eq(financialRecords.id, input.id), eq(financialRecords.projectId, input.projectId))).limit(1).for("update");
+        if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
+        if (record.sourceType || record.sourceId) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接作废" });
+        if (record.settlementStatus === "void") return { changed: false };
+        if (record.settlementStatus !== "unpaid") throw new TRPCError({ code: "CONFLICT", message: "部分或全部支付流水不可作废，请回来源业务办理受控调整" });
+        await assertFinancialDayWritable(tx, input.projectId, record.occurredAt, "作废财务流水");
+        const result = await tx.update(financialRecords).set({ settlementStatus: "void" }).where(and(eq(financialRecords.id, record.id), eq(financialRecords.projectId, input.projectId), eq(financialRecords.settlementStatus, "unpaid")));
+        assertCorrectionWrite(result);
+        await appendIntegrityProtectedAudit(tx, {
+          userId: user.id, module: "finance", action: "void_financial_record", targetType: "financial_record", targetId: String(record.id),
+          summary: `财务流水已作废：${record.recordNo}；原因：${input.reason}`,
+          beforeJson: JSON.stringify(record), afterJson: JSON.stringify({ settlementStatus: "void", reason: input.reason }),
         });
-      const [record] = await db
-        .select()
-        .from(financialRecords)
-        .where(eq(financialRecords.id, input.id))
-        .limit(1);
-      if (!record || record.projectId !== input.projectId)
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "未找到当前项目的财务流水",
-        });
-      await assertFinancialDayWritable(
-        db,
-        input.projectId,
-        record.occurredAt,
-        "作废已封存日期的财务流水"
-      );
-      if (record.sourceType)
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接作废",
-        });
-      if (record.settlementStatus === "paid")
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "已支付流水不可作废，请使用冲销流程",
-        });
-      if (record.settlementStatus === "void")
-        throw new TRPCError({ code: "CONFLICT", message: "该财务流水已作废" });
-      const updateResult = await db
-        .update(financialRecords)
-        .set({ settlementStatus: "void" })
-        .where(
-          and(
-            eq(financialRecords.id, record.id),
-            eq(financialRecords.settlementStatus, record.settlementStatus)
-          )
-        );
-      assertConditionalBusinessWrite(
-        updateResult,
-        "财务流水已被其他用户更新，请刷新后重试"
-      );
-      await db.insert(auditLogs).values({
-        userId: user.id,
-        module: "finance",
-        action: "void_financial_record",
-        targetType: "financial_record",
-        targetId: String(record.id),
-        summary: `财务流水已作废：${record.recordNo}；原因：${input.reason}`,
+        return { changed: true };
       });
-      void notifyOfficialAccountBusinessEventSafely({
-        userId: user.id,
-        module: "finance",
-        eventCode: "financial_voided",
-        targetType: "financial_record",
-        targetId: String(record.id),
-        title: "项目财务流水已作废",
-        deepLink: "/mobile/finance",
-      }).catch(() => undefined);
+      if (outcome.changed) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: "financial_voided", targetType: "financial_record", targetId: String(input.id), title: "项目财务流水已作废", deepLink: "/mobile/finance" }).catch(() => undefined);
       return { success: true, status: "void" as const };
     }),
 
-  /** 已支付的人工流水以反方向新流水冲销，保留原记录和资金发生时点的审计链。 */
+  /** 只冲销人工已付记录；同项目/原记录锁串行化唯一链，重试返回原回执，不重复审计/通知。 */
   reverseRecord: protectedProcedure
     .input(financialRecordReversalInput)
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
-      const roleCodes = await assertFinanceAccess(ctx);
-      if (!canReverseFinancialRecord(roleCodes))
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "已支付财务流水冲销仅限财务负责人办理",
-        });
-      await assertProjectInCurrentScope(ctx, input.projectId);
+      const checkAccess = async () => {
+        const roles = await assertFinanceAccess(ctx);
+        if (!canReverseFinancialRecord(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "已支付财务流水冲销仅限财务负责人办理" });
+        await assertProjectInCurrentScope(ctx, input.projectId);
+      };
+      await checkAccess();
       const db = await getDb();
-      if (!db)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "数据库连接暂不可用",
-        });
-      const [record] = await db
-        .select()
-        .from(financialRecords)
-        .where(eq(financialRecords.id, input.id))
-        .limit(1);
-      if (!record || record.projectId !== input.projectId)
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "未找到当前项目的财务流水",
-        });
-      if (record.sourceType)
-        throw new TRPCError({
-          code: "CONFLICT",
-          message:
-            "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接冲销",
-        });
-      if (record.settlementStatus !== "paid")
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "仅已支付的人工财务流水可以冲销；未支付流水请使用作废流程",
-        });
-      await assertFinancialDayWritable(
-        db,
-        input.projectId,
-        new Date(input.reversedAt),
-        "登记冲销调整"
-      );
-      const existingReversal = await db
-        .select({ id: financialRecords.id })
-        .from(financialRecords)
-        .where(
-          and(
-            eq(financialRecords.sourceType, "financial_reversal"),
-            eq(financialRecords.sourceId, String(record.id))
-          )
-        )
-        .limit(1);
-      if (existingReversal.length > 0)
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "该财务流水已存在冲销记录",
-        });
-      const reversalDirection =
-        record.direction === "income" ? "expense" : "income";
-      await db.insert(financialRecords).values({
-        recordNo: createBusinessNo("REV"),
-        projectId: input.projectId,
-        direction: reversalDirection,
-        category: `冲销：${record.category}`.slice(0, 64),
-        amount: String(roundMoney(Number(record.amount))),
-        occurredAt: new Date(input.reversedAt),
-        settlementStatus: "paid",
-        sourceType: "financial_reversal",
-        sourceId: String(record.id),
-        evidenceId: null,
-        remarks: `冲销原流水 ${record.recordNo}：${input.reason}`,
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:reverseRecord", projectId: input.projectId, input , revalidate: async () => { await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      const outcome = await db.transaction(async tx => {
+        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        await checkAccess();
+        const [record] = await tx.select().from(financialRecords).where(and(eq(financialRecords.id, input.id), eq(financialRecords.projectId, input.projectId))).limit(1).for("update");
+        if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "未找到当前项目的财务流水" });
+        if (record.sourceType || record.sourceId) throw new TRPCError({ code: "CONFLICT", message: "来源业务流水须在原业务模块按流程调整，不支持在财务台账直接冲销" });
+        if (record.settlementStatus !== "paid") throw new TRPCError({ code: "CONFLICT", message: "仅已支付的人工财务流水可以冲销；未支付流水请使用作废流程" });
+        const reversalDirection = record.direction === "income" ? "expense" as const : "income" as const;
+        const reversals = await tx.select().from(financialRecords).where(and(eq(financialRecords.projectId, input.projectId), eq(financialRecords.sourceType, "financial_reversal"), eq(financialRecords.sourceId, String(record.id)))).for("update");
+        if (reversals.length > 1) throw new TRPCError({ code: "CONFLICT", message: "原流水存在多条历史冲销，请财务核查，不可继续操作" });
+        if (reversals.length) {
+          const existing = reversals[0];
+          if (existing.settlementStatus !== "paid" || existing.direction !== reversalDirection || roundMoney(Number(existing.amount)) !== roundMoney(Number(record.amount))) throw new TRPCError({ code: "CONFLICT", message: "历史冲销链状态或金额异常，请财务核查" });
+          return { changed: false, reversalDirection };
+        }
+        // 只检查冲销发生日：历史原单封存不解封，追加式调整必须记在开放业务日。
+        await assertFinancialDayWritable(tx, input.projectId, new Date(input.reversedAt), "登记冲销调整");
+        const amount = roundMoney(Number(record.amount));
+        if (!Number.isFinite(amount) || amount <= 0) throw new TRPCError({ code: "CONFLICT", message: "原流水金额无效，不允许生成冲销" });
+        await tx.insert(financialRecords).values({ recordNo: (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.financialReversal, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:financial-reversal`, requestKey: `original:${record.id}` })).number, projectId: input.projectId, direction: reversalDirection, category: `冲销：${record.category}`.slice(0, 64), amount: String(amount), occurredAt: new Date(input.reversedAt), settlementStatus: "paid", sourceType: "financial_reversal", sourceId: String(record.id), evidenceId: null, remarks: `冲销原流水 ${record.recordNo}：${input.reason}` });
+        await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "finance", action: "reverse_financial_record", targetType: "financial_record", targetId: String(record.id), summary: `财务流水已冲销：${record.recordNo}；原因：${input.reason}`, beforeJson: JSON.stringify(record), afterJson: JSON.stringify({ reversalDirection, amount, reversedAt: input.reversedAt, reason: input.reason }) });
+        return { changed: true, reversalDirection };
       });
-      await db.insert(auditLogs).values({
-        userId: user.id,
-        module: "finance",
-        action: "reverse_financial_record",
-        targetType: "financial_record",
-        targetId: String(record.id),
-        summary: `财务流水已冲销：${record.recordNo}；原因：${input.reason}`,
+      if (outcome.changed) void notifyOfficialAccountBusinessEventSafely({ userId: user.id, module: "finance", eventCode: "financial_reversed", targetType: "financial_record", targetId: String(input.id), title: "项目财务流水已冲销", deepLink: "/mobile/finance" }).catch(() => undefined);
+      return { success: true, reversalDirection: outcome.reversalDirection };
+
       });
-      void notifyOfficialAccountBusinessEventSafely({
-        userId: user.id,
-        module: "finance",
-        eventCode: "financial_reversed",
-        targetType: "financial_record",
-        targetId: String(record.id),
-        title: "项目财务流水已冲销",
-        deepLink: "/mobile/finance",
-      }).catch(() => undefined);
-      return { success: true, reversalDirection };
     }),
 
   /** 现金流与利润只在服务端按原始财务流水汇总；工程计量收入确认与实际回款使用不同口径。 */
@@ -7713,3 +7935,5 @@ export const financeRouter = router({
       };
     }),
 });
+
+const notifyOfficialAccountBusinessEventSafely = afterBusinessDocumentCommit(notifyOfficialAccountBusinessEventSafelyImmediate);

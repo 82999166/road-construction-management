@@ -1,31 +1,38 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const contractsSource = readFileSync(new URL("./routers/contracts.ts", import.meta.url), "utf8");
 const subcontractSource = readFileSync(new URL("./routers/subcontract.ts", import.meta.url), "utf8");
 const settlementPaymentSource = readFileSync(new URL("./routers/settlementPayments.ts", import.meta.url), "utf8");
+const compact = (value: string) => value.replace(/\s+/g, "").replace(/,(?=[)\]}])/g, "");
+const hasContractCode = (code: string) => expect(compact(contractsSource)).toContain(compact(code));
 
 describe("外包合同状态机", () => {
   it("只允许草稿启用或作废、启用后暂停/到期/关闭、暂停后恢复/关闭/作废", () => {
-    expect(contractsSource).toContain('const contractStatus = z.enum(["draft", "active", "suspended", "expired", "closed", "void"])');
-    expect(contractsSource).toContain('draft: ["active", "void"]');
-    expect(contractsSource).toContain('active: ["suspended", "expired", "closed"]');
-    expect(contractsSource).toContain('suspended: ["active", "closed", "void"]');
-    expect(contractsSource).toContain('当前合同状态不允许该操作');
+    const source = ts.createSourceFile("contracts.ts", contractsSource, ts.ScriptTarget.Latest, true);
+    const declaration = source.statements.filter(ts.isVariableStatement).flatMap(statement => [...statement.declarationList.declarations]).find(node => node.name.getText(source) === "contractStatus");
+    const initializer = declaration?.initializer;
+    if (!initializer || !ts.isCallExpression(initializer) || initializer.expression.getText(source) !== "z.enum" || !ts.isArrayLiteralExpression(initializer.arguments[0])) throw new Error("合同状态必须使用真实z.enum数组");
+    expect(initializer.arguments[0].elements.map(node => ts.isStringLiteral(node) ? node.text : null)).toEqual(["draft", "active", "suspended", "expired", "closed", "void"]);
+    hasContractCode('draft: ["active", "void"]');
+    hasContractCode('active: ["suspended", "expired", "closed"]');
+    hasContractCode('suspended: ["active", "closed", "void"]');
+    hasContractCode('当前合同状态不允许该操作');
   });
 
   it("将启用复核与关闭/作废权限分开，并限制仅草稿或暂停合同可编辑", () => {
-    expect(contractsSource).toContain('input.targetStatus === "active" ? "review" : "edit"');
-    expect(contractsSource).toContain('["closed", "void"].includes(input.targetStatus) ? "void"');
-    expect(contractsSource).toContain('if (existing.status !== "draft" && existing.status !== "suspended")');
-    expect(contractsSource).toContain('仅草稿或已暂停合同可修改内容');
-    expect(contractsSource).toContain('assertProjectInCurrentScope(ctx, input.projectId)');
+    hasContractCode('input.targetStatus === "active" ? "review" : "edit"');
+    hasContractCode('["closed", "void"].includes(input.targetStatus) ? "void"');
+    hasContractCode('if (existing.status !== "draft" && existing.status !== "suspended")');
+    hasContractCode('仅草稿或已暂停合同可修改内容');
+    hasContractCode('assertProjectInCurrentScope(ctx, input.projectId)');
   });
 
   it("使用状态条件更新、审计和通知记录合同变更", () => {
-    expect(contractsSource).toContain('eq(outsourceContracts.status, existing.status)');
-    expect(contractsSource).toContain('transition_outsource_contract');
-    expect(contractsSource).toContain('outsource_contract_${input.targetStatus}');
+    hasContractCode('eq(outsourceContracts.status, existing.status)');
+    hasContractCode('transition_outsource_contract');
+    hasContractCode('outsource_contract_${input.targetStatus}');
   });
 });
 

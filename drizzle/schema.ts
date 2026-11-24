@@ -530,6 +530,7 @@ export const dataBackups = mysqlTable(
 export const constructionDailyReports = mysqlTable(
   "construction_daily_reports",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     reportDate: date("reportDate").notNull(),
@@ -1220,6 +1221,7 @@ export const attendanceDeviceBindings = mysqlTable(
 export const payrollStatements = mysqlTable(
   "payroll_statements",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     workerId: int("workerId").notNull(),
     projectId: int("projectId").notNull(),
@@ -1340,6 +1342,7 @@ export const payrollGenerationRuns = mysqlTable(
 export const temporaryDailyWageSettlements = mysqlTable(
   "temporary_daily_wage_settlements",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     workerId: int("workerId").notNull(),
     projectId: int("projectId").notNull(),
@@ -1446,6 +1449,7 @@ export const employeeProfiles = mysqlTable(
 export const employeePayrollAdvances = mysqlTable(
   "employee_payroll_advances",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     employeeProfileId: int("employeeProfileId").notNull(),
     laborWorkerId: int("laborWorkerId"),
@@ -1629,6 +1633,7 @@ export const machineLeaseRules = mysqlTable(
 export const machineCostRecords = mysqlTable(
   "machine_cost_records",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     machineId: int("machineId").notNull(),
     projectId: int("projectId").notNull(),
@@ -1679,6 +1684,7 @@ export const machineCostRecords = mysqlTable(
 export const machineMonthlyStatements = mysqlTable(
   "machine_monthly_statements",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     machineId: int("machineId").notNull(),
@@ -1899,6 +1905,7 @@ export const machinePaymentSettlements = mysqlTable(
 export const machineDailyOperations = mysqlTable(
   "machine_daily_operations",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     machineId: int("machineId").notNull(),
@@ -1964,6 +1971,7 @@ export const machineDailyOperations = mysqlTable(
 export const assetMaintenanceRecords = mysqlTable(
   "asset_maintenance_records",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     assetType: mysqlEnum("assetType", ["vehicle", "machine"]).notNull(),
     assetId: int("assetId").notNull(),
@@ -2332,6 +2340,7 @@ export const dieselPriceAlertRules = mysqlTable(
 export const dieselRefuelRecords = mysqlTable(
   "diesel_refuel_records",
   {
+    machineCostSourceId: bigint("machineCostSourceId", { mode: "number" }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     recordNo: varchar("recordNo", { length: 64 }).notNull(),
     projectId: int("projectId").notNull(),
@@ -2953,6 +2962,7 @@ export const transportVehicleSettlementItems = mysqlTable(
 export const settlementPaymentRecords = mysqlTable(
   "settlement_payment_records",
   {
+    documentNo: varchar("documentNo", { length: 36 }).unique(),
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     projectId: int("projectId").notNull(),
     /** 所有实际收付均落入同一付款明细；分包也必须逐笔关联付款凭证。 */
@@ -5029,3 +5039,48 @@ export const constructionAssistantDailyUsage = mysqlTable(
     ).on(table.userId, table.usageDate, table.channel),
   })
 );
+
+/** 新单号分配桶：版块+北京时间秒+真实操作人。事务内 upsert 取得唯一桶写锁后推进。 */
+export const businessDocumentNumberCounters = mysqlTable(
+  "business_document_number_counters",
+  {
+    prefix: varchar("prefix", { length: 32 }).primaryKey(),
+    lastSequence: int("lastSequence").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  }
+);
+
+/** 持久请求幂等与唯一单号登记。NULL 只用于事务内请求占位，失败须回滚整个事务。
+ * 不回填历史编号；不能更新/删除此表来释放单号或复用已提交的请求键。
+ */
+export const businessDocumentNumberAllocations = mysqlTable(
+  "business_document_number_allocations",
+  {
+    requestHash: varchar("requestHash", { length: 64 }).primaryKey(),
+    moduleCode: varchar("moduleCode", { length: 2 }).notNull(),
+    actorKey: varchar("actorKey", { length: 16 }).notNull(),
+    scopeHash: varchar("scopeHash", { length: 64 }).notNull(),
+    number: varchar("number", { length: 36 }),
+    prefix: varchar("prefix", { length: 32 }),
+    sequence: int("sequence"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => ({
+    numberUnique: uniqueIndex("business_document_number_unique").on(table.number),
+    prefixSequenceUnique: uniqueIndex("business_document_prefix_sequence_unique").on(
+      table.prefix,
+      table.sequence
+    ),
+  })
+);
+
+/** 同业务事务保存完整回执；重试不重新创建来源、不发送通知。 */
+export const businessDocumentCreationReceipts = mysqlTable("business_document_creation_receipts", {
+  requestHash: varchar("requestHash", { length: 64 }).primaryKey(),
+  inputHash: varchar("inputHash", { length: 64 }).notNull(),
+  scope: varchar("scope", { length: 128 }).notNull(),
+  actorId: int("actorId").notNull(),
+  resultJson: text("resultJson"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});

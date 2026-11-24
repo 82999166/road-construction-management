@@ -1,3 +1,5 @@
+import { lockBusinessEvidenceBindings } from "../services/evidenceBinding";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { and, desc, eq, gte, inArray, lte, lt } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -309,7 +311,7 @@ async function getSettlementForPayment(
   if (input.settlementType === "payroll") {
     const query = db
       .select({
-        id: payrollStatements.id,
+        id: payrollStatements.id, documentNo: payrollStatements.documentNo,
         workerId: payrollStatements.workerId,
         projectId: payrollStatements.projectId,
         status: payrollStatements.status,
@@ -346,7 +348,7 @@ async function getSettlementForPayment(
   if (input.settlementType === "daily_wage") {
     const query = db
       .select({
-        id: temporaryDailyWageSettlements.id,
+        id: temporaryDailyWageSettlements.id, documentNo: temporaryDailyWageSettlements.documentNo,
         workerId: temporaryDailyWageSettlements.workerId,
         projectId: temporaryDailyWageSettlements.projectId,
         status: temporaryDailyWageSettlements.status,
@@ -676,6 +678,11 @@ export const settlementPaymentRouter = router({
       );
       let evidenceId = 0;
       await db.transaction(async tx => {
+        await lockSettlementPaymentScope(tx, input);
+        await assertPaymentAccess(ctx, input.settlementType);
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        await lockSettlementPaymentResource(tx, input);
+        await getSettlementForPayment(tx, input, true);
         const result = await tx.insert(evidenceRecords).values({
           projectId: input.projectId,
           sourceType: "settlement_payment_proof",
@@ -836,7 +843,7 @@ export const settlementPaymentRouter = router({
 
   /** 登记一笔真实收付。金额不得超过服务端计算的未结余额；每笔同步生成真实财务流水。 */
   record: protectedProcedure
-    .input(paymentRecordInput)
+    .input(z.intersection(paymentRecordInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertPaymentAccess(ctx, input.settlementType, "settle");
@@ -847,6 +854,9 @@ export const settlementPaymentRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "settlementPayment:record", projectId: input.projectId, input , revalidate: async () => { await assertPaymentAccess(ctx, input.settlementType, "settle");
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const paymentDate = toBusinessDate(input.paymentDate);
       const amount = roundMoney(input.amount);
       if (amount <= 0)
@@ -865,6 +875,32 @@ export const settlementPaymentRouter = router({
             "settle"
           );
           await assertProjectInCurrentScope(ctx, input.projectId);
+          const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["settlement_payment_proof"], sourceId: proofSourceId(input.settlementType, input.settlementId) }], actorId: user.id, module: "finance", targetType: "settlement_payment", targetId: String(input.settlementId) });
+          const [proof] = await tx
+            .select({
+              id: evidenceRecords.id,
+              projectId: evidenceRecords.projectId,
+              sourceType: evidenceRecords.sourceType,
+              sourceId: evidenceRecords.sourceId,
+              status: evidenceRecords.status,
+            })
+            .from(evidenceRecords)
+            .where(eq(evidenceRecords.id, input.evidenceId))
+            .limit(1)
+            .for("update");
+          if (
+            !proof ||
+            proof.projectId !== input.projectId ||
+            proof.status !== "active" ||
+            proof.sourceType !== "settlement_payment_proof" ||
+            proof.sourceId !==
+              proofSourceId(input.settlementType, input.settlementId)
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "请上传并关联当前结算单的有效付款凭证",
+            });
+          }
           await lockSettlementPaymentResource(tx, input);
           const settlement = await getSettlementForPayment(tx, input, true);
           if (!settlement.statuses.includes(String(settlement.row.status)))
@@ -900,31 +936,6 @@ export const settlementPaymentRouter = router({
               code: "CONFLICT",
               message: "付款日期已封存，须由财务负责人先授权反结账后再登记付款",
             });
-          const [proof] = await tx
-            .select({
-              id: evidenceRecords.id,
-              projectId: evidenceRecords.projectId,
-              sourceType: evidenceRecords.sourceType,
-              sourceId: evidenceRecords.sourceId,
-              status: evidenceRecords.status,
-            })
-            .from(evidenceRecords)
-            .where(eq(evidenceRecords.id, input.evidenceId))
-            .limit(1)
-            .for("update");
-          if (
-            !proof ||
-            proof.projectId !== input.projectId ||
-            proof.status !== "active" ||
-            proof.sourceType !== "settlement_payment_proof" ||
-            proof.sourceId !==
-              proofSourceId(input.settlementType, input.settlementId)
-          ) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "请上传并关联当前结算单的有效付款凭证",
-            });
-          }
           const existing = await tx
             .select({ amount: settlementPaymentRecords.amount })
             .from(settlementPaymentRecords)
@@ -956,6 +967,7 @@ export const settlementPaymentRouter = router({
             });
           const final = roundMoney(remainingAmount - amount) === 0;
           const result = await tx.insert(settlementPaymentRecords).values({
+            documentNo: await newBusinessDocumentNumber(tx, "PM", { kind: "user", userId: user.id }, input.projectId, input),
             projectId: input.projectId,
             settlementType: input.settlementType,
             settlementId: input.settlementId,
@@ -984,7 +996,7 @@ export const settlementPaymentRouter = router({
               message: "本次资金登记未完成，请稍后重试",
             });
           await tx.insert(financialRecords).values({
-            recordNo: `F-SPAY-${input.settlementType}-${paymentId || Date.now()}`,
+            recordNo: await newBusinessDocumentNumber(tx, "FR", { kind: "user", userId: user.id }, input.projectId, input, `payment:${paymentId}`),
             projectId: input.projectId,
             direction: settlement.direction,
             category: settlement.category,
@@ -1006,6 +1018,7 @@ export const settlementPaymentRouter = router({
             paymentReference: input.paymentReference?.trim() || null,
             paidBy: user.id,
           });
+          await binding.retain();
           await appendIntegrityProtectedAudit(tx, {
             userId: user.id,
             module: "finance",
@@ -1078,6 +1091,8 @@ export const settlementPaymentRouter = router({
         remainingAmount: roundMoney(Math.max(0, remainingAmount - amount)),
         status,
       };
+
+      });
     }),
 
   /**
@@ -1159,7 +1174,7 @@ export const settlementPaymentRouter = router({
         .where(eq(machinePaymentSettlements.projectId, input.projectId)),
       db
         .select({
-          id: payrollStatements.id,
+          id: payrollStatements.id, documentNo: payrollStatements.documentNo,
           status: payrollStatements.status,
           actualAmount: payrollStatements.actualAmount,
           period: payrollStatements.period,
@@ -1173,7 +1188,7 @@ export const settlementPaymentRouter = router({
         .where(eq(payrollStatements.projectId, input.projectId)),
       db
         .select({
-          id: temporaryDailyWageSettlements.id,
+          id: temporaryDailyWageSettlements.id, documentNo: temporaryDailyWageSettlements.documentNo,
           status: temporaryDailyWageSettlements.status,
           actualAmount: temporaryDailyWageSettlements.actualAmount,
           settlementDate: temporaryDailyWageSettlements.settlementDate,
@@ -1300,7 +1315,7 @@ export const settlementPaymentRouter = router({
           safeBoardRow({
             sourceType: "payroll",
             settlementId: row.id,
-            settlementNo: `工资-${row.period}-${row.id}`,
+            settlementNo: row.documentNo ?? `工资-${row.period}-${row.id}`,
             direction: "expense",
             lifecycle,
             businessStatus: row.status,
@@ -1335,7 +1350,7 @@ export const settlementPaymentRouter = router({
           safeBoardRow({
             sourceType: "daily_wage",
             settlementId: row.id,
-            settlementNo: `日结-${String(row.settlementDate).slice(0, 10)}-${row.id}`,
+            settlementNo: row.documentNo ?? `日结-${String(row.settlementDate).slice(0, 10)}-${row.id}`,
             direction: "expense",
             lifecycle,
             businessStatus: row.status,
@@ -1602,7 +1617,7 @@ export const settlementPaymentRouter = router({
         idsByType.get("payroll")?.length
           ? db
               .select({
-                id: payrollStatements.id,
+                id: payrollStatements.id, documentNo: payrollStatements.documentNo,
                 period: payrollStatements.period,
               })
               .from(payrollStatements)
@@ -1611,7 +1626,7 @@ export const settlementPaymentRouter = router({
         idsByType.get("daily_wage")?.length
           ? db
               .select({
-                id: temporaryDailyWageSettlements.id,
+                id: temporaryDailyWageSettlements.id, documentNo: temporaryDailyWageSettlements.documentNo,
                 settlementDate: temporaryDailyWageSettlements.settlementDate,
               })
               .from(temporaryDailyWageSettlements)
@@ -1705,13 +1720,13 @@ export const settlementPaymentRouter = router({
       );
       payrolls.forEach(item =>
         settlementByKey.set(`payroll:${item.id}`, {
-          settlementNo: `工资-${item.period}-${item.id}`,
+          settlementNo: item.documentNo ?? `工资-${item.period}-${item.id}`,
           periodLabel: item.period,
         })
       );
       dailyWages.forEach(item =>
         settlementByKey.set(`daily_wage:${item.id}`, {
-          settlementNo: `日结-${String(item.settlementDate).slice(0, 10)}-${item.id}`,
+          settlementNo: item.documentNo ?? `日结-${String(item.settlementDate).slice(0, 10)}-${item.id}`,
           periodLabel: String(item.settlementDate).slice(0, 10),
         })
       );
@@ -1756,7 +1771,7 @@ export const settlementPaymentRouter = router({
               : ("matched" as const);
           return {
             id: payment.id,
-            voucherNo: `SPV-${input.projectId}-${payment.id}`,
+            voucherNo: payment.documentNo ?? `SPV-${input.projectId}-${payment.id}`,
             settlementType: payment.settlementType as SettlementType,
             settlementTypeLabel:
               settlementTypeLabel[payment.settlementType as SettlementType],

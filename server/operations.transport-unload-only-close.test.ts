@@ -155,7 +155,7 @@ describe("运输卸土点补刷卡闭环", () => {
     expect(
       routerSource.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
     ).toContain(
-      "triggerTransportRiskScan(input.projectId)"
+      "afterBusinessDocumentCommit(triggerTransportRiskScan)(input.projectId)"
         .replace(/\s+/g, "")
         .replace(/,([})\]])/g, "$1")
     );

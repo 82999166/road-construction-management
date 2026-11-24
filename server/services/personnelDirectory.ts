@@ -1,3 +1,7 @@
+import { lockBusinessEvidenceBindings } from "./evidenceBinding";
+import { appendIntegrityProtectedAudit } from "./auditIntegrity";
+import { lockEvidenceProject, assertEvidenceConditionalWrite } from "./evidenceIntegrity";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation } from "./businessDocumentCreation";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -116,7 +120,7 @@ async function assertPersonnelPhoneUnique(tx: ReadDb, fingerprint: string, previ
 /** 版本CAS与源链接/历史/工资主体/镜像同一事务，失败全部回滚。 */
 export async function saveDirectoryPerson(rawInput: PersonnelSaveInput, actorId: number, suppliedDb?: Db) {
   const input = personnelSaveInput.parse(rawInput); const db = suppliedDb ?? await requirePersonnelDb(); const today = chinaBusinessDate(new Date());
-  try { return await db.transaction(async tx => {
+  try { return await runBusinessDocumentCreation(db, { actorId, scope: "personnel:save", projectId: input.projectId, input }, async tx => {
     const previous = input.id ? await findPersonnel(tx, input.id) : undefined;
     if (previous && previous.version !== input.version) throw new TRPCError({ code: "CONFLICT", message: "档案已被其他人修改，请刷新后重试" });
     const patch = buildPersonnelPatch(input, previous);
@@ -145,7 +149,7 @@ export async function saveDirectoryPerson(rawInput: PersonnelSaveInput, actorId:
     await validateReferences(tx, prospective, previous);
     const version = (previous?.version ?? 0) + 1; let personId: number;
     if (previous) { const result = await tx.update(s.personnelPeople).set({ ...patch, version, updatedBy: actorId }).where(and(eq(s.personnelPeople.id, previous.id), eq(s.personnelPeople.version, input.version!))); if (!affected(result)) throw new TRPCError({ code: "CONFLICT", message: "档案版本冲突，请刷新后重试" }); personId = previous.id; }
-    else { const [result] = await tx.insert(s.personnelPeople).values({ ...patch, name: input.name, affiliation: input.affiliation, employmentStatus: input.employmentStatus, secondaryPositionIds: patch.secondaryPositionIds, personNo: `P-${randomUUID().replace(/-/g, "").slice(0, 20).toUpperCase()}`, version, createdBy: actorId, updatedBy: actorId } as typeof s.personnelPeople.$inferInsert); personId = Number(result.insertId); }
+    else { const [result] = await tx.insert(s.personnelPeople).values({ ...patch, name: input.name, affiliation: input.affiliation, employmentStatus: input.employmentStatus, secondaryPositionIds: patch.secondaryPositionIds, personNo: await newBusinessDocumentNumber(tx, "PN", { kind: "user", userId: actorId }, input.projectId, input), version, createdBy: actorId, updatedBy: actorId } as typeof s.personnelPeople.$inferInsert); personId = Number(result.insertId); }
     let person = await findPersonnel(tx, personId);
     if (person.userId && person.userId !== previous?.userId) await tx.insert(s.personnelSourceLinks).values({ personId, sourceType: "user", sourceId: person.userId, createdBy: actorId });
     if (salaryChanged) await tx.insert(s.personnelSalaryHistory).values({ ...nextSalary, personId, effectiveFrom, createdBy: actorId });
@@ -245,7 +249,8 @@ export async function uploadPersonnelDocument(rawInput: typeof personnelDocument
   // 现通用storage代理是公开的，故只上传AES-GCM密文，绝不上传敏感原件。
   const stored = await storagePut(`personnel-private/${randomUUID()}.encrypted`, encryptSecret(bytes.toString("base64")), "application/octet-stream");
   return db.transaction(async tx => {
-    const current = await findPersonnel(tx, person.id); if (current.version !== person.version) throw new TRPCError({ code: "CONFLICT", message: "上传时档案发生变化，请刷新后重试" });
+    const binding = await lockBusinessEvidenceBindings(tx, { projectId: person.projectId, bindings: [], parent: { table: s.personnelPeople, id: person.id }, actorId, module: "personnel", targetType: "personnel_document", targetId: String(person.id) });
+    const current = binding.parent as Person; if (current.version !== person.version) throw new TRPCError({ code: "CONFLICT", message: "上传时档案发生变化，请刷新后重试" });
     const [evidence] = await tx.insert(s.evidenceRecords).values({ projectId: person.projectId, sourceType: "personnel_private", sourceId: String(person.id), fileKey: stored.key, fileName: path.basename(input.fileName).replace(/[\r\n]/g, ""), mimeType: input.mimeType, contentSha256: createHash("sha256").update(bytes).digest("hex"), contentBytes: bytes.length, uploadedBy: actorId });
     const [document] = await tx.insert(s.personnelDocuments).values({ personId: person.id, projectId: person.projectId, documentType: input.documentType, name: input.name, expiresAt: input.expiresAt, evidenceId: Number(evidence.insertId), createdBy: actorId });
     const version = person.version + (input.documentType === "portrait" ? 1 : 0);
@@ -257,6 +262,7 @@ export async function uploadPersonnelDocument(rawInput: typeof personnelDocument
       if (!affected(result)) throw new TRPCError({ code: "CONFLICT", message: "头像上传时档案发生变化，请刷新后重试" });
     }
     await tx.insert(s.personnelChanges).values({ personId: person.id, action: "upload_document", version, changes, createdBy: actorId });
+    await appendIntegrityProtectedAudit(tx as any, { userId: actorId, module: "personnel", action: "retain_evidence_binding_pointers", targetType: "personnel_document", targetId: String(document.insertId), summary: "私有人员附件新增归档及原头像指针保留", beforeJson: binding.beforeJson, afterJson: JSON.stringify({ evidenceId: Number(evidence.insertId), fileKey: stored.key, personId: person.id, projectId: person.projectId, avatarEvidenceId: input.documentType === "portrait" ? Number(evidence.insertId) : current.avatarEvidenceId }) });
     return { success: true as const, id: Number(document.insertId), version, ...(input.documentType === "portrait" ? { avatarDocumentId: Number(document.insertId) } : {}) };
   });
 }
@@ -304,8 +310,7 @@ export async function savePersonnelInsurance(rawInput: typeof personnelInsurance
     const person = await findPersonnel(tx, input.personId);
     if (person.version !== input.version) throw new TRPCError({ code: "CONFLICT", message: "人员档案已变化，请刷新后重试" });
     const version = person.version + 1;
-    const cas = await tx.update(s.personnelPeople).set({ version, updatedBy: actorId }).where(and(eq(s.personnelPeople.id, person.id), eq(s.personnelPeople.version, input.version)));
-    if (!affected(cas)) throw new TRPCError({ code: "CONFLICT", message: "保险登记版本冲突，请刷新后重试" });
+
     const [existing] = input.id ? await tx.select().from(s.employeeInsurancePolicies).where(eq(s.employeeInsurancePolicies.id, input.id)).limit(1) : [];
     if (input.id && !existing) throw new TRPCError({ code: "NOT_FOUND", message: "保单不存在，不能覆盖" });
     let profile: typeof s.employeeProfiles.$inferSelect | undefined;
@@ -321,6 +326,9 @@ export async function savePersonnelInsurance(rawInput: typeof personnelInsurance
       if (!person.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "登记新保险须先将人员分配至真实项目" });
       const [project] = await tx.select({ id: s.projects.id }).from(s.projects).where(eq(s.projects.id, person.projectId)).limit(1);
       if (!project) throw new TRPCError({ code: "BAD_REQUEST", message: "保险所属项目不存在" });
+      // 新profile尚无可证明归属的既有附件，不得先建主体再借用旧附件。
+      if (input.evidenceId) throw new TRPCError({ code: "FORBIDDEN", message: "新保险主体尚无所属保单附件，请先建立主体后在专用保险入口上传" });
+      await lockEvidenceProject(tx, person.projectId);
       // 只建保险元数据主体，无账号/worker/工资金额/权限；历史主体保持原项目与记录。
       const [created] = await tx.insert(s.employeeProfiles).values({ userId: null, laborWorkerId: null, projectId: person.projectId, employeeType: person.affiliation === "temporary" || person.affiliation === "labor_team" ? "construction_worker" : "management", employmentStatus: person.employmentStatus, salaryBasis: "monthly", baseSalary: null });
       const profileId = Number(created.insertId);
@@ -331,16 +339,23 @@ export async function savePersonnelInsurance(rawInput: typeof personnelInsurance
     if (!profile) throw new TRPCError({ code: "BAD_REQUEST", message: "缺少真实保险主体" });
     const retained = <K extends "providerName" | "policyReference" | "evidenceId" | "premiumAmount" | "coverageAmount" | "remarks">(key: K) => input[key] === undefined ? existing?.[key] ?? null : input[key];
     const evidenceId = retained("evidenceId");
+    const binding = await lockBusinessEvidenceBindings(tx, { projectId: profile.projectId, bindings: [{ field: "evidenceId", id: evidenceId, allowedSourceTypes: ["employee_insurance_policy"], sourceId: String(profile.id) }], oldPointers: existing, actorId, module: "personnel", targetType: "employee_insurance", targetId: String(existing?.id ?? "new") });
+    const [lockedPerson] = await tx.select().from(s.personnelPeople).where(eq(s.personnelPeople.id, person.id)).limit(1).for("update");
+    if (!lockedPerson || lockedPerson.version !== input.version || lockedPerson.projectId !== person.projectId) throw new TRPCError({ code: "CONFLICT", message: "保险登记时人员主体已变化" });
+    if (existing) { const [lockedPolicy] = await tx.select().from(s.employeeInsurancePolicies).where(eq(s.employeeInsurancePolicies.id, existing.id)).limit(1).for("update"); if (!lockedPolicy || lockedPolicy.employeeProfileId !== profile.id || lockedPolicy.evidenceId !== existing.evidenceId) throw new TRPCError({ code: "CONFLICT", message: "原保险附件或主体已变化" }); }
+    const cas = await tx.update(s.personnelPeople).set({ version, updatedBy: actorId }).where(and(eq(s.personnelPeople.id, person.id), eq(s.personnelPeople.version, input.version)));
+    if (!affected(cas)) throw new TRPCError({ code: "CONFLICT", message: "保险登记版本冲突，请刷新后重试" });
     if (evidenceId) {
       const [evidence] = await tx.select().from(s.evidenceRecords).where(eq(s.evidenceRecords.id, Number(evidenceId))).limit(1);
       if (!evidence || evidence.status !== "active" || evidence.sourceType !== "employee_insurance_policy" || evidence.sourceId !== String(profile.id) || evidence.projectId !== profile.projectId) throw new TRPCError({ code: "FORBIDDEN", message: "保单附件不属于该真实员工主体；新加密保险附件请在人员文档中维护" });
     }
     const values = { employeeProfileId: profile.id, insuranceType: input.insuranceType, providerName: retained("providerName") as string | null, policyReference: retained("policyReference") as string | null, evidenceId: evidenceId as number | null, premiumAmount: retained("premiumAmount") === null ? null : String(retained("premiumAmount")), coverageAmount: retained("coverageAmount") === null ? null : String(retained("coverageAmount")), purchasedAt: new Date(`${input.purchasedAt}T00:00:00Z`), expiresAt: new Date(`${input.expiresAt}T00:00:00Z`), status: input.status, remarks: retained("remarks") as string | null };
     let policyId = existing?.id;
-    if (existing) await tx.update(s.employeeInsurancePolicies).set(values).where(eq(s.employeeInsurancePolicies.id, existing.id));
+    if (existing) assertEvidenceConditionalWrite(await tx.update(s.employeeInsurancePolicies).set(values).where(eq(s.employeeInsurancePolicies.id, existing.id)));
     else { const [created] = await tx.insert(s.employeeInsurancePolicies).values(values); policyId = Number(created.insertId); }
     const safePolicy = (row: any) => row ? { id: policyId, employeeProfileId: row.employeeProfileId, insuranceType: row.insuranceType, providerName: row.providerName, premiumAmount: row.premiumAmount, coverageAmount: row.coverageAmount, purchasedAt: chinaBusinessDate(row.purchasedAt), expiresAt: chinaBusinessDate(row.expiresAt), status: row.status, remarks: row.remarks } : null;
     await tx.insert(s.personnelChanges).values({ personId: person.id, action: "save_insurance", version, changes: { insurance: { before: safePolicy(existing), after: safePolicy(values) } }, createdBy: actorId });
+    await binding.retain(String(policyId));
     await tx.insert(s.auditLogs).values({ userId: actorId, module: "personnel", action: existing ? "update_employee_insurance" : "create_employee_insurance", targetType: "employee_insurance", targetId: String(policyId), summary: `${existing ? "维护" : "登记"}员工保险：${input.insuranceType}` });
     return { success: true as const, id: policyId!, version };
   });

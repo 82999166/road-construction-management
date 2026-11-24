@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { createRequire } from "node:module";
 import type {
   DatabaseSync as MemoryDatabase,
@@ -5,6 +6,7 @@ import type {
 } from "node:sqlite";
 import { TRPCError } from "@trpc/server";
 import { getTableColumns, getTableName, sql, type SQL } from "drizzle-orm";
+import { evidenceRecords, auditLogChainState, auditLogIntegrityEvents } from "../drizzle/schema";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
@@ -77,6 +79,7 @@ const input = () => ({
 const originalPlan = "明日先复检压实度，再组织下一层填筑。";
 const report = (patch: Record<string, unknown> = {}) => ({
   id: 71,
+  documentNo: null, // 迁移前历史单据不重编号，真实投影返回 nullable 新列。
   ...input(),
   progressPercent: "35.5",
   constructionPlan: originalPlan,
@@ -110,12 +113,14 @@ function memoryDb(records: Record<string, unknown>[] = []) {
   );
   memory.exec(`
     CREATE TABLE construction_daily_reports (
-      id INTEGER PRIMARY KEY, projectId INTEGER NOT NULL, reportDate TEXT NOT NULL,
+      id INTEGER PRIMARY KEY, documentNo TEXT, projectId INTEGER NOT NULL, reportDate TEXT NOT NULL,
       workArea TEXT NOT NULL, weather TEXT NOT NULL DEFAULT 'other', workContent TEXT NOT NULL,
       constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, issuePriority TEXT, progressPercent TEXT NOT NULL DEFAULT '0',
       status TEXT NOT NULL DEFAULT 'draft', createdBy INTEGER NOT NULL, reviewReply TEXT,
       reviewedBy INTEGER, reviewedAt TEXT, createdAt TEXT DEFAULT '2026-11-13T08:00:00.000Z',
       updatedAt TEXT DEFAULT '2026-11-13T08:00:00.000Z');
+    CREATE TABLE projects (id INTEGER PRIMARY KEY, status TEXT);
+    INSERT INTO projects VALUES (10,'active'),(20,'active');
     CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
     INSERT INTO users VALUES (1,'管理人员1'),(2,'现场填报人'),(3,'项目主管');
     CREATE TABLE audit_logs (
@@ -129,6 +134,13 @@ function memoryDb(records: Record<string, unknown>[] = []) {
       status TEXT, validFrom TEXT, validTo TEXT);
     INSERT INTO user_role_assignments VALUES (1,3,1,10,'active',NULL,NULL);
   `);
+  // 按真实 schema 创建新调用所需的全部列；历史 documentNo NULL 原样保留。
+  for (const table of [evidenceRecords, auditLogChainState, auditLogIntegrityEvents]) {
+    memory.exec(`CREATE TABLE ${getTableName(table)} (${Object.values(getTableColumns(table)).map(column =>
+      `\`${column.name}\` ${column.name === "id" ? "INTEGER PRIMARY KEY" : column.dataType === "number" || column.dataType === "boolean" ? "INTEGER" : "TEXT"}`
+    ).join(",")})`);
+  }
+  const locks: string[] = [];
   const dialect = new MySqlDialect();
   const values = (entries: unknown[]): SQLInputValue[] =>
     entries.map(value =>
@@ -198,8 +210,9 @@ function memoryDb(records: Record<string, unknown>[] = []) {
           limit = value;
           return chain;
         },
-        then(resolve: (rows: unknown[]) => unknown) {
-          return Promise.resolve().then(execute).then(resolve);
+        for(mode: string) { locks.push(`${getTableName(table)}:${mode}`); return chain; },
+        then(resolve: (rows: unknown[]) => unknown, reject: (reason: unknown) => unknown) {
+          return Promise.resolve().then(execute).then(resolve, reject);
         },
       };
       return chain;
@@ -216,10 +229,12 @@ function memoryDb(records: Record<string, unknown>[] = []) {
     },
   }));
   let beforeUpdate: (() => void) | undefined;
+  let appliedConcurrentWrite: (() => void) | undefined;
   const update = vi.fn((table: Table) => ({
     set(record: Record<string, unknown>) {
       return {
         async where(predicate: SQL) {
+          appliedConcurrentWrite = beforeUpdate;
           beforeUpdate?.();
           beforeUpdate = undefined;
           const entries = Object.entries(record).filter(
@@ -240,7 +255,19 @@ function memoryDb(records: Record<string, unknown>[] = []) {
   }));
   return {
     memory,
-    db: { select, insert, update },
+    locks,
+    db: { select, insert, update, transaction: async (callback: (tx: any) => Promise<unknown>) => {
+      memory.exec("BEGIN");
+      try { const result = await callback({ select, insert, update }); memory.exec("COMMIT"); return result; }
+      catch (error) {
+        memory.exec("ROLLBACK");
+        // 单连接内存 SQL 无法另开并行连接；竞争方已提交的变更不属于本事务回滚范围。
+        // 重放真实竞争 SQL，仅恢复其已提交事实，业务 UPDATE/CAS/审计仍完整回滚。
+        appliedConcurrentWrite?.();
+        throw error;
+      }
+      finally { appliedConcurrentWrite = undefined; }
+    } },
     raw: (id = 71) =>
       memory
         .prepare("SELECT * FROM construction_daily_reports WHERE id=?")
@@ -253,7 +280,7 @@ function memoryDb(records: Record<string, unknown>[] = []) {
 }
 function useDb(records: Record<string, unknown>[] = []) {
   const store = memoryDb(records);
-  vi.mocked(getDb).mockResolvedValue(store.db as never);
+  vi.mocked(getDb).mockResolvedValue(withNumberingFixture(store.db) as never);
   return store;
 }
 beforeEach(() => {
@@ -288,6 +315,7 @@ describe("可选施工计划：真实 scoped caller 与内存 SQL 回归", () =>
     expect(result).toEqual({ id: 1, created: true });
     expect(store.raw(1)).toMatchObject({
       ...input(),
+      documentNo: expect.stringMatching(/^CR\d{14}0001\d{4}$/),
       progressPercent: "35.5",
       createdBy: 1,
       status: "draft",

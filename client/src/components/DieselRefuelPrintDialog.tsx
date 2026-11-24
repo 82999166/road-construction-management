@@ -29,6 +29,7 @@ import { Printer } from "lucide-react";
 export type DieselPrintRecord = {
   id: number;
   recordNo: string;
+  machineCostSourceId?: number | null;
   assetName: string;
   assetType: "vehicle" | "machine";
   supplyMethod: "project_supply" | "external_station";
@@ -91,7 +92,7 @@ export default function DieselRefuelPrintDialog({
     const rows = records
       .map(
         (item, index) =>
-          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(dateTime(item.refueledAt))}</td><td>${escapePrintHtml(item.assetName)}</td><td class="center">${item.assetType === "vehicle" ? "车辆" : "机械"}<br/>${getDieselRecordSourceLabel(item.recordNo)}</td><td>${item.supplyMethod === "project_supply" ? "项目部供油" : escapePrintHtml(item.stationOrSupplierName || "加油站")}</td><td class="center">${escapePrintHtml(refuelerName(item.refuelerName))}</td><td class="right">${formatQuantity(item.liters)}</td><td class="right">${money(item.appliedUnitPrice)}</td><td class="right">${money(item.amount)}</td><td class="right">${item.meterReading === null ? "未记录" : formatQuantity(item.meterReading)}</td><td class="center">${item.deductFromFreight ? "扣运费" : "不扣"}</td><td class="center">${escapePrintHtml(statusLabel(item.status))}</td></tr>`
+          `<tr><td class="center">${index + 1}</td><td>${escapePrintHtml(dateTime(item.refueledAt))}</td><td>${escapePrintHtml(item.assetName)}</td><td class="center">${item.assetType === "vehicle" ? "车辆" : "机械"}<br/>${getDieselRecordSourceLabel(item.recordNo, item.machineCostSourceId)}</td><td>${item.supplyMethod === "project_supply" ? "项目部供油" : escapePrintHtml(item.stationOrSupplierName || "加油站")}</td><td class="center">${escapePrintHtml(refuelerName(item.refuelerName))}</td><td class="right">${formatQuantity(item.liters)}</td><td class="right">${money(item.appliedUnitPrice)}</td><td class="right">${money(item.amount)}</td><td class="right">${item.meterReading === null ? "未记录" : formatQuantity(item.meterReading)}</td><td class="center">${item.deductFromFreight ? "扣运费" : "不扣"}</td><td class="center">${escapePrintHtml(statusLabel(item.status))}</td></tr>`
       )
       .join("");
     openA4LandscapePrintDocument({
@@ -154,7 +155,7 @@ export default function DieselRefuelPrintDialog({
                         {item.assetType === "vehicle" ? "车辆" : "机械"}
                         <br />
                         <span className="text-[9px]">
-                          {getDieselRecordSourceLabel(item.recordNo)}
+                          {getDieselRecordSourceLabel(item.recordNo, item.machineCostSourceId)}
                         </span>
                       </td>
                       <td>

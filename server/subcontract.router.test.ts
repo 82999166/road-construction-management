@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
+import { BusinessDocumentCreationMockDb } from "./services/businessDocumentCreation.mockDb";
+import { projects, outsourceContracts, subcontractPackages, subcontractPaymentSettlements } from "../drizzle/schema";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
@@ -35,15 +38,17 @@ function createAuthContext(): TrpcContext {
 }
 
 /** 按路由读取顺序返回真实状态机测试所需的最小行，避免测试依赖外部数据库。 */
-function createSelectDb(...responses: unknown[][]) {
-  let index = 0;
-  const db = {
-    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => responses[index++] ?? []), orderBy: vi.fn(async () => responses[index++] ?? []) })) })) })),
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })) })),
-    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
-    transaction: vi.fn(),
-  };
-  db.transaction.mockImplementation(async callback => callback(db));
+const stores: BusinessDocumentCreationMockDb[] = [];
+afterEach(() => stores.splice(0).forEach(db => db.close()));
+/** 所有新增父单hint/快照读取按真实表和WHERE解析，不能消耗顺序响应。 */
+function createSelectDb(...responses: Record<string, unknown>[][]) {
+  const db = new BusinessDocumentCreationMockDb();
+  stores.push(db);
+  db.seed(projects, { id: 10, code: "P10", name: "测试项目", nodeType: "project", status: "active" });
+  for (const row of responses.flat()) {
+    if ("settlementNo" in row) db.seed(subcontractPaymentSettlements, { packageId: Number(row.id), subcontractTeamId: 1, packageNoSnapshot: "SP-LEGACY", workItemSnapshot: "路基", quantitySnapshot: "1", unitSnapshot: "m3", grossPayableAmount: "100", netPayableAmount: "100", payeeName: "施工队", createdBy: 2, ...row });
+    else db.seed(subcontractPackages, { packageNo: `SP-LEGACY-${row.id}`, subcontractTeamId: 1, workItem: "路基", unit: "m3", quantity: "1", upstreamAmount: "100", subcontractAmount: "120", marginAmount: "-20", createdBy: 1, ...row });
+  }
   return db;
 }
 
@@ -68,29 +73,29 @@ describe("工程结算与分包路由", () => {
 
   it("价格倒挂且未保留原因的已分配包件不能被计量岗位确认", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 8, projectId: 10, status: "allocated", marginAmount: "-20", priceExceptionReason: null, packageNo: "SP-TEST" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 8, projectId: 10, status: "allocated", marginAmount: "-20", priceExceptionReason: null, packageNo: "SP-TEST" }]) as never));
 
     await expect(subcontractRouter.createCaller(createAuthContext()).transitionPackage({ id: 8, projectId: 10, targetStatus: "confirmed" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("缺少原因") });
   });
 
   it("未完成双岗复核的倒挂包件不能建立应付结算单", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 8, projectId: 10, status: "confirmed", marginAmount: "-20", priceExceptionReviewedBy: null, priceExceptionReviewedAt: null }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 8, projectId: 10, status: "confirmed", marginAmount: "-20", priceExceptionReviewedBy: null, priceExceptionReviewedAt: null }]) as never));
 
     await expect(subcontractRouter.createCaller(createAuthContext()).createPaymentSettlement({ projectId: 10, packageId: 8, payeeName: "施工队", paymentMethod: "bank_transfer", manualDeductionAmount: 0, invoiceStatus: "missing" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("双岗复核") });
   });
 
   it("分包审核保留职责分离，实际付款强制交由统一凭证台账，已结清不可回退", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 21, projectId: 10, status: "submitted", submittedBy: 1, approvedBy: null, settlementNo: "SPAY-1" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 21, projectId: 10, status: "submitted", submittedBy: 1, approvedBy: null, settlementNo: "SPAY-1" }]) as never));
     await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 21, targetStatus: "approved" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("职责分离") });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 22, projectId: 10, status: "approved", submittedBy: 2, approvedBy: 1, settlementNo: "SPAY-2" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 22, projectId: 10, status: "approved", submittedBy: 2, approvedBy: 1, settlementNo: "SPAY-2" }]) as never));
     await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 22, targetStatus: "paid" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("不允许") });
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 23, projectId: 10, status: "paid", submittedBy: 2, approvedBy: 3, settlementNo: "SPAY-3" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 23, projectId: 10, status: "paid", submittedBy: 2, approvedBy: 3, settlementNo: "SPAY-3" }]) as never));
     await expect(subcontractRouter.createCaller(createAuthContext()).transitionPaymentSettlement({ projectId: 10, id: 23, targetStatus: "void" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("不允许") });
   });
 });

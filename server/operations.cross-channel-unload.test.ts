@@ -1,6 +1,9 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
-import { getTableName, type SQL } from "drizzle-orm";
+import { createRequire } from "node:module";
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import type { TrpcContext } from "./_core/context";
 
@@ -57,12 +60,13 @@ function createMemoryDb(withTrip = true, invoiceMode = "plate_photo") {
   const vehicle = { id: 11, projectId: 10, status: "active", plateNo: "湘A12345", driverUserId: 7, driverName: "张师傅", driverPhoneEncrypted: null, boxLengthMeters: "6", boxWidthMeters: "2", boxHeightMeters: "1", loadFactor: "1" };
   const siteSafety = { minimumTransitMinutes: 10, minimumTransitEnabled: true, unloadGeofenceMeters: 300, unloadGeofenceEnabled: true };
   const tables: Record<string, Row[]> = {
+    projects: [{ id: 10, status: "active" }],
     transport_vehicles: [vehicle, { ...vehicle, id: 12, plateNo: "湘B67890" }],
     transport_vehicle_rfid_cards: [{ id: 21, projectId: 10, vehicleId: 11, status: "active", payloadVersion: 1, cardUidFingerprint: fingerprint }, { id: 22, projectId: 10, vehicleId: 12, status: "active", payloadVersion: 1, cardUidFingerprint: "b".repeat(64) }],
     transport_sites: [{ id: 71, projectId: 10, siteType: "load", status: "active", name: "装土区", administratorUserId: 1, latitude: "30", longitude: "120", ...siteSafety }, { id: 72, projectId: 10, siteType: "unload", status: "active", name: "卸土区", administratorUserId: 1, latitude: "30", longitude: "120", ...siteSafety }],
     transport_route_presets: [{ id: 91, projectId: 10, status: "active", loadSiteId: 71, unloadSiteId: 72, freightRuleId: 12, presetDistanceKm: "8", isDefault: true, unloadOnlyCloseEnabled: false, ...siteSafety }],
     freight_rate_rules: [{ id: 12, projectId: 10, status: "active", effectiveFrom: new Date("2026-01-01T00:00:00Z"), effectiveTo: null, settlementUnit: "cubic_meter", startDistanceKm: "0", basePricePerUnit: "10", stepMeters: 500, stepIncreasePerUnit: "0" }],
-    evidence_records: [{ id: 301, projectId: 10, sourceType: "transport", sourceId: "transport-trip-TR-51" }, { id: 302, projectId: 10, sourceType: "transport", sourceId: null }, { id: 303, projectId: 10, sourceType: "transport", sourceId: null }],
+    evidence_records: [{ id: 301, projectId: 10, sourceType: "transport", status: "active", mimeType: "image/jpeg", sourceId: null }, { id: 302, projectId: 10, sourceType: "transport", status: "active", mimeType: "image/jpeg", sourceId: null }, { id: 303, projectId: 10, sourceType: "transport", status: "active", mimeType: "image/jpeg", sourceId: null }],
     transport_reader_devices: [{ id: 41, projectId: 10, siteId: 72, deviceCode: "UNLOAD-01", displayName: "卸土读卡器", status: "active" }, { id: 42, projectId: 10, siteId: 71, deviceCode: "LOAD-01", displayName: "装土读卡器", status: "active" }],
     transport_trips: withTrip ? [{ id: 51, tripNo: "TR-51", projectId: 10, vehicleId: 11, invoiceMode, status: "submitted", startAt: new Date(startAt), endAt: null, loadSiteId: 71, unloadSiteId: 72, loadConfirmedAt: new Date(startAt), loadConfirmedBy: 1, loadEventId: null, unloadConfirmedAt: null, unloadEventId: null, exceptionStatus: "none", evidenceId: 301, actualDistanceKm: "8", calculatedAmount: "120", activeVehicleTransitKey: "vehicle:10:11", nfcTransitKey: invoiceMode === "nfc_card" ? "nfc:10:21" : null, routeSnapshot: { source: invoiceMode === "plate_photo" ? "mobile" : "mobile_nfc_invoice", invoiceMode, routePresetId: 91, platePhotoEvidenceId: invoiceMode === "plate_photo" ? 301 : null } }] : [],
     transport_card_events: [], notification_records: [], audit_logs: [], system_settings: [],
@@ -72,31 +76,34 @@ function createMemoryDb(withTrip = true, invoiceMode = "plate_photo") {
   function matches(row: Row, condition?: SQL) {
     if (!condition) return true;
     const query = dialect.sqlToQuery(condition);
-    let paramIndex = 0;
-    const terms = [...query.sql.matchAll(/`[^`]+`\.`([^`]+)`\s*(is not null|is null|<>|>=|<=|=|>|<)\s*(\?)?/g)];
-    if (!terms.length || /\bor\b/i.test(query.sql)) throw new Error(`测试桩尚未支持此 SQL: ${query.sql}`);
-    return terms.map(term => {
-      const value = row[term[1]];
-      const operator = term[2];
-      if (operator === "is null") return value == null;
-      if (operator === "is not null") return value != null;
-      const parameter = query.params[paramIndex++];
-      if (operator === "=") return value === parameter;
-      if (operator === "<>") return value !== parameter;
-      throw new Error(`测试桩尚未支持运算符 ${operator}`);
-    }).every(Boolean);
+    const tablesUsed = [...new Set([...query.sql.matchAll(/`([^`]+)`\.`[^`]+`/g)].map(m => m[1]))];
+    const sqlite = new DatabaseSync(":memory:");
+    const norm = (value: any): any => value instanceof Date ? value.toISOString() : typeof value === "boolean" ? Number(value) : value && typeof value === "object" ? JSON.stringify(value) : value ?? null;
+    try {
+      for (const name of tablesUsed) {
+        const cols = [...new Set([...Object.keys(row), ...[...query.sql.matchAll(/`[^`]+`\.`([^`]+)`/g)].map(m => m[1])])];
+        sqlite.exec(`CREATE TABLE \`${name}\` (${cols.map(c => `\`${c}\``).join(",")})`);
+        sqlite.prepare(`INSERT INTO \`${name}\` VALUES (${cols.map(() => "?").join(",")})`).run(...cols.map(c => norm(row[c])));
+      }
+      return Boolean(sqlite.prepare(`SELECT 1 FROM ${tablesUsed.map(n => `\`${n}\``).join(",")} WHERE ${query.sql}`).get(...query.params.map(norm)));
+    } finally { sqlite.close(); }
   }
   let failNextTripWrite = false;
   const db = {
-    select: vi.fn(() => ({ from: (table: any) => {
+    select: vi.fn((projection?: any) => ({ from: (table: any) => {
       const name = getTableName(table);
       let condition: SQL | undefined;
       let count = Infinity;
-      const execute = () => structuredClone((tables[name] ?? []).filter(row => matches(row, condition)).sort((a, b) => b.id - a.id).slice(0, count));
+      const execute = () => {
+        const rows = (tables[name] ?? []).filter(row => matches(row, condition)).sort((a, b) => b.id - a.id).slice(0, count);
+        if (projection?.count) return [{ count: rows.length }];
+        return structuredClone(projection ? rows.map(row => Object.fromEntries(Object.entries(projection).map(([key, col]: any) => [key, row[col.name]]))) : rows);
+      };
       const query = {
         where: (value: SQL) => { condition = value; return query; },
         orderBy: (..._args: unknown[]) => query,
-        limit: (value: number) => { count = value; return Promise.resolve(execute()); },
+        for: () => query,
+        limit: (value: number) => { count = value; return query; },
         then: (resolve: (rows: Row[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve().then(execute).then(resolve, reject),
       };
       return query;
@@ -109,9 +116,10 @@ function createMemoryDb(withTrip = true, invoiceMode = "plate_photo") {
         const id = Math.max(50, ...rows.map(row => row.id ?? 0)) + 1;
         rows.push({ id, ...(name === "transport_trips" ? { unloadConfirmedAt: null, endAt: null, loadEventId: null, unloadEventId: null } : {}), ...structuredClone(values) });
         writes.push({ table: name, values: structuredClone(values) });
-        return [{ affectedRows: 1 }];
+        return [{ insertId: id, affectedRows: 1 }];
       };
-      return { then: (resolve: (result: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve().then(execute).then(resolve, reject), onDuplicateKeyUpdate: async () => execute() };
+      let result: any; const once = () => result ??= execute();
+      return { $returningId: async () => once().map((r: any) => ({ id: r.insertId })), then: (resolve: (result: unknown) => unknown, reject: (error: unknown) => unknown) => Promise.resolve().then(once).then(resolve, reject), onDuplicateKeyUpdate: async () => once() };
     } })),
     update: vi.fn((table: any) => ({ set: (values: Row) => ({ where: async (condition: SQL) => {
       const name = getTableName(table);
@@ -122,7 +130,7 @@ function createMemoryDb(withTrip = true, invoiceMode = "plate_photo") {
       return [{ affectedRows }];
     } }) })),
   };
-  vi.mocked(getDb).mockResolvedValue(db as never);
+  setDbFixture(db as never);
   return { tables, writes, db, trip: () => tables.transport_trips[0], failClosure: () => { failNextTripWrite = true; } };
 }
 
@@ -150,11 +158,13 @@ describe("同车辆同趟运输双向卸土互通", () => {
     const result = await caller().saveTrip({ tripNo: "TR-PLATE-NEW", vehicleId: 11, projectId: 10, routePresetId: 91, invoiceMode: "plate_photo", evidenceId: 301, startAt });
     const trip = state.trip();
     expect(result.dailyVehicleTripOrdinal).toBe(1);
+    expect(result.tripNo).toMatch(/^TR\d{14}0001(?!0000)\d{4}$/);
+    expect(trip.routeSnapshot.externalTripNo).toBe("TR-PLATE-NEW");
     const writesBeforePreview = state.writes.length;
     expect(await caller().previewMobileNfcInvoice({ token: token() })).toMatchObject({ vehicle: { id: 11 }, routes: [], activeTrip: { id: trip.id, invoiceMode: "plate_photo", loadConfirmed: true } });
     expect(state.writes).toHaveLength(writesBeforePreview);
     const loadAt = trip.loadConfirmedAt;
-    expect(await caller().confirmMobileNfcInvoice(unloadInput({ expectedUnloadTripId: trip.id }))).toMatchObject({ success: true, duplicate: false, stage: "completed", tripNo: "TR-PLATE-NEW", dailyVehicleTripOrdinal: 1 });
+    expect(await caller().confirmMobileNfcInvoice(unloadInput({ expectedUnloadTripId: trip.id }))).toMatchObject({ success: true, duplicate: false, stage: "completed", tripNo: result.tripNo, dailyVehicleTripOrdinal: 1 });
     expect(trip).toMatchObject({ invoiceMode: "plate_photo", loadConfirmedAt: loadAt, loadEventId: null, unloadConfirmedAt: new Date(arrivedAt), activeVehicleTransitKey: null, nfcTransitKey: null, endAt: new Date(arrivedAt), status: "submitted", evidenceId: 301, routeSnapshot: { source: "mobile", invoiceMode: "plate_photo", platePhotoEvidenceId: 301, unloadConfirmationMode: "nfc_card" } });
     expect(state.tables.transport_trips).toHaveLength(1);
     expect(state.tables.transport_card_events.map(row => row.eventType)).toEqual(["unload"]);
@@ -393,3 +403,5 @@ describe("跨通道卸土仍保留车辆、权限、现场与幂等边界", () =
     expect(state.writes).toHaveLength(0);
   });
 });
+
+function setDbFixture(database: any) { vi.mocked(getDb).mockResolvedValue(withNumberingFixture(database) as never); }

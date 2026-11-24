@@ -5,6 +5,8 @@ import { adoptLegacy, assertCompensationChannel, assertLegacyCoreEditSafe, ensur
 import { buildPayrollAccrualPreview, calculateEffectiveSalaryAccrual, generatePayrollDraftForEmployeeProfile } from "./payrollGeneration";
 import { getDb } from "../db";
 import { chinaBusinessDate } from "./chinaBusinessTime";
+import { withNumberingFixture } from "./businessDocumentNumber.fixtureAdapter";
+import { isBusinessDocumentNumber } from "../../shared/businessDocumentNumber";
 vi.mock("../db", () => ({ getDb: vi.fn() }));
 vi.mock("./secretVault", () => ({ decryptSecret: (x: string) => x.replace(/^cipher:/, ""), encryptSecret: (x: string) => `cipher:${x}`, fingerprintSecret: (x: string) => `hash:${x}`, maskSecret: (x: string) => `****${x.slice(-4)}` }));
 
@@ -43,7 +45,7 @@ function mockDb(data: MockData = new Map()) {
       try { return await callback(db); } catch (error) { data.clear(); before.forEach((rows, table) => data.set(table, rows)); writes.splice(count); throw error; }
     }),
   };
-  return { db, writes, locks, data };
+  return { db: withNumberingFixture(db), rawDb: db, writes, locks, data };
 }
 function person(overrides: Record<string, any> = {}) { return { id: 1, personNo: "P-1", name: "真实人员", affiliation: "company", employmentStatus: "active", projectId: 10, teamId: null, userId: null, legacyProfileId: null, legacyWorkerId: null, entryDate: "2026-01-01", exitDate: null, payrollEnabled: true, phoneEncrypted: null, phoneFingerprint: null, phoneMasked: null, identityNoEncrypted: null, bankAccountEncrypted: null, bankName: null, primaryPositionId: 3, secondaryPositionIds: [], version: 1, createdBy: 8, updatedBy: 8, ...overrides } as typeof s.personnelPeople.$inferSelect; }
 function profile(overrides: Record<string, any> = {}) { return { id: 4, userId: 7, laborWorkerId: 12, projectId: 10, employeeType: "management", employmentStatus: "active", joinedAt: new Date("2026-01-01Z"), leftAt: null, salaryBasis: "monthly", baseSalary: "9000", createdAt: new Date("2026-02-01Z"), updatedAt: new Date("2026-08-01Z"), ...overrides }; }
@@ -68,9 +70,11 @@ describe("真实ID身份引入", () => {
   });
   it("采用重复profile保留全部来源，不写旧表/工资/账号权限；身份证唯一指纹来自真实密文", async () => {
     const { db, writes } = mockDb(new Map([[s.employeeProfiles, [profile(), profile({ id: 5 })]], [s.laborWorkers, [{ id: 12, projectId: 10, realName: "真实人员", workerCategory: "company_admin", identityNoEncrypted: "cipher:110101199001011234", phoneEncrypted: "cipher:13800138000", phoneFingerprint: "hash:13800138000", createdAt: new Date("2026-01-01Z") }]], [s.users, [{ id: 7, name: "真实账号" }]]]));
-    const result = await adoptLegacy(db, { sourceType: "profile", sourceId: 4, actorUserId: 8 });
+    const result = await db.transaction((tx: any) => adoptLegacy(tx, { sourceType: "profile", sourceId: 4, actorUserId: 8 }));
     expect(result.id).toBeGreaterThan(0);
     const main = writes.find(w => w.table === s.personnelPeople)!.values;
+    expect(isBusinessDocumentNumber(main.personNo)).toBe(true);
+    expect(main.personNo).toMatch(/^PN\d{14}0008\d{4}$/);
     expect(main.identityNoFingerprint).toBe("hash:110101199001011234");
     expect(writes.filter(w => w.table === s.personnelSourceLinks).map(w => `${w.values.sourceType}:${w.values.sourceId}`).sort()).toEqual(["profile:4", "profile:5", "user:7", "worker:12"]);
     expect(writes.filter(w => [s.employeeProfiles, s.laborWorkers, s.users, s.payrollStatements].includes(w.table as any))).toEqual([]);
@@ -120,7 +124,7 @@ describe("任职镜像安全更正回归", () => {
   });
   it("多来源不按updatedAt选当前，重叠歧义拒绝，明确profile保留全部真实范围", async () => {
     const { db, data, writes } = mockDb(new Map([[s.personnelPeople, []], [s.users, [{ id: 7, name: "账号" }]], [s.employeeProfiles, [profile({ updatedAt: new Date("2099-01-01Z"), leftAt: new Date("2026-07-31Z"), employmentStatus: "left" }), profile({ id: 5, laborWorkerId: 13, projectId: 20, joinedAt: new Date("2026-08-01Z"), baseSalary: "12000" })]], [s.laborWorkers, [{ id: 12, projectId: 10, workerCategory: "company_admin", entryDate: new Date("2026-01-01Z"), exitDate: new Date("2026-07-31Z") }, { id: 13, projectId: 20, workerCategory: "temporary_daily", entryDate: new Date("2026-08-01Z") }]]]));
-    await adoptLegacy(db, { sourceType: "user", sourceId: 7, actorUserId: 8 });
+    await db.transaction((tx: any) => adoptLegacy(tx, { sourceType: "user", sourceId: 7, actorUserId: 8 }));
     expect(writes.find(w => w.table === s.personnelPeople)!.values).toMatchObject({ legacyProfileId: 5, projectId: 20 });
     expect(writes.find(w => w.table === s.personnelSalaryHistory)!.values.effectiveFrom).toBe(chinaBusinessDate(new Date()));
     expect(writes.find(w => w.table === s.personnelChanges)!.values.changes.sourceScopes.after.profiles).toHaveLength(2);
@@ -183,11 +187,14 @@ describe("生效工资与结算通道", () => {
     await expect(assertCompensationChannel(db, { workerId: 12, projectId: 10, period: "2026-08", channel: "monthly" })).rejects.toThrow("无该历史任职主体");
   });
   it("工资生成实际写事务draft及历史核算金额，而非当前profile薪资", async () => {
-    const { db, writes, locks } = mockDb(new Map([[s.employeeProfiles, [profile({ baseSalary: "99999" })]], [s.laborWorkers, [{ id: 12, projectId: 10, workerCategory: "company_admin" }]], [s.personnelPeople, [person({ legacyProfileId: 4, legacyWorkerId: 12 })]], [s.personnelSourceLinks, [{ personId: 1, sourceType: "worker", sourceId: 12 }]], [s.personnelSalaryHistory, [{ personId: 1, effectiveFrom: "2026-01-01", salaryBasis: "monthly", baseSalary: "9000", payrollEnabled: true, affiliation: "company" }]], [s.attendanceRecords, [{ workerId: 12, projectId: 10, attendanceDate: "2026-08-01", workHours: "8", overtimeHours: "0", status: "confirmed" }]]]));
+    const { db, rawDb, writes, locks } = mockDb(new Map([[s.employeeProfiles, [profile({ baseSalary: "99999" })]], [s.laborWorkers, [{ id: 12, projectId: 10, workerCategory: "company_admin" }]], [s.personnelPeople, [person({ legacyProfileId: 4, legacyWorkerId: 12 })]], [s.personnelSourceLinks, [{ personId: 1, sourceType: "worker", sourceId: 12 }]], [s.personnelSalaryHistory, [{ personId: 1, effectiveFrom: "2026-01-01", salaryBasis: "monthly", baseSalary: "9000", payrollEnabled: true, affiliation: "company" }]], [s.attendanceRecords, [{ workerId: 12, projectId: 10, attendanceDate: "2026-08-01", workHours: "8", overtimeHours: "0", status: "confirmed" }]]]));
     vi.mocked(getDb).mockResolvedValue(db);
     const result = await generatePayrollDraftForEmployeeProfile({ employeeProfileId: 4, period: "2026-08", actorUserId: 8, source: "manual" });
-    expect(result.status).toBe("created"); expect(db.transaction).toHaveBeenCalledOnce();
+    expect(result.status).toBe("created"); expect(rawDb.transaction).toHaveBeenCalledOnce();
     expect(writes.find(w => w.table === s.payrollStatements)!.values).toMatchObject({ workerId: 12, payableAmount: "300", actualAmount: "300", status: "draft" });
+    const createdNo = writes.find(w => w.table === s.payrollStatements)!.values.documentNo;
+    expect(isBusinessDocumentNumber(createdNo)).toBe(true);
+    expect(createdNo).toMatch(/^PY\d{14}0008\d{4}$/);
     expect(locks.slice(0, 2).map(t => t === s.personnelPeople ? "person" : "worker")).toEqual(["person", "worker"]);
     expect(locks.filter(t => t === s.employeeProfiles)).toHaveLength(2);
     expect(writes.filter(w => w.table === s.employeeProfiles)).toEqual([]);
@@ -260,9 +267,9 @@ describe("真实transition不搬历史金额", () => {
     expect(data.get(s.laborWorkers)!.at(-1)).toMatchObject({ entryDate: new Date("2026-12-01Z"), exitDate: null });
   });
   it("旧caller version冲突无任何写入；pointer CAS失败同事务回滚新subject", async () => {
-    const { db, data, writes, current } = transitionFixture({ projectId: 20 });
+    const { db, rawDb, data, writes, current } = transitionFixture({ projectId: 20 });
     await expect(ensureLegacyPayrollSubjects(db, { ...current, version: 0 }, 8)).rejects.toThrow("人员版本"); expect(writes).toEqual([]);
-    const originalUpdate = db.update;
+    const originalUpdate = rawDb.update;
     db.update = vi.fn((table: unknown) => table === s.personnelPeople ? { set: () => ({ where: async () => [{ affectedRows: 0 }] }) } : originalUpdate(table));
     await expect(db.transaction((tx: any) => ensureLegacyPayrollSubjects(tx, current, 8))).rejects.toThrow("同事务回滚");
     expect(data.get(s.laborWorkers)).toHaveLength(1); expect(data.get(s.employeeProfiles)).toHaveLength(1); expect(writes).toEqual([]);

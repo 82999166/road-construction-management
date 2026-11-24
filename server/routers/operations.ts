@@ -1,3 +1,5 @@
+import { lockBusinessEvidenceBindings, assertEvidenceSourceOwner } from "../services/evidenceBinding";
+import { businessDocumentCreationDatabase, newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import {
   and,
   desc,
@@ -14,11 +16,16 @@ import {
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { machineCostDraftSchema, machineCostSaveSchema } from "../../shared/machineCostDuplicate";
+import { machineCostDraftSchema, machineCostSaveSchema, machineCostEditDraftSchema, machineCostEditSaveSchema } from "../../shared/machineCostDuplicate";
 import {
   buildMachineCostDuplicateCheck, decideMachineCostWrite, machineCostRequestHash,
-  readMachineCostCandidates, recordMachineCostReceipt,
+  readMachineCostCandidates, recordMachineCostReceipt, decideMachineCostEditWrite, machineCostEditRequestHash,
 } from "../services/machineCostDuplicate";
+import {
+  machineCostVersion, machineCostCreator, lockMachineCostForCorrection, assertMachineCostSourceUnoccupied,
+  assertNoDuplicateMachineFuelEdit, lockMachineCostEvidence, updateMachineFuelDraftMirror, machineCostCorrectionConflict,
+} from "../services/machineCostCorrection";
+import { lockEvidenceProject, assertEvidenceConditionalWrite } from "../services/evidenceIntegrity";
 import {
   assetMaintenanceRecords,
   auditLogs,
@@ -98,10 +105,11 @@ import {
   assertNoDuplicateMachineFuel,
   ensureMachineFuelRefuelRecord,
   transitionMachineFuelRefuelRecord,
+  assertMachineFuelWriteApplied,
 } from "../services/machineFuelLedger";
 import { protectedProcedure, router } from "../_core/trpc";
 import { makeRequest, type GeocodingResult } from "../_core/map";
-import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely as notifyOfficialAccountBusinessEventSafelyImmediate } from "../services/businessNotifier";
 import { sendOfficialAccountDriverNotification } from "../services/officialAccountDriverBinding";
 import {
   decryptSecret,
@@ -110,7 +118,7 @@ import {
 } from "../services/secretVault";
 import {
   formatChinaSmsTime,
-  notifyAliyunSmsSafely,
+  notifyAliyunSmsSafely as notifyAliyunSmsSafelyImmediate,
 } from "../services/smsNotifier";
 import {
   buildTransportNfcCardPayload,
@@ -1145,7 +1153,7 @@ async function getDailyVehicleStageOrdinal(
 
 /** 机械油料费用与柴油领用共用同一项目指导价口径，避免前端手填单价绕开有效期控制。 */
 async function getEffectiveDieselGuidelinePrice(
-  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  db: Parameters<typeof readMachineCostCandidates>[0],
   projectId: number,
   occurredAt: Date
 ) {
@@ -1256,48 +1264,14 @@ function calculateMonthlyMachineStatement(input: {
 }
 
 /** 运单号以日期、时间、秒为主体；同一进程同秒并发时只追加短序号避免冲突。 */
-let latestTripSecond = "";
-let latestTripSecondSequence = 0;
-function createTransportTripNo(projectId: number, occurredAt = new Date()) {
-  const values = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  })
-    .formatToParts(occurredAt)
-    .reduce<Record<string, string>>(
-      (current, part) => ({ ...current, [part.type]: part.value }),
-      {}
-    );
-  const secondKey = `${values.year}${values.month}${values.day}${values.hour}${values.minute}${values.second}`;
-  latestTripSecondSequence =
-    latestTripSecond === secondKey ? latestTripSecondSequence + 1 : 1;
-  latestTripSecond = secondKey;
-  return `TR-${projectId}-${secondKey}-${String(latestTripSecondSequence).padStart(2, "0")}`;
-}
+
+
 
 /** 渣土车结算号与运单号分离，避免付款单因重算或补审混同运输票据。 */
-function createTransportVehicleSettlementNo(
-  projectId: number,
-  occurredAt = new Date()
-) {
-  const date = getChinaBusinessDate(occurredAt).replaceAll("-", "");
-  return `TS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 /** 机械付款结算号独立于月结快照编号，区分已生成结算和实际付款终态。 */
-function createMachinePaymentSettlementNo(
-  projectId: number,
-  occurredAt = new Date()
-) {
-  const date = getChinaBusinessDate(occurredAt).replaceAll("-", "");
-  return `MS-${projectId}-${date}-${randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 /** 账户按当前运输/机械业务授权完整展示；付款执行仍由财务权限控制。 */
 function maskPaymentAccount(account: string | null) {
@@ -1494,10 +1468,7 @@ function maskRfidCardUid(cardUid: string) {
     : `${"*".repeat(Math.min(12, normalized.length - 4))}${normalized.slice(-4)}`;
 }
 
-function createRfidWriteJobNo(projectId: number) {
-  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  return `CARD-${projectId}-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 /** 写卡模型与运费模型均只能由运输负责人、项目负责人、财务或系统管理员维护。 */
 function assertCanManageTransportResources(roleCodes: readonly string[]) {
@@ -1654,7 +1625,7 @@ async function recordTransportCardEvent(
   const user = requireAuthenticatedUser(ctx);
   const roleCodes = await assertTransportAccess(ctx);
   await assertProjectInCurrentScope(ctx, input.projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -2365,12 +2336,18 @@ async function recordTransportNfcReaderScan(
   const user = requireAuthenticatedUser(ctx);
   const roleCodes = await assertTransportAccess(ctx);
   await assertProjectInCurrentScope(ctx, input.projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "数据库连接暂不可用",
     });
+  await assertTransportAccess(ctx);
+  await assertProjectInCurrentScope(ctx, input.projectId);
+  return runBusinessDocumentCreation(db, { actorId: user.id, scope: "transport:recordTransportNfcReaderScan", replayDuplicate: true, projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId);
+await assertTransportAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
   const occurredAt = new Date(input.occurredAt);
 
   const [replayedEvent] = await db
@@ -2614,7 +2591,7 @@ async function recordTransportNfcReaderScan(
     } catch (error) {
       throwDomainAsBadRequest(error);
     }
-    const tripNo = createTransportTripNo(input.projectId);
+    const tripNo = await newBusinessDocumentNumber(db, "TR", { kind: "user", userId: user.id }, input.projectId, input);
     const routeSnapshot = {
       source: "nfc_dual_reader",
       routePresetId: route.id,
@@ -2736,7 +2713,7 @@ async function recordTransportNfcReaderScan(
       deepLink: "/mobile/transport",
     }).catch(() => undefined);
     if (event.success && !event.needsReview)
-      triggerTransportRiskScan(input.projectId);
+      afterBusinessDocumentCommit(triggerTransportRiskScan)(input.projectId);
     return {
       ...event,
       stage: singleScanClosed
@@ -2856,7 +2833,7 @@ async function recordTransportNfcReaderScan(
     } catch (error) {
       throwDomainAsBadRequest(error);
     }
-    const tripNo = createTransportTripNo(input.projectId, occurredAt);
+    const tripNo = await newBusinessDocumentNumber(db, "TR", { kind: "user", userId: user.id }, input.projectId, input);
     const routeSnapshot = {
       source: "nfc_unload_only_reader",
       routePresetId: route.id,
@@ -2942,7 +2919,7 @@ async function recordTransportNfcReaderScan(
         targetId: String(createdTrip.id),
         summary: `卸土点设备 ${reader.displayName} 为车辆 ${vehicle.plateNo} 按补刷卡规则创建并闭环票据 ${tripNo}；未记录装土刷卡`,
       });
-      triggerTransportRiskScan(input.projectId);
+      afterBusinessDocumentCommit(triggerTransportRiskScan)(input.projectId);
     }
     return {
       ...event,
@@ -3017,7 +2994,7 @@ async function recordTransportNfcReaderScan(
       content: `车辆 ${vehicle.plateNo} 已在 ${site.name} 完成卸土刷卡，运输票据 ${activeTrip.tripNo} 已进入待核验状态。`,
       deepLink: "/mobile/transport",
     }).catch(() => undefined);
-    triggerTransportRiskScan(input.projectId);
+    afterBusinessDocumentCommit(triggerTransportRiskScan)(input.projectId);
   }
   return {
     ...event,
@@ -3034,6 +3011,8 @@ async function recordTransportNfcReaderScan(
         ?.loadSite?.name ?? "装土点",
     unloadSiteName: site.name,
   };
+
+  });
 }
 
 /** 将手机触碰卡片 URL 的签名令牌转换为同一套双设备扫描输入；原始 UID 不会进入手机 URL 或服务端日志。 */
@@ -3048,7 +3027,7 @@ async function recordTransportNfcLinkScan(
       message: "NFC 卡片入口无效或已被篡改，请重新读取有效车辆卡",
     });
   await assertProjectInCurrentScope(ctx, parsed.projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -3094,7 +3073,7 @@ async function resolveMobileNfcInvoice(
     });
   const roleCodes = await assertTransportAccess(ctx);
   await assertProjectInCurrentScope(ctx, parsed.projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -3250,12 +3229,16 @@ async function confirmMobileNfcInvoice(
 ) {
   const user = requireAuthenticatedUser(ctx);
   const resolved = await resolveMobileNfcInvoice(ctx, input.token);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: "数据库连接暂不可用",
     });
+  await assertTransportAccess(ctx);
+  await assertProjectInCurrentScope(ctx, resolved.projectId);
+  return runBusinessDocumentCreation(db, { actorId: user.id, scope: "transport:confirmMobileNfcInvoice", replayDuplicate: true, projectId: resolved.projectId, input , revalidate: async () => { await assertTransportAccess(ctx);
+await assertProjectInCurrentScope(ctx, resolved.projectId); }}, async db => {
   const occurredAt = new Date(input.occurredAt);
   const [card] = await db
     .select()
@@ -3392,7 +3375,7 @@ async function confirmMobileNfcInvoice(
           event.reason || "卸土异常，当前运单仍在运输中，不能显示卸土成功",
       });
     }
-    if (!event.duplicate) triggerTransportRiskScan(resolved.projectId);
+    if (!event.duplicate) afterBusinessDocumentCommit(triggerTransportRiskScan)(resolved.projectId);
     return {
       ...event,
       stage: "completed" as const,
@@ -3497,7 +3480,7 @@ async function confirmMobileNfcInvoice(
   } catch (error) {
     throwDomainAsBadRequest(error);
   }
-  const tripNo = createTransportTripNo(resolved.projectId, occurredAt);
+  const tripNo = await newBusinessDocumentNumber(db, "TR", { kind: "user", userId: user.id }, resolved.projectId, input);
   const transitKey = `nfc:${resolved.projectId}:${card.id}`;
   try {
     await db.insert(transportTrips).values({
@@ -3607,7 +3590,7 @@ async function confirmMobileNfcInvoice(
       : `${mobileNfcTripText}已开具运单 ${tripNo}，请按路线从 ${loadSite.name} 前往 ${unloadSite.name}。`,
     deepLink: "/mobile/transport",
   }).catch(() => undefined);
-  notifyExternalDriverWechat({
+  afterBusinessDocumentCommit(notifyExternalDriverWechat)({
     vehicleId: vehicle.id,
     projectId: resolved.projectId,
     eventCode: singleScanClosed
@@ -3622,7 +3605,7 @@ async function confirmMobileNfcInvoice(
     deepLink: "/mobile/transport",
   });
   if (event.success && !event.needsReview)
-    triggerTransportRiskScan(resolved.projectId);
+    afterBusinessDocumentCommit(triggerTransportRiskScan)(resolved.projectId);
   await db.insert(auditLogs).values({
     userId: user.id,
     module: "transport",
@@ -3638,6 +3621,8 @@ async function confirmMobileNfcInvoice(
     tripNo,
     vehiclePlateNo: vehicle.plateNo,
   };
+
+  });
 }
 
 /** 返回用户有权访问的项目选项，项目/组织范围均以服务端授权记录为准。 */
@@ -3645,7 +3630,7 @@ async function listScopedProjects(
   ctx: Parameters<typeof requireAuthenticatedUser>[0]
 ) {
   const scope = await getCurrentDataScope(ctx);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db) return [];
   const allProjects = await db
     .select({
@@ -3703,7 +3688,7 @@ async function getMachineOwnerPortalRows(
         "司机手机号账号仅能查看本人操作机械或绑定车辆，不能作为机械老板查询",
     });
   }
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -3785,7 +3770,7 @@ async function getScopedMachine(
   projectId: number
 ) {
   await assertProjectInCurrentScope(ctx, projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -3805,16 +3790,30 @@ async function getScopedMachine(
   return { db, machine };
 }
 
+async function assertMachineCostDraftEditor(ctx: Parameters<typeof requireAuthenticatedUser>[0], tx: Parameters<typeof machineCostCreator>[0], cost: Parameters<typeof machineCostCreator>[1]) {
+  const user = requireAuthenticatedUser(ctx);
+  const roles = await assertMachineryAccess(ctx);
+  await assertDepartmentBusinessAccess(ctx, "MACHINERY", "edit");
+  await assertProjectInCurrentScope(ctx, cost.projectId);
+  const creatorId = await machineCostCreator(tx, cost);
+  if (creatorId !== user.id && !roles.some(role => ["ALL", "MACHINERY_MANAGER", "PROJECT_MANAGER"].includes(role)))
+    throw new TRPCError({ code: "FORBIDDEN", message: "只能修改本人草稿，代改费用须机械负责人或项目负责人授权" });
+  if (cost.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "仅机械费用草稿可以修改，已审核/已结算/作废记录不得覆盖" });
+  return creatorId;
+}
+
 /** 复用会计模板的月度明细预览，避免保存接口通过路由自身调用而产生循环类型依赖。 */
 async function buildMachineMonthlyStatementPreview(
   ctx: Parameters<typeof requireAuthenticatedUser>[0],
-  input: z.infer<typeof machineMonthlyStatementInput>
+  input: z.infer<typeof machineMonthlyStatementInput>,
+  transaction?: Parameters<typeof readMachineCostCandidates>[0]
 ) {
-  const { db, machine } = await getScopedMachine(
+  const { db: scopedDb, machine } = await getScopedMachine(
     ctx,
     input.machineId,
     input.projectId
   );
+  const db = transaction ?? scopedDb;
   const range = getMonthRange(input.period);
   const rules = await db
     .select()
@@ -3938,7 +3937,7 @@ async function getScopedVehicle(
   roleCodes: readonly string[]
 ) {
   await assertProjectInCurrentScope(ctx, projectId);
-  const db = await getDb();
+  const db = businessDocumentCreationDatabase() ?? await getDb();
   if (!db)
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
@@ -4032,7 +4031,7 @@ export const machineryRouter = router({
       await assertProjectInCurrentScope(ctx, input.projectId);
       if (input.machineId)
         await getScopedMachine(ctx, input.machineId, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const range = getMonthRange(input.period);
       const predicates = [
@@ -4059,6 +4058,7 @@ export const machineryRouter = router({
       const names = new Map(machineRows.map(row => [row.id, row]));
       return rows.map(row => ({
         id: row.id,
+        documentNo: row.documentNo,
         machineId: row.machineId,
         projectId: row.projectId,
         date: chinaBusinessDate(row.occurredOn),
@@ -4304,7 +4304,7 @@ export const machineryRouter = router({
     .query(async ({ ctx, input }) => {
       await assertMachineryAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -4335,7 +4335,7 @@ export const machineryRouter = router({
     .query(async ({ ctx, input }) => {
       await assertMachineryAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const rows = await db
         .select()
@@ -4400,7 +4400,7 @@ export const machineryRouter = router({
         input.id ? "edit" : "create"
       );
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -4690,11 +4690,20 @@ export const machineryRouter = router({
           gte(machineCostRecords.occurredAt, range.start),
           lt(machineCostRecords.occurredAt, range.endExclusive)
         );
-      return db
+      const rows = await db
         .select()
         .from(machineCostRecords)
         .where(and(...predicates))
         .orderBy(desc(machineCostRecords.occurredAt));
+      let editAllowed = false;
+      try { await assertDepartmentBusinessAccess(ctx, "MACHINERY", "edit"); editAllowed = true; }
+      catch (error) { if (!(error instanceof TRPCError) || error.code !== "FORBIDDEN") throw error; }
+      const roles = await getEffectiveRoleCodes(ctx);
+      const canEditOthers = roles.some(role => ["ALL", "MACHINERY_MANAGER", "PROJECT_MANAGER"].includes(role));
+      const creators = rows.length && editAllowed ? await db.select({ targetId: auditLogs.targetId, userId: auditLogs.userId }).from(auditLogs).where(and(
+        eq(auditLogs.module, "machinery"), eq(auditLogs.action, "create_cost"), eq(auditLogs.targetType, "machine_cost"), inArray(auditLogs.targetId, rows.map(row => String(row.id)))
+      )) : [];
+      return rows.map(row => ({ ...row, canEdit: row.status === "draft" && editAllowed && (canEditOthers || creators.some(log => log.targetId === String(row.id) && log.userId === requireAuthenticatedUser(ctx).id)) }));
     }),
 
   /**
@@ -4717,7 +4726,7 @@ export const machineryRouter = router({
       await assertProjectInCurrentScope(ctx, input.projectId);
       if (input.machineId)
         await getScopedMachine(ctx, input.machineId, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         return {
           records: [],
@@ -4756,8 +4765,18 @@ export const machineryRouter = router({
           `${row.name}${row.code ? ` · ${row.code}` : ""}`,
         ])
       );
+      let editAllowed = false;
+      try { await assertDepartmentBusinessAccess(ctx, "MACHINERY", "edit"); editAllowed = true; }
+      catch (error) { if (!(error instanceof TRPCError) || error.code !== "FORBIDDEN") throw error; }
+      const editorRoles = await getEffectiveRoleCodes(ctx);
+      const canEditOthers = editorRoles.some(role => ["ALL", "MACHINERY_MANAGER", "PROJECT_MANAGER"].includes(role));
+      const creatorLogs = rows.length && editAllowed ? await db.select({ targetId: auditLogs.targetId, userId: auditLogs.userId }).from(auditLogs).where(and(
+        eq(auditLogs.module, "machinery"), eq(auditLogs.action, "create_cost"), eq(auditLogs.targetType, "machine_cost"),
+        inArray(auditLogs.targetId, rows.map(row => String(row.id)))
+      )) : [];
       const records = rows.map(row => ({
         id: row.id,
+        documentNo: row.documentNo,
         machineId: row.machineId,
         machineLabel: labels.get(row.machineId) ?? "机械已停用/删除",
         costType: row.costType,
@@ -4768,6 +4787,7 @@ export const machineryRouter = router({
         occurredAt: row.occurredAt,
         remarks: row.remarks,
         status: row.status,
+        canEdit: row.status === "draft" && editAllowed && (canEditOthers || creatorLogs.some(log => log.targetId === String(row.id) && log.userId === requireAuthenticatedUser(ctx).id)),
       }));
       return {
         records,
@@ -4786,7 +4806,7 @@ export const machineryRouter = router({
     .query(async ({ ctx, input }) => {
       await assertMachineryAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const rows = await db
         .select()
@@ -4839,7 +4859,7 @@ export const machineryRouter = router({
     .query(async ({ ctx, input }) => {
       await assertMachineryAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       return db
         .select()
@@ -5195,7 +5215,7 @@ export const machineryRouter = router({
 
   /** 保存单机日作业；已提交、审核或结算记录禁止直接修改。 */
   saveDailyOperation: protectedProcedure
-    .input(machineDailyOperationInput)
+    .input(z.intersection(machineDailyOperationInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertMachineryAccess(ctx);
@@ -5222,6 +5242,9 @@ export const machineryRouter = router({
         input.machineId,
         input.projectId
       );
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "machinery:saveDailyOperation", projectId: input.projectId, input , revalidate: async () => { await assertMachineryAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const [existing] = input.id
         ? await db
             .select()
@@ -5310,7 +5333,7 @@ export const machineryRouter = router({
       else
         await db
           .insert(machineDailyOperations)
-          .values({ ...values, status: "draft", createdBy: user.id });
+          .values({ ...values, documentNo: await newBusinessDocumentNumber(db, "MD", { kind: "user", userId: user.id }, input.projectId, input), status: "draft", createdBy: user.id });
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "machinery",
@@ -5320,6 +5343,8 @@ export const machineryRouter = router({
         summary: `${existing ? "更新" : "录入"}机械日作业：${machine.name} ${input.occurredOn}，产值 ¥${roundMoney(input.outputAmount)}`,
       });
       return { success: true };
+
+      });
     }),
 
   /** 日作业沿用机械会计状态机，审核和结算仍只允许会计或财务负责人办理。 */
@@ -5340,7 +5365,7 @@ export const machineryRouter = router({
               : "submit"
       );
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -5533,19 +5558,24 @@ export const machineryRouter = router({
 
   /** 保存或更新单台机械当期会计明细快照；非草稿快照必须经状态流转处理，避免改写已审核或已结算数据。 */
   saveMonthlyStatement: protectedProcedure
-    .input(machineMonthlyStatementInput)
+    .input(z.intersection(machineMonthlyStatementInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertMachineryAccess(ctx);
       await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
-      const preview = await buildMachineMonthlyStatementPreview(ctx, input);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
-      const [existing] = await db
+      return db.transaction(async tx => {
+      await lockEvidenceProject(tx, input.projectId);
+      await lockMachineFuelLedger(tx, input);
+      await assertMachineryAccess(ctx);
+      await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
+      const preview = await buildMachineMonthlyStatementPreview(ctx, input, tx);
+      const [existing] = await tx
         .select()
         .from(machineMonthlyStatements)
         .where(
@@ -5555,7 +5585,7 @@ export const machineryRouter = router({
             eq(machineMonthlyStatements.period, input.period)
           )
         )
-        .limit(1);
+        .limit(1).for("update");
       if (existing && existing.status !== "draft")
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -5602,15 +5632,16 @@ export const machineryRouter = router({
         remarks: input.remarks?.trim() || null,
       };
       if (existing)
-        await db
+        await tx
           .update(machineMonthlyStatements)
           .set(values)
           .where(eq(machineMonthlyStatements.id, existing.id));
       else
-        await db
+        await tx
           .insert(machineMonthlyStatements)
-          .values({ ...values, status: "draft", createdBy: user.id });
-      await db.insert(auditLogs).values({
+          .values({
+            documentNo: await newBusinessDocumentNumber(tx, "MM", { kind: "user", userId: user.id }, input.projectId, input), ...values, status: "draft", createdBy: user.id });
+      await tx.insert(auditLogs).values({
         userId: user.id,
         module: "machinery",
         action: existing
@@ -5621,6 +5652,7 @@ export const machineryRouter = router({
         summary: `${existing ? "更新" : "生成"}会计机械月度明细：${preview.machine.name} ${input.period}，总产值 ¥${preview.statement.totalOutput}`,
       });
       return { success: true, preview };
+      });
     }),
 
   /** 月度机械明细按草稿、提交、审核、结算、作废顺序流转；财务岗位才可审核或结算。 */
@@ -5641,7 +5673,7 @@ export const machineryRouter = router({
               : "submit"
       );
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -5735,7 +5767,7 @@ export const machineryRouter = router({
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertMachineryAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       let rows = await db
         .select()
@@ -5853,7 +5885,7 @@ export const machineryRouter = router({
 
   /** 从已审核外租机械月结生成付款结算草稿；公司自有机械不虚构外部收款人。 */
   createPaymentSettlement: protectedProcedure
-    .input(machinePaymentSettlementDraftInput)
+    .input(z.intersection(machinePaymentSettlementDraftInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertMachineryAccess(ctx);
@@ -5864,12 +5896,21 @@ export const machineryRouter = router({
           message: "当前岗位无权创建机械付款结算单",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:createPaymentSettlement", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertMachineryAccess(ctx);
+await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
+if (!canManageSettlement(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无权创建机械付款结算单",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const [statement] = await db
         .select()
         .from(machineMonthlyStatements)
@@ -5931,9 +5972,7 @@ export const machineryRouter = router({
           code: "CONFLICT",
           message: "该机械月结已生成付款结算单，不能重复创建",
         });
-      const settlementNo =
-        existing?.settlementNo ??
-        createMachinePaymentSettlementNo(input.projectId);
+      let settlementNo = existing?.settlementNo ?? "";
       const values = {
         projectId: input.projectId,
         machineId: machine.id,
@@ -6009,7 +6048,7 @@ export const machineryRouter = router({
         else
           await tx
             .insert(machinePaymentSettlements)
-            .values({ settlementNo, ...values, createdBy: user.id });
+            .values({ settlementNo: settlementNo || (settlementNo = await newBusinessDocumentNumber(tx, "MS", { kind: "user", userId: user.id }, input.projectId, input)), ...values, createdBy: user.id });
         if (statement.status === "approved")
           await tx
             .update(machineMonthlyStatements)
@@ -6057,6 +6096,8 @@ export const machineryRouter = router({
         partsDeductionAmount,
         netPayableAmount,
       };
+
+      });
     }),
 
   /** 机械付款结算严格依次提交、会计审核；实际付款仅可由带凭证的统一资金台账登记。 */
@@ -6081,7 +6122,7 @@ export const machineryRouter = router({
           message:
             "请使用“登记付款”上传本次凭证并按实际金额办理，旧的一次性付款入口已停用",
         });
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -6212,6 +6253,84 @@ export const machineryRouter = router({
       return { success: true, status: nextStatus };
     }),
 
+  getCostForEdit: protectedProcedure
+    .input(z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), machineId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      await assertMachineryAccess(ctx);
+      const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+      const [cost] = await db.select().from(machineCostRecords).where(eq(machineCostRecords.id, input.id)).limit(1);
+      if (!cost || cost.projectId !== input.projectId || cost.machineId !== input.machineId)
+        throw new TRPCError({ code: "NOT_FOUND", message: "机械费用不属于当前项目或机械" });
+      const creatorId = await assertMachineCostDraftEditor(ctx, db, cost);
+      return { ...cost, creatorId, version: await machineCostVersion(db, cost) };
+    }),
+
+  checkCostEditDuplicate: protectedProcedure
+    .input(machineCostEditDraftSchema)
+    .mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx);
+      await assertMachineryAccess(ctx);
+      const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+      const [cost] = await db.select().from(machineCostRecords).where(eq(machineCostRecords.id, input.id)).limit(1);
+      if (!cost || cost.projectId !== input.projectId || cost.machineId !== input.machineId) throw machineCostCorrectionConflict();
+      await assertMachineCostDraftEditor(ctx, db, cost);
+      if (await machineCostVersion(db, cost) !== input.version) throw machineCostCorrectionConflict();
+      const draft = { ...input, evidenceId: input.evidenceId === undefined ? cost.evidenceId : input.evidenceId };
+      const guideline = draft.costType === "fuel" ? await getEffectiveDieselGuidelinePrice(db, input.projectId, new Date(input.occurredAt)) : null;
+      if (draft.costType === "fuel" && !guideline?.price) throw new TRPCError({ code: "BAD_REQUEST", message: "发生时间没有有效柴油指导价，请先维护指导价" });
+      const unitPrice = guideline?.price?.pricePerLiter ?? draft.unitPrice;
+      return buildMachineCostDuplicateCheck(await readMachineCostCandidates(db, draft, unitPrice, false, input.id), machineCostEditRequestHash(draft, unitPrice, user.id));
+    }),
+
+  updateCostDraft: protectedProcedure
+    .input(machineCostEditSaveSchema)
+    .mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx);
+      await assertMachineryAccess(ctx);
+      await assertDepartmentBusinessAccess(ctx, "MACHINERY", "edit");
+      const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+      return db.transaction(async tx => {
+        // 项目先锁，阻断证据删除/绑定与付款来源占用；不得持机器锁后再请求项目锁。
+        await lockEvidenceProject(tx, input.projectId);
+        const [hint] = await tx.select().from(machineCostRecords).where(eq(machineCostRecords.id, input.id)).limit(1);
+        if (!hint || hint.projectId !== input.projectId || hint.machineId !== input.machineId) throw machineCostCorrectionConflict();
+        const evidenceId = input.evidenceId === undefined ? hint.evidenceId : input.evidenceId;
+        const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: evidenceId, allowedSourceTypes: ["other", "diesel_receipt"] }], resource: { table: machines, id: input.machineId }, parent: { table: machineCostRecords, id: input.id }, actorId: user.id, module: "machinery", targetType: "machine_cost", targetId: String(input.id) });
+        await lockMachineCostEvidence(tx, hint, evidenceId ?? null);
+        const cost = await lockMachineCostForCorrection(tx, input);
+        const creatorId = await assertMachineCostDraftEditor(ctx, tx, cost);
+        if (await machineCostVersion(tx, cost, true) !== input.version) throw machineCostCorrectionConflict();
+        // 燃油类别或柴油关联不能靠修改类别解除；其他费用可在非 fuel 类别间更正。
+        if ((cost.costType === "fuel") !== (input.costType === "fuel"))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "油料与非油料费用不能互改类别，请核对来源后另行处理" });
+        const occurredAt = new Date(input.occurredAt);
+        await assertMachineCostSourceUnoccupied(tx, cost, occurredAt);
+        const guideline = input.costType === "fuel" ? await getEffectiveDieselGuidelinePrice(tx, input.projectId, occurredAt) : null;
+        if (input.costType === "fuel" && (!guideline?.price || !(input.quantity > 0)))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "燃油草稿必须有有效指导价且加油量大于0" });
+        const appliedUnitPrice = guideline?.price?.pricePerLiter ?? input.unitPrice;
+        const draft = { ...input, evidenceId: evidenceId ?? null };
+        const decision = await decideMachineCostEditWrite(tx, draft, appliedUnitPrice, user.id);
+        if (decision.kind === "confirmation") return { success: false as const, duplicateCheck: decision.check };
+        const linked = cost.costType === "fuel" ? await ensureMachineFuelRefuelRecord(tx, cost, creatorId) : null;
+        if (linked) await assertNoDuplicateMachineFuelEdit(tx, cost, input.quantity, occurredAt, linked.id);
+        const values = { costType: input.costType, costName: input.costName.trim(), quantity: String(input.quantity),
+          unitPrice: String(roundMoney(appliedUnitPrice)), amount: String(roundMoney(input.quantity * appliedUnitPrice)),
+          occurredAt, evidenceId: evidenceId ?? null, remarks: input.remarks?.trim() || null };
+        assertMachineFuelWriteApplied(await tx.update(machineCostRecords).set(values).where(and(
+          eq(machineCostRecords.id, cost.id), eq(machineCostRecords.projectId, cost.projectId),
+          eq(machineCostRecords.machineId, cost.machineId), eq(machineCostRecords.status, "draft")
+        )), "机械费用草稿");
+        if (linked) await updateMachineFuelDraftMirror(tx, cost, linked.id, values, user.id);
+        if (evidenceId) await tx.update(evidenceRecords).set({ sourceId: `machine-cost-${cost.id}` }).where(eq(evidenceRecords.id, evidenceId));
+        await binding.retain();
+        await tx.insert(auditLogs).values({ userId: user.id, module: "machinery", action: "edit_cost_draft", targetType: "machine_cost", targetId: String(cost.id),
+          summary: `修改机械费用草稿，原登记人 #${creatorId}，金额系统核算${guideline?.price ? `，柴油指导价 #${guideline.price.id}` : ""}${input.duplicateConfirmation ? `；不同业务依据：${input.duplicateConfirmation.reason}` : ""}`,
+          beforeJson: JSON.stringify(cost), afterJson: JSON.stringify({ ...cost, ...values, dieselRefuelRecordId: linked?.id ?? cost.dieselRefuelRecordId }) });
+        return { success: true as const, id: cost.id, amount: Number(values.amount), unitPrice: appliedUnitPrice, dieselRefuelRecordId: linked?.id ?? null };
+      });
+    }),
+
   checkCostDuplicate: protectedProcedure
     .input(machineCostDraftSchema)
     .mutation(async ({ ctx, input }) => {
@@ -6230,7 +6349,7 @@ export const machineryRouter = router({
 
   /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */
   saveCost: protectedProcedure
-    .input(machineCostInput)
+    .input(z.intersection(machineCostInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       await assertMachineryAccess(ctx);
@@ -6255,6 +6374,7 @@ export const machineryRouter = router({
             message: "费用水印照片不存在或不属于当前项目",
           });
       }
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:saveCost", projectId: input.projectId, input, revalidate: async () => { await assertMachineryAccess(ctx); await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create"); await assertProjectInCurrentScope(ctx, input.projectId); } }, async db => {
       const occurredAt = new Date(input.occurredAt);
       if (Number.isNaN(occurredAt.getTime()))
         throw new TRPCError({
@@ -6282,6 +6402,7 @@ export const machineryRouter = router({
       const amount = roundMoney(input.quantity * appliedUnitPrice);
       const outcome = await db.transaction(
         async tx => {
+          const binding = await lockBusinessEvidenceBindings(tx, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["other", "diesel_receipt"] }], actorId: user.id, module: "machinery", targetType: "machine_cost", targetId: "new" });
           await lockMachineFuelLedger(tx, {
             machineId: input.machineId, projectId: input.projectId,
           });
@@ -6294,6 +6415,11 @@ export const machineryRouter = router({
             return { kind: "confirmation" as const, check: decision.check };
           if (decision.kind === "replay")
             return { kind: "saved" as const, result: decision.result, replay: true };
+          if (input.evidenceId) {
+            const [photo] = await tx.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.evidenceId)).limit(1).for("update");
+            if (photo?.sourceId && !photo.sourceId.startsWith(`machine-cost-pending-${input.machineId}-`))
+              throw new TRPCError({ code: "CONFLICT", message: "费用照片已带其他来源引用，不能覆盖原绑定，请核对独立凭证" });
+          }
           if (input.costType === "fuel") {
             if (!(input.quantity > 0))
               throw new TRPCError({
@@ -6308,6 +6434,7 @@ export const machineryRouter = router({
             });
           }
           const result = await tx.insert(machineCostRecords).values({
+            documentNo: await newBusinessDocumentNumber(tx, "MC", { kind: "user", userId: user.id }, input.projectId, input),
             machineId: input.machineId,
             projectId: input.projectId,
             costType: input.costType,
@@ -6369,6 +6496,7 @@ export const machineryRouter = router({
           const priceSource = guideline?.price
             ? `，引用柴油指导价 ¥${guideline.price.pricePerLiter}/L（${guideline.businessDate}，规则 #${guideline.price.id}）`
             : "";
+          await binding.retain(String(costId));
           await tx.insert(auditLogs).values({
             userId: user.id,
             module: "machinery",
@@ -6441,6 +6569,7 @@ export const machineryRouter = router({
         unitPrice: appliedUnitPrice,
         guidelinePriceId: guideline?.price?.id ?? null,
       };
+      });
     }),
 
   /** 审批、结算或作废机械成本；已结算记录不可回退，结算操作限定财务岗位。 */
@@ -6478,7 +6607,7 @@ export const machineryRouter = router({
           code: "FORBIDDEN",
           message: "仅财务负责人或会计可确认机械成本结算",
         });
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -6495,11 +6624,15 @@ export const machineryRouter = router({
           message: "机械成本记录不存在",
         });
       await db.transaction(async tx => {
-        if (record.costType === "fuel")
-          await lockMachineFuelLedger(tx, {
-            machineId: record.machineId,
-            projectId: input.projectId,
-          });
+        if (record.costType === "fuel") {
+          await lockEvidenceProject(tx, input.projectId);
+          await lockMachineFuelLedger(tx, { machineId: record.machineId, projectId: input.projectId });
+        }
+        const currentRoles = await assertMachineryAccess(ctx);
+        await assertDepartmentBusinessAccess(ctx, "MACHINERY", input.nextStatus === "settled" ? "settle" : input.nextStatus === "void" ? "void" : "review");
+        await assertProjectInCurrentScope(ctx, input.projectId);
+        if (!canManageSettlement(currentRoles) || (input.nextStatus === "settled" && !canSettleFinancialRecord(currentRoles)))
+          throw new TRPCError({ code: "FORBIDDEN", message: "当前授权已变化，不能处理机械费用状态" });
         const [lockedRecord] = await tx
           .select()
           .from(machineCostRecords)
@@ -6521,6 +6654,8 @@ export const machineryRouter = router({
         } catch (error) {
           throwDomainAsBadRequest(error);
         }
+        if (lockedRecord.costType === "fuel" && input.nextStatus === "void")
+          await assertMachineCostSourceUnoccupied(tx, lockedRecord);
         const fuelRecord =
           lockedRecord.costType === "fuel"
             ? await ensureMachineFuelRefuelRecord(tx, lockedRecord)
@@ -7191,7 +7326,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const user = requireAuthenticatedUser(ctx);
       const rows = await db
@@ -7414,6 +7549,13 @@ export const transportRouter = router({
         input.projectId,
         roleCodes
       );
+      return db.transaction(async db => {
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["transport"], sourcePattern: /^transport-usage-(?:pending-[0-9-]+|[0-9]+)$/ }], actorId: user.id, module: "transport", targetType: "transport_vehicle_usage", targetId: String(input.vehicleId) });
+      const freshRoles = await assertTransportAccess(ctx);
+      assertCanManageTransportResources(freshRoles);
+      await assertProjectInCurrentScope(ctx, input.projectId);
+      const [freshVehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1).for("update");
+      if (!freshVehicle || freshVehicle.projectId !== input.projectId || freshVehicle.status !== "active" || freshVehicle.ownership !== "leased") throw new TRPCError({ code: "CONFLICT", message: "车辆使用依据主体或状态已变化" });
       if (vehicle.ownership !== "leased")
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -7454,6 +7596,7 @@ export const transportRouter = router({
         voidedAt: null,
         voidReason: null,
       });
+      await binding.retain();
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "transport",
@@ -7463,6 +7606,7 @@ export const transportRouter = router({
         summary: `登记外租车辆使用依据：${input.usageDate} · ${input.usageType} ${input.quantity}`,
       });
       return { success: true };
+      });
     }),
 
   voidVehicleUsageRecord: protectedProcedure
@@ -7478,7 +7622,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -7540,7 +7684,7 @@ export const transportRouter = router({
           [input.projectId])
         : (await listScopedProjects(ctx)).map(project => project.id);
       if (!projectIds.length) return [];
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const sources = await readVehicleFinanceSources(db, projectIds);
       const vehicleIds = Array.from(
@@ -7619,7 +7763,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertVehicleFinanceReader(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -7712,7 +7856,7 @@ export const transportRouter = router({
         });
       }
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -7883,7 +8027,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const user = requireAuthenticatedUser(ctx);
       const isDriverOnly =
@@ -7912,7 +8056,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -7966,7 +8110,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const user = requireAuthenticatedUser(ctx);
       const rows = await db
@@ -8051,7 +8195,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -8105,7 +8249,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -8368,7 +8512,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       await assertCanIssueMobileNfcCards(ctx, roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const [projectVehicles, projectCards] = await Promise.all([
         db
@@ -8417,7 +8561,7 @@ export const transportRouter = router({
    * 这样现场不需要先在 PC 端手工读取 UID 或建立空卡绑定。
    */
   prepareMobileNfcInitialIssue: protectedProcedure
-    .input(mobileNfcInitialIssueInput)
+    .input(z.intersection(mobileNfcInitialIssueInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
@@ -8428,6 +8572,10 @@ export const transportRouter = router({
         input.projectId,
         roleCodes
       );
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:prepareMobileNfcInitialIssue", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+await assertCanIssueMobileNfcCards(ctx, roleCodes);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       if (vehicle.status !== "active")
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -8520,7 +8668,7 @@ export const transportRouter = router({
         driverPhone,
       });
       const payloadContract = createTransportNfcCardPayloadContract(payload);
-      const jobNo = createRfidWriteJobNo(input.projectId);
+      const jobNo = await newBusinessDocumentNumber(db, "RJ", { kind: "user", userId: user.id }, input.projectId, input);
       const nfcEntryUrl = buildTransportNfcDeepLink({
         cardId: card.id,
         projectId: input.projectId,
@@ -8573,22 +8721,27 @@ export const transportRouter = router({
         payloadFingerprint: payloadContract.payloadFingerprint,
         hardwareMode: "mobile_web_nfc" as const,
       };
+
+      });
     }),
 
   /** 管理员准备一次写卡任务。返回的载荷只在本次受控响应中提供，数据库仅保存其摘要以防止卡片内容被静态导出。 */
   prepareRfidCardWrite: protectedProcedure
-    .input(rfidWritePrepareInput)
+    .input(z.intersection(rfidWritePrepareInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:prepareRfidCardWrite", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const [card] = await db
         .select()
         .from(transportVehicleRfidCards)
@@ -8761,7 +8914,7 @@ export const transportRouter = router({
         driverPhone,
       });
       const payloadContract = createTransportNfcCardPayloadContract(payload);
-      const jobNo = createRfidWriteJobNo(input.projectId);
+      const jobNo = await newBusinessDocumentNumber(db, "RJ", { kind: "user", userId: user.id }, input.projectId, input);
       const nfcEntryUrl = buildTransportNfcDeepLink({
         cardId: card.id,
         projectId: input.projectId,
@@ -8829,6 +8982,8 @@ export const transportRouter = router({
             payloadFingerprint: payloadContract.payloadFingerprint,
             hardwareMode: "manual_confirmation" as const,
           };
+
+      });
     }),
 
   /**
@@ -8842,7 +8997,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -8935,7 +9090,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9044,7 +9199,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9103,7 +9258,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9182,7 +9337,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9254,7 +9409,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       return db
         .select()
@@ -9287,7 +9442,7 @@ export const transportRouter = router({
         });
       }
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9342,7 +9497,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const rows = await db
         .select()
@@ -9405,7 +9560,7 @@ export const transportRouter = router({
             "当前账号未被授予运输地点新增或编辑权限，请联系超级管理员配置运输创建/编辑权限",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9540,7 +9695,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       return db
         .select({
@@ -9572,7 +9727,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       assertCanManageTransportResources(roleCodes);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9635,7 +9790,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const [routes, sites] = await Promise.all([
         db
@@ -9667,7 +9822,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         return {
           enabled: false,
@@ -9696,7 +9851,7 @@ export const transportRouter = router({
           message: "仅超级管理员可在后台维护刷卡发票运输闭环设置",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9717,7 +9872,7 @@ export const transportRouter = router({
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
       const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -9889,7 +10044,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       const predicates = [eq(transportTrips.projectId, input.projectId)];
       if (input.date) {
@@ -10250,7 +10405,7 @@ export const transportRouter = router({
 
   /** 录入运输趟次并把当时运价和原始载货参数写入快照，后续修改价格规则不影响历史金额。 */
   saveTrip: protectedProcedure
-    .input(tripInput)
+    .input(z.intersection(tripInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
@@ -10260,6 +10415,12 @@ export const transportRouter = router({
         input.projectId,
         roleCodes
       );
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:saveTrip", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "evidenceId", id: input.evidenceId, allowedSourceTypes: ["transport"], sourcePattern: new RegExp(`^(?:transport-plate-pending-${input.vehicleId}-[0-9]+)?$`) }], actorId: user.id, module: "transport", targetType: "transport_trip", targetId: "new" });
+      const [freshVehicle] = await db.select().from(transportVehicles).where(eq(transportVehicles.id, input.vehicleId)).limit(1).for("update");
+      if (!freshVehicle || freshVehicle.projectId !== input.projectId || freshVehicle.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "运输车辆主体或状态已变化" });
       if (vehicle.status !== "active")
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -10435,7 +10596,7 @@ export const transportRouter = router({
       } catch (error) {
         throwDomainAsBadRequest(error);
       }
-      const tripNo = input.tripNo ?? createTransportTripNo(input.projectId);
+      const tripNo = await newBusinessDocumentNumber(db, "TR", { kind: "user", userId: user.id }, input.projectId, input);
       if (input.invoiceMode === "plate_photo" && !input.evidenceId)
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -10450,6 +10611,7 @@ export const transportRouter = router({
         );
       const routeSnapshot = {
         source: "mobile",
+        externalTripNo: input.tripNo ?? null,
         routePresetId: routePreset?.id ?? null,
         invoiceMode: input.invoiceMode,
         settlementUnit: rule.settlementUnit,
@@ -10545,6 +10707,7 @@ export const transportRouter = router({
           });
         }
       }
+      await binding.retain(tripNo);
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "transport",
@@ -10565,7 +10728,7 @@ export const transportRouter = router({
           content: `车辆 ${vehicle.plateNo} 的车牌直拍运输票据已提交，待核验后进入结算流程。`,
           deepLink: "/mobile/transport",
         }).catch(() => undefined);
-        notifyExternalDriverWechat({
+        afterBusinessDocumentCommit(notifyExternalDriverWechat)({
           vehicleId: vehicle.id,
           projectId: input.projectId,
           eventCode: "transport_plate_photo_ticket_submitted",
@@ -10595,6 +10758,8 @@ export const transportRouter = router({
         dailyVehicleTripOrdinal,
         anomalies,
       };
+
+      });
     }),
 
   /** 装土读卡成功后确认趟次起始环节；重复上报按幂等键安全返回，乱序事件留痕进入人工复核。 */
@@ -10618,17 +10783,19 @@ export const transportRouter = router({
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:confirmPlatePhotoUnload", replayDuplicate: true, projectId: input.projectId, input, revalidate: async () => { await assertTransportAccess(ctx); await assertProjectInCurrentScope(ctx, input.projectId); } }, async db => {
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "unloadPhotoEvidenceId", id: input.unloadEvidenceId, allowedSourceTypes: ["transport"], sourcePattern: new RegExp(`^(?:transport-unload-pending-${input.tripId}-[0-9]+|transport-unload-[A-Za-z0-9-]+)?$`) }], parent: { table: transportTrips, id: input.tripId }, actorId: user.id, module: "transport", targetType: "transport_trip", targetId: String(input.tripId) });
       const [trip] = await db
         .select()
         .from(transportTrips)
         .where(eq(transportTrips.id, input.tripId))
-        .limit(1);
+        .limit(1).for("update");
       if (!trip || trip.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -10665,6 +10832,7 @@ export const transportRouter = router({
           code: "BAD_REQUEST",
           message: "请先使用后置相机拍摄并上传卸土现场照片",
         });
+      assertEvidenceSourceOwner(unloadEvidence, `transport-unload-${trip.tripNo}`, new RegExp(`^transport-unload-pending-${trip.id}-[0-9]+$`));
       const occurredAt = new Date(input.occurredAt);
       const payloadFingerprint = createHash("sha256")
         .update(
@@ -10894,6 +11062,7 @@ export const transportRouter = router({
             eq(evidenceRecords.projectId, input.projectId)
           )
         );
+      await binding.retain(trip.tripNo);
       await db.insert(auditLogs).values({
         userId: user.id,
         module: "transport",
@@ -10933,7 +11102,7 @@ export const transportRouter = router({
             })
         )
       );
-      notifyExternalDriverWechat({
+      afterBusinessDocumentCommit(notifyExternalDriverWechat)({
         vehicleId: trip.vehicleId,
         projectId: input.projectId,
         eventCode: "transport_photo_unload_confirmed",
@@ -10952,6 +11121,7 @@ export const transportRouter = router({
         vehiclePlateNo: vehicle.plateNo,
         dailyVehicleTripOrdinal,
       };
+      });
     }),
 
   /** 装土/卸土现场注册设备统一入口：首次刷卡创建在途票据，第二次刷同卡按路线卸土点闭环。 */
@@ -10991,7 +11161,7 @@ export const transportRouter = router({
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -11229,7 +11399,7 @@ export const transportRouter = router({
         title: `运输趟次${transportStatusLabel}`,
         deepLink: "/mobile/transport",
       }).catch(() => undefined);
-      notifyExternalDriverWechat({
+      afterBusinessDocumentCommit(notifyExternalDriverWechat)({
         vehicleId: trip.vehicleId,
         projectId: input.projectId,
         eventCode: `transport_trip_${input.nextStatus}`,
@@ -11283,7 +11453,7 @@ export const transportRouter = router({
           code: "FORBIDDEN",
           message: "当前岗位无权批量核验运输趟次",
         });
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -11387,7 +11557,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         return {
           date: input.date,
@@ -11564,7 +11734,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         return {
           date: input.date,
@@ -11745,7 +11915,7 @@ export const transportRouter = router({
           message: "当前岗位无权发送运输日结通知",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -11804,7 +11974,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db) return [];
       let rows = await db
         .select()
@@ -12007,7 +12177,7 @@ export const transportRouter = router({
           message: "当前岗位无权预览渣土车费用结算候选",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -12038,7 +12208,7 @@ export const transportRouter = router({
 
   /** 由已核验的渣土车真实趟次生成付款前结算草稿；每趟只能进入一张结算单。 */
   createVehicleSettlement: protectedProcedure
-    .input(transportVehicleSettlementDraftInput)
+    .input(z.intersection(transportVehicleSettlementDraftInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
@@ -12048,12 +12218,20 @@ export const transportRouter = router({
           message: "当前岗位无权创建渣土车费用结算单",
         });
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:createVehicleSettlement", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+if (!canManageSettlement(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无权创建渣土车费用结算单",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const [vehicle] = await db
         .select()
         .from(transportVehicles)
@@ -12256,7 +12434,7 @@ export const transportRouter = router({
         candidates,
         fuelRecords
       );
-      const settlementNo = createTransportVehicleSettlementNo(input.projectId);
+      let settlementNo = "";
       const amountBeforeCarryForward = roundMoney(
         details.reduce((sum, item) => sum + item.netPayableAmount, 0) -
           partsDeductionAmount
@@ -12385,7 +12563,7 @@ export const transportRouter = router({
             endExclusive
           );
           await tx.insert(transportVehicleSettlements).values({
-            settlementNo,
+            settlementNo: settlementNo || (settlementNo = await newBusinessDocumentNumber(tx, "TS", { kind: "user", userId: user.id }, input.projectId, input)),
             projectId: input.projectId,
             vehicleId: input.vehicleId,
             periodStart: start,
@@ -12545,6 +12723,8 @@ export const transportRouter = router({
         summary: `生成渣土车按趟结算草稿：${vehicle.plateNo}${input.legacyTripIds.length ? `；逐单历史核对 ${input.legacyTripIds.join(",")}，依据 ${input.legacyConfirmation}` : ""}，${input.periodStart} 至 ${input.periodEnd}，${summary.tripCount} 趟，车辆归集柴油扣款 ¥${summary.fuelDeductionAmount.toFixed(2)}，资产扣款 ¥${summary.assetDeductionAmount.toFixed(2)}，前期抵扣 ¥${summary.carryForwardDeductionAmount.toFixed(2)}，净应付 ¥${summary.netPayableAmount.toFixed(2)}`,
       });
       return { success: true, id: settlementId, settlementNo, ...summary };
+
+      });
     }),
 
   /**
@@ -12552,7 +12732,7 @@ export const transportRouter = router({
    * 其他已核准应付使用调整结算并强制填写依据。两者均可归集尚未结算的车辆柴油、配件和前期待收补款。
    */
   createNonTripVehicleSettlement: protectedProcedure
-    .input(transportVehicleNonTripSettlementInput)
+    .input(z.intersection(transportVehicleNonTripSettlementInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
@@ -12567,6 +12747,14 @@ export const transportRouter = router({
         input.projectId,
         roleCodes
       );
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "operations:createNonTripVehicleSettlement", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertTransportAccess(ctx);
+if (!canManageSettlement(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "当前岗位无权创建车辆结算单",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const { start } = getChinaBusinessDateRange(input.periodStart);
       const end = toBusinessDate(input.periodEnd);
       const { end: endExclusive } = getChinaBusinessDateRange(input.periodEnd);
@@ -12735,7 +12923,7 @@ export const transportRouter = router({
       const netPayableAmount = roundMoney(
         amountBeforeCarryForward - carryForwardDeductionAmount
       );
-      const settlementNo = createTransportVehicleSettlementNo(input.projectId);
+      let settlementNo = "";
       let settlementId = 0;
       await db.transaction(async tx => {
         await lockVehicleSettlementScope(tx, input.projectId, input.vehicleId);
@@ -12796,7 +12984,7 @@ export const transportRouter = router({
             });
         }
         await tx.insert(transportVehicleSettlements).values({
-          settlementNo,
+          settlementNo: settlementNo || (settlementNo = await newBusinessDocumentNumber(tx, "TS", { kind: "user", userId: user.id }, input.projectId, input)),
           projectId: input.projectId,
           vehicleId: input.vehicleId,
           periodStart: start,
@@ -12958,6 +13146,8 @@ export const transportRouter = router({
         carryForwardDeductionAmount,
         netPayableAmount,
       };
+
+      });
     }),
 
   /** 结算草稿提交、会计审核和作废；实际付款/补款必须走 settlementPayment 路由并上传凭证。 */
@@ -12967,7 +13157,7 @@ export const transportRouter = router({
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -13531,7 +13721,7 @@ export const transportRouter = router({
         content: `${settlement.settlementNo} ${transitionLabel}，净额 ¥${Number(settlement.netPayableAmount).toFixed(2)}。`,
         deepLink: "/mobile/transport",
       }).catch(() => undefined);
-      notifyExternalDriverWechat({
+      afterBusinessDocumentCommit(notifyExternalDriverWechat)({
         vehicleId: settlement.vehicleId,
         projectId: input.projectId,
         eventCode: `transport_vehicle_settlement_${input.action}`,
@@ -13555,7 +13745,7 @@ export const transportRouter = router({
     .query(async ({ ctx, input }) => {
       const roleCodes = await assertTransportAccess(ctx);
       await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
+      const db = businessDocumentCreationDatabase() ?? await getDb();
       if (!db)
         return {
           tripCount: 0,
@@ -13719,3 +13909,7 @@ export const transportRouter = router({
       };
     }),
 });
+
+const notifyOfficialAccountBusinessEventSafely = afterBusinessDocumentCommit(notifyOfficialAccountBusinessEventSafelyImmediate);
+
+const notifyAliyunSmsSafely = afterBusinessDocumentCommit(notifyAliyunSmsSafelyImmediate);

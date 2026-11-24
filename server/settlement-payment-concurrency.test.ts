@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SQLInputValue } from "node:sqlite";
 import { createRequire } from "node:module";
@@ -41,7 +42,7 @@ const mock = vi.hoisted(() => ({
   authChecks: 0,
 }));
 vi.mock("./db", () => ({
-  getDb: async () => mock.db as unknown as SettlementPaymentDb,
+  getDb: async () => withNumberingFixture(mock.db!) as unknown as SettlementPaymentDb,
 }));
 vi.mock("./access", async original => {
   const access = await original<typeof import("./access")>();
@@ -467,7 +468,7 @@ const assertNoMoney = () => {
   expect(records(settlementPaymentRecords)).toHaveLength(0);
   expect(records(financialRecords)).toHaveLength(0);
   expect(
-    records(auditLogs).filter(row => row.module === "finance")
+    records(auditLogs).filter(row => row.module === "finance" && row.action !== "retain_evidence_binding_pointers")
   ).toHaveLength(0);
 };
 function pauseNextTransaction() {
@@ -526,6 +527,7 @@ describe("统一付款真实caller与排队事务", () => {
       expect(outcomes.filter(row => row.status === "fulfilled")).toHaveLength(
         1
       );
+      expect(records(settlementPaymentRecords)[0].documentNo).toMatch(/^PM\d{14}0001(?!0000)\d{4}$/);
       const failure = outcomes.find(row => row.status === "rejected");
       expect(
         failure?.status === "rejected" ? String(failure.reason) : ""
@@ -533,7 +535,7 @@ describe("统一付款真实caller与排队事务", () => {
       expect(total(settlementPaymentRecords)).toBe(60);
       expect(total(financialRecords)).toBe(60);
       expect(
-        records(auditLogs).filter(row => row.module === "finance")
+        records(auditLogs).filter(row => row.module === "finance" && row.action !== "retain_evidence_binding_pointers")
       ).toHaveLength(1);
       const final = await caller().settlementPayment.record(input(type, 40));
       expect(final).toMatchObject({
@@ -557,12 +559,17 @@ describe("统一付款真实caller与排队事务", () => {
                     ? "temporary_daily_wage_settlements"
                     : "subcontract_payment_settlements",
               ];
-      expect(db().locks[0].slice(0, expected.length)).toEqual(expected);
+      const locks = db().locks[0].filter((name, index, locks) => name !== locks[index - 1]);
+      expect(locks[0]).toBe("projects");
+      expect(locks[1]).toBe("evidence_records");
+      expect(locks.filter(name => name !== "evidence_records").slice(0, expected.length)).toEqual(expected);
       const integrity = await verifyAuditIntegrityChain(
         db() as unknown as Parameters<typeof verifyAuditIntegrityChain>[0]
       );
       expect(integrity.valid).toBe(true);
-      expect(integrity.eventCount).toBe(2);
+      expect(integrity.eventCount).toBe(4);
+      expect(records(auditLogs).filter(row => row.action === "retain_evidence_binding_pointers")).toHaveLength(2);
+      expect(records(auditLogs).filter(row => row.action === "retain_evidence_binding_pointers").every(row => String(row.afterJson).includes('"evidenceId":1'))).toBe(true);
       if (type === "subcontract")
         expect(records(subcontractPackages)[0].status).toBe("settled");
     }
@@ -619,7 +626,7 @@ describe("统一付款真实caller与排队事务", () => {
     db().beforeTransaction = () =>
       Object.assign(records(evidenceRecords)[0], patch);
     await expect(caller().settlementPayment.record(input())).rejects.toThrow(
-      "有效付款凭证"
+      /有效付款凭证|附件不存在、已删除、来源类型或原所属业务不符/
     );
     assertNoMoney();
   });
@@ -757,7 +764,7 @@ describe("统一付款真实caller与排队事务", () => {
     expect(total(settlementPaymentRecords)).toBe(60);
     expect(total(financialRecords)).toBe(60);
     expect(
-      records(auditLogs).filter(row => row.module === "finance")
+      records(auditLogs).filter(row => row.module === "finance" && row.action !== "retain_evidence_binding_pointers")
     ).toHaveLength(1);
     expect(
       (
@@ -1032,15 +1039,13 @@ describe("负净应付补款、有效前期抵扣与跨路由互斥", () => {
     barrier.release();
     const results = await outcomes;
     expect(results[0].status).toBe("fulfilled");
-    expect(results[1].status).toBe("rejected");
+    expect(results[1].status).toBe("fulfilled");
     expect(total(settlementPaymentRecords)).toBe(60);
-    expect(total(transportVehicleCarryForwardOffsets)).toBe(0);
-    const retry =
-      await caller().transport.createNonTripVehicleSettlement(adjustment);
-    expect(retry).toMatchObject({
-      carryForwardDeductionAmount: 40,
-      netPayableAmount: 20,
-    });
+    expect(total(transportVehicleCarryForwardOffsets)).toBe(40);
+    const retry = (results[1] as PromiseFulfilledResult<any>).value;
+    expect(retry).toMatchObject({ carryForwardDeductionAmount: 40, netPayableAmount: 20 });
+    expect(total(settlementPaymentRecords) + total(transportVehicleCarryForwardOffsets)).toBe(100);
+    expect(db().rows.transport_vehicle_settlements.filter(row => row.id !== 1)).toHaveLength(1);
     expect(
       total(settlementPaymentRecords) +
         total(transportVehicleCarryForwardOffsets)

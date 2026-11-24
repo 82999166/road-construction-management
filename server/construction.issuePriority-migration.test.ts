@@ -85,10 +85,16 @@ describe("0098可空问题等级受控迁移（无真实数据库）", () => {
         "utf8"
       )
     );
-    expect(journal.entries.at(-1)).toMatchObject({
+    expect(journal.entries.find((entry: { idx: number }) => entry.idx === 98)).toMatchObject({
       idx: 98,
       tag: "0098_clumsy_big_bertha",
     });
+    expect(journal.entries.map((entry: { idx: number }) => entry.idx)).toEqual(
+      Array.from({ length: journal.entries.length }, (_, idx) => idx)
+    );
+    for (const entry of journal.entries) {
+      expect(readFileSync(new URL(`../drizzle/${entry.tag}.sql`, import.meta.url), "utf8").trim()).not.toBe("");
+    }
     const previous = JSON.parse(
       readFileSync(
         new URL("../drizzle/meta/0097_snapshot.json", import.meta.url),

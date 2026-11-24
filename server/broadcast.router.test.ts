@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
@@ -39,7 +40,8 @@ function createAcknowledgementDb() {
     insert: vi.fn(() => ({ values: auditValues })),
   };
   return {
-    select: vi.fn(() => ({ from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [delivery]) })) })) })) })),
+    ...tx,
+    select: vi.fn((projection: any) => projection?.count ? tx.select() : ({ from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [delivery]) })) })) })) })),
     transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<void>) => callback(tx)),
     auditValues,
     updateWhere,
@@ -55,7 +57,7 @@ describe("服务号群发审批状态机", () => {
 
   it("草稿仅可提交审批，并写入状态审计", async () => {
     const db = createReviewDb({ id: 11, status: "draft" });
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(broadcastRouter.createCaller(createAuthContext()).review({ id: 11, action: "submit", reviewNote: null })).resolves.toEqual({ success: true, status: "submitted" });
     expect(db.updateWhere).toHaveBeenCalledTimes(1);
@@ -64,7 +66,7 @@ describe("服务号群发审批状态机", () => {
 
   it("退回群发必须给出修改说明，避免无依据地阻塞发布", async () => {
     const db = createReviewDb({ id: 12, status: "submitted" });
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(broadcastRouter.createCaller(createAuthContext()).review({ id: 12, action: "reject", reviewNote: null })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "退回群发单必须填写修改说明" });
     expect(db.updateWhere).not.toHaveBeenCalled();
@@ -73,7 +75,7 @@ describe("服务号群发审批状态机", () => {
 
   it("已发布群发单不可再次进入审批状态，防止终态记录被回退", async () => {
     const db = createReviewDb({ id: 13, status: "published" });
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(broadcastRouter.createCaller(createAuthContext()).review({ id: 13, action: "submit", reviewNote: null })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(db.updateWhere).not.toHaveBeenCalled();
@@ -81,7 +83,7 @@ describe("服务号群发审批状态机", () => {
 
   it("仅实际收件人可确认收到，并以条件更新和审计记录防止重复确认", async () => {
     const db = createAcknowledgementDb();
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(broadcastRouter.createCaller(createAuthContext()).acknowledgeReceipt({ deliveryId: 25 })).resolves.toEqual({ success: true, alreadyAcknowledged: false });
     expect(db.updateWhere).toHaveBeenCalledTimes(2);

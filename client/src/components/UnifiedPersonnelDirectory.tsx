@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { StoredDocumentNumber } from "./StoredDocumentNumber";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
 import { trpc } from "@/lib/trpc";
@@ -2550,7 +2551,7 @@ function PersonnelCompensation({
         <Ledger
           headers={["日期", "原始 ID / 工资主体 / 历史项目", "金额", "状态", "备注"]}
           rows={compensation.advances.map(item => [
-            displayDate(item.advanceDate),
+            <div className="min-w-0">{displayDate(item.advanceDate)}<StoredDocumentNumber record={item} /></div>,
             `预支 ID ${item.id} · 档案 ID ${item.employeeProfileId} · ${referenceLabel("项目", item.projectId, options?.projects.find(p => p.id === item.projectId)?.name)}`,
             money(item.amount),
             getBusinessStatusLabel(item.status),

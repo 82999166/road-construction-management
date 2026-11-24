@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { StoredDocumentNumber } from "./StoredDocumentNumber";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
@@ -818,9 +819,10 @@ export default function CompanyPersonnelRoster({
                               key={item.id}
                               className="flex justify-between gap-2"
                             >
-                              <span>
+                              <div className="min-w-0">
                                 {String(item.advanceDate)} · {item.status}
-                              </span>
+                                <StoredDocumentNumber record={item} />
+                              </div>
                               <span>¥{formatAmount(item.amount)}</span>
                             </div>
                           ))}

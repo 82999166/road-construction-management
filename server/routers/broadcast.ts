@@ -1,3 +1,4 @@
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -37,10 +38,7 @@ type BroadcastAudience = z.infer<typeof broadcastAudienceInput>;
 type BroadcastRecipient = { userId: number; name: string; roleSummary: string; scopeSummary: string };
 type AudienceResolution = { qualifiedUserIds: number[]; recipientUserIds: number[]; unboundCount: number; recipients: BroadcastRecipient[] };
 
-function createBroadcastNo() {
-  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  return `BC-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 function isActiveInPeriod(validFrom: Date | null, validTo: Date | null, now: Date) {
   return (!validFrom || validFrom <= now) && (!validTo || validTo > now);
@@ -250,10 +248,12 @@ export const broadcastRouter = router({
     return { success: true, alreadyAcknowledged: false };
   }),
 
-  saveDraft: protectedProcedure.input(saveBroadcastInput).mutation(async ({ ctx, input }) => {
+  saveDraft: protectedProcedure.input(z.intersection(saveBroadcastInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() }))).mutation(async ({ ctx, input }) => {
     const user = await assertSuperAdmin(ctx);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "broadcast:saveDraft", projectId: input.audienceType === "project" ? input.projectId : null, input , revalidate: async () => { await assertSuperAdmin(ctx); }}, async db => {
     await resolveBroadcastAudience(input);
     const values = { ...toAudienceValues(input), title: input.title, content: input.content, deepLink: normalizeDeepLink(input.deepLink) };
     let broadcastId = input.id;
@@ -263,7 +263,7 @@ export const broadcastRouter = router({
       if (!["draft", "rejected"].includes(existing.status)) throw new TRPCError({ code: "CONFLICT", message: "已提交审批或已发布的群发单不可直接修改" });
       await db.update(officialAccountBroadcasts).set({ ...values, status: "draft", reviewNote: null, reviewedBy: null, reviewedAt: null }).where(and(eq(officialAccountBroadcasts.id, existing.id), eq(officialAccountBroadcasts.status, existing.status)));
     } else {
-      const broadcastNo = createBroadcastNo();
+      const broadcastNo = await newBusinessDocumentNumber(db, "BC", { kind: "user", userId: user.id }, input.audienceType === "project" ? input.projectId : null, input);
       await db.insert(officialAccountBroadcasts).values({ broadcastNo, ...values, status: "draft", createdBy: user.id });
       const [created] = await db.select({ id: officialAccountBroadcasts.id }).from(officialAccountBroadcasts).where(eq(officialAccountBroadcasts.broadcastNo, broadcastNo)).limit(1);
       broadcastId = created?.id;
@@ -271,7 +271,9 @@ export const broadcastRouter = router({
     if (!broadcastId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "群发草稿保存失败" });
     await db.insert(auditLogs).values({ userId: user.id, module: "notification", action: input.id ? "update_broadcast_draft" : "create_broadcast_draft", targetType: "official_account_broadcast", targetId: String(broadcastId), summary: `${input.id ? "维护" : "新建"}服务号群发草稿` });
     return { success: true, broadcastId };
-  }),
+
+      });
+    }),
 
   review: protectedProcedure.input(z.object({ id: z.number().int().positive(), action: z.enum(["submit", "approve", "reject", "cancel"]), reviewNote: z.string().trim().max(500).nullable().optional() })).mutation(async ({ ctx, input }) => {
     const user = await assertSuperAdmin(ctx);

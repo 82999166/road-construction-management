@@ -5,6 +5,7 @@ import ts from "typescript";
 import * as XLSX from "@e965/xlsx";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatAmount, formatQuantity } from "@shared/numberFormat";
+import { documentNumberText } from "@/components/StoredDocumentNumber";
 
 // Execute the actual AdminPage functions and output expressions without mounting
 // its unrelated RPC workspaces; no copied formatter or source-string assertions.
@@ -17,7 +18,7 @@ function collect(node: ts.Node) {
 }
 collect(file);
 const common = {
-  React, formatAmount, formatQuantity, Number, String,
+  React, formatAmount, formatQuantity, documentNumberText, Number, String,
   displayDate: (value: unknown) => String(value),
   toBusinessDateInput: (value: unknown) => String(value),
   formatChinaDateTime: () => "2026-11-14 12:00",
@@ -59,6 +60,32 @@ function csvCall(prefix: string) {
 }
 function mappedRows(prefix: string, context: Record<string, unknown>) {
   return expression(csvCall(prefix).arguments[2], context) as Array<Array<string | number>>;
+}
+function csvHeaders(prefix: string) {
+  return expression(csvCall(prefix).arguments[1]) as string[];
+}
+function cells(headers: string[], row: Array<string | number>, names: string[]) {
+  expect(row).toHaveLength(headers.length);
+  return names.map(name => {
+    const index = headers.indexOf(name);
+    expect(index, `真实导出缺少表头 ${name}`).toBeGreaterThan(-1);
+    return row[index];
+  });
+}
+function csvCells(prefix: string, rows: Array<Array<string | number>>, names: string[]) {
+  return cells(csvHeaders(prefix), rows[0], names);
+}
+// 从真实mapper的词法祖先块读取配套header，避免从其他导出误取同名变量。
+function headersInScope(anchor: ts.Node, name: string): string[] {
+  for (let parent = anchor.parent; parent; parent = parent.parent) {
+    if (!ts.isBlock(parent)) continue;
+    for (const statement of parent.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      const declaration = statement.declarationList.declarations.find(node => node.name.getText(file) === name);
+      if (declaration?.initializer) return expression(declaration.initializer) as string[];
+    }
+  }
+  throw new Error(`Missing actual scoped headers: ${name}`);
 }
 function variable(name: string, context: Record<string, unknown>) {
   const node = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === name);
@@ -109,9 +136,9 @@ describe("admin business decimals — actual page output", () => {
       expect(formatter("0")).toBe("0.00");
     }
     const rows = mappedRows("劳务考勤-", { visibleAttendance: [{ ...numeric, workHours: null, overtimeHours: 0 }], workerById: new Map() });
-    expect(rows[0].slice(4, 6)).toEqual(["", "0.00"]);
+    expect(csvCells("劳务考勤-", rows, ["正常工时", "加班工时"])).toEqual(["", "0.00"]);
     const invoices = mappedRows("发票台账-", { financeInvoiceRows: [{ ...numeric, amount: null, taxAmount: null }] });
-    expect(invoices[0].slice(4, 6)).toEqual(["", "0.00"]);
+    expect(csvCells("发票台账-", invoices, ["金额", "税额"])).toEqual(["", "0.00"]);
   });
 
   it("renders actual responsive MetricCard with formatted finance/risk values and unchanged counters", () => {
@@ -129,14 +156,15 @@ describe("admin business decimals — actual page output", () => {
 
   it("executes all explicit numeric CSV row mappers, preserving dates, IDs, accounts and percentages", () => {
     const payroll = mappedRows("工资条-", { visiblePayrolls: [numeric], workspaceProjectId: 3, laborPeriod: "2026-11" });
-    expect(payroll[0].slice(5, 8)).toEqual(["430.43", "0.00", "3.00"]);
-    expect(payroll[0][8]).toBe("43043200003");
+    expect(csvCells("工资条-", payroll, ["应发金额", "扣款", "实发金额"])).toEqual(["430.43", "0.00", "3.00"]);
+    expect(csvCells("工资条-", payroll, ["正式单号"])).toEqual(["ID430432"]);
+    expect(csvCells("工资条-", payroll, ["付款凭证"])).toEqual(["43043200003"]);
     const attendance = mappedRows("劳务考勤-", { visibleAttendance: [numeric], workerById: new Map() });
-    expect(attendance[0].slice(4, 6)).toEqual(["3.00", "430.43"]);
-    expect(attendance[0][3]).toBe("2026-11-14");
+    expect(csvCells("劳务考勤-", attendance, ["正常工时", "加班工时"])).toEqual(["3.00", "430.43"]);
+    expect(csvCells("劳务考勤-", attendance, ["考勤日期"])).toEqual(["2026-11-14"]);
     const finance = mappedRows("项目资金总账-", { financeLedgerRows: [numeric] });
-    expect(finance[0][6]).toBe("430.43");
-    expect(finance[0][0]).toBe("ID430432");
+    expect(csvCells("项目资金总账-", finance, ["金额"])).toEqual(["430.43"]);
+    expect(csvCells("项目资金总账-", finance, ["单号"])).toEqual(["ID430432"]);
     for (const prefix of ["财务分类汇总-", "项目成本分类-"]) {
       const rows = mappedRows(prefix, { riskFinanceAnalysis: { data: { categories: [numeric] } } });
       expect(rows[0].slice(1, 4)).toEqual(["430.43", "3.123%", 3]);
@@ -145,10 +173,10 @@ describe("admin business decimals — actual page output", () => {
     expect(subcategory[0].slice(2, 5)).toEqual(["430.43", "3.123%", 3]);
     expect(mappedRows("项目支出分类明细-", { expenseCategoryDetails: { data: { records: [numeric] } } })[0][6]).toBe("430.43");
     const diesel = mappedRows("柴油领用明细-", { dieselRefuelRecords: { data: [numeric] } });
-    expect(diesel[0].slice(7, 10)).toEqual(["430.43", "3.00", "430.43"]);
+    expect(csvCells("柴油领用明细-", diesel, ["升数", "适用单价", "金额"])).toEqual(["430.43", "3.00", "430.43"]);
     const invoices = mappedRows("发票台账-", { financeInvoiceRows: [numeric] });
-    expect(invoices[0].slice(4, 6)).toEqual(["430.43", "0.00"]);
-    expect(invoices[0][0]).toBe("43043200003");
+    expect(csvCells("发票台账-", invoices, ["金额", "税额"])).toEqual(["430.43", "0.00"]);
+    expect(csvCells("发票台账-", invoices, ["发票号码"])).toEqual(["43043200003"]);
     expect(numeric.liters).toBe("430.432");
   });
 
@@ -159,11 +187,16 @@ describe("admin business decimals — actual page output", () => {
     vi.stubGlobal("document", { createElement: () => anchor, body: { appendChild: vi.fn() } });
     vi.spyOn(URL, "createObjectURL").mockImplementation(value => { blob = value as Blob; return "blob:admin"; });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
-    declaration("downloadCsvFile")("admin.csv", ["单号", "资源"], rows, { module: "admin", filters: [["项目ID", 3]] });
+    declaration("downloadCsvFile")("admin.csv", csvHeaders("柴油领用明细-"), rows, { module: "admin", filters: [["项目ID", 3]] });
     const csv = await blob!.text();
     expect(csv).toContain('"430.43","3.00","430.43"');
     expect(csv).toContain('"筛选条件 · 项目ID","3"');
     expect(csv).toContain('"导出记录数","1"');
+    const workbook = XLSX.read(csv, { type: "string", raw: true });
+    const parsed = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, raw: true });
+    const headerIndex = parsed.findIndex(row => row.includes("升数") && row.includes("适用单价"));
+    expect(headerIndex).toBeGreaterThan(-1);
+    expect(cells(parsed[headerIndex] as string[], parsed[headerIndex + 1], ["升数", "适用单价", "金额", "单号"])).toEqual(["430.43", "3.00", "430.43", "ID430432"]);
     expect(anchor.click).toHaveBeenCalledOnce();
     expect(numeric.liters).toBe("430.432");
   });
@@ -171,16 +204,19 @@ describe("admin business decimals — actual page output", () => {
   it("runs real workbook exporter and reads generated Excel cells with fixed display strings", async () => {
     const payrollRows = variable("toPayrollRows", {})([numeric]);
     const dailyRows = variable("toDailyRows", {})([numeric]);
-    expect(payrollRows[0].slice(3, 6)).toEqual(["430.43", "0.00", "3.00"]);
-    expect(dailyRows[0].slice(3, 6)).toEqual(["430.43", "0.00", "3.00"]);
-    expect(payrollRows[0][7]).toBe("****430432");
+    const mapper = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "toPayrollRows")!;
+    const standardHeaders = headersInScope(mapper, "standardHeaders");
+    for (const rows of [payrollRows, dailyRows]) {
+      expect(cells(standardHeaders, rows[0], ["应发", "扣款", "实发"])).toEqual(["430.43", "0.00", "3.00"]);
+      expect(cells(standardHeaders, rows[0], ["正式单号", "银行卡"])).toEqual(["ID430432", "****430432"]);
+    }
     const paymentPayroll = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "payrollRows" && node.initializer?.getText(file).startsWith("data.payrollRows.map"));
     const paymentDaily = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "dailyRows" && node.initializer?.getText(file).startsWith("data.dailyRows.map"));
     for (const node of [paymentPayroll, paymentDaily]) {
       if (!node || !ts.isVariableDeclaration(node) || !node.initializer) throw new Error("Missing payment mapper");
       const rows = expression(node.initializer, { data: { payrollRows: [numeric], dailyRows: [numeric] } });
-      expect(rows[0][7]).toBe("3.00");
-      expect(rows[0][6]).toBe("622243043200000003");
+      const paymentHeaders = headersInScope(node, "headers");
+      expect(cells(paymentHeaders, rows[0], ["实发金额", "完整银行卡号", "正式单号"])).toEqual(["3.00", "622243043200000003", "ID430432"]);
     }
     let buffer: Uint8Array | undefined;
     const writeFile = vi.fn(workbook => { buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }); });
@@ -189,11 +225,39 @@ describe("admin business decimals — actual page output", () => {
       getActiveDailyWageWorkbookFilter: () => undefined,
       require: () => ({ ...XLSX, writeFile }),
     });
-    await exporter("admin.xlsx", [{ name: "工资", headers: ["人员", "班组", "期间", "应发", "扣款", "实发", "开户行", "银行卡", "状态", "付款日期"], rows: payrollRows }], { module: "admin", filters: [["项目ID", 3]] });
+    await exporter("admin.xlsx", [{ name: "工资", headers: standardHeaders, rows: payrollRows }, { name: "临时日结", headers: standardHeaders, rows: dailyRows }], { module: "admin", filters: [["项目ID", 3]] });
     const workbook = XLSX.read(buffer!, { type: "array" });
-    expect(["D2", "E2", "F2"].map(address => workbook.Sheets["工资"][address].v)).toEqual(["430.43", "0.00", "3.00"]);
+    for (const name of ["工资", "临时日结"]) {
+      const sheet = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets[name], { header: 1, raw: true });
+      expect(sheet[0]).toEqual(standardHeaders);
+      expect(cells(sheet[0] as string[], sheet[1], ["应发", "扣款", "实发", "正式单号", "银行卡"])).toEqual(["430.43", "0.00", "3.00", "ID430432", "****430432"]);
+    }
     expect(workbook.Sheets["汇总说明"].B6.v).toBe(1);
     expect(writeFile).toHaveBeenCalledOnce();
+  });
+
+  it("real daily-wage workbook filtering reads the original headers after adding the formal-number column", async () => {
+    const filter = { dateFrom: "2026-11-14", dateTo: "2026-11-14", keyword: "人员3", team: "班组", status: "approved" };
+    vi.stubGlobal("window", { __roadConstructionDailyWageExportFilter: filter });
+    const records = [numeric, { ...numeric, workerName: "非筛选人员", documentNo: "OTHER-ID" }];
+    const dailyRows = variable("toDailyRows", {})(records);
+    const mapper = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(file) === "toDailyRows")!;
+    const headers = headersInScope(mapper, "standardHeaders");
+    const functionNode = nodes.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "downloadXlsxWorkbook")!;
+    let buffer: Uint8Array | undefined;
+    const writeFile = vi.fn(workbook => { buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }); });
+    const exporter = execute(`${functionNode.getText(file)}\nconst __result = downloadXlsxWorkbook;`, {
+      getActiveDailyWageWorkbookFilter: declaration("getActiveDailyWageWorkbookFilter"),
+      require: () => ({ ...XLSX, writeFile }),
+    });
+    await exporter("daily.xlsx", [{ name: "临时日结", headers, rows: dailyRows }], { module: "admin", filters: [] });
+    const workbook = XLSX.read(buffer!, { type: "array" });
+    const sheet = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets["临时日结"], { header: 1, raw: true });
+    expect(sheet[0]).toEqual(headers);
+    expect(sheet).toHaveLength(2); // 表头 + 唯一符合真实筛选的人员
+    expect(cells(sheet[0] as string[], sheet[1], ["正式单号", "人员", "期间/日期", "应发", "扣款", "实发"])).toEqual(["ID430432", "人员3", "2026-11-14", "430.43", "0.00", "3.00"]);
+    expect(dailyRows).toHaveLength(2);
+    expect(numeric.amount).toBe(430.432);
   });
 
   it("executes actual governance and daily closure print paths using display-only snapshots", () => {

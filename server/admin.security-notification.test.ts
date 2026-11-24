@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectPermissionsMockDb } from "./services/projectPermissions.mockDb";
+import { auditLogs, departmentBusinessScopes, organizations, projects } from "../drizzle/schema";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 const { mockCreateInAppMessage, mockNotifyOfficialAccountBusinessEventSafely } = vi.hoisted(() => ({
@@ -55,6 +57,9 @@ function createAdminDb(selectResponses: unknown[][] = []) {
   };
 }
 
+const scopeStores: ProjectPermissionsMockDb[] = [];
+afterEach(() => scopeStores.splice(0).forEach(db => db.close()));
+
 describe("后台安全通知", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -96,24 +101,26 @@ describe("后台安全通知", () => {
   });
 
   it("超级管理员可为有效部门启用标准业务模块并写入审计", async () => {
-    const db = createAdminDb([[{ id: 22, type: "department", status: "active" }], []]);
+    const db = new ProjectPermissionsMockDb(); scopeStores.push(db);
+    db.seed(organizations, { id: 22, type: "department", status: "active" });
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ scopeType: "organization", scopeId: 22, module: "LABOR", status: "active" })).resolves.toEqual({ success: true });
 
-    expect(db.insertedValues).toEqual(expect.arrayContaining([
+    expect([...db.rows(departmentBusinessScopes), ...db.rows(auditLogs)]).toEqual(expect.arrayContaining([
       expect.objectContaining({ organizationId: 22, module: "LABOR", status: "active", configuredBy: 1 }),
       expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "organization:22:LABOR" }),
     ]));
   });
 
   it("超级管理员可直接为已有未归档项目启用业务模块，不要求先建立组织节点", async () => {
-    const db = createAdminDb([[{ id: 88, status: "active" }], []]);
+    const db = new ProjectPermissionsMockDb(); scopeStores.push(db);
+    db.seed(projects, { id: 88, status: "active" });
     vi.mocked(getDb).mockResolvedValue(db as never);
 
     await expect(adminRouter.createCaller(createAdminContext()).department.saveScope({ scopeType: "project", scopeId: 88, module: "CONSTRUCTION", status: "active" })).resolves.toEqual({ success: true });
 
-    expect(db.insertedValues).toEqual(expect.arrayContaining([
+    expect([...db.rows(departmentBusinessScopes), ...db.rows(auditLogs)]).toEqual(expect.arrayContaining([
       expect.objectContaining({ organizationId: null, projectId: 88, module: "CONSTRUCTION", status: "active", configuredBy: 1 }),
       expect.objectContaining({ module: "department", action: "enable_business_scope", targetId: "project:88:CONSTRUCTION" }),
     ]));

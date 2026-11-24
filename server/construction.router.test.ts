@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
+import { eq, getTableName } from "drizzle-orm";
+import { BusinessDocumentCreationMockDb } from "./services/businessDocumentCreation.mockDb";
+import { auditLogs, auditLogIntegrityEvents, auditLogChainState, constructionDailyReports, evidenceRecords, projects, systemRoles, userRoleAssignments } from "../drizzle/schema";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 /** 施工日报路由测试隔离数据范围与数据库，专注验证项目范围、审计与状态机不可回退边界。 */
@@ -62,6 +66,45 @@ function createSelectDb(rows: unknown[]) {
       })),
     })),
   };
+}
+
+// 真 Drizzle WHERE / SQLite 事务执行父单快照、CAS 和 retain 审计；不是 MySQL 锁证明。
+const mutationStores: BusinessDocumentCreationMockDb[] = [];
+afterEach(() => mutationStores.splice(0).forEach(db => db.close()));
+function mutationDb(row: Record<string, unknown>, supervisor?: number, photo = false) {
+  const db = new BusinessDocumentCreationMockDb();
+  mutationStores.push(db);
+  db.seed(projects, { id: 10, code: "P10", name: "施工测试项目", nodeType: "project", status: "active" });
+  db.seed(constructionDailyReports, { reportDate: new Date("2026-11-24"), workArea: "作业面", workContent: "真实施工内容", createdBy: 1, documentNo: null, ...row });
+  if (supervisor) {
+    db.seed(systemRoles, { id: 1, code: "CONSTRUCTION_MANAGER", name: "项目施工主管", status: "active" });
+    db.seed(userRoleAssignments, { userId: supervisor, roleId: 1, projectId: 10, status: "active" });
+  }
+  if (photo) db.seed(evidenceRecords, { id: 601, projectId: 10, sourceType: "site_photo", sourceId: `construction-report-${row.id}`, fileKey: "fixture/construction-photo.jpg", uploadedBy: 1, status: "active" });
+  const insert = db.insert.bind(db);
+  const auditValues = vi.fn((values: any) => insert(auditLogs).values(values));
+  vi.spyOn(db, "insert").mockImplementation(table => table === auditLogs ? { values: auditValues } : insert(table));
+  const update = db.update.bind(db);
+  const updateWhere = vi.fn((condition: any) => update(constructionDailyReports).set(pendingPatch).where(condition));
+  let pendingPatch: any;
+  const updateSet = vi.fn((patch: any) => { pendingPatch = patch; return { where: updateWhere }; });
+  vi.spyOn(db, "update").mockImplementation(table => table === constructionDailyReports ? { set: updateSet } : update(table));
+  return { db, auditValues, updateSet, updateWhere, update };
+}
+function assertRetainedPhoto(db: BusinessDocumentCreationMockDb, reportId: number) {
+  expect(db.locks.filter(lock => !lock.startsWith("business_document_"))).toEqual([
+    "projects:update", // runBusinessDocumentCreation 项目现存行锁
+    "projects:update", // 日报在枚举外部照片前锁定同一项目
+    "evidence_records:update", // 升序当前读本日报全部照片，不使用锁前陈旧快照
+    "projects:update", // helper 重验已持有的同一项目锁
+    "evidence_records:update", "construction_daily_reports:update", "construction_daily_reports:update",
+  ]);
+  expect(db.rows(auditLogs).find(row => row.action === "retain_evidence_binding_pointers")).toMatchObject({
+    targetId: String(reportId), beforeJson: JSON.stringify({ evidencePointers: [{ evidenceId: 601, fileKey: "fixture/construction-photo.jpg" }] }),
+    afterJson: JSON.stringify({ evidencePointers: [{ evidenceId: 601, fileKey: "fixture/construction-photo.jpg" }] }),
+  });
+  expect(db.rows(auditLogIntegrityEvents)).toHaveLength(1);
+  expect(db.rows(auditLogChainState)[0].lastSequence).toBe(1);
 }
 
 describe("施工日报 tRPC 路由", () => {
@@ -173,11 +216,15 @@ describe("施工日报 tRPC 路由", () => {
     const auditValues = vi.fn(async () => undefined);
     const reportValues = vi.fn(() => ({ $returningId: async () => [{ id: 88 }] }));
     const db = {
+      select: vi.fn(() => ({ from: vi.fn((table: any) => {
+        if (getTableName(table) !== "projects") throw new Error("unexpected business select");
+        return { where: () => ({ limit: () => ({ for: async () => [{ id: 10, status: "active" }] }) }) };
+      }) })),
       insert: vi.fn()
         .mockImplementationOnce(() => ({ values: reportValues }))
         .mockImplementationOnce(() => ({ values: auditValues })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
 
     await expect(constructionRouter.createCaller(createAuthContext()).saveReport({
       projectId: 10,
@@ -190,91 +237,78 @@ describe("施工日报 tRPC 路由", () => {
       progressPercent: 35.5,
     })).resolves.toEqual({ id: 88, created: true });
 
-    expect(reportValues).toHaveBeenCalledWith(expect.objectContaining({ projectId: 10, createdBy: 1, progressPercent: "35.5" }));
+    expect(reportValues).toHaveBeenCalledWith(expect.objectContaining({ projectId: 10, createdBy: 1, progressPercent: "35.5", documentNo: expect.stringMatching(/^CR\d{14}0001\d{4}$/) }));
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ module: "construction", action: "create_daily_report", targetId: "88" }));
     expect(notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ projectId: 10, eventCode: "construction_daily_report_created", targetId: "88" }));
   });
 
   it("已归档施工日报不允许回退，且拒绝发生在写库之前", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL", "SUPER_ADMIN"]);
-    const db = { ...createSelectDb([{ id: 91, projectId: 10, status: "locked" }]), update: vi.fn(), insert: vi.fn() };
-    vi.mocked(getDb).mockResolvedValue(db as never);
-
+    const { db } = mutationDb({ id: 91, projectId: 10, status: "locked" });
+    const before = db.snapshot();
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
     await expect(constructionRouter.createCaller(createAuthContext()).transitionReport({ id: 91, projectId: 10, nextStatus: "draft" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.update).not.toHaveBeenCalled();
+    expect(db.snapshot()).toEqual(before);
   });
 
   it("日报状态条件更新冲突时不追加审计记录", async () => {
-    const auditValues = vi.fn(async () => undefined);
-    const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    const db = {
-      ...createSelectDb([{ id: 92, projectId: 10, status: "submitted" }]),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
-      insert: vi.fn(() => ({ values: auditValues })),
-    };
-    vi.mocked(getDb).mockResolvedValue(db as never);
-
+    const { db, auditValues, updateWhere, update } = mutationDb({ id: 92, projectId: 10, status: "submitted" }, undefined, true);
+    const before = db.snapshot();
+    updateWhere.mockImplementationOnce(async condition => {
+      await update(constructionDailyReports).set({ status: "locked" }).where(eq(constructionDailyReports.id, 92));
+      return update(constructionDailyReports).set({ status: "approved" }).where(condition);
+    });
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
     await expect(constructionRouter.createCaller(createAuthContext()).transitionReport({ id: 92, projectId: 10, nextStatus: "approved" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(updateWhere).toHaveBeenCalledTimes(1);
     expect(auditValues).not.toHaveBeenCalled();
     expect(notifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
+    expect(db.snapshot()).toEqual(before);
   });
 
   it("填报人提交草稿会通知本项目有效主管，且不改变项目范围", async () => {
-    const auditValues = vi.fn(async () => undefined);
-    const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
-    let selectCount = 0;
-    const db = {
-      select: vi.fn(() => {
-        selectCount += 1;
-        if (selectCount === 1) return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 93, projectId: 10, status: "draft", createdBy: 1 }]) })) })) };
-        return { from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 2 }]) })) })) };
-      }),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
-      insert: vi.fn(() => ({ values: auditValues })),
-    };
-    vi.mocked(getDb).mockResolvedValue(db as never);
-
+    const { db, updateWhere } = mutationDb({ id: 93, projectId: 10, status: "draft", createdBy: 1 }, 2, true);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
     await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 93, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 1, autoApproved: false });
     expect(createInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 2, eventCode: "construction_daily_report_review_requested" }));
     expect(notifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(expect.objectContaining({ userId: 2, projectId: 10, eventCode: "construction_daily_report_review_requested" }));
     expect(updateWhere).toHaveBeenCalledTimes(1);
+    expect(db.rows(constructionDailyReports)[0]).toMatchObject({ projectId: 10, status: "submitted", documentNo: null });
+    assertRetainedPhoto(db, 93);
   });
 
   it("统一审核开关开启时，日报直接自动归档并记录为自动审核，不查询主管名单", async () => {
     vi.mocked(isSupervisorReviewAutoApprove).mockResolvedValue(true);
-    const auditValues = vi.fn(async () => undefined);
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
-    const db = {
-      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 95, projectId: 10, status: "draft", createdBy: 1 }]) })) })) })),
-      update: vi.fn(() => ({ set: updateSet })),
-      insert: vi.fn(() => ({ values: auditValues })),
-    };
-    vi.mocked(getDb).mockResolvedValue(db as never);
-
+    const { db, auditValues, updateSet } = mutationDb({ id: 95, projectId: 10, status: "draft", createdBy: 1 }, undefined, true);
+    const select = vi.spyOn(db, "select");
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
     await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 95, projectId: 10 })).resolves.toEqual({ success: true, supervisorCount: 0, autoApproved: true });
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "locked", reviewedBy: 1 }));
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({ action: "auto_approve_daily_report_by_supervisor_setting" }));
+    expect(select.mock.calls.some(([projection]) => projection && "userId" in projection)).toBe(false);
     expect(createInAppMessage).not.toHaveBeenCalled();
+    assertRetainedPhoto(db, 95);
   });
 
   it("项目主管填写回复确认后会直接归档并通知填报人", async () => {
-    const auditValues = vi.fn(async () => undefined);
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
-    let selectCount = 0;
-    const db = {
-      select: vi.fn(() => {
-        selectCount += 1;
-        if (selectCount === 1) return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: 94, projectId: 10, status: "submitted", createdBy: 2 }]) })) })) };
-        return { from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(async () => [{ userId: 1 }]) })) })) };
-      }),
-      update: vi.fn(() => ({ set: updateSet })),
-      insert: vi.fn(() => ({ values: auditValues })),
-    };
-    vi.mocked(getDb).mockResolvedValue(db as never);
-
+    const { db, updateSet } = mutationDb({ id: 94, projectId: 10, status: "submitted", createdBy: 2 }, 1, true);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
     await expect(constructionRouter.createCaller(createAuthContext()).reviewReport({ id: 94, projectId: 10, decision: "confirm", reply: "日报内容属实，确认归档。" })).resolves.toEqual({ success: true, status: "locked" });
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ status: "locked", reviewReply: "日报内容属实，确认归档。", reviewedBy: 1 }));
     expect(createInAppMessage).toHaveBeenCalledWith(expect.objectContaining({ recipientUserId: 2, eventCode: "construction_daily_report_locked" }));
+    assertRetainedPhoto(db, 94);
+  });
+
+  it("retain审计链写入失败真实回滚父单更新、审计和编号metadata，不发送通知", async () => {
+    vi.mocked(isSupervisorReviewAutoApprove).mockResolvedValue(true);
+    const { db } = mutationDb({ id: 96, projectId: 10, status: "draft", createdBy: 1 }, undefined, true);
+    const before = db.snapshot();
+    db.failInsertTable = "audit_log_integrity_events";
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db) as never);
+    await expect(constructionRouter.createCaller(createAuthContext()).submitReportForReview({ id: 96, projectId: 10 })).rejects.toThrow("injected insert failure");
+    expect(db.snapshot()).toEqual(before);
+    expect(createInAppMessage).not.toHaveBeenCalled();
+    expect(notifyOfficialAccountBusinessEventSafely).not.toHaveBeenCalled();
   });
 });

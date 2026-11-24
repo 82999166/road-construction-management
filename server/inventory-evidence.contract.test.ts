@@ -1,3 +1,6 @@
+import { getTableName } from "drizzle-orm";
+import { EVIDENCE_REFERENCE_REGISTRY } from "./services/evidenceIntegrity";
+import { inventoryTransactions } from "../drizzle/schema";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -48,10 +51,12 @@ describe("库存流水凭证安全契约", () => {
   });
 
   it("已关联到库存流水的凭证不能通过取证删除接口移除", () => {
-    expect(evidenceSource).toContain("inventoryTransactions");
-    expect(evidenceSource).toContain(
-      "eq(inventoryTransactions.evidenceId, evidence.id)"
-    );
+    const entry = EVIDENCE_REFERENCE_REGISTRY.find(item => item.table === inventoryTransactions);
+    expect(entry).toBeDefined();
+    expect(getTableName(entry!.table)).toBe("inventory_transactions");
+    expect(entry!.direct).toContainEqual(["evidenceId", inventoryTransactions.evidenceId]);
+    expect(entry!.sensitive).toBe(false); // 通用库存引用仍阻断删除，不误归专用财务附件
+    expect(evidenceSource).toContain("collectEvidenceReferences");
   });
 });
 

@@ -95,11 +95,13 @@ describe("机械柴油归集前端", () => {
   it("台账和打印采用同一机械录入来源，标准十二列不新增错位列", () => {
     expect(getDieselRecordSourceLabel("DS-MC-23")).toBe("机械录入");
     expect(getDieselRecordSourceLabel("DS-23")).toBe("柴油登记");
+    expect(getDieselRecordSourceLabel("DS2026112417050900090001", 23)).toBe("机械录入");
+    expect(getDieselRecordSourceLabel("DS2026112417050900090001", null)).toBe("柴油登记");
     const source = readFileSync(
       new URL("../components/DieselRefuelPrintDialog.tsx", import.meta.url),
       "utf8"
     );
-    expect(source).toContain("getDieselRecordSourceLabel(item.recordNo)");
+    expect(source).toContain("getDieselRecordSourceLabel(item.recordNo, item.machineCostSourceId)");
     expect(source).toContain("DIESEL_REFUEL_COLUMN_WIDTHS");
   });
 });

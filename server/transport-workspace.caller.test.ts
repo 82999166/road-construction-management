@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
@@ -5,7 +6,7 @@ import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import type { TrpcContext } from "./_core/context";
 const mock = vi.hoisted(() => ({ db: null as any, roles: ["ALL"] }));
-vi.mock("./db", () => ({ getDb: async () => mock.db }));
+vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mock.db) }));
 vi.mock("./access", async original => ({
   ...(await original<typeof import("./access")>()),
   assertDepartmentBusinessAccess: async () => {},
@@ -656,12 +657,14 @@ describe("真实结算生成与并发来源占用", () => {
       caller().createVehicleSettlement({ ...draft, tripIds: [1] }),
       caller().createVehicleSettlement({ ...draft, tripIds: [2] }),
     ]);
-    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
-    const used = mock.db.rows.transport_vehicle_settlement_items[0].tripId;
-    const retry = await caller().createVehicleSettlement({
-      ...draft,
-      tripIds: [used === 1 ? 2 : 1],
-    });
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(2);
+    expect(mock.db.rows.transport_vehicle_settlements.reduce((sum: number, row: any) => sum + Number(row.fuelDeductionAmount), 0)).toBe(20); // 全流程锁内重读，两笔可成功但来源只能消费一次
+    expect(mock.db.rows.transport_vehicle_settlement_items.map((row: any) => row.tripId).sort()).toEqual([1, 2]);
+    expect(new Set(mock.db.rows.transport_vehicle_settlement_items.map((row: any) => row.settlementId)).size).toBe(2);
+    expect(mock.db.rows.transport_vehicle_settlements.reduce((sum: number, row: any) => sum + Number(row.grossFreightAmount), 0)).toBe(200);
+    expect(mock.db.rows.transport_vehicle_settlements.reduce((sum: number, row: any) => sum + Number(row.netPayableAmount), 0)).toBe(180);
+    seedTrip(3);
+    const retry = await caller().createVehicleSettlement({ ...draft, tripIds: [3] });
     expect(retry.fuelDeductionAmount).toBe(0);
     expect(
       mock.db.rows.transport_vehicle_settlements.reduce(
@@ -719,7 +722,8 @@ describe("真实结算生成与并发来源占用", () => {
       caller().createVehicleSettlement({ ...draft, tripIds: [1] }),
       caller().createVehicleSettlement({ ...draft, tripIds: [2] }),
     ]);
-    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(1);
+    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(2);
+    expect(mock.db.rows.transport_vehicle_settlements.reduce((sum: number, row: any) => sum + Number(row.assetDeductionAmount), 0)).toBe(30);
     expect(
       mock.db.rows.transport_vehicle_settlements[0].assetDeductionAmount
     ).toBe("30");
@@ -746,7 +750,7 @@ describe("真实结算生成与并发来源占用", () => {
       caller().createVehicleSettlement({ ...draft, tripIds: [1] }),
       caller().createVehicleSettlement({ ...draft, tripIds: [2] }),
     ]);
-    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(1);
+    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(2);
     const target = mock.db.rows.transport_vehicle_settlements.find(
       (x: any) => x.id !== 20 && x.id !== 21
     );
@@ -863,13 +867,21 @@ describe("来源快照条件恢复和非按趟闭环", () => {
       "receivable"
     );
   });
-  it("非按趟并发柴油消费仍只允许一张草稿", async () => {
+  it("非按趟并发独立调整可各建草稿，但柴油来源只消费一次", async () => {
     mock.db.rows.diesel_refuel_records = [fuel()];
     const r = await Promise.allSettled([
       caller().createNonTripVehicleSettlement(nonTrip),
       caller().createNonTripVehicleSettlement(nonTrip),
     ]);
-    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(1);
+    expect(r.filter(x => x.status === "fulfilled")).toHaveLength(2);
+    const rows = mock.db.rows.transport_vehicle_settlements;
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((sum: number, row: any) => sum + Number(row.grossFreightAmount), 0)).toBe(200);
+    expect(rows.reduce((sum: number, row: any) => sum + Number(row.fuelDeductionAmount), 0)).toBe(20);
+    expect(rows.reduce((sum: number, row: any) => sum + Number(row.netPayableAmount), 0)).toBe(180);
+    expect(mock.db.rows.diesel_refuel_records[0].status).toBe("settled");
+    expect(mock.db.rows.transport_vehicle_settlement_items ?? []).toHaveLength(0);
+
   });
   it("并发重复租金期间只有一单，不因无柴油/无使用量月租而重复计租", async () => {
     mock.db.rows.transport_vehicles[0].ownership = "leased";
@@ -895,6 +907,7 @@ describe("来源快照条件恢复和非按趟闭环", () => {
       caller().createNonTripVehicleSettlement(lease),
     ]);
     expect(r.filter(x => x.status === "fulfilled")).toHaveLength(1);
+    expect(mock.db.rows.transport_vehicle_settlements).toHaveLength(1);
   });
   it("历史无来源快照拒绝猜测恢复；有付款即使状态旧approved也不能作废", async () => {
     mock.db.rows.transport_vehicle_settlements = [

@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
@@ -17,7 +18,7 @@ const mock = vi.hoisted(() => ({
     url: "/never-public",
   })),
 }));
-vi.mock("./db", () => ({ getDb: async () => mock.db }));
+vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mock.db) }));
 vi.mock("./access", async original => ({
   ...(await original<typeof import("./access")>()),
   getEffectiveRoleCodes: async () => mock.roles,
@@ -269,9 +270,11 @@ class SqlFixture {
           return [{ insertId: first }];
         };
         // The unload route uses Drizzle's insert ... on duplicate key for local notifications.
+        let result: any; const once = async () => result ??= await commit();
         return {
-          then: (resolve: any, reject: any) => commit().then(resolve, reject),
-          onDuplicateKeyUpdate: async () => commit(),
+          $returningId: async () => (await once()).map((r: any) => ({ id: r.insertId })),
+          then: (resolve: any, reject: any) => once().then(resolve, reject),
+          onDuplicateKeyUpdate: async () => once(),
         };
       },
     };

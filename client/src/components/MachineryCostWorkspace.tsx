@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { StoredDocumentNumber, documentNumberText } from "./StoredDocumentNumber";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { CurrentFilterPrintActions } from "@/components/CurrentFilterPrintActions";
+import MachineCostEditDialog, { type MachineCostEditTarget } from "./MachineCostEditDialog";
 import {
   FinancePagination,
   useFinancePagination,
@@ -35,6 +37,8 @@ export default function MachineryCostWorkspace({
   const [status, setStatus] = useState<
     "all" | "draft" | "approved" | "settled" | "void"
   >("all");
+  const [editTarget, setEditTarget] = useState<MachineCostEditTarget | null>(null);
+  useEffect(() => { setEditTarget(null); }, [projectId, machineId, period, active]);
   const enabled =
     active && Boolean(projectId) && /^\d{4}-(0[1-9]|1[0-2])$/.test(period);
   const query = trpc.machinery.printSummary.useQuery(
@@ -54,6 +58,9 @@ export default function MachineryCostWorkspace({
         utils.machinery.listCosts.invalidate(),
         utils.machinery.listCostSummaries.invalidate(),
         utils.machinery.getMachineAnalysis.invalidate(),
+        utils.admin.diesel.invalidate(),
+        utils.diesel.invalidate(),
+        utils.finance.invalidate(),
       ]);
     },
     onError: error =>
@@ -65,6 +72,7 @@ export default function MachineryCostWorkspace({
     JSON.stringify([projectId, period, machineId, status])
   );
   const headers = [
+    "正式单号",
     "日期",
     "机械",
     "来源",
@@ -76,6 +84,7 @@ export default function MachineryCostWorkspace({
     "备注",
   ];
   const exportRows = filteredRows.map(row => [
+    documentNumberText(row),
     formatChinaDateTime(row.occurredAt),
     row.machineLabel,
     machineryCostType(row.costType),
@@ -177,6 +186,7 @@ export default function MachineryCostWorkspace({
                   </td>
                   <td className="p-2">
                     {row.costName}
+                    <StoredDocumentNumber record={row} />
                     <p className="text-xs text-muted-foreground">
                       {machineryCostType(row.costType)}
                       {row.remarks ? ` · ${row.remarks}` : ""}
@@ -189,6 +199,9 @@ export default function MachineryCostWorkspace({
                   <td className="p-2">{machineryStatus(row.status)}</td>
                   <td className="p-2">
                     <div className="flex flex-wrap gap-1">
+                      {row.status === "draft" && row.canEdit && capabilities.data?.canEdit ? (
+                        <Button size="sm" variant="outline" disabled={transition.isPending} onClick={() => setEditTarget({ id: row.id, projectId, machineId: row.machineId })}>修改草稿</Button>
+                      ) : null}
                       {row.status === "draft" &&
                       capabilities.data?.canManage ? (
                         <Button
@@ -255,6 +268,9 @@ export default function MachineryCostWorkspace({
         onPageSizeChange={pagination.setPageSize}
         label="机械费用"
       />
+      {editTarget && active && editTarget.projectId === projectId && (!machineId || machineId === editTarget.machineId) ? (
+        <MachineCostEditDialog key={`${projectId}:${editTarget.machineId}:${editTarget.id}`} target={editTarget} onClose={() => setEditTarget(null)} />
+      ) : null}
     </section>
   );
 }

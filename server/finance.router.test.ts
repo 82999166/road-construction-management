@@ -1,5 +1,7 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { TRPCError } from "@trpc/server";
 import { getTableName } from "drizzle-orm";
+import { MySqlDialect } from "drizzle-orm/mysql-core";
 import { auditLogs } from "../drizzle/schema";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +91,7 @@ function createSelectDbSequence(...responses: unknown[][]) {
           orderBy: vi.fn(() => builder),
           limit: vi.fn(() => builder),
           for: vi.fn((mode: string) => {
-            expect(["projects", "daily_accounting_closures"]).toContain(
+            expect(["projects", "evidence_records", "measurement_takeoff_records", "daily_accounting_closures", "financial_records"]).toContain(
               getTableName(table)
             );
             expect(mode).toBe("update");
@@ -103,6 +105,70 @@ function createSelectDbSequence(...responses: unknown[][]) {
       }),
     })),
   };
+}
+
+/** Binding regressions need real table/id/source snapshots, not positional response reuse. */
+function createEvidenceSelectDb(initial: Record<string, any[]>) {
+  let state: Record<string, any[]> = structuredClone({ projects: [{ id: 10 }], ...initial });
+  let inTransaction = false;
+  let projectLocked = false;
+  const lock = vi.fn();
+  const db: any = {
+    lock,
+    transaction: vi.fn(async (callback: any) => {
+      expect(inTransaction).toBe(false); // inner business transactions must reuse creation tx.
+      const before = structuredClone(state);
+      inTransaction = true;
+      projectLocked = false;
+      try { return await callback(db); }
+      catch (error) { state = before; throw error; }
+      finally { inTransaction = false; projectLocked = false; }
+    }),
+    select: () => ({ from: (table: any) => {
+      const name = getTableName(table);
+      let predicate: any;
+      let limit = Infinity;
+      let ascending = false;
+      const builder: any = {
+        where: (condition: any) => { predicate = condition; return builder; },
+        limit: (value: number) => { limit = value; return builder; },
+        orderBy: (order: any) => {
+          expect(new MySqlDialect().sqlToQuery(order).sql).toBe("`evidence_records`.`id` asc");
+          ascending = true;
+          return builder;
+        },
+        for: (mode: string) => {
+          expect(inTransaction).toBe(true);
+          expect(mode).toBe("update");
+          if (name === "projects") projectLocked = true;
+          else expect(projectLocked).toBe(true);
+          if (name === "evidence_records") expect(ascending).toBe(true);
+          lock(table, mode);
+          return builder;
+        },
+        then: (resolve: any, reject: any) => {
+          let rows = [...(state[name] ?? [])];
+          if (predicate) {
+            const query = new MySqlDialect().sqlToQuery(predicate);
+            let index = 0;
+            const checks: Array<(row: any) => boolean> = [];
+            for (const match of query.sql.matchAll(/`[^`]+`\.`([^`]+)`\s*(=\s*\?|in\s*\(([^)]*)\))/gi)) {
+              const column = match[1];
+              const count = match[2].startsWith("=") ? 1 : (match[3].match(/\?/g) ?? []).length;
+              const values = query.params.slice(index, index + count);
+              index += count;
+              checks.push(row => values.includes(row[column]));
+            }
+            rows = rows.filter(row => checks.every(check => check(row)));
+          }
+          if (ascending) rows.sort((a, b) => a.id - b.id);
+          return Promise.resolve(rows.slice(0, limit).map(row => ({ ...row }))).then(resolve, reject);
+        },
+      };
+      return builder;
+    } }),
+  };
+  return db;
 }
 
 describe("采购、工程计量与财务 tRPC 路由", () => {
@@ -136,7 +202,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("已关闭采购申请不可回退，且状态操作始终保留项目范围校验", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 31, projectId: 10, status: "closed" }]) as never
+      withNumberingFixture(createSelectDb([{ id: 31, projectId: 10, status: "closed" }]) as never)
     );
 
     await expect(
@@ -153,7 +219,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("仓储岗位不能越权批准采购申请", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["WAREHOUSE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 32, projectId: 10, status: "submitted" }]) as never
+      withNumberingFixture(createSelectDb([{ id: 32, projectId: 10, status: "submitted" }]) as never)
     );
 
     await expect(
@@ -167,11 +233,11 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([{ id: 321, projectId: 10, status: "submitted" }]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values: auditValues })),
-    } as never);
+    } as never));
 
     await expect(
       purchasingRouter
@@ -186,7 +252,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("采购订单只能由已批准申请创建，创建后申请状态同步为已下单", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
     const requestStatusUpdate = vi.fn(() => ({
-      where: vi.fn(async () => undefined),
+      where: vi.fn(async () => [{ affectedRows: 1 }]),
     }));
     const db = {
       ...createSelectDb([
@@ -195,7 +261,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
       update: vi.fn(() => ({ set: requestStatusUpdate })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       purchasingRouter.createCaller(createAuthContext()).createOrder({
@@ -211,9 +277,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     );
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         { id: 34, projectId: 10, requestId: 33, status: "closed" },
-      ]) as never
+      ]) as never)
     );
     await expect(
       purchasingRouter
@@ -224,7 +290,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
 
   it("采购分类、跨项目申请与订单金额上限均由服务端拦截", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([]) as never));
     await expect(
       purchasingRouter.createCaller(createAuthContext()).saveRequest({
         projectId: 10,
@@ -238,9 +304,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         { id: 35, projectId: 99, status: "approved", amount: "100.00" },
-      ]) as never
+      ]) as never)
     );
     await expect(
       purchasingRouter.createCaller(createAuthContext()).createOrder({
@@ -253,9 +319,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         { id: 36, projectId: 10, status: "approved", amount: "100.00" },
-      ]) as never
+      ]) as never)
     );
     await expect(
       purchasingRouter.createCaller(createAuthContext()).createOrder({
@@ -277,13 +343,13 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     }));
     const auditValues = vi.fn(async () => undefined);
     let insertCount = 0;
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       insert: vi.fn(() =>
         insertCount++ === 0
           ? { values: supplierValues }
           : { values: auditValues }
       ),
-    } as never);
+    } as never));
 
     await expect(
       purchasingRouter.createCaller(createAuthContext()).saveSupplier({
@@ -307,7 +373,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("库存余额和库存成本仅按服务端不可变收发流水汇总", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["WAREHOUSE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           itemName: "水泥",
           unit: "袋",
@@ -329,7 +395,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           quantity: "1",
           amount: "50.00",
         },
-      ]) as never
+      ]) as never)
     );
 
     await expect(
@@ -355,10 +421,11 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
         Promise.resolve([{ insertId: 101 }]).then(resolve),
     }));
     const db = {
-      ...createSelectDbSequence(
-        [{ id: 77, projectId: 10, sourceType: "purchase", status: "active" }],
-        [],
-        [
+      ...createEvidenceSelectDb({
+        // 专用采购上传真实生成此 sourceId；helper锁读与原库存校验读取同一当前快照。
+        evidence_records: [{ id: 77, projectId: 10, sourceType: "purchase", sourceId: "small_direct_document", status: "active" }],
+        inventory_transactions: [],
+        purchase_orders: [
           {
             id: 37,
             requestId: 33,
@@ -368,14 +435,14 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
             inventoryUnit: "袋",
             receiptExpectedQuantity: "2.5",
           },
-        ]
-      ),
+        ],
+      }),
       insert: vi.fn(() => ({ values })),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })),
       })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     await expect(
       purchasingRouter
         .createCaller(createAuthContext())
@@ -404,7 +471,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       })
     );
     expect(db.transaction).toHaveBeenCalledTimes(1);
-    expect(db.lock).toHaveBeenCalledTimes(1);
+    expect(db.lock.mock.calls.map(([table]) => getTableName(table))).toEqual([
+      "projects", "projects", "evidence_records", "projects",
+    ]); // 创建授权→binding项目/证据→原库存锁，仍为同一真实事务。
   });
 
   it("采购结算只允许已收货订单分次付款，并由服务端拒绝超额结算", async () => {
@@ -418,7 +487,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       ),
       insert: vi.fn(() => ({ values })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       purchasingRouter.createCaller(createAuthContext()).recordSettlement({
@@ -450,14 +519,14 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       })
     );
 
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDbSequence(
         [],
         [{ id: 39, projectId: 10, status: "received", amount: "1000.00" }],
         [{ amount: "950.00", settlementStatus: "partial" }]
       ),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
-    } as never);
+    } as never));
     await expect(
       purchasingRouter.createCaller(createAuthContext()).recordSettlement({
         orderId: 39,
@@ -472,10 +541,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDbSequence(
+      withNumberingFixture(createSelectDbSequence(
         [],
         [{ id: 40, projectId: 10, status: "confirmed", amount: "1000.00" }]
-      ) as never
+      ) as never)
     );
     await expect(
       purchasingRouter.createCaller(createAuthContext()).recordSettlement({
@@ -494,7 +563,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("工程计量核定必须提交核定金额，禁止将空金额写入已审核状态", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 41,
           projectId: 10,
@@ -502,7 +571,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           declaredAmount: "1000.00",
           approvedAmount: null,
         },
-      ]) as never
+      ]) as never)
     );
 
     await expect(
@@ -522,7 +591,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("工程计量已确认后不可回退，且非会计岗位不得执行结算确认", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 42,
           projectId: 10,
@@ -530,7 +599,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           declaredAmount: "1000.00",
           approvedAmount: "900.00",
         },
-      ]) as never
+      ]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionClaim({
@@ -543,7 +612,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 43,
           projectId: 10,
@@ -551,7 +620,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           declaredAmount: "1000.00",
           approvedAmount: "900.00",
         },
-      ]) as never
+      ]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionClaim({
@@ -573,7 +642,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     ).resolves.toEqual({ canSubmit: true, canReview: false });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 501, projectId: 10, status: "submitted" }]) as never
+      withNumberingFixture(createSelectDb([{ id: 501, projectId: 10, status: "submitted" }]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionTakeoff({
@@ -617,7 +686,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 504, projectId: 99, status: "draft" }]) as never
+      withNumberingFixture(createSelectDb([{ id: 504, projectId: 99, status: "draft" }]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).saveTakeoff({
@@ -636,7 +705,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 505, projectId: 10, status: "void" }]) as never
+      withNumberingFixture(createSelectDb([{ id: 505, projectId: 10, status: "void" }]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).saveTakeoff({
@@ -659,13 +728,13 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     const updateWhere = vi.fn(async () => undefined);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([
         { id: 502, projectId: 10, status: "reviewing", workItem: "路基土方" },
       ]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values })),
-    } as never);
+    } as never));
 
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionTakeoff({
@@ -696,7 +765,11 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       "CONSTRUCTION_MANAGER",
     ]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([{ id: 503, projectId: 10, status: "locked" }]) as never
+      withNumberingFixture(createEvidenceSelectDb({
+        measurement_takeoff_records: [{ id: 503, projectId: 10, status: "locked" }],
+        // 合法移动 UI 实际使用 takeoff-{id}，不得杜撰 measurement-takeoff marker。
+        evidence_records: [{ id: 77, projectId: 10, sourceType: "site_photo", sourceId: "takeoff-503", status: "active" }],
+      }) as never)
     );
     await expect(
       measurementRouter
@@ -712,7 +785,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MEASUREMENT_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([
         {
           id: 431,
@@ -724,7 +797,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       ]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values: auditValues })),
-    } as never);
+    } as never));
 
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionClaim({
@@ -757,7 +830,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionClaim({
@@ -786,7 +859,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     );
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 45,
           projectId: 10,
@@ -794,7 +867,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           declaredAmount: "1000.00",
           approvedAmount: "900.00",
         },
-      ]) as never
+      ]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).transitionClaim({
@@ -826,10 +899,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       ),
       insert: vi.fn(() => ({ values })),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+        set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })),
       })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       measurementRouter.createCaller(createAuthContext()).recordPayment({
@@ -862,7 +935,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     );
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDbSequence(
+      withNumberingFixture(createSelectDbSequence(
         [
           {
             id: 52,
@@ -873,7 +946,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           },
         ],
         [{ amount: "950.00", settlementStatus: "partial" }]
-      ) as never
+      ) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).recordPayment({
@@ -892,7 +965,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("工程回款拒绝未结算申报与零金额输入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 53,
           projectId: 10,
@@ -900,7 +973,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           declaredAmount: "1000.00",
           approvedAmount: "1000.00",
         },
-      ]) as never
+      ]) as never)
     );
     await expect(
       measurementRouter.createCaller(createAuthContext()).recordPayment({
@@ -1026,10 +1099,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("财务流水由服务端审计并投递固定的财务深链", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([]),
       insert: vi.fn(() => ({ values })),
-    } as never);
+    } as never));
 
     await expect(
       financeRouter.createCaller(createAuthContext()).saveRecord({
@@ -1066,10 +1139,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("会计和财务负责人可登记待结清资料，但只有出纳可执行资金结清", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([]),
       insert: vi.fn(() => ({ values })),
-    } as never);
+    } as never));
 
     await expect(
       financeRouter.createCaller(createAuthContext()).saveRecord({
@@ -1128,10 +1201,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("系统应急管理身份可创建需要立即确认的财务流水", async () => {
     const values = vi.fn(async () => undefined);
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ALL"]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([]),
       insert: vi.fn(() => ({ values })),
-    } as never);
+    } as never));
 
     await expect(
       financeRouter.createCaller(createAuthContext()).saveRecord({
@@ -1165,13 +1238,13 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       sourceType: null,
     };
     const insertValues = vi.fn(async () => undefined);
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
     const db = {
       ...createSelectDbSequence([manualPaidRecord], []),
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: updateSet })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["CASHIER"]);
 
     await expect(
@@ -1229,7 +1302,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
       update: vi.fn(() => ({ set: updateSet })),
     };
-    vi.mocked(getDb).mockResolvedValue(voidDb as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(voidDb as never));
     await expect(
       financeRouter
         .createCaller(createAuthContext())
@@ -1238,9 +1311,9 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     expect(updateSet).toHaveBeenCalledWith({ settlementStatus: "void" });
 
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         { ...manualPaidRecord, sourceType: "measurement_payment" },
-      ]) as never
+      ]) as never)
     );
     await expect(
       financeRouter.createCaller(createAuthContext()).reverseRecord({
@@ -1256,7 +1329,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([
         {
           id: 721,
@@ -1269,7 +1342,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       ]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values: auditValues })),
-    } as never);
+    } as never));
 
     await expect(
       financeRouter
@@ -1284,10 +1357,10 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("已日结日期拒绝服务端补录财务流水，不能仅靠隐藏前端入口绕过", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     const values = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([{ status: "closed", closingNo: "DAY-20260725-001" }]),
       insert: vi.fn(() => ({ values })),
-    } as never);
+    } as never));
 
     await expect(
       financeRouter.createCaller(createAuthContext()).saveRecord({
@@ -1334,7 +1407,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           eventValues(...args).then(() => auditValues(...args)),
       })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
     await expect(
       financeRouter.createCaller(createAuthContext()).reopenDailyAccount({
@@ -1368,7 +1441,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("财务月报仅汇总指定项目期间的有效收支，并分别计算未收未付", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 1,
           direction: "income",
@@ -1393,7 +1466,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           amount: "99.99",
           settlementStatus: "void",
         },
-      ]) as never
+      ]) as never)
     );
 
     const result = await financeRouter
@@ -1415,7 +1488,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("已确认采购订单作为应付进入财务总账，实际采购结算只计入现金流且不重复累计", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDbSequence(
+      withNumberingFixture(createSelectDbSequence(
         [
           {
             id: 201,
@@ -1442,7 +1515,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           },
         ],
         [{ sourceId: "81", amount: "200.00", settlementStatus: "paid" }]
-      ) as never
+      ) as never)
     );
 
     const result = await financeRouter
@@ -1476,7 +1549,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   it("财务月报将计量收入确认与实际回款分开统计，并以回款余额计算应收", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
     vi.mocked(getDb).mockResolvedValue(
-      createSelectDb([
+      withNumberingFixture(createSelectDb([
         {
           id: 11,
           direction: "income",
@@ -1501,7 +1574,7 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
           sourceType: null,
           sourceId: null,
         },
-      ]) as never
+      ]) as never)
     );
 
     const result = await financeRouter
@@ -1548,13 +1621,13 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
       [{ id: 11, amount: "47.59", status: "approved" }],
     ];
     let index = 0;
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       select: vi.fn(() => ({
         from: vi.fn(() => ({
           where: vi.fn(async () => responses[index++] ?? []),
         })),
       })),
-    } as never);
+    } as never));
     const result = await financeRouter
       .createCaller(createAuthContext())
       .businessSummary({ projectId: 10, period: "2026-10" });

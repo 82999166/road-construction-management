@@ -1,3 +1,5 @@
+import { getTableConfig } from "drizzle-orm/mysql-core";
+import { payrollStatements } from "../drizzle/schema";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -24,11 +26,11 @@ const machineryRouter = readFileSync(
 
 describe("payroll draft generation safeguards", () => {
   it("以项目、期间、员工唯一工资条防止重试重复写入，并且只创建草稿", () => {
-    expect(
-      payrollService.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
-    ).toContain(
-      "duplicate|unique".replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
-    );
+    const unique = getTableConfig(payrollStatements).indexes.find(index => index.config.name === "payroll_worker_project_period_unique");
+    expect(unique?.config.unique).toBe(true);
+    expect(unique?.config.columns).toEqual([payrollStatements.workerId, payrollStatements.projectId, payrollStatements.period]);
+    expect(payrollService).toContain("if (preview.existingPayroll)");
+    expect(payrollService).toContain("db.transaction");
     expect(
       payrollService.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")
     ).toContain(

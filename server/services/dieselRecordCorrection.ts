@@ -129,7 +129,7 @@ export async function lockDieselRecordForCorrection(
     existing.transportTripId !== hint.transportTripId
   )
     throw conflict();
-  if (existing.recordNo.startsWith("DS-MC-"))
+  if (existing.machineCostSourceId != null || existing.recordNo.startsWith("DS-MC-"))
     throw new TRPCError({
       code: "FORBIDDEN",
       message:

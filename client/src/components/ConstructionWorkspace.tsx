@@ -1,3 +1,4 @@
+import { StoredDocumentNumber } from "./StoredDocumentNumber";
 import { ConstructionReportSheet } from "./ConstructionReportSheet";
 import React, {
   useEffect,
@@ -1157,6 +1158,7 @@ export default function ConstructionWorkspace({
                         </h3>
                         <BusinessStatusBadge status={report.status} />
                       </div>
+                      <StoredDocumentNumber record={report} />
                       <p className="text-xs text-muted-foreground">
                         {report.createdByName} ·{" "}
                         {CONSTRUCTION_WEATHER[report.weather]} · 累计{" "}
@@ -1235,6 +1237,7 @@ export default function ConstructionWorkspace({
                       <tr key={report.id} className="border-t align-top">
                         <td className="p-3">
                           {formatChinaDate(report.reportDate)}
+                          <StoredDocumentNumber record={report} />
                           <p className="mt-1 text-xs text-muted-foreground">
                             {report.createdByName}
                           </p>

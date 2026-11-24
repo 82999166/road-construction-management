@@ -90,7 +90,7 @@ function memoryDb(
       : 0
   );
   memory.exec(`CREATE TABLE construction_daily_reports (
-    id INTEGER PRIMARY KEY, projectId INTEGER, reportDate TEXT, workArea TEXT, weather TEXT DEFAULT 'sunny',
+    id INTEGER PRIMARY KEY, documentNo TEXT, projectId INTEGER, reportDate TEXT, workArea TEXT, weather TEXT DEFAULT 'sunny',
     workContent TEXT, constructionPlan TEXT, safetyNotes TEXT, issueNotes TEXT, issuePriority TEXT,
     progressPercent TEXT DEFAULT '25', status TEXT, createdBy INTEGER, reviewReply TEXT,
     reviewedBy INTEGER DEFAULT 3, reviewedAt TEXT, createdAt TEXT DEFAULT '2026-11-22', updatedAt TEXT DEFAULT '2026-11-22');

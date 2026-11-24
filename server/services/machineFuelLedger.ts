@@ -1,5 +1,6 @@
+import { newBusinessDocumentNumber } from "./businessDocumentCreation";
 import { TRPCError } from "@trpc/server";
-import { and, eq, gte, isNull, lte, ne } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
 import {
   auditLogs,
   dieselRefuelRecords,
@@ -184,9 +185,10 @@ function assertLinkedSnapshot(
     Number(record.amount) !== Number(cost.amount) ||
     new Date(record.refueledAt).getTime() !==
       new Date(cost.occurredAt).getTime() ||
-    (isMachineFuelRecordNo(record.recordNo) &&
+    ((record.machineCostSourceId != null && (record.machineCostSourceId !== cost.id || record.supplyMethod !== "project_supply")) ||
+      (isMachineFuelRecordNo(record.recordNo) &&
       (record.recordNo !== machineFuelRecordNo(cost.id) ||
-        record.supplyMethod !== "project_supply"))
+        record.supplyMethod !== "project_supply")))
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -208,7 +210,7 @@ export async function ensureMachineFuelRefuelRecord(
     .where(
       cost.dieselRefuelRecordId
         ? eq(dieselRefuelRecords.id, cost.dieselRefuelRecordId)
-        : eq(dieselRefuelRecords.recordNo, machineFuelRecordNo(cost.id))
+        : or(eq(dieselRefuelRecords.machineCostSourceId, cost.id), eq(dieselRefuelRecords.recordNo, machineFuelRecordNo(cost.id)))
     )
     .limit(1)
     .for("update");
@@ -242,9 +244,10 @@ export async function ensureMachineFuelRefuelRecord(
         });
       createdBy = creators[0];
     }
-    const result = await tx
-      .insert(dieselRefuelRecords)
-      .values(buildMachineFuelRefuelValues(cost, createdBy!));
+    const values = buildMachineFuelRefuelValues(cost, createdBy!);
+    // 新业务具有持久MC号时使用DS正式号并存原成本来源ID；历史回填继续DS-MC，不回写旧号。
+    const recordValues = cost.documentNo ? { ...values, machineCostSourceId: cost.id, recordNo: await newBusinessDocumentNumber(tx, "DS", { kind: "user", userId: createdBy! }, cost.projectId, { requestKey: `machine-cost:${cost.id}` }, "machine-cost-source") } : values;
+    const result = await tx.insert(dieselRefuelRecords).values(recordValues);
     refuelId = Number(
       (result[0] as { insertId?: number } | undefined)?.insertId ?? 0
     );

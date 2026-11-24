@@ -1,6 +1,8 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
 import type { TrpcContext } from "./_core/context";
+import { getTableName } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 vi.mock("./db", () => ({ getDb: vi.fn() }));
 vi.mock("./services/businessNotifier", () => ({
@@ -49,9 +51,10 @@ function mockDb(responses: unknown[][] = [], affectedRows = 1) {
   const predicates: any[] = [];
   const limits: number[] = [];
   const select = vi.fn(() => {
-    const rows = responses[index++] ?? [];
+    let rows: unknown[] = [];
     const chain: any = {
-      from: () => chain,
+      from: (table: any) => { rows = getTableName(table) === "projects" ? [{ id: 10, status: "active" }] : responses[index++] ?? []; return chain; },
+      for: () => chain,
       where: (predicate: any) => {
         predicates.push(predicate);
         return chain;
@@ -117,7 +120,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       ["draft", "void", "MACHINERY_MANAGER", "void"],
     ] as const) {
       const db = mockDb([[{ id: 90, machineId: 7, projectId: 10, status }]]);
-      vi.mocked(getDb).mockResolvedValue(db as never);
+      setDbFixture(db as never);
       vi.mocked(getEffectiveRoleCodes).mockResolvedValue([role]);
       await expect(
         machineryRouter
@@ -143,7 +146,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       const db = mockDb([
         [{ id: 90, machineId: 7, projectId: project, status }],
       ]);
-      vi.mocked(getDb).mockResolvedValue(db as never);
+      setDbFixture(db as never);
       vi.mocked(getEffectiveRoleCodes).mockResolvedValue([role]);
       await expect(
         machineryRouter
@@ -155,7 +158,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["VIEWER"]);
     vi.mocked(hasUserSpecificOperationPermission).mockResolvedValue(true);
     const db = mockDb([[{ id: 90, projectId: 10, status: "draft" }]]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await expect(
       machineryRouter.createCaller(ctx()).transitionDailyOperation({
         id: 90,
@@ -167,7 +170,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
   });
   it("细粒度read-only权限服务端拒绝写操作，并在查数据库前收口项目", async () => {
     const db = mockDb();
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     vi.mocked(assertDepartmentBusinessAccess).mockImplementation(
       async (_ctx, _module, action) => {
         if (action && action !== "read")
@@ -205,12 +208,14 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       ],
       [],
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await expect(
       machineryRouter.createCaller(ctx()).saveDailyOperation(zeroInput)
     ).resolves.toEqual({ success: true });
     expect(db.writes).toHaveBeenCalledWith(
       expect.objectContaining({
+        documentNo: expect.stringMatching(/^MD\d{14}0001(?!0000)\d{4}$/),
+        createdBy: 1,
         overtimeAmount: "100",
         shiftCount: "0",
         shiftAmount: "0",
@@ -218,7 +223,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       })
     );
     const invalid = mockDb();
-    vi.mocked(getDb).mockResolvedValue(invalid as never);
+    setDbFixture(invalid as never);
     await expect(
       machineryRouter
         .createCaller(ctx())
@@ -240,7 +245,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
         },
       ],
     ]);
-    vi.mocked(getDb).mockResolvedValue(historic as never);
+    setDbFixture(historic as never);
     await expect(
       machineryRouter.createCaller(ctx()).saveDailyOperation(zeroInput)
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -263,7 +268,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       signedUrl: "secret",
     }));
     const db = mockDb([rows, [{ id: 7, name: "挖机", code: "M7" }]]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     const result = await machineryRouter
       .createCaller(ctx())
       .listDailyOperations({ projectId: 10, period: "2026-11" });
@@ -309,7 +314,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       [],
       [],
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     const result = await machineryRouter
       .createCaller(ctx())
       .getMachineAnalysis({ projectId: 10, machineId: 7, period: "2026-11" });
@@ -345,7 +350,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
         { settlementId: 8, amount: "100" },
       ],
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     const result = await machineryRouter
       .createCaller(ctx())
       .listPaymentSettlements({ projectId: 10 });
@@ -372,7 +377,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
     "新加班拒绝旧字段%s非零，不能恢复台班/工时/产值/双算工资",
     async field => {
       const db = mockDb();
-      vi.mocked(getDb).mockResolvedValue(db as never);
+      setDbFixture(db as never);
       await expect(
         machineryRouter
           .createCaller(ctx())
@@ -389,7 +394,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
         [{ id: 7, projectId: 10 }],
         [{ id: 9, machineId: 7, projectId: 10, status }],
       ]);
-      vi.mocked(getDb).mockResolvedValue(db as never);
+      setDbFixture(db as never);
       await expect(
         machineryRouter.createCaller(ctx()).saveDailyOperation(zeroInput)
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -408,7 +413,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       driverWageAmount: "0",
     };
     const db = mockDb([[{ id: 7, projectId: 10 }], [historic]]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     vi.mocked(assertDepartmentBusinessAccess).mockImplementation(
       async (_ctx, _module, action) => {
         if (action === "edit") throw new TRPCError({ code: "FORBIDDEN" });
@@ -446,7 +451,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
         },
       ],
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await expect(
       machineryRouter
         .createCaller(ctx())
@@ -471,7 +476,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
       [[{ id: 90, machineId: 7, projectId: 10, status: "draft" }]],
       0
     );
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await expect(
       machineryRouter.createCaller(ctx()).transitionDailyOperation({
         id: 90,
@@ -485,7 +490,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
     "详细权限read-only即使财务岗位也拒绝%s状态动作且不查DB",
     async nextStatus => {
       const db = mockDb();
-      vi.mocked(getDb).mockResolvedValue(db as never);
+      setDbFixture(db as never);
       vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
       vi.mocked(assertDepartmentBusinessAccess).mockImplementation(
         async (_ctx, _module, action) => {
@@ -528,7 +533,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
         { settlementId: 8, amount: "99.90" },
       ],
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     const result = await machineryRouter
       .createCaller(ctx())
       .listPaymentSettlements({ projectId: 10, machineId: 7, status: "paid" });
@@ -547,7 +552,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
   });
   it("付款跨项目拒绝先于DB读取，不授权绝不返回账户；空集不查询资金流水", async () => {
     let db = mockDb();
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     vi.mocked(assertProjectInCurrentScope).mockRejectedValue(
       new TRPCError({ code: "FORBIDDEN" })
     );
@@ -559,7 +564,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
     expect(db.select).not.toHaveBeenCalled();
     vi.mocked(assertProjectInCurrentScope).mockResolvedValue(undefined);
     db = mockDb([[], []]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await expect(
       machineryRouter
         .createCaller(ctx())
@@ -569,7 +574,7 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
   });
   it("业务DATE月份SQL采用月初左闭右开日期边界，单机加班列表无100条上限", async () => {
     const db = mockDb([[], []]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
     await machineryRouter
       .createCaller(ctx())
       .listDailyOperations({ projectId: 10, period: "2026-11" });
@@ -590,3 +595,5 @@ describe("机械工作区真实tRPC caller行为（mock DB，无真实写入）"
     expect(db.limits).toEqual([]);
   });
 });
+
+function setDbFixture(database: any) { vi.mocked(getDb).mockResolvedValue(withNumberingFixture(database) as never); }

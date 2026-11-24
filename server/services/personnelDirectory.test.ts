@@ -3,6 +3,8 @@ import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { getTableName, getTableColumns } from "drizzle-orm";
 import * as s from "../../drizzle/schema";
+import { withNumberingFixture } from "./businessDocumentNumber.fixtureAdapter";
+import { isBusinessDocumentNumber } from "../../shared/businessDocumentNumber";
 
 const mocks = vi.hoisted(() => ({
   db: null as any,
@@ -18,12 +20,14 @@ vi.mock("drizzle-orm", async importOriginal => {
   const actual = await importOriginal<typeof import("drizzle-orm")>();
   return {
     ...actual,
-    eq: (col: any, value: any) => ({ kind: "eq", col: col.name, value }),
+    eq: (col: any, value: any) => actual.getTableName(col.table).startsWith("business_document_")
+      ? actual.eq(col, value) : ({ kind: "eq", col: col.name, value }),
     inArray: (col: any, value: any) => ({ kind: "in", col: col.name, value }),
-    and: (...items: any[]) => ({ kind: "and", items }),
+    and: (...items: any[]) => items.every(item => item instanceof actual.SQL)
+      ? actual.and(...items) : ({ kind: "and", items }),
     or: (...items: any[]) => ({ kind: "or", items }),
     lte: (col: any, value: any) => ({ kind: "lte", col: col.name, value }),
-    asc: () => null,
+    asc: (col: any) => ({ kind: "asc", col: col.name }),
     desc: () => null,
   };
 });
@@ -90,6 +94,9 @@ function matches(row: any, p: any): boolean {
 function memoryDb() {
   const state: Record<string, any[]> = {};
   const writes: any[] = [];
+  const lockCalls: Array<{ table: string; ids: number[] }> = [];
+  let inTransaction = false;
+  let lockedProject = false;
   let forceConflict = false;
   function rows(table: any) {
     const name = getTableName(table);
@@ -98,6 +105,7 @@ function memoryDb() {
   const db: any = {
     state,
     writes,
+    lockCalls,
     forceCasConflict: () => {
       forceConflict = true;
     },
@@ -108,6 +116,7 @@ function memoryDb() {
       let table: any;
       let predicate: any;
       let limit = Infinity;
+      let ordering: any[] = [];
       const q: any = {
         from(t: any) {
           table = t;
@@ -121,16 +130,29 @@ function memoryDb() {
           limit = n;
           return q;
         },
-        orderBy() {
+        orderBy(...orders: any[]) {
+          ordering = orders;
           return q;
         },
-        for() {
+        for(mode: string) {
+          expect(mode).toBe("update");
+          expect(inTransaction).toBe(true);
+          const name = getTableName(table);
+          const selected = rows(table).filter(row => matches(row, predicate));
+          if (name === "projects") lockedProject = true;
+          if (name === "evidence_records") {
+            if (selected.some(row => row.projectId !== null)) expect(lockedProject).toBe(true);
+            expect(ordering).toEqual([{ kind: "asc", col: "id" }]);
+            if (predicate.kind === "in") expect(predicate.value).toEqual([...predicate.value].sort((a: number, b: number) => a - b));
+          }
+          lockCalls.push({ table: name, ids: selected.map(row => row.id).sort((a, b) => a - b) });
           return q;
         },
         then(resolve: any, reject: any) {
           try {
-            const result = rows(table)
-              .filter(row => matches(row, predicate))
+            const selected = rows(table).filter(row => matches(row, predicate));
+            if (ordering.some(order => order?.kind === "asc" && order.col === "id")) selected.sort((a, b) => a.id - b.id);
+            const result = selected
               .slice(0, limit)
               .map(row =>
                 selection
@@ -178,9 +200,12 @@ function memoryDb() {
               value: { ...row },
             });
           }
-          return Promise.resolve([
-            { insertId: ids[0], affectedRows: values.length },
-          ]);
+          return {
+            $returningId: async () => ids.map(id => ({ id })),
+            then: (resolve: any, reject: any) => Promise.resolve([
+              { insertId: ids[0], affectedRows: values.length },
+            ]).then(resolve, reject),
+          };
         },
       };
     },
@@ -211,6 +236,9 @@ function memoryDb() {
     async transaction(callback: any) {
       const before = structuredClone(state);
       const writeLength = writes.length;
+      expect(inTransaction).toBe(false);
+      inTransaction = true;
+      lockedProject = false;
       try {
         return await callback(db);
       } catch (error) {
@@ -218,6 +246,9 @@ function memoryDb() {
         Object.assign(state, before);
         writes.length = writeLength;
         throw error;
+      } finally {
+        inTransaction = false;
+        lockedProject = false;
       }
     },
   };
@@ -280,7 +311,7 @@ const png = Buffer.from([
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JWT_SECRET = "personnel-core-test-secret";
-  mocks.db = memoryDb();
+  mocks.db = withNumberingFixture(memoryDb());
   mocks.objects.clear();
   mocks.actor = { id: 7 };
   mocks.deny = false;
@@ -315,7 +346,8 @@ describe("统一人员核心事务行为", () => {
       );
       expect(result.success).toBe(true);
       expect(result.id).toBe(1);
-      expect(result.personNo).toMatch(/^P-/);
+      expect(isBusinessDocumentNumber(result.personNo)).toBe(true);
+      expect(result.personNo).toMatch(/^PN\d{14}0007\d{4}$/);
       expect(mocks.db.state.personnel_people[0].userId).toBeNull();
       expect(mocks.ensure).not.toHaveBeenCalled();
       expect(mocks.db.state.personnel_salary_history ?? []).toHaveLength(0);
@@ -817,6 +849,8 @@ function previewHttp() {
   };
 }
 function legacyInsurance(extra: Record<string, any> = {}) {
+  // 历史保单属于profile原项目，真实helper锁该项目，不猜今天人员项目20。
+  mocks.db.seed(s.projects, [{ id: 10 }, { id: 11 }, { id: 20 }]);
   mocks.db.seed(s.personnelPeople, [
     person({ projectId: 20, legacyProfileId: 5 }),
   ]);
@@ -1089,9 +1123,15 @@ describe("保险元数据授权与原子事务", () => {
     expect(JSON.stringify(mocks.db.state.personnel_changes)).not.toContain(
       "SECRET-POLICY"
     );
-    expect(mocks.db.state.audit_logs[0].action).toBe(
-      "update_employee_insurance"
-    );
+    expect(mocks.db.state.audit_logs.map((audit: any) => audit.action)).toEqual([
+      "retain_evidence_binding_pointers", "update_employee_insurance",
+    ]);
+    expect(mocks.db.lockCalls.map((lock: any) => lock.table)).toEqual([
+      "projects", "evidence_records", "personnel_people", "employee_insurance_policies",
+    ]);
+    expect(JSON.parse(mocks.db.state.audit_logs[0].beforeJson)).toEqual({
+      evidencePointers: [{ evidenceId: 9, fileKey: "employee-insurance/6/old.png" }],
+    });
     await savePersonnelInsurance(
       {
         ...input,
@@ -1121,7 +1161,7 @@ describe("保险元数据授权与原子事务", () => {
     mocks.db.state.evidence_records[0].sourceType = "personnel_private";
     await expect(
       savePersonnelInsurance({ ...input, id: 8, evidenceId: 9 }, 7)
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("来源类型或原所属业务不符") });
     expect(mocks.db.state.personnel_people[0].version).toBe(1);
     expect(mocks.db.writes).toHaveLength(0);
   });

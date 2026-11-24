@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, isNull, lt, ne, or } from "drizzle-orm";
 import { auditLogs, machineCostRecords } from "../../drizzle/schema";
-import type { MachineCostDraft, MachineCostSave, MachineCostDuplicateCandidate, MachineCostDuplicateCheck } from "../../shared/machineCostDuplicate";
+import type { MachineCostDraft, MachineCostSave, MachineCostEditDraft, MachineCostEditSave, MachineCostDuplicateCandidate, MachineCostDuplicateCheck } from "../../shared/machineCostDuplicate";
 import { ENV } from "../_core/env";
 import { chinaBusinessDate } from "./chinaBusinessTime";
 import type { MachineFuelLedgerDb, MachineFuelLedgerTx } from "./machineFuelLedger";
@@ -24,11 +24,12 @@ export function machineCostReceiptKey(input: MachineCostDraft) {
 
 /** 两位数字比较，历史 NULL 名称/数量/单价不能使旧记录漏检；NULL 不改变原记录。 */
 export function projectMachineCostCandidates(
-  rows: Array<typeof machineCostRecords.$inferSelect>, input: MachineCostDraft, appliedUnitPrice: number
+  rows: Array<typeof machineCostRecords.$inferSelect>, input: MachineCostDraft, appliedUnitPrice: number, excludeId?: number
 ): MachineCostDuplicateCandidate[] {
   const occurredAt = new Date(input.occurredAt);
   const amount = cents(money2(input.quantity * appliedUnitPrice));
   return rows.filter(row => {
+    if (row.id === excludeId) return false;
     if (row.projectId !== input.projectId || row.machineId !== input.machineId || row.status === "void") return false;
     if (input.evidenceId && row.evidenceId === input.evidenceId) return true;
     return chinaBusinessDate(row.occurredAt) === chinaBusinessDate(occurredAt)
@@ -45,7 +46,7 @@ export function projectMachineCostCandidates(
 }
 
 export async function readMachineCostCandidates(
-  db: MachineFuelLedgerDb | MachineFuelLedgerTx, input: MachineCostDraft, appliedUnitPrice: number, locked = false
+  db: MachineFuelLedgerDb | MachineFuelLedgerTx, input: MachineCostDraft, appliedUnitPrice: number, locked = false, excludeId?: number
 ) {
   const day = chinaBusinessDate(input.occurredAt);
   const start = new Date(`${day}T00:00:00+08:00`);
@@ -57,7 +58,7 @@ export async function readMachineCostCandidates(
     input.evidenceId ? or(dayPredicate, eq(machineCostRecords.evidenceId, input.evidenceId)) : dayPredicate
   ));
   const rows = await (locked ? query.for("update") : query);
-  return projectMachineCostCandidates(rows, input, appliedUnitPrice);
+  return projectMachineCostCandidates(rows, input, appliedUnitPrice, excludeId);
 }
 function sign(payload: string) {
   if (!ENV.cookieSecret) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "费用防重确认服务未配置，暂不能确认另笔费用" });
@@ -107,6 +108,11 @@ export async function decideMachineCostWrite(tx: MachineFuelLedgerTx, input: Mac
         eq(machineCostRecords.machineId, input.machineId)
       )).limit(1).for("update");
       if (!cost || cost.status === "void") throw new TRPCError({ code: "CONFLICT", message: "原请求费用已作废或不存在，请检查台账，不可重试入账" });
+      const [edit] = await tx.select({ id: auditLogs.id }).from(auditLogs).where(and(
+        eq(auditLogs.module, "machinery"), eq(auditLogs.action, "edit_cost_draft"),
+        eq(auditLogs.targetType, "machine_cost"), eq(auditLogs.targetId, String(cost.id))
+      )).limit(1).for("update");
+      if (edit) throw new TRPCError({ code: "CONFLICT", message: "原请求费用已修改，旧回执不可重放，请检查现有台账" });
       return { kind: "replay" as const, result: { ...data.result, duplicate: true } };
     }
   }
@@ -118,6 +124,17 @@ export async function decideMachineCostWrite(tx: MachineFuelLedgerTx, input: Mac
   if (!candidates.length && input.duplicateConfirmation) {
     return { kind: "confirmation" as const, check: buildMachineCostDuplicateCheck(candidates, requestHash) };
   }
+  return { kind: "write" as const, requestHash };
+}
+export function machineCostEditRequestHash(input: MachineCostEditDraft, appliedUnitPrice: number, userId: number) {
+  return hash({ operation: "edit_cost_draft", id: input.id, version: input.version,
+    draftHash: machineCostRequestHash(input, appliedUnitPrice, userId) });
+}
+export async function decideMachineCostEditWrite(tx: MachineFuelLedgerTx, input: MachineCostEditSave, appliedUnitPrice: number, userId: number) {
+  const requestHash = machineCostEditRequestHash(input, appliedUnitPrice, userId);
+  const candidates = await readMachineCostCandidates(tx, input, appliedUnitPrice, true, input.id);
+  if ((candidates.length && !validConfirmation(input, requestHash, candidates)) || (!candidates.length && input.duplicateConfirmation))
+    return { kind: "confirmation" as const, check: buildMachineCostDuplicateCheck(candidates, requestHash) };
   return { kind: "write" as const, requestHash };
 }
 export async function recordMachineCostReceipt(tx: MachineFuelLedgerTx, input: MachineCostSave, requestHash: string, userId: number, result: MachineCostSavedResult) {

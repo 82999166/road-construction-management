@@ -207,6 +207,8 @@ async function getProjectScopedRoleAssignments(
 /**
  * 项目直接授权已有角色菜单是历史兼容基线；未配置项目范围时完全保持旧行为。
  * 一旦项目存在任一业务范围记录，该项目以启用模块为白名单；白名单仍只能收紧既有角色菜单，
+ * disabled 行是已收回的显式配置墓碑，必须参与 configuredProjectIds；不能只查询 active 行。
+ * 收回不等于恢复继承。恢复档案也不负责重新授予角色/模块，须另行显式确认。
  * 绝不能通过菜单配置给用户增加项目、角色或具体操作权限。
  */
 async function getProjectScopedModuleRows(
@@ -237,10 +239,10 @@ async function getProjectScopedModuleRows(
   for (const row of configuredRows) {
     if (row.projectId !== null) {
       configuredProjectIds.add(row.projectId);
-      statusByProjectAndModule.set(
-        `${row.projectId}:${row.module}`,
-        row.status
-      );
+      const key = `${row.projectId}:${row.module}`;
+      // 唯一索引正常保证一行；旧导入/异常重复时 disabled 优先，避免查询顺序暗中扩权。
+      const previous = statusByProjectAndModule.get(key);
+      statusByProjectAndModule.set(key, previous === "disabled" || row.status !== "active" ? "disabled" : "active");
     }
   }
 

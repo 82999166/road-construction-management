@@ -1,3 +1,5 @@
+import { lockEvidenceProject } from "../services/evidenceIntegrity";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
@@ -34,6 +36,7 @@ import {
   type BusinessOperationAction,
 } from "../access";
 import { getDb } from "../db";
+import { assertPayrollHasNoEffectiveFunds, assertPayrollCorrectionWrite, lockPayrollCorrectionScope, lockMonthlyPayroll, lockDailyPayroll } from "../services/payrollCorrection";
 import { createInAppMessage } from "./messages";
 import {
   decryptSecret,
@@ -446,6 +449,13 @@ function getCertificateName(metadata: string | null, fallback: string | null) {
  * 各过程均在服务端执行岗位及项目范围校验，移动端的菜单显示只作为体验层，不构成安全边界。
  */
 export const laborRouter = router({
+  /** 仅工资页面当前项目的岗位能力，不借后台人员列表推断授权。 */
+  correctionCapabilities: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const roleCodes = await assertLaborBusinessAccess(ctx);
+    await assertProjectInCurrentScope(ctx, input.projectId);
+    return { roleCodes, canApprove: canApprovePayroll(roleCodes), canVoid: canVoidPayroll(roleCodes) };
+  }),
+
   /** 返回当前用户有权查看的项目，供移动端筛选器使用。 */
   projectOptions: protectedProcedure.query(async ({ ctx }) => {
     await assertLaborBusinessAccess(ctx);
@@ -1499,7 +1509,7 @@ export const laborRouter = router({
 
     /** 按“人员 + 日期”幂等保存考勤，锁定后的记录不可覆盖。 */
     save: protectedProcedure
-      .input(attendanceInput)
+      .input(z.intersection(attendanceInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
       .mutation(async ({ ctx, input }) => {
         const user = requireAuthenticatedUser(ctx);
         await assertLaborBusinessAccess(ctx);
@@ -1512,6 +1522,9 @@ export const laborRouter = router({
         assertAttendanceWorkerDate(worker, input.attendanceDate);
         const attendanceDate = toBusinessDate(input.attendanceDate);
         try { return await db.transaction(async tx => {
+        await lockEvidenceProject(tx, input.projectId);
+        await assertLaborBusinessAccess(ctx);
+        await assertProjectInCurrentScope(ctx, input.projectId);
         const existingRows = await tx
           .select({
             id: attendanceRecords.id,
@@ -1528,7 +1541,7 @@ export const laborRouter = router({
               eq(attendanceRecords.attendanceDate, sql`${input.attendanceDate}`)
             )
           )
-          .limit(1);
+          .limit(1).for("update");
         const existing = existingRows[0];
         if (input.id && (!existing || existing.workerId !== input.workerId ||
             existing.projectId !== input.projectId ||
@@ -1615,6 +1628,7 @@ export const laborRouter = router({
         return db
           .select({
             id: temporaryDailyWageSettlements.id,
+            documentNo: temporaryDailyWageSettlements.documentNo,
             workerId: temporaryDailyWageSettlements.workerId,
             workerName: laborWorkers.realName,
             teamName: laborWorkers.teamName,
@@ -1639,7 +1653,7 @@ export const laborRouter = router({
           );
       }),
     save: protectedProcedure
-      .input(dailyWageSaveInput)
+      .input(z.intersection(dailyWageSaveInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
       .mutation(async ({ ctx, input }) => {
         const user = requireAuthenticatedUser(ctx);
         const roleCodes = await assertLaborBusinessAccess(ctx);
@@ -1663,6 +1677,9 @@ export const laborRouter = router({
             message: "仅临时日结人员可创建日结记录",
           });
         return db.transaction(async db => {
+          await lockPayrollCorrectionScope(db, input.projectId);
+          await assertLaborBusinessAccess(ctx);
+          await assertProjectInCurrentScope(ctx, input.projectId);
           await assertCompensationChannel(db, {
             workerId: input.workerId,
             projectId: input.projectId,
@@ -1685,7 +1702,7 @@ export const laborRouter = router({
                   )
                 )
               )
-              .limit(1)
+              .limit(1).for("update")
           )[0];
           if (existing && existing.status !== "draft")
             throw new TRPCError({
@@ -1709,12 +1726,11 @@ export const laborRouter = router({
             paidAt: null,
             paymentReference: null,
           };
-          if (existing)
-            await db
-              .update(temporaryDailyWageSettlements)
-              .set(values)
-              .where(eq(temporaryDailyWageSettlements.id, existing.id));
-          else await db.insert(temporaryDailyWageSettlements).values(values);
+          if (existing) {
+            await assertPayrollHasNoEffectiveFunds(db, { projectId: input.projectId, settlementId: existing.id, settlementType: "daily_wage" });
+            const result = await db.update(temporaryDailyWageSettlements).set(values).where(and(eq(temporaryDailyWageSettlements.id, existing.id), eq(temporaryDailyWageSettlements.status, "draft")));
+            assertPayrollCorrectionWrite(result);
+          } else await db.insert(temporaryDailyWageSettlements).values({ ...values, documentNo: await newBusinessDocumentNumber(db, "DW", { kind: "user", userId: user.id }, input.projectId, input) });
           await db.insert(auditLogs).values({
             userId: user.id,
             module: "labor",
@@ -1748,22 +1764,29 @@ export const laborRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
-        const settlement = (
+        const snapshot = (
           await db
             .select()
             .from(temporaryDailyWageSettlements)
             .where(eq(temporaryDailyWageSettlements.id, input.id))
             .limit(1)
         )[0];
-        if (!settlement)
+        if (!snapshot)
           throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" });
-        await assertProjectInCurrentScope(ctx, settlement.projectId);
+        await assertProjectInCurrentScope(ctx, snapshot.projectId);
+        return db.transaction(async tx => {
+          await lockPayrollCorrectionScope(tx, snapshot.projectId);
+          const roles = await assertLaborBusinessAccess(ctx);
+          if (!roles.some(role => ["ALL", "LABOR_MANAGER", "PROJECT_MANAGER"].includes(role))) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权办理该日结操作" });
+          await assertProjectInCurrentScope(ctx, snapshot.projectId);
+          const settlement = await lockDailyPayroll(tx, input.id, snapshot.projectId);
+          await assertPayrollHasNoEffectiveFunds(tx, { projectId: settlement.projectId, settlementId: settlement.id, settlementType: "daily_wage" });
         if (settlement.status !== "draft")
           throw new TRPCError({
             code: "CONFLICT",
             message: "仅草稿可提交审核",
           });
-        await db
+        const updateResult = await tx
           .update(temporaryDailyWageSettlements)
           .set({
             status: "reviewing",
@@ -1778,7 +1801,8 @@ export const laborRouter = router({
               eq(temporaryDailyWageSettlements.status, "draft")
             )
           );
-        await db.insert(auditLogs).values({
+        assertPayrollCorrectionWrite(updateResult);
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: "submit_daily_wage",
@@ -1787,12 +1811,14 @@ export const laborRouter = router({
           summary: `${settlement.settlementDate} 临时日结提交审核`,
         });
         return { success: true };
+        });
       }),
     review: protectedProcedure
       .input(
         z.object({
           id: z.number().int().positive(),
           decision: z.enum(["approved", "returned"]),
+          reason: z.string().trim().min(1).max(500).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1813,23 +1839,30 @@ export const laborRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
-        const settlement = (
+        const snapshot = (
           await db
             .select()
             .from(temporaryDailyWageSettlements)
             .where(eq(temporaryDailyWageSettlements.id, input.id))
             .limit(1)
         )[0];
-        if (!settlement)
+        if (!snapshot)
           throw new TRPCError({ code: "NOT_FOUND", message: "临时日结不存在" });
-        await assertProjectInCurrentScope(ctx, settlement.projectId);
+        await assertProjectInCurrentScope(ctx, snapshot.projectId);
+        return db.transaction(async tx => {
+          await lockPayrollCorrectionScope(tx, snapshot.projectId);
+          const roles = await assertLaborBusinessAccess(ctx);
+          if (!roles.some(role => ["ALL", "ACCOUNTANT", "FINANCE_MANAGER"].includes(role))) throw new TRPCError({ code: "FORBIDDEN", message: "当前岗位无权办理该日结操作" });
+          await assertProjectInCurrentScope(ctx, snapshot.projectId);
+          const settlement = await lockDailyPayroll(tx, input.id, snapshot.projectId);
+          await assertPayrollHasNoEffectiveFunds(tx, { projectId: settlement.projectId, settlementId: settlement.id, settlementType: "daily_wage" });
         if (settlement.status !== "reviewing")
           throw new TRPCError({
             code: "CONFLICT",
             message: "仅审核中的临时日结可以办理审核",
           });
         const approved = input.decision === "approved";
-        await db
+        const updateResult = await tx
           .update(temporaryDailyWageSettlements)
           .set({
             status: approved ? "approved" : "draft",
@@ -1842,18 +1875,20 @@ export const laborRouter = router({
               eq(temporaryDailyWageSettlements.status, "reviewing")
             )
           );
-        await db.insert(auditLogs).values({
+        assertPayrollCorrectionWrite(updateResult);
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: approved ? "approve_daily_wage" : "return_daily_wage",
           targetType: "temporary_daily_wage",
           targetId: String(settlement.id),
-          summary: `${settlement.settlementDate} 临时日结${approved ? "审核通过" : "退回草稿"}`,
+          summary: `${settlement.settlementDate} 临时日结${approved ? "审核通过" : "退回草稿"}${input.reason ? `；原因：${input.reason}` : ""}`,
         });
         return {
           success: true,
           status: approved ? ("approved" as const) : ("draft" as const),
         };
+        });
       }),
     /** @deprecated 实际付款必须走 settlementPayment.record，确保每笔均有关联凭证和余额校验。 */
     pay: protectedProcedure
@@ -1898,6 +1933,7 @@ export const laborRouter = router({
           : eq(payrollStatements.projectId, input.projectId);
         const payrollRows = await db
           .select({
+            documentNo: payrollStatements.documentNo,
             workerName: laborWorkers.realName,
             workerCategory: laborWorkers.workerCategory,
             teamName: laborWorkers.teamName,
@@ -1924,6 +1960,7 @@ export const laborRouter = router({
           );
         const dailyRows = await db
           .select({
+            documentNo: temporaryDailyWageSettlements.documentNo,
             workerName: laborWorkers.realName,
             workerCategory: laborWorkers.workerCategory,
             teamName: laborWorkers.teamName,
@@ -2006,6 +2043,7 @@ export const laborRouter = router({
           : eq(payrollStatements.projectId, input.projectId);
         const payrollRows = await db
           .select({
+            documentNo: payrollStatements.documentNo,
             sourceType: payrollStatements.id,
             workerName: laborWorkers.realName,
             workerCategory: laborWorkers.workerCategory,
@@ -2027,6 +2065,7 @@ export const laborRouter = router({
           .orderBy(desc(payrollStatements.period), laborWorkers.realName);
         const dailyRows = await db
           .select({
+            documentNo: temporaryDailyWageSettlements.documentNo,
             sourceType: temporaryDailyWageSettlements.id,
             workerName: laborWorkers.realName,
             workerCategory: laborWorkers.workerCategory,
@@ -2050,6 +2089,7 @@ export const laborRouter = router({
           );
         const mapPaymentRow = (row: {
           sourceType: number;
+          documentNo: string | null;
           workerName: string;
           workerCategory: string;
           teamName: string | null;
@@ -2104,6 +2144,7 @@ export const laborRouter = router({
         const rows = await db
           .select({
             id: payrollStatements.id,
+            documentNo: payrollStatements.documentNo,
             workerId: payrollStatements.workerId,
             workerName: laborWorkers.realName,
             teamName: laborWorkers.teamName,
@@ -2143,7 +2184,7 @@ export const laborRouter = router({
 
     /** 保存工资草稿；服务端通过应发减扣款计算实发金额并读取完整银行卡号。 */
     save: protectedProcedure
-      .input(payrollSaveInput)
+      .input(z.intersection(payrollSaveInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
       .mutation(async ({ ctx, input }) => {
         const user = requireAuthenticatedUser(ctx);
         await assertLaborBusinessAccess(ctx);
@@ -2153,6 +2194,9 @@ export const laborRouter = router({
           input.projectId
         );
         return db.transaction(async db => {
+          await lockPayrollCorrectionScope(db, input.projectId);
+          await assertLaborBusinessAccess(ctx);
+          await assertProjectInCurrentScope(ctx, input.projectId);
           await assertCompensationChannel(db, {
             workerId: input.workerId,
             projectId: input.projectId,
@@ -2177,7 +2221,7 @@ export const laborRouter = router({
                 eq(payrollStatements.period, input.period)
               )
             )
-            .limit(1);
+            .limit(1).for("update");
           const existing = existingRows[0];
           if (existing && existing.status !== "draft") {
             throw new TRPCError({
@@ -2202,6 +2246,7 @@ export const laborRouter = router({
             paidAt: null,
           };
           if (existing) {
+            await assertPayrollHasNoEffectiveFunds(db, { projectId: input.projectId, settlementId: existing.id, settlementType: "payroll" });
             const updateResult = await db
               .update(payrollStatements)
               .set(values)
@@ -2213,7 +2258,7 @@ export const laborRouter = router({
               );
             assertConditionalPayrollWrite(updateResult);
           } else {
-            await db.insert(payrollStatements).values(values);
+            await db.insert(payrollStatements).values({ ...values, documentNo: await newBusinessDocumentNumber(db, "PY", { kind: "user", userId: user.id }, input.projectId, input) });
           }
           await db.insert(auditLogs).values({
             userId: user.id,
@@ -2250,10 +2295,16 @@ export const laborRouter = router({
           .from(payrollStatements)
           .where(eq(payrollStatements.id, input.id))
           .limit(1);
-        const payroll = rows[0];
-        if (!payroll)
+        const snapshot = rows[0];
+        if (!snapshot)
           throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
-        await assertProjectInCurrentScope(ctx, payroll.projectId);
+        await assertProjectInCurrentScope(ctx, snapshot.projectId);
+        const payroll = await db.transaction(async tx => {
+          await lockPayrollCorrectionScope(tx, snapshot.projectId);
+          await assertLaborBusinessAccess(ctx);
+          await assertProjectInCurrentScope(ctx, snapshot.projectId);
+          const payroll = await lockMonthlyPayroll(tx, input.id, snapshot.projectId);
+          await assertPayrollHasNoEffectiveFunds(tx, { projectId: payroll.projectId, settlementId: payroll.id, settlementType: "payroll" });
         try {
           assertPayrollStatusTransition(payroll.status, "reviewing");
         } catch {
@@ -2262,7 +2313,7 @@ export const laborRouter = router({
             message: "仅工资草稿可以提交会计审核",
           });
         }
-        const updateResult = await db
+        const updateResult = await tx
           .update(payrollStatements)
           .set({
             status: "reviewing",
@@ -2277,13 +2328,13 @@ export const laborRouter = router({
               eq(payrollStatements.status, payroll.status)
             )
           );
-        assertConditionalPayrollWrite(updateResult);
+        assertPayrollCorrectionWrite(updateResult);
         const periodStart = toBusinessDate(`${payroll.period}-01`);
         const [year, month] = payroll.period.split("-").map(Number);
         const periodEndExclusive = new Date(Date.UTC(year, month, 1));
         // 草稿期间允许劳资核对并修订考勤；一经提交审核，纳入本工资条的已确认考勤即锁定，
         // 防止审批与付款阶段的应发金额被事后悄然改变。
-        await db
+        await tx
           .update(attendanceRecords)
           .set({ status: "locked" })
           .where(
@@ -2295,13 +2346,15 @@ export const laborRouter = router({
               lt(attendanceRecords.attendanceDate, periodEndExclusive)
             )
           );
-        await db.insert(auditLogs).values({
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: "submit_payroll",
           targetType: "payroll_statement",
           targetId: String(payroll.id),
           summary: `${payroll.period} 工资条提交会计审核`,
+        });
+          return payroll;
         });
         try {
           const messageResult = await createInAppMessage({
@@ -2355,6 +2408,7 @@ export const laborRouter = router({
         z.object({
           id: z.number().int().positive(),
           decision: z.enum(["approved", "returned"]).default("approved"),
+          reason: z.string().trim().min(1).max(500).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -2377,11 +2431,19 @@ export const laborRouter = router({
           .from(payrollStatements)
           .where(eq(payrollStatements.id, input.id))
           .limit(1);
-        const payroll = rows[0];
-        if (!payroll)
+        const snapshot = rows[0];
+        if (!snapshot)
           throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
-        await assertProjectInCurrentScope(ctx, payroll.projectId);
+        await assertProjectInCurrentScope(ctx, snapshot.projectId);
         const isApproved = input.decision === "approved";
+        const reviewedAt = new Date();
+        const payroll = await db.transaction(async tx => {
+          await lockPayrollCorrectionScope(tx, snapshot.projectId);
+          const roles = await assertLaborBusinessAccess(ctx);
+          if (!canApprovePayroll(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "工资审核仅限会计岗位办理" });
+          await assertProjectInCurrentScope(ctx, snapshot.projectId);
+          const payroll = await lockMonthlyPayroll(tx, input.id, snapshot.projectId);
+          await assertPayrollHasNoEffectiveFunds(tx, { projectId: payroll.projectId, settlementId: payroll.id, settlementType: "payroll" });
         try {
           assertPayrollStatusTransition(
             payroll.status,
@@ -2393,8 +2455,7 @@ export const laborRouter = router({
             message: "仅审核中的工资条可以办理会计审核",
           });
         }
-        const reviewedAt = new Date();
-        const updateResult = await db
+        const updateResult = await tx
           .update(payrollStatements)
           .set({
             status: isApproved ? "approved" : "draft",
@@ -2407,14 +2468,17 @@ export const laborRouter = router({
               eq(payrollStatements.status, payroll.status)
             )
           );
-        assertConditionalPayrollWrite(updateResult);
-        await db.insert(auditLogs).values({
+        assertPayrollCorrectionWrite(updateResult);
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: isApproved ? "approve_payroll" : "return_payroll",
           targetType: "payroll_statement",
           targetId: String(payroll.id),
-          summary: `${payroll.period} 工资条已${isApproved ? "审核通过" : "退回草稿"}`,
+          summary: `${payroll.period} 工资条已${isApproved ? "审核通过" : "退回草稿"}${input.reason ? `；原因：${input.reason}` : ""}`,
+          beforeJson: JSON.stringify({ status: payroll.status }), afterJson: JSON.stringify({ status: isApproved ? "approved" : "draft", reason: input.reason ?? null }),
+        });
+          return payroll;
         });
         // 通知只写入审核结论和业务入口，不写入工资金额、银行卡等敏感工资信息。
         if (payroll.submittedBy) {
@@ -2521,10 +2585,17 @@ export const laborRouter = router({
           .from(payrollStatements)
           .where(eq(payrollStatements.id, input.id))
           .limit(1);
-        const payroll = rows[0];
-        if (!payroll)
+        const snapshot = rows[0];
+        if (!snapshot)
           throw new TRPCError({ code: "NOT_FOUND", message: "工资条不存在" });
-        await assertProjectInCurrentScope(ctx, payroll.projectId);
+        await assertProjectInCurrentScope(ctx, snapshot.projectId);
+        const payroll = await db.transaction(async tx => {
+          await lockPayrollCorrectionScope(tx, snapshot.projectId);
+          const roles = await assertLaborBusinessAccess(ctx);
+          if (!canVoidPayroll(roles)) throw new TRPCError({ code: "FORBIDDEN", message: "工资条作废仅限会计或财务负责人办理" });
+          await assertProjectInCurrentScope(ctx, snapshot.projectId);
+          const payroll = await lockMonthlyPayroll(tx, input.id, snapshot.projectId);
+          await assertPayrollHasNoEffectiveFunds(tx, { projectId: payroll.projectId, settlementId: payroll.id, settlementType: "payroll" });
         try {
           assertPayrollStatusTransition(payroll.status, "void");
         } catch {
@@ -2533,8 +2604,7 @@ export const laborRouter = router({
             message: "已发放或已作废的工资条不可作废",
           });
         }
-        const voidedAt = new Date();
-        const updateResult = await db
+        const updateResult = await tx
           .update(payrollStatements)
           .set({ status: "void" })
           .where(
@@ -2543,15 +2613,19 @@ export const laborRouter = router({
               eq(payrollStatements.status, payroll.status)
             )
           );
-        assertConditionalPayrollWrite(updateResult);
-        await db.insert(auditLogs).values({
+        assertPayrollCorrectionWrite(updateResult);
+        await tx.insert(auditLogs).values({
           userId: user.id,
           module: "labor",
           action: "void_payroll",
           targetType: "payroll_statement",
           targetId: String(payroll.id),
           summary: `${payroll.period} 工资条已作废，原因：${input.reason}`,
+          beforeJson: JSON.stringify({ status: payroll.status, actualAmount: payroll.actualAmount }), afterJson: JSON.stringify({ status: "void", reason: input.reason }),
         });
+          return payroll;
+        });
+        const voidedAt = new Date();
         const recipientUserId = payroll.submittedBy ?? user.id;
         try {
           const messageResult = await createInAppMessage({

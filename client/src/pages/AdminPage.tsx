@@ -11,6 +11,8 @@ import {
 } from "@/components/DieselSupportingReports";
 import { DieselReceiptLedger } from "@/components/DieselReceiptLedger";
 import { DieselRecordActions } from "@/components/DieselRecordActions";
+import { FinanceRecordCorrectionActions } from "@/components/FinanceRecordCorrectionActions";
+import { IdentityDeletionImpactPreview, ScopeReactivationDialog, type ScopeReactivationTarget } from "@/components/IdentityGovernanceControls";
 import {
   createDieselEditForm,
   dieselRefueledAtForSave,
@@ -37,6 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import { StoredDocumentNumber, documentNumberText } from "@/components/StoredDocumentNumber";
 import ConstructionWorkspace, {
   type ConstructionWorkspaceReport,
 } from "@/components/ConstructionWorkspace";
@@ -465,7 +468,9 @@ type DepartmentModuleCode =
   | "TRANSPORT"
   | "PURCHASING"
   | "MEASUREMENT"
+  | "CONTRACT"
   | "FINANCE"
+  | "DIESEL"
   | "EVIDENCE";
 type OrganizationStatus = "active" | "disabled";
 type ProjectType = "highway" | "railway" | "municipal" | "other";
@@ -489,6 +494,9 @@ type OrganizationForm = {
 };
 type ProjectForm = {
   id?: number;
+  expectedStatus?: ProjectStatus;
+  confirmRestore?: boolean;
+  restoreReason?: string;
   parentId: string;
   organizationId: string;
   code: string;
@@ -843,6 +851,7 @@ type MasterDataDeleteTarget = {
   id: number;
   label: string;
   description: string;
+  scopeType?: "project" | "organization";
 };
 type PayrollPaymentTarget = { id: number; workerName: string; period: string };
 type WechatBindingActionTarget = { userId: number; displayName: string };
@@ -1979,12 +1988,17 @@ async function downloadXlsxWorkbook(
 ) {
   const dailyFilter = getActiveDailyWageWorkbookFilter();
   const matchesDailyWageFilter = (
-    row: Array<string | number | null | undefined>
+    row: Array<string | number | null | undefined>,
+    headers: string[]
   ) => {
     if (!dailyFilter) return true;
-    const [workerName, teamName, settlementDate, , , , , , status] = row.map(
-      value => String(value ?? "")
-    );
+    // 正式单号等列可新增或重排，筛选必须读取当前工作表的真实表头。
+    const readCell = (header: string) =>
+      String(row[headers.indexOf(header)] ?? "");
+    const workerName = readCell("人员");
+    const teamName = readCell("班组");
+    const settlementDate = readCell("期间/日期");
+    const status = readCell("状态");
     const keyword = dailyFilter.keyword.trim().toLocaleLowerCase();
     const normalizedTeam = teamName || "未设置班组";
     return (
@@ -1999,7 +2013,12 @@ async function downloadXlsxWorkbook(
   };
   const scopedSheets = sheets.map(sheet =>
     sheet.name === "临时日结" && dailyFilter
-      ? { ...sheet, rows: sheet.rows.filter(matchesDailyWageFilter) }
+      ? {
+          ...sheet,
+          rows: sheet.rows.filter(row =>
+            matchesDailyWageFilter(row, sheet.headers)
+          ),
+        }
       : sheet
   );
   const scopedFilters: CsvExportScope["filters"] = dailyFilter
@@ -3019,6 +3038,19 @@ export default function AdminPage({
   );
   const workspaceProjectId = workspaceProjectState.projectId;
   const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
+  const payrollCorrectionCapabilities = trpc.labor.correctionCapabilities.useQuery(
+    { projectId: workspaceProjectId || 0 },
+    { enabled: canQuery && isLabor && Boolean(workspaceProjectId), retry: false }
+  );
+  // 财务筛选器独立于劳务/机械工作区；仅实际财务页当前项目加载能力。
+  const financeCorrectionCapabilities = trpc.finance.correctionCapabilities.useQuery(
+    { projectId: Number(financeProjectId || 0) },
+    { enabled: canQuery && activeSection === "finance" && Number(financeProjectId) > 0, retry: false }
+  );
+  const payrollCorrectionRoleCodes = canQuery && isLabor && !payrollCorrectionCapabilities.isError && !payrollCorrectionCapabilities.isFetching && !payrollCorrectionCapabilities.isPlaceholderData
+    ? payrollCorrectionCapabilities.data?.roleCodes ?? [] : [];
+  const financeCorrectionRoleCodes = canQuery && activeSection === "finance" && !financeCorrectionCapabilities.isError && !financeCorrectionCapabilities.isFetching && !financeCorrectionCapabilities.isPlaceholderData
+    ? financeCorrectionCapabilities.data?.roleCodes ?? [] : [];
   const workspaceProjectInput = useMemo(
     () => ({ projectId: workspaceProjectId }),
     [workspaceProjectId]
@@ -4168,6 +4200,7 @@ export default function AdminPage({
     scopeTarget: string;
     module: DepartmentModuleCode | "";
   }>({ scopeTarget: "", module: "" });
+  const [scopeReactivationTarget, setScopeReactivationTarget] = useState<ScopeReactivationTarget | null>(null);
   const [settingForm, setSettingForm] =
     useState<SettingForm>(EMPTY_SETTING_FORM);
   const [
@@ -4655,6 +4688,7 @@ export default function AdminPage({
       setOrganizationForm(EMPTY_ORGANIZATION_FORM);
       await Promise.all([
         organizations.refetch(),
+        trpcUtils.admin.department.listScopes.invalidate(),
         overview.refetch(),
         audits.refetch(),
       ]);
@@ -4667,11 +4701,20 @@ export default function AdminPage({
       setProjectForm(EMPTY_PROJECT_FORM);
       await Promise.all([
         projects.refetch(),
+        trpcUtils.admin.department.listScopes.invalidate(),
+        trpcUtils.admin.personnel.listAssignments.invalidate(),
         overview.refetch(),
         audits.refetch(),
       ]);
     },
-    onError: error => toast.error(getUserFacingErrorMessage(error)),
+    onError: async error => {
+      toast.error(getUserFacingErrorMessage(error));
+      if (error.data?.code === "CONFLICT") {
+        setProjectForm(current => ({ ...current, confirmRestore: false }));
+        await Promise.all([projects.refetch(), trpcUtils.admin.department.listScopes.invalidate(), trpcUtils.admin.personnel.listAssignments.invalidate()]);
+        toast.warning("项目状态已变化，请重新选择项目核对后保存；原输入未清除");
+      }
+    },
   });
   const savePosition = trpc.admin.position.save.useMutation({
     onSuccess: async () => {
@@ -5773,6 +5816,13 @@ export default function AdminPage({
       setDepartmentScopeForm({ scopeTarget: "", module: "" });
       await departmentScopes.refetch();
     },
+    onError: async error => {
+      toast.error(getUserFacingErrorMessage(error));
+      if (error.data?.code === "CONFLICT") {
+        await departmentScopes.refetch();
+        toast.warning("业务配置已变化，已强制刷新；请重新核对当前状态");
+      }
+    },
   });
   const saveSetting = trpc.admin.settings.saveDraft.useMutation({
     onSuccess: async data => {
@@ -6103,7 +6153,9 @@ export default function AdminPage({
       toast.success(
         result.operation === "revoked"
           ? "角色授权已撤销并保留可追溯历史"
-          : `${target?.label ?? "主数据"}已安全删除`
+          : result.operation === "disabled"
+            ? "项目业务模块已收回，disabled 配置及原主键保留；不会恢复历史兼容权限"
+            : `${target?.label ?? "主数据"}已安全删除`
       );
       setMasterDataDeleteTarget(null);
       if (target?.resource === "organization")
@@ -6970,6 +7022,11 @@ export default function AdminPage({
         !projectForm.nodeType.trim()
       )
         return toast.error("请填写项目编码、名称和层级名称");
+      if (projectForm.id && !projectForm.expectedStatus)
+        return toast.error("请重新选择项目以取得当前状态");
+      const restoring = projectForm.expectedStatus === "archived" && projectForm.status !== "archived";
+      if (restoring && (!projectForm.confirmRestore || (projectForm.restoreReason?.trim().length ?? 0) < 4 || (projectForm.restoreReason?.trim().length ?? 0) > 200))
+        return toast.error("恢复归档项目须明确确认，并填写 4–200 字原因");
       saveProject.mutate({
         id: projectForm.id,
         parentId: projectForm.parentId ? Number(projectForm.parentId) : null,
@@ -6981,6 +7038,9 @@ export default function AdminPage({
         nodeType: projectForm.nodeType.trim(),
         projectType: projectForm.projectType,
         status: projectForm.status,
+        expectedStatus: projectForm.expectedStatus,
+        confirmRestore: restoring ? projectForm.confirmRestore : undefined,
+        reason: restoring ? projectForm.restoreReason?.trim() : undefined,
         startDate: projectForm.startDate || null,
         endDate: projectForm.endDate || null,
         costCenterCode: projectForm.costCenterCode.trim() || null,
@@ -7143,6 +7203,9 @@ export default function AdminPage({
                         nodeType: item.nodeType,
                         projectType: item.projectType ?? "other",
                         status: item.status,
+                        expectedStatus: item.status,
+                        confirmRestore: false,
+                        restoreReason: "",
                         startDate: item.startDate
                           ? toDeviceDateInput(item.startDate)
                           : "",
@@ -7350,11 +7413,11 @@ export default function AdminPage({
                         resource: "organization",
                         id: organizationForm.id!,
                         label: organizationForm.name,
-                        description: `确认删除组织“${organizationForm.name}”？若仍被下级节点、人员、项目、车辆、授权或部门业务范围引用，系统将拒绝删除并要求先迁移或停用。`,
+                        description: `组织“${organizationForm.name}”硬删除已关闭。只读查看当前及历史引用；建议将状态改为停用并保存，保留身份。`,
                       })
                     }
                   >
-                    删除组织
+                    查看引用 / 停用建议
                   </Button>
                 ) : null}
               </div>
@@ -7544,7 +7607,7 @@ export default function AdminPage({
                 <Select
                   value={projectForm.status}
                   onValueChange={(value: ProjectStatus) =>
-                    setProjectForm({ ...projectForm, status: value })
+                    setProjectForm({ ...projectForm, status: value, confirmRestore: false })
                   }
                 >
                   <SelectTrigger>
@@ -7559,6 +7622,13 @@ export default function AdminPage({
                   </SelectContent>
                 </Select>
               </div>
+              {projectForm.status === "archived" && projectForm.expectedStatus !== "archived" ? <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">归档会收回项目直接业务模块、撤销直接业务角色授权并保留历史。归档不等于全域写锁，历史收尾仍由原业务权限校验。</p> : null}
+              {projectForm.expectedStatus === "archived" && projectForm.status !== "archived" ? <div className="min-w-0 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs leading-5 text-amber-900">只恢复项目档案，不恢复旧直接角色授权或业务模块；后续必须独立显式授权。不会新增全局恢复继承权限。</p>
+                <Label htmlFor="project-restore-reason">恢复原因（4–200 字）</Label>
+                <Textarea id="project-restore-reason" maxLength={200} disabled={saveProject.isPending} value={projectForm.restoreReason ?? ""} onChange={event => setProjectForm({ ...projectForm, restoreReason: event.target.value, confirmRestore: false })} />
+                <label className="flex items-start gap-2 text-sm"><Checkbox checked={projectForm.confirmRestore ?? false} disabled={saveProject.isPending} onCheckedChange={value => setProjectForm({ ...projectForm, confirmRestore: value === true })} /><span>我确认恢复档案，旧权限仍保持收回。</span></label>
+              </div> : null}
               <div className="grid gap-2 sm:grid-cols-2">
                 <Button
                   className="bg-[#203c48] hover:bg-[#17313b]"
@@ -7566,6 +7636,7 @@ export default function AdminPage({
                     !projectForm.code ||
                     !projectForm.name ||
                     !projectForm.nodeType ||
+                    (projectForm.expectedStatus === "archived" && projectForm.status !== "archived" && (!projectForm.confirmRestore || (projectForm.restoreReason?.trim().length ?? 0) < 4)) ||
                     saveProject.isPending
                   }
                   onClick={submitProject}
@@ -7581,11 +7652,11 @@ export default function AdminPage({
                         resource: "project",
                         id: projectForm.id!,
                         label: projectForm.name,
-                        description: `确认删除项目节点“${projectForm.name}”？若仍有下级项目、授权、资源或业务单据，系统将拒绝删除并提示改为归档。`,
+                        description: `项目“${projectForm.name}”硬删除已关闭。只读查看实际当前及历史引用；建议将状态改为已归档并保存，保留原身份和业务历史。`,
                       })
                     }
                   >
-                    删除项目
+                    查看引用 / 归档建议
                   </Button>
                 ) : null}
               </div>
@@ -9816,6 +9887,7 @@ export default function AdminPage({
                   disabled={
                     !departmentScopeForm.scopeTarget ||
                     !departmentScopeForm.module ||
+                    departmentScopes.isLoading || departmentScopes.isError || departmentScopes.isFetching ||
                     saveDepartmentScope.isPending
                   }
                   onClick={() => {
@@ -9828,13 +9900,20 @@ export default function AdminPage({
                         scopeType === "project") &&
                       Number.isSafeInteger(scopeId) &&
                       scopeId > 0
-                    )
+                    ) {
+                      const existing = departmentScopes.data?.find(scope => scope.scopeType === scopeType && scope.scopeId === scopeId && scope.module === departmentScopeForm.module);
+                      if (existing?.status === "disabled") {
+                        setScopeReactivationTarget({ scopeType, scopeId, module: departmentScopeForm.module, label: `${existing.scopeName} · ${existing.module}` });
+                        return;
+                      }
                       saveDepartmentScope.mutate({
                         scopeType,
                         scopeId,
                         module: departmentScopeForm.module,
                         status: "active",
+                        expectedStatus: existing?.status ?? "absent",
                       });
+                    }
                   }}
                 >
                   启用业务
@@ -9866,6 +9945,7 @@ export default function AdminPage({
                     const module = departmentModules.data?.find(
                       item => item.code === scope.module
                     );
+                    const canEnableObject = scope.scopeType === "project" ? scope.scopeStatus !== "archived" : scope.scopeStatus === "active";
                     return (
                       <div
                         key={scope.id}
@@ -9877,43 +9957,48 @@ export default function AdminPage({
                             {scope.scopeName} · {module?.name ?? scope.module}
                           </p>
                           <p className="mt-0.5 text-xs text-slate-500">
-                            {scope.status === "active" ? "已启用" : "已停用"} ·
+                            对象状态：{getBusinessStatusLabel(scope.scopeStatus)} · 配置：{scope.status === "active" ? "已启用" : "已收回 / disabled"} ·
                             更新于 {displayDate(scope.updatedAt)}
                           </p>
+                          <p className="mt-1 text-xs text-slate-500">{scope.status === "active" && canEnableObject ? "模块已配置，实际可访问仍须既有角色、项目范围及具体权限" : "对象失效或配置已收回，不代表当前可访问"}</p>
                         </div>
                         <div className="flex gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={saveDepartmentScope.isPending}
-                            onClick={() =>
+                            disabled={saveDepartmentScope.isPending || departmentScopes.isError || departmentScopes.isFetching || (scope.status === "disabled" && !canEnableObject)}
+                            onClick={() => {
+                              if (scope.status === "disabled") {
+                                setScopeReactivationTarget({ scopeType: scope.scopeType, scopeId: scope.scopeId, module: scope.module, label: `${scope.scopeName} · ${module?.name ?? scope.module}` });
+                                return;
+                              }
                               saveDepartmentScope.mutate({
                                 scopeType: scope.scopeType,
                                 scopeId: scope.scopeId,
                                 module: scope.module,
-                                status:
-                                  scope.status === "active"
-                                    ? "disabled"
-                                    : "active",
-                              })
-                            }
+                                status: "disabled",
+                                expectedStatus: scope.status,
+                              });
+                            }}
                           >
-                            {scope.status === "active" ? "停用" : "启用"}
+                            {scope.status === "active" ? "停用 / 收回" : "明确重新启用"}
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
                             className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                            disabled={removeMasterData.isPending || departmentScopes.isError || departmentScopes.isFetching || (scope.scopeType === "project" && scope.status === "disabled")}
                             onClick={() =>
                               setMasterDataDeleteTarget({
                                 resource: "department_scope",
                                 id: scope.id,
+                                scopeType: scope.scopeType,
                                 label: `${scope.scopeType === "project" ? "项目" : "部门"} · ${scope.scopeName} · ${module?.name ?? scope.module}`,
-                                description: `确认删除“${scope.scopeName}”的“${module?.name ?? scope.module}”业务范围？删除后该${scope.scopeType === "project" ? "项目" : "部门"}不再拥有该模块入口，可重新启用创建。`,
+                                description: scope.scopeType === "project" ? `确认收回“${scope.scopeName}”的“${module?.name ?? scope.module}”？保留原记录为 disabled 显式配置；最后模块收回不会恢复历史兼容范围。重新启用需独立确认与原因。` : `确认删除“${scope.scopeName}”的“${module?.name ?? scope.module}”组织业务范围配置？此操作不删除组织身份，不扩大原有角色或项目范围。`,
                               })
                             }
                           >
-                            删除
+                            {scope.scopeType === "project" ? scope.status === "disabled" ? "已收回（保留配置）" : "收回" : "删除配置"}
                           </Button>
                         </div>
                       </div>
@@ -14535,6 +14620,7 @@ export default function AdminPage({
                   formatMoney={displayMoney}
                 />
                 <DailyWageLedger
+                  roleCodes={payrollCorrectionRoleCodes}
                   summary={dailyWageSummary}
                   rows={dailyWages}
                   refreshing={laborDailyWages.isFetching}
@@ -14551,6 +14637,7 @@ export default function AdminPage({
                     const data = response.data;
                     if (!data) return toast.error("工资分类报表数据读取失败");
                     const standardHeaders = [
+                      "正式单号",
                       "人员",
                       "班组",
                       "期间/日期",
@@ -14564,6 +14651,7 @@ export default function AdminPage({
                     ];
                     const toPayrollRows = (rows: typeof data.payrollRows) =>
                       rows.map(row => [
+                        documentNumberText(row),
                         row.workerName,
                         row.teamName || "",
                         row.period,
@@ -14577,6 +14665,7 @@ export default function AdminPage({
                       ]);
                     const toDailyRows = (rows: typeof data.dailyRows) =>
                       rows.map(row => [
+                        documentNumberText(row),
                         row.workerName,
                         row.teamName || "",
                         toBusinessDateInput(row.settlementDate),
@@ -14633,6 +14722,7 @@ export default function AdminPage({
                     if (!data)
                       return toast.error("付款专用清单无权限或数据读取失败");
                     const headers = [
+                      "正式单号",
                       "来源",
                       "人员",
                       "人员类型",
@@ -14645,6 +14735,7 @@ export default function AdminPage({
                       "实际付款日期",
                     ];
                     const payrollRows = data.payrollRows.map(row => [
+                      documentNumberText(row),
                       "月度工资",
                       row.workerName,
                       getPayrollWorkerCategoryLabel(row.workerCategory),
@@ -14657,6 +14748,7 @@ export default function AdminPage({
                       row.paidAt ? displayDate(row.paidAt) : "",
                     ]);
                     const dailyRows = data.dailyRows.map(row => [
+                      documentNumberText(row),
                       "临时日结",
                       row.workerName,
                       getPayrollWorkerCategoryLabel(row.workerCategory),
@@ -14697,6 +14789,7 @@ export default function AdminPage({
                   }}
                 />
                 <PayrollStatementLedger
+                  roleCodes={payrollCorrectionRoleCodes}
                   period={laborPeriod}
                   onPeriodChange={setLaborPeriod}
                   search={laborPayrollSearch}
@@ -14717,6 +14810,7 @@ export default function AdminPage({
                         "人员",
                         "班组",
                         "工资期间",
+                        "正式单号",
                         "应发金额",
                         "扣款",
                         "实发金额",
@@ -14731,6 +14825,7 @@ export default function AdminPage({
                         item.workerName,
                         item.teamName || "",
                         item.period,
+                        documentNumberText(item),
                         exportMoney(item.payableAmount),
                         exportMoney(item.deductionAmount),
                         exportMoney(item.actualAmount),
@@ -14745,6 +14840,7 @@ export default function AdminPage({
                       description:
                         "工资金额由服务端计算，付款凭证与敏感账户字段仅向获授权岗位展示。",
                       fields: [
+                        { label: "正式单号", value: <StoredDocumentNumber record={item} /> },
                         { label: "工资期间", value: item.period },
                         {
                           label: "状态",
@@ -17819,6 +17915,7 @@ export default function AdminPage({
                           <TableHead>结算状态</TableHead>
                           <TableHead>金额</TableHead>
                           <TableHead>说明</TableHead>
+                          <TableHead>纠错 / 来源</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -17859,12 +17956,20 @@ export default function AdminPage({
                               <TableCell className="max-w-[280px] whitespace-normal text-slate-600">
                                 {record.remarks || "—"}
                               </TableCell>
+                              <TableCell className="whitespace-normal">
+                                {Number(financeProjectId) > 0 && typeof record.id === "number" && Number.isSafeInteger(record.id) && record.id > 0 && typeof record.projectId === "number" && Number.isSafeInteger(record.projectId) && record.projectId > 0 ? <FinanceRecordCorrectionActions
+                                  key={`${financeProjectId}:${record.id}`}
+                                  projectId={Number(financeProjectId)}
+                                  record={{ ...record, projectId: record.projectId }}
+                                  roleCodes={financeCorrectionRoleCodes}
+                                /> : <span className="text-xs text-slate-500">虚拟记录或项目归属未确认，仅可查看；须回原业务核查</span>}
+                              </TableCell>
                             </TableRow>
                           ))
                         ) : (
                           <TableRow>
                             <TableCell
-                              colSpan={7}
+                              colSpan={8}
                               className="py-10 text-center text-slate-500"
                             >
                               当前筛选范围暂无已登记资金流水。可检查项目、期间和筛选条件，或由财务按权限登记真实流水。
@@ -19139,7 +19244,7 @@ export default function AdminPage({
                               item.recordNo,
                               item.assetName,
                               item.assetType === "vehicle" ? "车辆" : "机械",
-                              getDieselRecordSourceLabel(item.recordNo),
+                              getDieselRecordSourceLabel(item.recordNo, item.machineCostSourceId),
                               item.supplyMethod === "project_supply"
                                 ? "项目部供油"
                                 : "加油站加油",
@@ -19259,7 +19364,7 @@ export default function AdminPage({
                             <div>
                               <p>{item.recordNo}</p>
                               <p className="mt-1 text-[11px] font-medium text-emerald-700">
-                                {getDieselRecordSourceLabel(item.recordNo)}
+                                {getDieselRecordSourceLabel(item.recordNo, item.machineCostSourceId)}
                               </p>
                               <p className="mt-1 text-[11px] text-slate-500">
                                 {item.assetName}
@@ -19317,14 +19422,14 @@ export default function AdminPage({
                                 {
                                   label: "录入来源",
                                   value: getDieselRecordSourceLabel(
-                                    item.recordNo
+                                    item.recordNo, item.machineCostSourceId
                                   ),
                                 },
                                 {
                                   label: "办理说明",
                                   value:
                                     getDieselRecordSourceLabel(
-                                      item.recordNo
+                                      item.recordNo, item.machineCostSourceId
                                     ) === "机械录入"
                                       ? "已关联原机械成本，未重复计费；审核、结算或作废在机械管理原记录办理，柴油台账同步状态"
                                       : "柴油登记与资源成本同源关联",
@@ -21725,33 +21830,40 @@ export default function AdminPage({
             />
           ) : null}
         </Suspense>
+        {scopeReactivationTarget ? <ScopeReactivationDialog
+          key={`${scopeReactivationTarget.scopeType}:${scopeReactivationTarget.scopeId}:${scopeReactivationTarget.module}`}
+          target={scopeReactivationTarget}
+          onClose={() => setScopeReactivationTarget(null)}
+          onConfirm={input => saveDepartmentScope.mutateAsync(input)}
+        /> : null}
         <AlertDialog
           open={Boolean(masterDataDeleteTarget)}
           onOpenChange={open => {
-            if (!open) setMasterDataDeleteTarget(null);
+            if (!open && !removeMasterData.isPending) setMasterDataDeleteTarget(null);
           }}
         >
-          <AlertDialogContent>
+          <AlertDialogContent className="min-w-0 max-h-[90dvh] overflow-y-auto overflow-x-hidden break-words sm:max-w-3xl lg:max-w-3xl">
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {masterDataDeleteTarget?.resource === "role_assignment"
-                  ? "确认撤销角色授权？"
-                  : "确认删除主数据？"}
+                {masterDataDeleteTarget?.resource === "project" || masterDataDeleteTarget?.resource === "organization" ? "只读引用预览 · 硬删除关闭" : masterDataDeleteTarget?.resource === "department_scope" && masterDataDeleteTarget.scopeType === "project" ? "确认收回项目业务模块？" : masterDataDeleteTarget?.resource === "role_assignment" ? "确认撤销角色授权？" : "确认删除主数据？"}
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {masterDataDeleteTarget?.description ??
                   "系统将在服务端校验关联业务数据。仍被引用的记录将被拒绝删除，并提示改为停用或归档。"}
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {masterDataDeleteTarget && (masterDataDeleteTarget.resource === "project" || masterDataDeleteTarget.resource === "organization") ? <IdentityDeletionImpactPreview key={`${masterDataDeleteTarget.resource}:${masterDataDeleteTarget.id}`} resource={masterDataDeleteTarget.resource} id={masterDataDeleteTarget.id} /> : null}
             <AlertDialogFooter>
               <AlertDialogCancel disabled={removeMasterData.isPending}>
-                取消
+                {masterDataDeleteTarget?.resource === "project" || masterDataDeleteTarget?.resource === "organization" ? "关闭预览" : "取消"}
               </AlertDialogCancel>
+              {masterDataDeleteTarget?.resource !== "project" && masterDataDeleteTarget?.resource !== "organization" ? (
               <AlertDialogAction
                 className="bg-rose-700 hover:bg-rose-800"
                 disabled={!masterDataDeleteTarget || removeMasterData.isPending}
-                onClick={() => {
-                  if (masterDataDeleteTarget)
+                onClick={event => {
+                  event.preventDefault();
+                  if (masterDataDeleteTarget && masterDataDeleteTarget.resource !== "project" && masterDataDeleteTarget.resource !== "organization" && !removeMasterData.isPending)
                     removeMasterData.mutate({
                       resource: masterDataDeleteTarget.resource,
                       id: masterDataDeleteTarget.id,
@@ -21760,8 +21872,9 @@ export default function AdminPage({
               >
                 {masterDataDeleteTarget?.resource === "role_assignment"
                   ? "确认撤销"
-                  : "确认删除"}
+                  : masterDataDeleteTarget?.resource === "department_scope" && masterDataDeleteTarget.scopeType === "project" ? "确认收回（保留配置）" : "确认删除"}
               </AlertDialogAction>
+              ) : null}
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -22407,7 +22520,7 @@ export default function AdminPage({
             <DialogHeader>
               <DialogTitle>登记机械加班</DialogTitle>
               <DialogDescription>
-                填写加班小时、驾驶员和单价；金额由服务端按加班小时×单价核算，保存后进入草稿审核链路。
+                填写加班小时、驾驶员和单价；金额由服务端按加班小时×单价核算，保存后进入草稿审核链路。新建保存成功后由服务器分配正式单号；编辑保留原号。
               </DialogDescription>
             </DialogHeader>
             <form
@@ -22572,7 +22685,7 @@ export default function AdminPage({
             <DialogHeader>
               <DialogTitle>录入机械成本</DialogTitle>
               <DialogDescription>
-                成本金额仅由服务端按数量乘单价计算，保存后先进入草稿状态，再由受权岗位审核、结算或作废。
+                成本金额仅由服务端按数量乘单价计算，保存后先进入草稿状态，再由受权岗位审核、结算或作废。保存成功后由服务器分配正式单号。
                 保存前自动核对当前项目、机械及北京时间同日相近费用，数量、单价和金额按两位比较；发现疑似记录先核对，不要连续提交。
               </DialogDescription>
             </DialogHeader>
@@ -22750,7 +22863,7 @@ export default function AdminPage({
             <DialogHeader>
               <DialogTitle>会计机械月度明细</DialogTitle>
               <DialogDescription>
-                按会计模板录入出勤、司机固定工资、加班与签字。机械产值、维修费、油耗、司机工资和机械分成始终由服务端按项目真实成本和生效计价规则生成。
+                按会计模板录入出勤、司机固定工资、加班与签字。机械产值、维修费、油耗、司机工资和机械分成始终由服务端按项目真实成本和生效计价规则生成。新建保存成功后由服务器分配正式单号；重算保留原号。
               </DialogDescription>
             </DialogHeader>
             <form
@@ -23103,7 +23216,7 @@ export default function AdminPage({
                 维修保养费用
               </DialogTitle>
               <DialogDescription>
-                费用会纳入单车/单设备及车辆、机械费用汇总；作废记录不参与金额统计。
+                费用会纳入单车/单设备及车辆、机械费用汇总；作废记录不参与金额统计。新建保存成功后由服务器分配正式单号；编辑保留原号。
               </DialogDescription>
             </DialogHeader>
             <form

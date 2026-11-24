@@ -1,9 +1,10 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /** 全部基础设施隔离；本文件仅调用真实 tRPC caller，不连接 MySQL、不写业务、不发通知。 */
 const mocks = vi.hoisted(() => ({ db: vi.fn(), scope: vi.fn(), permission: vi.fn(), notify: vi.fn() }));
-vi.mock("./db", () => ({ getDb: mocks.db }));
+vi.mock("./db", () => ({ getDb: async (...args: any[]) => withNumberingFixture(await mocks.db(...args)) }));
 vi.mock("./access", async original => ({
   ...(await original<typeof import("./access")>()),
   assertProjectInCurrentScope: mocks.scope,
@@ -83,7 +84,7 @@ describe("手机柴油加油通知真实 caller 提交边界", () => {
     // 在 mock 外检查快照，通知安全 catch 不能吞掉测试断言。
     expect(atNotification).toEqual({ committed: true, auditCount: 1, dieselCount: 1,
       costCount: assetType === "machine" ? 1 : 0, recordId: 20 });
-    expect(result).toMatchObject({ success: true, id: 20, amount: 86.1, appliedUnitPrice: 8.61, recordNo: expect.stringMatching(/^DS3/) });
+    expect(result).toMatchObject({ success: true, id: 20, amount: 86.1, appliedUnitPrice: 8.61, recordNo: expect.stringMatching(/^DS\d{14}0009\d{4}$/) });
     expect(mocks.notify).toHaveBeenCalledTimes(1);
     expect(mocks.notify).toHaveBeenCalledWith({ actorUserId: 9, projectId: 3, recordId: 20, assetType, assetId: 13, liters: 10, amount: 86.1, refueledAt });
     expect(db.state.diesel_refuel_records[0]).toMatchObject({ status: "approved", assetType, amount: "86.1", createdBy: 9 });

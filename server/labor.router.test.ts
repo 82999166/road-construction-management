@@ -1,4 +1,6 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getTableName } from "drizzle-orm";
 import type { TrpcContext } from "./_core/context";
 
 /** 对象存储与加密实现属于外部基础设施；路由测试只验证其调用边界，不执行真实上传。 */
@@ -63,19 +65,14 @@ function createAuthContext(): TrpcContext {
 
 /** 构造 Drizzle 查询链，返回指定的单次查询结果。 */
 function createSelectDb(rows: unknown[]) {
-  const terminalQuery = {
-    orderBy: vi.fn(async () => rows),
-    limit: vi.fn(async () => rows),
-  };
-  const chain = {
-    where: vi.fn(() => terminalQuery),
-    innerJoin: vi.fn(),
-  };
-  chain.innerJoin.mockReturnValue(chain);
   return {
-    select: vi.fn(() => ({
-      from: vi.fn(() => chain),
-    })),
+    transaction: vi.fn(async function (this: any, callback: any) { return callback(this); }),
+    select: vi.fn(() => ({ from: vi.fn((table: any) => {
+      const name = getTableName(table);
+      const data = name === "projects" ? [{ id: 10 }] : ["settlement_payment_records", "financial_records"].includes(name) ? [] : rows;
+      const builder: any = { where: vi.fn(() => builder), innerJoin: vi.fn(() => builder), orderBy: vi.fn(() => builder), limit: vi.fn(() => builder), for: vi.fn(() => builder), then: (resolve: any, reject: any) => Promise.resolve(data).then(resolve, reject) };
+      return builder;
+    }) })),
   };
 }
 
@@ -110,7 +107,7 @@ describe("labor tRPC 路由", () => {
       checkoutLocationAccuracyMeters: null,
       checkoutStatus: null,
     };
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([checkIn]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([checkIn]) as never));
 
     await expect(
       laborRouter
@@ -149,7 +146,7 @@ describe("labor tRPC 路由", () => {
         updatedAt: new Date("2026-07-25T00:00:00.000Z"),
       },
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     const result = await laborRouter
       .createCaller(createAuthContext())
@@ -176,13 +173,13 @@ describe("labor tRPC 路由", () => {
       period: "2026-07",
       status: "draft",
     };
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
     const db = {
       ...createSelectDb([payroll]),
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       laborRouter.createCaller(createAuthContext()).payroll.submit({ id: 8 })
@@ -216,13 +213,13 @@ describe("labor tRPC 路由", () => {
   it("工资状态条件更新发生冲突时不写审计或投递站内及企业微信消息", async () => {
     const auditValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       ...createSelectDb([
         { id: 18, projectId: 10, period: "2026-07", status: "draft" },
       ]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
       insert: vi.fn(() => ({ values: auditValues })),
-    } as never);
+    } as never));
 
     await expect(
       laborRouter.createCaller(createAuthContext()).payroll.submit({ id: 18 })
@@ -245,11 +242,11 @@ describe("labor tRPC 路由", () => {
     const db = {
       ...createSelectDb([worker]),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+        set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })),
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       laborRouter
@@ -283,9 +280,9 @@ describe("labor tRPC 路由", () => {
 
   it("新建实名制施工队工人要求劳务模块的 create 操作权限", async () => {
     const insertValues = vi.fn(async () => [{ insertId: 31 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({
       insert: vi.fn(() => ({ values: insertValues })),
-    } as never);
+    } as never));
 
     await expect(
       laborRouter.createCaller(createAuthContext()).saveWorker({
@@ -313,7 +310,7 @@ describe("labor tRPC 路由", () => {
       transaction: vi.fn(),
     };
     db.transaction.mockImplementation(async callback => callback(db));
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     vi.mocked(storagePut).mockResolvedValue({
       key: "labor-certificates/project-10/worker-7/id-card.jpg",
       url: "https://storage.example/certificate.jpg",
@@ -352,13 +349,13 @@ describe("labor tRPC 路由", () => {
       period: "2026-07",
       status: "reviewing",
     };
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
     const db = {
       ...createSelectDb([payroll]),
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       laborRouter
@@ -401,11 +398,11 @@ describe("labor tRPC 路由", () => {
     const finalizedDb = {
       ...createSelectDb([{ ...payroll, status: "approved" }]),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+        set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })),
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(finalizedDb as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(finalizedDb as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -432,7 +429,7 @@ describe("labor tRPC 路由", () => {
       createdAt: new Date("2026-07-01T00:00:00.000Z"),
       updatedAt: new Date("2026-07-25T00:00:00.000Z"),
     };
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([payrollRow]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([payrollRow]) as never));
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["LABOR_MANAGER"]);
 
     const restrictedRows = await laborRouter
@@ -455,14 +452,14 @@ describe("labor tRPC 路由", () => {
       status: "approved",
       submittedBy: 7,
     };
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
     const insertValues = vi.fn(async () => undefined);
     const db = {
       ...createSelectDb([payroll]),
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: insertValues })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       laborRouter
@@ -488,7 +485,7 @@ describe("labor tRPC 路由", () => {
   });
 
   it("工资条只能在发放确认前由会计或财务负责人作废，已发放记录保持终态锁定", async () => {
-    const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+    const updateSet = vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) }));
     const insertValues = vi.fn(async () => undefined);
     const db = {
       ...createSelectDb([
@@ -503,7 +500,7 @@ describe("labor tRPC 路由", () => {
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: insertValues })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["ACCOUNTANT"]);
     await expect(
       laborRouter
@@ -530,11 +527,11 @@ describe("labor tRPC 路由", () => {
         },
       ]),
       update: vi.fn(() => ({
-        set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+        set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })),
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(paidDb as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(paidDb as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -544,7 +541,7 @@ describe("labor tRPC 路由", () => {
 
   it("下班打卡必须先完成上班打卡，并仅写入一次下班时间和定位状态", async () => {
     const fingerprint = "a".repeat(64);
-    vi.mocked(getDb).mockResolvedValue({} as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture({} as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -559,7 +556,7 @@ describe("labor tRPC 路由", () => {
       message: "上下班打卡必须上传实时定位信息，请允许浏览器定位后重试",
     });
 
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([]) as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -595,7 +592,7 @@ describe("labor tRPC 路由", () => {
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
     Object.assign(db, { transaction: vi.fn(async callback => callback(db)) });
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -641,7 +638,7 @@ describe("labor tRPC 路由", () => {
     Object.assign(zeroWriteDb, {
       transaction: vi.fn(async callback => callback(zeroWriteDb)),
     });
-    vi.mocked(getDb).mockResolvedValue(zeroWriteDb as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(zeroWriteDb as never));
     await expect(
       laborRouter
         .createCaller(createAuthContext())
@@ -674,7 +671,7 @@ describe("labor tRPC 路由", () => {
       insert: vi.fn(),
     };
     Object.assign(db, { transaction: vi.fn(async callback => callback(db)) });
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(db as never));
 
     await expect(
       laborRouter

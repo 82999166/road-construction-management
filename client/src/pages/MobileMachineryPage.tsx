@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { StoredDocumentNumber } from "@/components/StoredDocumentNumber";
 import { useGuardedMachineCost } from "@/components/MachineCostDuplicateConfirmation";
 import {
   Select,
@@ -62,6 +63,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import MachineryOvertimeLedger from "@/components/MachineryOvertimeLedger";
 import MachineryCostWorkspace from "@/components/MachineryCostWorkspace";
+import MachineCostEditDialog, { type MachineCostEditTarget } from "@/components/MachineCostEditDialog";
 import { BusinessWorkspaceNavigation } from "@/components/BusinessWorkspaceNavigation";
 import {
   MACHINERY_WORKSPACE_TABS,
@@ -341,6 +343,8 @@ export default function MobileMachineryPage() {
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [costDialogOpen, setCostDialogOpen] = useState(false);
+  const [costEditTarget, setCostEditTarget] = useState<MachineCostEditTarget | null>(null);
+  useEffect(() => { setCostEditTarget(null); }, [projectId, machineId, period, activeTab]);
   const [costHistoryMachineId, setCostHistoryMachineId] = useState<
     number | null
   >(null);
@@ -1746,6 +1750,7 @@ export default function MobileMachineryPage() {
                                             {formatMoney(cost.amount)}
                                           </span>
                                         </div>
+                                        <StoredDocumentNumber record={cost} />
                                         <div className="mt-0.5 flex items-center justify-between">
                                           <span>
                                             {cost.remarks ||
@@ -1761,6 +1766,9 @@ export default function MobileMachineryPage() {
                                           <span className="mt-0.5 block text-[#47754d]">
                                             已关联水印照片
                                           </span>
+                                        ) : null}
+                                        {cost.status === "draft" && cost.canEdit ? (
+                                          <Button size="sm" variant="outline" className="mt-1" onClick={() => setCostEditTarget({ id: cost.id, projectId: selectedProjectId, machineId: cost.machineId })}>修改草稿</Button>
                                         ) : null}
                                       </div>
                                     );
@@ -2180,6 +2188,7 @@ export default function MobileMachineryPage() {
                                 {formatMoney(item.machineShareAmount)}
                               </p>
                             </div>
+                            <StoredDocumentNumber record={item} />
                             <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-[#fcf8f2] p-3 text-[11px] text-[#765a49]">
                               <span>
                                 总产值：{formatMoney(item.totalOutput)}
@@ -3375,6 +3384,9 @@ export default function MobileMachineryPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        {costEditTarget && costEditTarget.projectId === selectedProjectId && costEditTarget.machineId === selectedMachineId ? (
+          <MachineCostEditDialog key={`${costEditTarget.projectId}:${costEditTarget.machineId}:${costEditTarget.id}`} target={costEditTarget} onClose={() => setCostEditTarget(null)} />
+        ) : null}
         <MachinerySummaryPrintDialog
           open={machineryPrintOpen}
           onOpenChange={setMachineryPrintOpen}

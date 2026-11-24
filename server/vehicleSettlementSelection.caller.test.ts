@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
@@ -10,7 +11,7 @@ import {
 } from "./services/vehicleSettlementSelection";
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 const mock = vi.hoisted(() => ({ db: null as any, roles: ["ALL"] }));
-vi.mock("./db", () => ({ getDb: async () => mock.db }));
+vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mock.db) }));
 vi.mock("./access", async original => ({
   ...(await original<typeof import("./access")>()),
   assertDepartmentBusinessAccess: async () => {},
@@ -62,6 +63,7 @@ class SelectionFixtureDb {
   };
   private gate = Promise.resolve();
   beforeTransaction?: () => void;
+  beforeVehicleLock?: () => void;
   zeroWriteTable?: string;
   locks: string[] = [];
   reads: string[] = [];
@@ -113,6 +115,7 @@ class SelectionFixtureDb {
         return builder;
       },
       for: () => {
+        if (getTableName(table) === "transport_vehicles") { this.beforeVehicleLock?.(); this.beforeVehicleLock = undefined; }
         this.locks.push(getTableName(table));
         return builder;
       },
@@ -703,7 +706,7 @@ describe("real transport caller preview and creation", () => {
     async kind => {
       seedTrip(1);
       seedTrip(2);
-      mock.db.beforeTransaction = () => {
+      mock.db.beforeVehicleLock = () => {
         if (kind === "added") seedTrip(3);
         if (kind === "occupied")
           mock.db.rows.transport_vehicle_settlement_items = [
@@ -724,7 +727,7 @@ describe("real transport caller preview and creation", () => {
       ).rejects.toMatchObject({ code: "CONFLICT" });
       expect(mock.db.rows.transport_vehicle_settlements ?? []).toHaveLength(0);
       expect(mock.db.writes).toBe(0);
-      expect(mock.db.locks.slice(0, 2)).toEqual([
+      expect(mock.db.locks.filter((name: string, index: number, locks: string[]) => name !== locks[index - 1]).slice(0, 2)).toEqual([
         "projects",
         "transport_vehicles",
       ]);

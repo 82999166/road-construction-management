@@ -1,16 +1,17 @@
 import { TRPCError } from "@trpc/server";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { assertEvidenceImageSignature } from "../../shared/domain";
 import { DEFAULT_EVIDENCE_WATERMARK_TEMPLATE, normalizeEvidenceWatermarkTemplate, WATERMARK_TEMPLATE_SETTING_KEY, type EvidenceWatermarkTemplate } from "../../shared/watermarkTemplate";
-import { attendanceRecords, auditLogs, dieselRefuelRecords, evidenceRecords, financialInvoices, financialRecords, inventoryTransactions, machineCostRecords, measurementTakeoffEvidences, projects, purchaseOrders, systemSettings, transportTrips } from "../../drizzle/schema";
-import { assertDepartmentBusinessAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
+import { auditLogs, constructionDailyReports, evidenceRecords, projects, systemSettings } from "../../drizzle/schema";
+import { assertDepartmentBusinessAccess, assertExistingBusinessRecordChangeAccess, assertProjectInCurrentScope, getDepartmentModuleDataScope, getEffectiveRoleCodes, getRoleOperationPermissionDecision, requireAuthenticatedUser } from "../access";
 import { getDb } from "../db";
 import { invokeLLM } from "../_core/llm";
 import { storageGetSignedUrl, storagePut } from "../storage";
 import { protectedProcedure, router } from "../_core/trpc";
 import { appendIntegrityProtectedAudit } from "../services/auditIntegrity";
+import { assertEvidenceConditionalWrite, collectEvidenceReferences, evidenceDeleteBlockedReason, GENERAL_EVIDENCE_SOURCES, isGeneralEvidenceVisible, lockEvidenceProject, type EvidenceRow, type EvidenceTransaction } from "../services/evidenceIntegrity";
 
 const MAX_EVIDENCE_BYTES = 8 * 1024 * 1024;
 const evidenceSourceSchema = z.enum(["site_photo", "safety", "transport", "attendance", "purchase", "diesel_receipt", "other"]);
@@ -125,10 +126,53 @@ async function assertConstructionSitePhotoAccess(ctx: Parameters<typeof requireA
 async function assertEvidenceUploadAccess(ctx: Parameters<typeof requireAuthenticatedUser>[0], sourceType: z.infer<typeof evidenceSourceSchema>) {
   try {
     await assertEvidenceAccess(ctx);
+    return "EVIDENCE" as const;
   } catch (error) {
     if (sourceType !== "site_photo") throw error;
     await assertConstructionSitePhotoAccess(ctx);
+    return "CONSTRUCTION" as const;
   }
+}
+
+async function assertModuleProjectScope(ctx: Parameters<typeof requireAuthenticatedUser>[0], tx: EvidenceTransaction, projectId: number, module: "EVIDENCE" | "CONSTRUCTION") {
+  const scope = await getDepartmentModuleDataScope(ctx, module);
+  if (scope.hasAllProjects || scope.projectIds.includes(projectId)) return;
+  if (scope.organizationIds.length) {
+    const [project] = await tx.select({ organizationId: projects.organizationId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (project?.organizationId && scope.organizationIds.includes(project.organizationId)) return;
+  }
+  throw new TRPCError({ code: "FORBIDDEN", message: "当前模块未获该项目授权" });
+}
+
+function constructionReportSourceId(sourceType: string, sourceId: string | null | undefined) {
+  if (!sourceId?.startsWith("construction-report")) return null;
+  const match = /^construction-report-([1-9]\d*)$/.exec(sourceId);
+  const id = match ? Number(match[1]) : NaN;
+  if (sourceType !== "site_photo" || !Number.isSafeInteger(id)) throw new TRPCError({ code: "BAD_REQUEST", message: "日报照片来源编号格式无效，请从日报上传入口重试" });
+  return id;
+}
+
+async function assertConstructionPhotoParent(ctx: Parameters<typeof requireAuthenticatedUser>[0], tx: EvidenceTransaction, input: z.infer<typeof evidenceUploadInput>, lock = false) {
+  const reportId = constructionReportSourceId(input.sourceType, input.sourceId);
+  if (reportId === null) return;
+  await assertConstructionSitePhotoAccess(ctx);
+  await assertModuleProjectScope(ctx, tx, input.projectId, "CONSTRUCTION");
+  const query = tx.select().from(constructionDailyReports).where(eq(constructionDailyReports.id, reportId)).limit(1);
+  const [report] = await (lock ? query.for("update") : query);
+  if (!report || report.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "日报不存在或不属于当前项目，请从日报详情重新上传" });
+  if (!["draft", "rejected"].includes(report.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "仅草稿或退回日报允许追加照片；已提交、审核或归档日报请走补证流程" });
+  if (report.createdBy !== ctx.user?.id) await assertExistingBusinessRecordChangeAccess(ctx);
+}
+
+async function assertGeneralEvidence(ctx: Parameters<typeof requireAuthenticatedUser>[0], tx: EvidenceTransaction, evidence: EvidenceRow, lock = false) {
+  if (!evidence || evidence.status !== "active") throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在或已被删除" });
+  if (!evidence.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "未归属项目的影像不能执行通用操作" });
+  await assertProjectInCurrentScope(ctx, evidence.projectId);
+  await assertModuleProjectScope(ctx, tx, evidence.projectId, "EVIDENCE");
+  if (!GENERAL_EVIDENCE_SOURCES.includes(evidence.sourceType as typeof GENERAL_EVIDENCE_SOURCES[number])) throw new TRPCError({ code: "FORBIDDEN", message: "该附件属于专用业务，请在原业务模块查看或处理" });
+  const references = (await collectEvidenceReferences(tx, [evidence], lock)).get(evidence.id)!;
+  if (!isGeneralEvidenceVisible(evidence, references)) throw new TRPCError({ code: "FORBIDDEN", message: "该附件已用于专用或不明确的来源业务，请在原业务模块查看或处理" });
+  return references;
 }
 
 /**
@@ -163,13 +207,15 @@ export const evidenceRouter = router({
       await assertProjectInCurrentScope(ctx, input.projectId);
       const db = await getDb();
       if (!db) return [];
+      await assertModuleProjectScope(ctx, db, input.projectId, "EVIDENCE");
       const rows = await db
         .select()
         .from(evidenceRecords)
-        .where(and(eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.status, "active")))
+        .where(and(eq(evidenceRecords.projectId, input.projectId), eq(evidenceRecords.status, "active"), inArray(evidenceRecords.sourceType, input.sourceType ? [input.sourceType] : [...GENERAL_EVIDENCE_SOURCES])))
         .orderBy(desc(evidenceRecords.capturedAt), desc(evidenceRecords.createdAt))
         .limit(input.limit);
-      const filteredRows = input.sourceType ? rows.filter(row => row.sourceType === input.sourceType) : rows;
+      const references = await collectEvidenceReferences(db, rows);
+      const filteredRows = rows.filter(row => (!input.sourceType || row.sourceType === input.sourceType) && isGeneralEvidenceVisible(row, references.get(row.id)!));
       const deleteDecision = await getRoleOperationPermissionDecision(ctx, "EVIDENCE", "void");
       return Promise.all(filteredRows.map(async row => {
         // 正式部署的托管存储代理可能以 307 跳转到对象域名；部分微信浏览器不会在
@@ -184,6 +230,7 @@ export const evidenceRouter = router({
           projectId: row.projectId,
           sourceType: row.sourceType,
           sourceId: row.sourceId,
+          sourceAssociationStatus: references.get(row.id)!.length ? "referenced" as const : row.sourceId?.trim() ? "unverified_marker" as const : "unassigned" as const,
           fileName: row.fileName,
           mimeType: row.mimeType,
           description: watermark?.description ?? "现场影像",
@@ -194,17 +241,23 @@ export const evidenceRouter = router({
           createdAt: row.createdAt,
           url: signedImageUrl,
           ocrResult,
-          canDelete: row.uploadedBy === ctx.user?.id || deleteDecision.allowed,
+          canDelete: !evidenceDeleteBlockedReason(row, references.get(row.id)!) && (row.uploadedBy === ctx.user?.id || deleteDecision.allowed),
+          deletionBlockedReason: evidenceDeleteBlockedReason(row, references.get(row.id)!),
         };
       }));
     }),
 
   upload: protectedProcedure.input(evidenceUploadInput).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
-    await assertEvidenceUploadAccess(ctx, input.sourceType);
+    const accessModule = await assertEvidenceUploadAccess(ctx, input.sourceType);
     await assertProjectInCurrentScope(ctx, input.projectId);
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+    const reportId = constructionReportSourceId(input.sourceType, input.sourceId);
+    if (accessModule === "CONSTRUCTION" && reportId === null) throw new TRPCError({ code: "BAD_REQUEST", message: "施工照片必须从已保存的日报入口上传，不能以自由来源号宣称关联" });
+    if (/^(?:payroll|salary|settlement[-_]payment|financial|personnel|employee|insurance|tax|contract)[-_:]/i.test(input.sourceId ?? "")) throw new TRPCError({ code: "BAD_REQUEST", message: "专用业务附件请使用原业务上传入口" });
+    await assertModuleProjectScope(ctx, db, input.projectId, accessModule);
+    await assertConstructionPhotoParent(ctx, db, input);
     const imageBytes = decodeEvidenceBase64(input.base64Data);
     try {
       assertEvidenceImageSignature(imageBytes, input.mimeType);
@@ -221,20 +274,25 @@ export const evidenceRouter = router({
     const capturedAt = new Date(input.capturedAt);
     if (Number.isNaN(capturedAt.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "拍摄时间无效" });
     const contentSha256 = createHash("sha256").update(imageBytes).digest("hex");
-    const storedFile = await storagePut(`evidence/${input.projectId}/${capturedAt.toISOString().slice(0, 10)}/${user.id}-${getSafeEvidenceFileName(input.fileName)}`, imageBytes, input.mimeType);
-    const watermarkJson = JSON.stringify({ description: input.description, capturedAt: capturedAt.toISOString(), longitude: input.longitude ?? null, latitude: input.latitude ?? null, version: 1 });
+    const storedFile = await storagePut(`evidence/${input.projectId}/${capturedAt.toISOString().slice(0, 10)}/${user.id}-${randomUUID()}-${getSafeEvidenceFileName(input.fileName)}`, imageBytes, input.mimeType);
+    const watermarkJson = JSON.stringify({ description: input.description, capturedAt: capturedAt.toISOString(), longitude: input.longitude ?? null, latitude: input.latitude ?? null, version: 1, genericEvidenceUpload: true, validatedConstructionReportId: reportId });
     let evidenceId = 0;
     await db.transaction(async tx => {
+      const project = await lockEvidenceProject(tx, input.projectId);
+      if (["completed", "archived"].includes(project.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "已完结或归档项目不能新增影像，请走补证流程" });
+      await assertModuleProjectScope(ctx, tx, input.projectId, accessModule);
+      await assertConstructionPhotoParent(ctx, tx, input, true);
       const result = await tx.insert(evidenceRecords).values({ projectId: input.projectId, sourceType: input.sourceType, sourceId: input.sourceId ?? null, fileKey: storedFile.key, fileName: input.fileName, mimeType: input.mimeType, contentSha256, contentBytes: imageBytes.length, watermarkJson, longitude: input.longitude === null || input.longitude === undefined ? null : String(input.longitude), latitude: input.latitude === null || input.latitude === undefined ? null : String(input.latitude), capturedAt, retentionUntil: null, status: "active", uploadedBy: user.id });
       evidenceId = Number((result[0] as { insertId?: number } | undefined)?.insertId ?? 0);
+      if (!Number.isSafeInteger(evidenceId) || evidenceId <= 0) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "影像未能归档，请重试" });
       await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "upload", targetType: "evidence", targetId: String(evidenceId || storedFile.key), summary: `归档现场影像：${input.sourceType} · ${input.description.slice(0, 80)}`, afterJson: JSON.stringify({ contentSha256, contentBytes: imageBytes.length, projectId: input.projectId, sourceType: input.sourceType }) });
     });
     return { success: true, id: evidenceId || null, url: storedFile.url };
   }),
 
   /**
-   * 删除未被业务单据引用的取证影像。对象存储模板不提供物理删除接口；删除数据库
-   * 文件键和所有 UI 引用后，对象会成为不可访问的无引用对象，由平台生命周期管理。
+   * 未使用误上传只 soft delete，原文件键/水印/坐标/指纹和来源指针全部保留。
+   * 当前、历史、JSON/自由文本引用及来源不明确者不得删除；对象不物理移除。
    */
   delete: protectedProcedure.input(z.object({ id: z.number().int().positive(), deletionReason: z.string().trim().min(5, "请说明删除原因，至少 5 个字符").max(500) })).mutation(async ({ ctx, input }) => {
     const user = requireAuthenticatedUser(ctx);
@@ -245,29 +303,21 @@ export const evidenceRouter = router({
     if (!evidence || evidence.status !== "active") throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在或已被删除" });
     if (!evidence.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "未归属项目的影像不能执行删除" });
     await assertProjectInCurrentScope(ctx, evidence.projectId);
-
+    await assertModuleProjectScope(ctx, db, evidence.projectId, "EVIDENCE");
     if (evidence.uploadedBy !== user.id) {
       await assertDepartmentBusinessAccess(ctx, "EVIDENCE", "void");
     }
-
-    const dependencies = await Promise.all([
-      db.select({ id: attendanceRecords.id }).from(attendanceRecords).where(eq(attendanceRecords.evidenceId, evidence.id)).limit(1),
-      db.select({ id: machineCostRecords.id }).from(machineCostRecords).where(eq(machineCostRecords.evidenceId, evidence.id)).limit(1),
-      db.select({ id: dieselRefuelRecords.id }).from(dieselRefuelRecords).where(eq(dieselRefuelRecords.evidenceId, evidence.id)).limit(1),
-      db.select({ id: transportTrips.id }).from(transportTrips).where(eq(transportTrips.evidenceId, evidence.id)).limit(1),
-      db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.evidenceId, evidence.id)).limit(1),
-      db.select({ id: inventoryTransactions.id }).from(inventoryTransactions).where(eq(inventoryTransactions.evidenceId, evidence.id)).limit(1),
-      db.select({ id: measurementTakeoffEvidences.takeoffId }).from(measurementTakeoffEvidences).where(eq(measurementTakeoffEvidences.evidenceId, evidence.id)).limit(1),
-      db.select({ id: financialRecords.id }).from(financialRecords).where(eq(financialRecords.evidenceId, evidence.id)).limit(1),
-      db.select({ id: financialInvoices.id }).from(financialInvoices).where(eq(financialInvoices.evidenceId, evidence.id)).limit(1),
-    ]);
-    if (dependencies.some(rows => rows.length > 0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "该影像已关联考勤、成本、运输、采购、库存、计量或财务单据，不能删除；请保留作为业务审计凭证" });
-    }
-
     await db.transaction(async tx => {
-      await tx.update(evidenceRecords).set({ status: "deleted", deletedAt: new Date(), deletedBy: user.id, deletionReason: input.deletionReason }).where(and(eq(evidenceRecords.id, evidence.id), eq(evidenceRecords.status, "active")));
-      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "soft_delete", targetType: "evidence", targetId: String(evidence.id), summary: `受控删除未关联现场影像：${evidence.sourceType} · ${evidence.fileName}；对象键保留以便审计追溯`, beforeJson: JSON.stringify({ contentSha256: evidence.contentSha256, contentBytes: evidence.contentBytes, fileKey: evidence.fileKey }), afterJson: JSON.stringify({ status: "deleted", deletionReason: input.deletionReason }) });
+      await lockEvidenceProject(tx, evidence.projectId!);
+      const [locked] = await tx.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.id)).limit(1).for("update");
+      if (!locked || locked.projectId !== evidence.projectId || locked.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "影像状态或归属已变化，请刷新后重试" });
+      if (locked.uploadedBy !== user.id) await assertDepartmentBusinessAccess(ctx, "EVIDENCE", "void");
+      const references = await assertGeneralEvidence(ctx, tx, locked, true);
+      const blockedReason = evidenceDeleteBlockedReason(locked, references);
+      if (blockedReason) throw new TRPCError({ code: "BAD_REQUEST", message: blockedReason });
+      const result = await tx.update(evidenceRecords).set({ status: "deleted", deletedAt: new Date(), deletedBy: user.id, deletionReason: input.deletionReason }).where(and(eq(evidenceRecords.id, locked.id), eq(evidenceRecords.projectId, locked.projectId!), eq(evidenceRecords.status, "active")));
+      assertEvidenceConditionalWrite(result);
+      await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "soft_delete", targetType: "evidence", targetId: String(locked.id), summary: `受控删除未关联现场影像：${locked.sourceType} · ${locked.fileName}；对象键保留以便审计追溯`, beforeJson: JSON.stringify({ contentSha256: locked.contentSha256, contentBytes: locked.contentBytes, fileKey: locked.fileKey, sourceType: locked.sourceType, sourceId: locked.sourceId, watermarkJson: locked.watermarkJson }), afterJson: JSON.stringify({ status: "deleted", deletionReason: input.deletionReason }) });
     });
     return { success: true };
   }),
@@ -283,9 +333,7 @@ export const evidenceRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const rows = await db.select().from(evidenceRecords).where(eq(evidenceRecords.id, input.id)).limit(1);
     const evidence = rows[0];
-    if (!evidence) throw new TRPCError({ code: "NOT_FOUND", message: "影像记录不存在" });
-    if (!evidence.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "未归属项目的影像不能执行票据识别" });
-    await assertProjectInCurrentScope(ctx, evidence.projectId);
+    await assertGeneralEvidence(ctx, db, evidence);
     if (!["image/jpeg", "image/png"].includes(evidence.mimeType || "")) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "仅支持 JPG、PNG 影像进行票据识别" });
     }
@@ -314,10 +362,18 @@ export const evidenceRouter = router({
         ],
       });
       const ocrResult = parseOcrResult(getOcrResponseText(result.choices[0]?.message.content ?? ""));
-      await db.update(evidenceRecords).set({ ocrResultJson: JSON.stringify(ocrResult) }).where(eq(evidenceRecords.id, evidence.id));
-      await db.insert(auditLogs).values({ userId: user.id, module: "evidence", action: "ocr", targetType: "evidence", targetId: String(evidence.id), summary: `执行票据 OCR：${ocrResult.documentType || "未识别类型"}，结果需人工复核` });
+      await db.transaction(async tx => {
+        await lockEvidenceProject(tx, evidence.projectId!);
+        const [locked] = await tx.select().from(evidenceRecords).where(eq(evidenceRecords.id, evidence.id)).limit(1).for("update");
+        if (!locked || locked.projectId !== evidence.projectId) throw new TRPCError({ code: "CONFLICT", message: "影像归属已变化，请刷新后重试" });
+        await assertGeneralEvidence(ctx, tx, locked, true);
+        const write = await tx.update(evidenceRecords).set({ ocrResultJson: JSON.stringify(ocrResult) }).where(and(eq(evidenceRecords.id, evidence.id), eq(evidenceRecords.status, "active")));
+        assertEvidenceConditionalWrite(write);
+        await appendIntegrityProtectedAudit(tx, { userId: user.id, module: "evidence", action: "ocr", targetType: "evidence", targetId: String(evidence.id), summary: `执行票据 OCR：${ocrResult.documentType || "未识别类型"}，结果需人工复核` });
+      });
       return { success: true, ocrResult };
-    } catch {
+    } catch (error) {
+      if (error instanceof TRPCError) throw error;
       await db.insert(auditLogs).values({ userId: user.id, module: "evidence", action: "ocr_failed", targetType: "evidence", targetId: String(evidence.id), summary: "票据 OCR 未完成；可稍后重试或人工录入" });
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "票据识别暂不可用，请稍后重试或人工录入" });
     }

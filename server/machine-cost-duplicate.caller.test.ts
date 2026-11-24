@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
@@ -5,7 +6,7 @@ import { MySqlDialect } from "drizzle-orm/mysql-core";
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 const mocks = vi.hoisted(() => ({ db: null as any, roles: ["MACHINERY_MANAGER"], denied: false,
   department: vi.fn(), notify: vi.fn(), sms: vi.fn() }));
-vi.mock("./db", () => ({ getDb: async () => mocks.db }));
+vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mocks.db) }));
 vi.mock("./_core/env", () => ({ ENV: { cookieSecret: "fixture-only-confirm-secret" } }));
 vi.mock("./access", async original => ({ ...(await original<any>()),
   assertDepartmentBusinessAccess: mocks.department,
@@ -22,7 +23,7 @@ class FixtureDb {
   rows: Record<string, any[]> = {
     machines: [{ id: 13, projectId: 3, name: "合成洒水车", code: "M04", ownerUserId: null }],
     projects: [{ id: 3, status: "active" }],
-    machine_cost_records: [], diesel_refuel_records: [], audit_logs: [], evidence_records: [{ id: 8, projectId: 3 }],
+    machine_cost_records: [], diesel_refuel_records: [], audit_logs: [], evidence_records: [{ id: 8, projectId: 3, sourceType: "other", status: "active", sourceId: "machine-cost-pending-13-1", mimeType: "image/jpeg" }],
     diesel_guideline_prices: [{ id: 5, projectId: 3, status: "active", pricePerLiter: "8.64", effectiveFrom: new Date("2026-11-01T00:00:00Z"), effectiveTo: null }],
   };
   gate = Promise.resolve(); locks: string[] = []; beforeTransaction?: () => void; failAudit = false;
@@ -48,10 +49,13 @@ class FixtureDb {
       }).then(ok, fail),
     }; return builder;
   } }; }
-  insert(table: any) { return { values: async (value: any) => {
+  insert(table: any) { return { values: (value: any) => {
+    const execute = async () => {
     const name = getTableName(table); if (name === "audit_logs" && this.failAudit) throw Error("fixture audit failure");
     const rows = this.rows[name] ??= []; const id = Math.max(0, ...rows.map(row => row.id)) + 1;
     rows.push({ id, createdAt: new Date(), ...structuredClone(value) }); return [{ insertId: id, affectedRows: 1 }];
+    }; let result: any; const once = async () => result ??= await execute();
+    return { $returningId: async () => (await once()).map((r: any) => ({ id: r.insertId })), then: (ok: any, fail: any) => once().then(ok, fail) };
   } }; }
   update(table: any) { return { set: (value: any) => ({ where: async (condition: SQL) => {
     const rows = this.matches(table, condition); rows.forEach(row => Object.assign(row, value)); return [{ affectedRows: rows.length }];
@@ -76,7 +80,7 @@ describe("机械费用防重真实 caller（SQL内存fixture，无业务DB/通�
     expect(await caller().saveCost(base)).toMatchObject({ success: true, amount: 200.02 });
     expect(await caller().saveCost({ ...base, costName: "轮胎维修" })).toMatchObject({ success: true });
     expect(await caller().saveCost({ ...base, unitPrice: 9 })).toMatchObject({ success: true });
-    expect(db.rows.machine_cost_records).toHaveLength(3); expect(db.locks[0]).toBe("machines");
+    expect(db.rows.machine_cost_records).toHaveLength(3); expect(db.locks[0]).toBe("projects"); expect(db.locks).toContain("machines"); expect(db.locks.indexOf("projects")).toBeLessThan(db.locks.indexOf("machines"));
   });
   it("预检返回真实编号日期状态，取消/无确认提交均不新增", async () => {
     seed(); const check = await caller().checkCostDuplicate(later);

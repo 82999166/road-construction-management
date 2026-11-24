@@ -1,3 +1,4 @@
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import {
   saveResourceBinding,
   resolveResourcePerson,
@@ -92,6 +93,8 @@ import {
 } from "../services/vehicleManagementPolicy";
 import { initialFleetProfile } from "../services/vehicleManagementCore";
 import { getDb } from "../db";
+import { previewIdentityDeletion, refuseUnsafeIdentityDeletion } from "../services/projectDeletionGuard";
+import { saveBusinessScope, revokeBusinessScope, revokeProjectDirectAccess } from "../services/businessScopeGovernance";
 import {
   createBusinessDataBackup,
   getBusinessDataBackupDownload,
@@ -106,7 +109,7 @@ import {
   sealUnchainedAuditLogs,
   verifyAuditIntegrityChain,
 } from "../services/auditIntegrity";
-import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely as notifyOfficialAccountBusinessEventSafelyImmediate } from "../services/businessNotifier";
 import { ensureFoundationData } from "../services/foundationData";
 import {
   revokeOfficialAccountDriverVehicleBinding,
@@ -127,7 +130,7 @@ import {
   formatChinaSmsTime,
   inspectAliyunSmsReadiness,
   inspectAliyunSmsTemplateVariableContract,
-  notifyAliyunSmsSafely,
+  notifyAliyunSmsSafely as notifyAliyunSmsSafelyImmediate,
   sendAliyunSmsTest,
 } from "../services/smsNotifier";
 import {
@@ -693,6 +696,9 @@ const departmentBusinessScopeInput = z.object({
     "EVIDENCE",
   ]),
   status: z.enum(["active", "disabled"]).default("active"),
+  expectedStatus: z.enum(["active", "disabled", "absent"]).optional(),
+  confirmReactivate: z.boolean().optional(),
+  reason: z.string().trim().min(4).max(200).optional(),
 });
 
 /** 超级管理员只能创建普通本地账号，初始密码仅在本次请求中用于生成不可逆摘要。 */
@@ -866,6 +872,7 @@ const masterDataRemoveInput = z.object({
     "role_assignment",
   ]),
   id: z.number().int().positive(),
+  reason: z.string().trim().min(4).max(200).optional(),
 });
 
 /** 全业务治理统计仅支持已校验的项目和自然月筛选，避免模糊日期或越权项目参数进入聚合查询。 */
@@ -1393,6 +1400,7 @@ export const adminRouter = router({
           organizationCode: organizations.code,
           organizationName: organizations.name,
           organizationType: organizations.type,
+          organizationStatus: organizations.status,
           projectId: departmentBusinessScopes.projectId,
           module: departmentBusinessScopes.module,
           status: departmentBusinessScopes.status,
@@ -1441,7 +1449,7 @@ export const adminRouter = router({
           scopeId: row.organizationId,
           scopeName: row.organizationName,
           scopeCode: row.organizationCode,
-          scopeStatus: "active" as const,
+          scopeStatus: row.organizationStatus,
         })),
         ...projectRows.map(row => ({
           ...row,
@@ -1464,81 +1472,7 @@ export const adminRouter = router({
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
         if (!db) throw new Error("数据库连接暂不可用");
-        const isOrganizationScope = input.scopeType === "organization";
-        if (isOrganizationScope) {
-          const [department] = await db
-            .select({
-              id: organizations.id,
-              type: organizations.type,
-              status: organizations.status,
-            })
-            .from(organizations)
-            .where(eq(organizations.id, input.scopeId))
-            .limit(1);
-          if (
-            !department ||
-            department.status !== "active" ||
-            (department.type !== "department" &&
-              department.type !== "project_department")
-          ) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "请选择启用中的有效部门或项目部节点配置业务范围",
-            });
-          }
-        } else {
-          const [project] = await db
-            .select({ id: projects.id, status: projects.status })
-            .from(projects)
-            .where(eq(projects.id, input.scopeId))
-            .limit(1);
-          if (!project || project.status === "archived") {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "请选择未归档的有效项目配置业务范围",
-            });
-          }
-        }
-        const currentScopes = await db
-          .select({
-            id: departmentBusinessScopes.id,
-            module: departmentBusinessScopes.module,
-          })
-          .from(departmentBusinessScopes)
-          .where(
-            isOrganizationScope
-              ? eq(departmentBusinessScopes.organizationId, input.scopeId)
-              : eq(departmentBusinessScopes.projectId, input.scopeId)
-          );
-        const existing = currentScopes.find(
-          item => item.module === input.module
-        );
-        if (existing) {
-          await db
-            .update(departmentBusinessScopes)
-            .set({ status: input.status, configuredBy: admin.id })
-            .where(eq(departmentBusinessScopes.id, existing.id));
-        } else {
-          await db.insert(departmentBusinessScopes).values({
-            organizationId: isOrganizationScope ? input.scopeId : null,
-            projectId: isOrganizationScope ? null : input.scopeId,
-            module: input.module,
-            status: input.status,
-            configuredBy: admin.id,
-          });
-        }
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "department",
-          action:
-            input.status === "active"
-              ? "enable_business_scope"
-              : "disable_business_scope",
-          targetType: "department_business_scope",
-          targetId: `${input.scopeType}:${input.scopeId}:${input.module}`,
-          summary: `维护${input.scopeType === "project" ? "项目" : "部门"}业务范围：${input.module}`,
-        });
-        return { success: true };
+        return saveBusinessScope(db, admin.id, input);
       }),
     /** 将模块目录由服务端统一返回，确保管理端不依赖硬编码选项。 */
     modules: protectedProcedure.query(async ({ ctx }) => {
@@ -1643,6 +1577,9 @@ export const adminRouter = router({
           endDate: z.string().date().nullable().optional(),
           costCenterCode: z.string().max(64).nullable().optional(),
           sortOrder: z.number().int().min(0).default(0),
+          expectedStatus: z.enum(["planning", "active", "suspended", "completed", "archived"]).optional(),
+          confirmRestore: z.boolean().optional(),
+          reason: z.string().trim().min(4).max(200).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1728,8 +1665,9 @@ export const adminRouter = router({
             message: "项目结束日期不得早于开始日期",
           });
         }
+        const { expectedStatus, confirmRestore, reason, ...projectInput } = input;
         const values = {
-          ...input,
+          ...projectInput,
           parentId: input.parentId ?? null,
           organizationId: input.organizationId ?? null,
           projectType: input.projectType ?? null,
@@ -1741,21 +1679,31 @@ export const adminRouter = router({
             : null,
           costCenterCode: input.costCenterCode ?? null,
         };
-        if (input.id)
-          await db
-            .update(projects)
-            .set(values)
-            .where(eq(projects.id, input.id));
-        else await db.insert(projects).values(values);
-        await db.insert(auditLogs).values({
-          userId: admin.id,
-          module: "project",
-          action: input.id ? "update" : "create",
-          targetType: "project",
-          targetId: String(input.id ?? input.code),
-          summary: `维护项目节点：${input.name}`,
+        return db.transaction(async tx => {
+          const [before] = input.id
+            ? await tx.select().from(projects).where(eq(projects.id, input.id)).limit(1).for("update")
+            : [];
+          if (input.id && !before) throw new TRPCError({ code: "NOT_FOUND", message: "项目不存在或已删除" });
+          if (expectedStatus !== undefined && before?.status !== expectedStatus) throw new TRPCError({ code: "CONFLICT", message: "项目状态已变化，请刷新后重试" });
+          const restoring = before?.status === "archived" && input.status !== "archived";
+          if (restoring && (!confirmRestore || !reason)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "恢复归档项目须明确确认并填写原因；原直接授权及模块不会自动恢复" });
+          if (before && (input.status === "archived" || restoring)) {
+            await revokeProjectDirectAccess(tx, admin.id, before.id, reason || "项目归档，保留历史并收回直接业务授权");
+          }
+          if (input.id) {
+            const result = await tx.update(projects).set(values).where(eq(projects.id, input.id));
+            if (Number(result[0]?.affectedRows) !== 1) throw new TRPCError({ code: "CONFLICT", message: "项目保存未命中，请刷新后重试" });
+          } else await tx.insert(projects).values(values);
+          const [after] = await tx.select().from(projects).where(input.id ? eq(projects.id, input.id) : eq(projects.code, input.code)).limit(1);
+          if (!after) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "项目保存后未找到记录" });
+          await tx.insert(auditLogs).values({
+            userId: admin.id, module: "project", action: restoring ? "restore" : input.id ? "update" : "create",
+            targetType: "project", targetId: String(after.id), summary: `维护项目节点：${input.name}${restoring ? "；已恢复档案，直接授权须独立重新授予" : ""}`,
+            beforeJson: JSON.stringify({ projectId: after.id, scopeType: "project", reason: reason ?? null, snapshot: before ?? null }),
+            afterJson: JSON.stringify({ projectId: after.id, scopeType: "project", reason: reason ?? null, snapshot: after, directAccessAutoRestored: false }),
+          });
+          return { success: true };
         });
-        return { success: true };
       }),
   }),
 
@@ -2764,7 +2712,7 @@ export const adminRouter = router({
         return { success: true, taskUid };
       }),
     saveAdvance: protectedProcedure
-      .input(employeePayrollAdvanceInput)
+      .input(z.intersection(employeePayrollAdvanceInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
@@ -2773,6 +2721,7 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        return runBusinessDocumentCreation(db, { actorId: admin.id, scope: "payroll:advance", projectId: null, input , revalidate: async () => { await assertSuperAdmin(ctx); }}, async db => {
         return db.transaction(async db => {
           const [profile] = await db
             .select({
@@ -2790,6 +2739,7 @@ export const adminRouter = router({
             });
           await assertCompanyPayrollAdvance(db, profile, input.advanceDate);
           const [created] = await db.insert(employeePayrollAdvances).values({
+            documentNo: await newBusinessDocumentNumber(db, "PA", { kind: "user", userId: admin.id }, profile.projectId, input),
             employeeProfileId: profile.id,
             laborWorkerId: profile.laborWorkerId,
             projectId: profile.projectId,
@@ -2809,7 +2759,9 @@ export const adminRouter = router({
           });
           return { success: true, id: created.insertId };
         });
-      }),
+
+        });
+}),
     saveProfile: protectedProcedure
       .input(employeeProfileInput)
       .mutation(async ({ ctx, input }) => {
@@ -3455,6 +3407,7 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        return runBusinessDocumentCreation(db, { actorId: admin.id, scope: "maintenance:save", projectId: input.projectId, input , revalidate: async () => { await assertSuperAdmin(ctx); }}, async db => {
         const result = await db.transaction(async db => {
           await assertFleetDayWritable(
             db,
@@ -3527,7 +3480,7 @@ export const adminRouter = router({
           else {
             const inserted = await db
               .insert(assetMaintenanceRecords)
-              .values(values);
+              .values({ ...values, documentNo: await newBusinessDocumentNumber(db, "AM", { kind: "user", userId: admin.id }, input.projectId, input) });
             recordId = Number(
               (inserted[0] as { insertId?: number } | undefined)?.insertId ?? 0
             );
@@ -3633,7 +3586,9 @@ export const adminRouter = router({
           },
         }).catch(() => undefined);
         return result;
-      }),
+
+        });
+}),
   }),
 
   /** 柴油价格、领用、运输扣款与每日汇总均由超级管理后台受控维护。 */
@@ -4022,10 +3977,9 @@ export const adminRouter = router({
                   .where(eq(transportTrips.id, row.transportTripId))
                   .limit(1)
               : [];
-            const machineCostSourceId = /^DS-MC-([1-9]\d*)$/.exec(row.recordNo);
-            const sourceCostId = machineCostSourceId
-              ? Number(machineCostSourceId[1])
-              : null;
+            const legacyMachineSource = /^DS-MC-([1-9]\d*)$/.exec(row.recordNo);
+            const sourceCostId = row.machineCostSourceId ?? (legacyMachineSource ? Number(legacyMachineSource[1]) : null);
+            const machineCostSourceId = sourceCostId !== null;
             const [sourceCost] =
               sourceCostId && Number.isSafeInteger(sourceCostId)
                 ? await db
@@ -4127,7 +4081,7 @@ export const adminRouter = router({
                 : ("diesel_refuel" as const),
               sourceLabel: machineCostSourceId ? "机械录入" : "柴油登记",
               sourceRecordId: sourceCostId,
-              readOnly: row.recordNo.startsWith("DS-MC-"),
+              readOnly: machineCostSourceId || row.recordNo.startsWith("DS-MC-"),
               assetName: asset
                 ? "code" in asset && asset.code
                   ? `${asset.name} · ${asset.code}`
@@ -4218,7 +4172,7 @@ export const adminRouter = router({
         return deleteDieselRefuelRecord(db, input, admin.id);
       }),
     saveRefuelRecord: protectedProcedure
-      .input(dieselRefuelInput)
+      .input(z.intersection(dieselRefuelInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
       .mutation(async ({ ctx, input }) => {
         const admin = await assertSuperAdmin(ctx);
         const db = await getDb();
@@ -4227,6 +4181,7 @@ export const adminRouter = router({
             code: "INTERNAL_SERVER_ERROR",
             message: "数据库连接暂不可用",
           });
+        return runBusinessDocumentCreation(db, { actorId: admin.id, scope: "diesel:pc", projectId: input.projectId, input , revalidate: async () => { await assertSuperAdmin(ctx); }}, async db => {
         if (input.assetType === "vehicle" && !input.vehicleId)
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -4519,7 +4474,7 @@ export const adminRouter = router({
               .where(dieselCorrectionWhere(existing));
             assertRefuelWrite(updated);
           } else {
-            const recordNo = `DS${input.projectId}-${randomBytes(12).toString("hex")}`;
+            const recordNo = await newBusinessDocumentNumber(tx, "DS", { kind: "user", userId: admin.id }, input.projectId, input);
             const created = await tx
               .insert(dieselRefuelRecords)
               .values({ ...values, recordNo });
@@ -4533,6 +4488,7 @@ export const adminRouter = router({
               message: "柴油记录保存后无法确认编号",
             });
           const alertCandidate: DieselRefuelRow = {
+            machineCostSourceId: existing?.machineCostSourceId ?? null,
             ...values,
             id: recordId,
             recordNo: `DS${recordId}`,
@@ -4573,7 +4529,7 @@ export const adminRouter = router({
             } else if (effectiveStatus !== "void") {
               const created = await tx
                 .insert(machineCostRecords)
-                .values(costValues);
+                .values({ ...costValues, documentNo: await newBusinessDocumentNumber(tx, "MC", { kind: "user", userId: admin.id }, input.projectId, input) });
               costId = Number(
                 (created[0] as { insertId?: number } | undefined)?.insertId ?? 0
               );
@@ -4760,7 +4716,9 @@ export const adminRouter = router({
           appliedUnitPrice,
           priceAlert,
         };
-      }),
+
+        });
+}),
   }),
 
   vehicle: router({
@@ -5331,6 +5289,14 @@ export const adminRouter = router({
    * 管理员应改为停用或归档；角色授权仅撤销以确保历史责任可追溯。
    */
   masterData: router({
+    deletionImpact: protectedProcedure
+      .input(z.object({ resource: z.enum(["project", "organization"]), id: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        await assertSuperAdmin(ctx);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
+        return previewIdentityDeletion(db, input.resource, input.id);
+      }),
     remove: protectedProcedure
       .input(masterDataRemoveInput)
       .mutation(async ({ ctx, input }) => {
@@ -5339,64 +5305,7 @@ export const adminRouter = router({
         if (!db) throw new Error("数据库连接暂不可用");
 
         if (input.resource === "organization") {
-          const [existing] = await db
-            .select({ id: organizations.id, name: organizations.name })
-            .from(organizations)
-            .where(eq(organizations.id, input.id))
-            .limit(1);
-          if (!existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "组织节点不存在或已删除",
-            });
-          const dependencies = await Promise.all([
-            db
-              .select({ id: organizations.id })
-              .from(organizations)
-              .where(eq(organizations.parentId, input.id))
-              .limit(1),
-            db
-              .select({ id: projects.id })
-              .from(projects)
-              .where(eq(projects.organizationId, input.id))
-              .limit(1),
-            db
-              .select({ id: userProfiles.id })
-              .from(userProfiles)
-              .where(eq(userProfiles.organizationId, input.id))
-              .limit(1),
-            db
-              .select({ id: transportVehicles.id })
-              .from(transportVehicles)
-              .where(eq(transportVehicles.organizationId, input.id))
-              .limit(1),
-            db
-              .select({ id: userRoleAssignments.id })
-              .from(userRoleAssignments)
-              .where(eq(userRoleAssignments.organizationId, input.id))
-              .limit(1),
-            db
-              .select({ id: departmentBusinessScopes.id })
-              .from(departmentBusinessScopes)
-              .where(eq(departmentBusinessScopes.organizationId, input.id))
-              .limit(1),
-          ]);
-          if (dependencies.some(rows => rows.length > 0))
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "该组织仍被下级节点、项目、人员、车辆、授权或部门业务范围引用，不能删除；请先迁移关联数据或将其停用",
-            });
-          await db.delete(organizations).where(eq(organizations.id, input.id));
-          await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "organization",
-            action: "delete",
-            targetType: "organization",
-            targetId: String(input.id),
-            summary: `删除未被引用的组织节点：${existing.name}`,
-          });
-          return { success: true, operation: "deleted" as const };
+          return refuseUnsafeIdentityDeletion(db, "organization", input.id);
         }
 
         if (input.resource === "position") {
@@ -5434,109 +5343,7 @@ export const adminRouter = router({
         }
 
         if (input.resource === "project") {
-          const [existing] = await db
-            .select({ id: projects.id, name: projects.name })
-            .from(projects)
-            .where(eq(projects.id, input.id))
-            .limit(1);
-          if (!existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "项目节点不存在或已删除",
-            });
-          const dependencies = await Promise.all([
-            db
-              .select({ id: projects.id })
-              .from(projects)
-              .where(eq(projects.parentId, input.id))
-              .limit(1),
-            db
-              .select({ id: transportVehicles.id })
-              .from(transportVehicles)
-              .where(eq(transportVehicles.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: userRoleAssignments.id })
-              .from(userRoleAssignments)
-              .where(eq(userRoleAssignments.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: departmentBusinessScopes.id })
-              .from(departmentBusinessScopes)
-              .where(eq(departmentBusinessScopes.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: constructionDailyReports.id })
-              .from(constructionDailyReports)
-              .where(eq(constructionDailyReports.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: transportTrips.id })
-              .from(transportTrips)
-              .where(eq(transportTrips.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: laborWorkers.id })
-              .from(laborWorkers)
-              .where(eq(laborWorkers.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: attendanceRecords.id })
-              .from(attendanceRecords)
-              .where(eq(attendanceRecords.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: payrollStatements.id })
-              .from(payrollStatements)
-              .where(eq(payrollStatements.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: purchaseRequests.id })
-              .from(purchaseRequests)
-              .where(eq(purchaseRequests.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: purchaseOrders.id })
-              .from(purchaseOrders)
-              .where(eq(purchaseOrders.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: measurementClaims.id })
-              .from(measurementClaims)
-              .where(eq(measurementClaims.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: inventoryTransactions.id })
-              .from(inventoryTransactions)
-              .where(eq(inventoryTransactions.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: evidenceRecords.id })
-              .from(evidenceRecords)
-              .where(eq(evidenceRecords.projectId, input.id))
-              .limit(1),
-            db
-              .select({ id: machines.id })
-              .from(machines)
-              .where(eq(machines.projectId, input.id))
-              .limit(1),
-          ]);
-          if (dependencies.some(rows => rows.length > 0))
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "该项目仍被下级项目、授权、资源或业务单据引用，不能删除；请先归档或迁移关联数据",
-            });
-          await db.delete(projects).where(eq(projects.id, input.id));
-          await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "project",
-            action: "delete",
-            targetType: "project",
-            targetId: String(input.id),
-            summary: `删除未被引用的项目节点：${existing.name}`,
-          });
-          return { success: true, operation: "deleted" as const };
+          return refuseUnsafeIdentityDeletion(db, "project", input.id);
         }
 
         if (input.resource === "vehicle") {
@@ -5631,32 +5438,7 @@ export const adminRouter = router({
         }
 
         if (input.resource === "department_scope") {
-          const [existing] = await db
-            .select({
-              id: departmentBusinessScopes.id,
-              organizationId: departmentBusinessScopes.organizationId,
-              module: departmentBusinessScopes.module,
-            })
-            .from(departmentBusinessScopes)
-            .where(eq(departmentBusinessScopes.id, input.id))
-            .limit(1);
-          if (!existing)
-            throw new TRPCError({
-              code: "NOT_FOUND",
-              message: "部门业务范围不存在或已删除",
-            });
-          await db
-            .delete(departmentBusinessScopes)
-            .where(eq(departmentBusinessScopes.id, input.id));
-          await db.insert(auditLogs).values({
-            userId: admin.id,
-            module: "department",
-            action: "delete_business_scope",
-            targetType: "department_business_scope",
-            targetId: `${existing.organizationId}:${existing.module}`,
-            summary: `删除部门业务范围：${existing.module}`,
-          });
-          return { success: true, operation: "deleted" as const };
+          return revokeBusinessScope(db, admin.id, input.id, input.reason);
         }
 
         const [existing] = await db
@@ -9308,3 +9090,7 @@ export const adminRouter = router({
       }),
   }),
 });
+
+const notifyOfficialAccountBusinessEventSafely = afterBusinessDocumentCommit(notifyOfficialAccountBusinessEventSafelyImmediate);
+
+const notifyAliyunSmsSafely = afterBusinessDocumentCommit(notifyAliyunSmsSafelyImmediate);

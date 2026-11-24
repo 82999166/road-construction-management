@@ -1,82 +1,1078 @@
 import { formatAmount } from "@shared/numberFormat";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, Plus, RefreshCw, FilePenLine } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime";
-import FullContractTemplates, { type FullContractTemplate } from "@/components/FullContractTemplates";
+import FullContractTemplates, {
+  type FullContractTemplate,
+} from "@/components/FullContractTemplates";
 
 type ProjectOption = { id: number; name: string };
-type ContractType = "transport" | "labor_subcontract" | "machinery_lease" | "material_supply" | "other";
-type PricingMethod = "lump_sum" | "unit_price" | "trip" | "ton" | "m3" | "day" | "month" | "other";
-type ContractForm = { id?: number; projectId: string; contractType: ContractType; counterpartyName: string; counterpartyContact: string; pricingMethod: PricingMethod; unit: string; unitPrice: string; contractAmount: string; startDate: string; endDate: string; contractSummary: string; remarks: string };
+type ContractType =
+  | "transport"
+  | "labor_subcontract"
+  | "machinery_lease"
+  | "material_supply"
+  | "other";
+type PricingMethod =
+  | "lump_sum"
+  | "unit_price"
+  | "trip"
+  | "ton"
+  | "m3"
+  | "day"
+  | "month"
+  | "other";
+type ContractForm = {
+  id?: number;
+  attachmentEvidenceId?: number;
+  attachmentUploaded?: boolean;
+  attachmentName?: string;
+  projectId: string;
+  contractType: ContractType;
+  counterpartyName: string;
+  counterpartyContact: string;
+  pricingMethod: PricingMethod;
+  unit: string;
+  unitPrice: string;
+  contractAmount: string;
+  startDate: string;
+  endDate: string;
+  contractSummary: string;
+  remarks: string;
+};
 
-const blank = (projectId = ""): ContractForm => ({ projectId, contractType: "transport", counterpartyName: "", counterpartyContact: "", pricingMethod: "trip", unit: "趟", unitPrice: "", contractAmount: "0", startDate: "", endDate: "", contractSummary: "", remarks: "" });
-const contractTypeLabel: Record<ContractType, string> = { transport: "渣土车运输", labor_subcontract: "附属工程外包", machinery_lease: "机械租赁", material_supply: "材料供应", other: "其他外包" };
-const pricingLabel: Record<PricingMethod, string> = { lump_sum: "总价包干", unit_price: "单价计量", trip: "按趟", ton: "按吨", m3: "按方", day: "按天", month: "按月", other: "其他" };
-const statusLabel = new Proxy<Record<string, string>>({ draft: "草稿", active: "执行中", suspended: "已暂停", expired: "已到期", closed: "已关闭", void: "已作废" }, {
-  get: (labels, status) => typeof status === "string" ? labels[status] ?? getBusinessStatusLabel(status) : undefined,
+const blank = (projectId = ""): ContractForm => ({
+  projectId,
+  contractType: "transport",
+  counterpartyName: "",
+  counterpartyContact: "",
+  pricingMethod: "trip",
+  unit: "趟",
+  unitPrice: "",
+  contractAmount: "0",
+  startDate: "",
+  endDate: "",
+  contractSummary: "",
+  remarks: "",
 });
+const contractTypeLabel: Record<ContractType, string> = {
+  transport: "渣土车运输",
+  labor_subcontract: "附属工程外包",
+  machinery_lease: "机械租赁",
+  material_supply: "材料供应",
+  other: "其他外包",
+};
+const pricingLabel: Record<PricingMethod, string> = {
+  lump_sum: "总价包干",
+  unit_price: "单价计量",
+  trip: "按趟",
+  ton: "按吨",
+  m3: "按方",
+  day: "按天",
+  month: "按月",
+  other: "其他",
+};
+const statusLabel = new Proxy<Record<string, string>>(
+  {
+    draft: "草稿",
+    active: "执行中",
+    suspended: "已暂停",
+    expired: "已到期",
+    closed: "已关闭",
+    void: "已作废",
+  },
+  {
+    get: (labels, status) =>
+      typeof status === "string"
+        ? (labels[status] ?? getBusinessStatusLabel(status))
+        : undefined,
+  }
+);
 
-const contractTemplates: Array<{ id: "auxiliary" | "transport" | "machinery"; title: string; detail: string; values: Pick<ContractForm, "contractType" | "pricingMethod" | "unit" | "contractSummary" | "remarks"> }> = [
-  { id: "auxiliary", title: "附属工程外包合同草案", detail: "涵洞、边沟、挡墙、排水、防护等按图纸、清单和已确认收方计量。", values: { contractType: "labor_subcontract", pricingMethod: "m3", unit: "方 / 项", contractSummary: "工程范围：按项目施工图、设计变更、经确认的附属工程清单及收方记录办理。计价口径：按合同约定单价及实际合格完成工程量计量。质量、安全、进度、缺陷责任、验收与结算以双方最终签署文本及项目管理制度为准。", remarks: "草案要点：明确里程桩号、构件名称、图纸参数、计量规则、含税/不含税口径、材料甲供/乙供、进度节点、质量保修和违约处理。" } },
-  { id: "transport", title: "渣土车运输合同草案", detail: "运输路线、车辆方量、计价里程、油款扣减与运单结算。", values: { contractType: "transport", pricingMethod: "trip", unit: "趟", contractSummary: "运输范围：按指定装土点、卸土点、预设有效路线及车辆核定方量执行。结算依据：有效运输票据、NFC/车牌运单、经确认趟次及系统运价快照。油款扣减、异常趟次、运输安全、车辆证照、现场调度和结算周期按最终签署文本约定。", remarks: "草案要点：明确线路、计价规则、方量口径、装卸点确认、油款扣除、结算周期、车辆与司机资质、事故责任和异常运单处理。" } },
-  { id: "machinery", title: "工程机械租赁合同草案", detail: "设备台班、月租/日租、油料、维修、进退场与停工计价。", values: { contractType: "machinery_lease", pricingMethod: "month", unit: "台·月", contractSummary: "租赁设备：以设备型号、编号、功率、操作员、进退场日期及验收记录为准。计价方式：按合同约定的月租、日租、台班或小时计价，油料、维修、配件、进退场、停工待工与操作人员费用按最终签署文本约定。", remarks: "草案要点：明确设备清单、租期、计费口径、燃油与维修承担、出勤/台班认定、故障停机、进退场、保险、安全和结算周期。" } },
+const contractTemplates: Array<{
+  id: "auxiliary" | "transport" | "machinery";
+  title: string;
+  detail: string;
+  values: Pick<
+    ContractForm,
+    "contractType" | "pricingMethod" | "unit" | "contractSummary" | "remarks"
+  >;
+}> = [
+  {
+    id: "auxiliary",
+    title: "附属工程外包合同草案",
+    detail: "涵洞、边沟、挡墙、排水、防护等按图纸、清单和已确认收方计量。",
+    values: {
+      contractType: "labor_subcontract",
+      pricingMethod: "m3",
+      unit: "方 / 项",
+      contractSummary:
+        "工程范围：按项目施工图、设计变更、经确认的附属工程清单及收方记录办理。计价口径：按合同约定单价及实际合格完成工程量计量。质量、安全、进度、缺陷责任、验收与结算以双方最终签署文本及项目管理制度为准。",
+      remarks:
+        "草案要点：明确里程桩号、构件名称、图纸参数、计量规则、含税/不含税口径、材料甲供/乙供、进度节点、质量保修和违约处理。",
+    },
+  },
+  {
+    id: "transport",
+    title: "渣土车运输合同草案",
+    detail: "运输路线、车辆方量、计价里程、油款扣减与运单结算。",
+    values: {
+      contractType: "transport",
+      pricingMethod: "trip",
+      unit: "趟",
+      contractSummary:
+        "运输范围：按指定装土点、卸土点、预设有效路线及车辆核定方量执行。结算依据：有效运输票据、NFC/车牌运单、经确认趟次及系统运价快照。油款扣减、异常趟次、运输安全、车辆证照、现场调度和结算周期按最终签署文本约定。",
+      remarks:
+        "草案要点：明确线路、计价规则、方量口径、装卸点确认、油款扣除、结算周期、车辆与司机资质、事故责任和异常运单处理。",
+    },
+  },
+  {
+    id: "machinery",
+    title: "工程机械租赁合同草案",
+    detail: "设备台班、月租/日租、油料、维修、进退场与停工计价。",
+    values: {
+      contractType: "machinery_lease",
+      pricingMethod: "month",
+      unit: "台·月",
+      contractSummary:
+        "租赁设备：以设备型号、编号、功率、操作员、进退场日期及验收记录为准。计价方式：按合同约定的月租、日租、台班或小时计价，油料、维修、配件、进退场、停工待工与操作人员费用按最终签署文本约定。",
+      remarks:
+        "草案要点：明确设备清单、租期、计费口径、燃油与维修承担、出勤/台班认定、故障停机、进退场、保险、安全和结算周期。",
+    },
+  },
 ];
 
-export default function ContractManagementPanel({ projects }: { projects: ProjectOption[] }) {
+export default function ContractManagementPanel({
+  projects,
+}: {
+  projects: ProjectOption[];
+}) {
   const [projectId, setProjectId] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<ContractForm>(blank());
-  const input = useMemo(() => ({ projectId: Number(projectId || 0) }), [projectId]);
-  const contracts = trpc.contract.list.useQuery(input, { enabled: Boolean(projectId), retry: false });
-  const capabilities = trpc.contract.capabilities.useQuery(undefined, { retry: false });
+  const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [preview, setPreview] = useState<{
+    url: string;
+    fileName: string | null;
+  } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const epoch = useRef(0);
+  const uploadToken = useRef(0);
+  const previewToken = useRef(0);
+  const mounted = useRef(true);
+  const busy = useRef({ upload: false, submit: false });
+  const reader = useRef<FileReader | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      epoch.current++;
+      uploadToken.current++;
+      previewToken.current++;
+      reader.current?.abort();
+    };
+  }, []);
+  const input = useMemo(
+    () => ({ projectId: Number(projectId || 0) }),
+    [projectId]
+  );
+  const contracts = trpc.contract.list.useQuery(input, {
+    enabled: Boolean(projectId),
+    retry: false,
+  });
+  const capabilities = trpc.contract.capabilities.useQuery(undefined, {
+    retry: false,
+  });
   const utils = trpc.useUtils();
-  const save = trpc.contract.save.useMutation({ onSuccess: async () => { toast.success(form.id ? "合同台账已更新" : "外包合同已建立"); setDialogOpen(false); setForm(blank(projectId)); await utils.contract.list.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "合同操作未完成，请稍后重试")) });
-  const transition = trpc.contract.transition.useMutation({ onSuccess: async () => { toast.success("合同状态已更新"); await utils.contract.list.invalidate(); }, onError: error => toast.error(getUserFacingErrorMessage(error, "合同操作未完成，请稍后重试")) });
+  const save = trpc.contract.save.useMutation();
+  const upload = trpc.contract.uploadAttachment.useMutation();
+  const transition = trpc.contract.transition.useMutation({
+    onSuccess: async () => {
+      toast.success("合同状态已更新");
+      await utils.contract.list.invalidate();
+    },
+    onError: error =>
+      toast.error(
+        getUserFacingErrorMessage(error, "合同操作未完成，请稍后重试")
+      ),
+  });
   const rows = contracts.data ?? [];
-  const activeAmount = rows.filter(row => row.status === "active").reduce((sum, row) => sum + Number(row.contractAmount), 0);
+  const activeAmount = rows
+    .filter(row => row.status === "active")
+    .reduce((sum, row) => sum + Number(row.contractAmount), 0);
+  const resetSession = () => {
+    epoch.current++;
+    uploadToken.current++;
+    previewToken.current++;
+    reader.current?.abort();
+    reader.current = null;
+    busy.current = { upload: false, submit: false };
+    setUploading(false);
+    setSubmitting(false);
+    setPreviewing(false);
+    setPreview(null);
+  };
+  const closeForm = () => {
+    if (busy.current.submit) {
+      toast.error("合同正在保存，请等待完成后关闭");
+      return;
+    }
+    resetSession();
+    setDialogOpen(false);
+    setForm(blank(projectId));
+  };
+  const changeProject = (value: string) => {
+    resetSession();
+    setDialogOpen(false);
+    setForm(blank(value));
+    setProjectId(value);
+  };
+  const cancelUpload = () => {
+    if (!busy.current.upload) return;
+    uploadToken.current++;
+    reader.current?.abort();
+    reader.current = null;
+    busy.current.upload = false;
+    setUploading(false);
+    toast.success(
+      "已取消本次上传关联；如服务器已归档，附件仍按合同私有资料保留，不会写入当前表单"
+    );
+  };
+  const uploadAttachment = async (file?: File) => {
+    if (!file || busy.current.upload || busy.current.submit || !dialogOpen)
+      return;
+    if (
+      !["image/jpeg", "image/png"].includes(file.type) ||
+      !file.size ||
+      file.size > 8 * 1024 * 1024
+    ) {
+      toast.error("请选择不超过 8MB 的 JPG/PNG 合同照片");
+      return;
+    }
+    const session = epoch.current,
+      token = ++uploadToken.current;
+    const scope = { projectId: Number(form.projectId), id: form.id };
+    busy.current.upload = true;
+    setUploading(true);
+    const current = () =>
+      mounted.current &&
+      epoch.current === session &&
+      uploadToken.current === token;
+    try {
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const fileReader = new FileReader();
+        reader.current = fileReader;
+        fileReader.onload = () => resolve(String(fileReader.result));
+        fileReader.onerror = () => reject(new Error("合同照片读取失败"));
+        fileReader.onabort = () => reject(new Error("已取消读取"));
+        fileReader.readAsDataURL(file);
+      });
+      if (!current()) return;
+      reader.current = null;
+      const result = await upload.mutateAsync({
+        ...scope,
+        fileName: file.name,
+        mimeType: file.type as "image/jpeg" | "image/png",
+        base64Data,
+      });
+      if (!current()) return;
+      setForm(value => ({
+        ...value,
+        attachmentEvidenceId: result.evidenceId,
+        attachmentUploaded: true,
+        attachmentName: result.fileName,
+      }));
+      toast.success("合同附件已归档，请保存合同完成关联");
+    } catch (error) {
+      if (current())
+        toast.error(
+          getUserFacingErrorMessage(
+            error,
+            "附件归档未完成，已归档附件与合同输入仍保留"
+          )
+        );
+    } finally {
+      if (current()) {
+        busy.current.upload = false;
+        setUploading(false);
+        reader.current = null;
+      }
+    }
+  };
+  const viewAttachment = async (
+    evidenceId: number,
+    id?: number,
+    selectedProject = Number(form.projectId)
+  ) => {
+    const session = epoch.current,
+      token = ++previewToken.current;
+    const current = () =>
+      mounted.current &&
+      epoch.current === session &&
+      previewToken.current === token;
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      const result = await utils.contract.previewAttachment.fetch({
+        projectId: selectedProject,
+        id,
+        evidenceId,
+      });
+      if (current()) setPreview({ url: result.url, fileName: result.fileName });
+    } catch (error) {
+      if (current())
+        toast.error(getUserFacingErrorMessage(error, "合同附件暂不可查看"));
+    } finally {
+      if (current()) setPreviewing(false);
+    }
+  };
+  const submitContract = async () => {
+    if (busy.current.upload || busy.current.submit) return;
+    busy.current.submit = true;
+    setSubmitting(true);
+    const session = epoch.current;
+    const current = () => mounted.current && epoch.current === session;
+    try {
+      await save.mutateAsync({
+        id: form.id,
+        projectId: Number(form.projectId),
+        contractType: form.contractType,
+        counterpartyName: form.counterpartyName.trim(),
+        counterpartyContact: form.counterpartyContact.trim() || null,
+        pricingMethod: form.pricingMethod,
+        unit: form.unit.trim() || null,
+        unitPrice: form.unitPrice ? Number(form.unitPrice) : null,
+        contractAmount: Number(form.contractAmount),
+        startDate: form.startDate || null,
+        endDate: form.endDate || null,
+        ...(form.attachmentUploaded
+          ? { attachmentEvidenceId: form.attachmentEvidenceId }
+          : {}),
+        contractSummary: form.contractSummary.trim() || null,
+        remarks: form.remarks.trim() || null,
+      });
+      if (current()) {
+        toast.success(form.id ? "合同台账已更新" : "外包合同已建立");
+        resetSession();
+        setDialogOpen(false);
+        setForm(blank(projectId));
+      }
+      await utils.contract.list.invalidate();
+    } catch (error) {
+      if (current())
+        toast.error(
+          getUserFacingErrorMessage(
+            error,
+            "合同保存失败；已归档附件ID仍保留，可直接重试，无需重传"
+          )
+        );
+    } finally {
+      if (current()) {
+        busy.current.submit = false;
+        setSubmitting(false);
+      }
+    }
+  };
   const openCreate = () => {
-    if (!projectId) { toast.error("请先选择合同项目范围，再新建外包合同"); return; }
-    if (capabilities.data && !capabilities.data.canMaintain) { toast.error("当前岗位仅可查看合同台账，不能新建合同"); return; }
+    if (!projectId) {
+      toast.error("请先选择合同项目范围，再新建外包合同");
+      return;
+    }
+    if (capabilities.data && !capabilities.data.canMaintain) {
+      toast.error("当前岗位仅可查看合同台账，不能新建合同");
+      return;
+    }
+    if (busy.current.submit || busy.current.upload) return;
+    resetSession();
     setForm(blank(projectId));
     setDialogOpen(true);
   };
-  const applyTemplate = (templateId: typeof contractTemplates[number]["id"]) => {
+  const applyTemplate = (
+    templateId: (typeof contractTemplates)[number]["id"]
+  ) => {
     const template = contractTemplates.find(item => item.id === templateId);
     if (!template) return;
     setForm(current => ({ ...current, ...template.values }));
-    toast.success(`已套用${template.title}，请补全相对方、单价、金额和日期后保存`);
+    toast.success(
+      `已套用${template.title}，请补全相对方、单价、金额和日期后保存`
+    );
   };
   const applyFullTemplate = (template: FullContractTemplate) => {
-    if (!projectId) { toast.error("请先选择合同项目范围，再套用完整合同模板"); return; }
-    if (capabilities.data && !capabilities.data.canMaintain) { toast.error("当前岗位仅可查看合同台账"); return; }
-    setForm({ ...blank(projectId), contractType: template.contractType, pricingMethod: template.pricingMethod, unit: template.unit, contractSummary: template.summary, remarks: `已套用《${template.title}》完整业务草案；完整合同正文请在模板库中复制、编辑并经法务/律师审阅后归档。` });
+    if (!projectId) {
+      toast.error("请先选择合同项目范围，再套用完整合同模板");
+      return;
+    }
+    if (capabilities.data && !capabilities.data.canMaintain) {
+      toast.error("当前岗位仅可查看合同台账");
+      return;
+    }
+    if (busy.current.submit || busy.current.upload) return;
+    resetSession();
+    setForm({
+      ...blank(projectId),
+      contractType: template.contractType,
+      pricingMethod: template.pricingMethod,
+      unit: template.unit,
+      contractSummary: template.summary,
+      remarks: `已套用《${template.title}》完整业务草案；完整合同正文请在模板库中复制、编辑并经法务/律师审阅后归档。`,
+    });
     setDialogOpen(true);
-    toast.success(`已套用${template.title}的商务摘要，请继续补全相对方、单价、金额和日期`);
+    toast.success(
+      `已套用${template.title}的商务摘要，请继续补全相对方、单价、金额和日期`
+    );
   };
-  const openEdit = (row: typeof rows[number]) => {
-    setForm({ id: row.id, projectId: String(row.projectId), contractType: row.contractType, counterpartyName: row.counterpartyName, counterpartyContact: row.counterpartyContact ?? "", pricingMethod: row.pricingMethod, unit: row.unit ?? "", unitPrice: row.unitPrice ?? "", contractAmount: row.contractAmount, startDate: row.startDate ? toDeviceDateInput(row.startDate) : "", endDate: row.endDate ? toDeviceDateInput(row.endDate) : "", contractSummary: row.contractSummary ?? "", remarks: row.remarks ?? "" });
+  const openEdit = (row: (typeof rows)[number]) => {
+    if (busy.current.submit || busy.current.upload) return;
+    resetSession();
+    setForm({
+      id: row.id,
+      attachmentEvidenceId: row.attachmentEvidenceId ?? undefined,
+      projectId: String(row.projectId),
+      contractType: row.contractType,
+      counterpartyName: row.counterpartyName,
+      counterpartyContact: row.counterpartyContact ?? "",
+      pricingMethod: row.pricingMethod,
+      unit: row.unit ?? "",
+      unitPrice: row.unitPrice ?? "",
+      contractAmount: row.contractAmount,
+      startDate: row.startDate ? toDeviceDateInput(row.startDate) : "",
+      endDate: row.endDate ? toDeviceDateInput(row.endDate) : "",
+      contractSummary: row.contractSummary ?? "",
+      remarks: row.remarks ?? "",
+    });
     setDialogOpen(true);
   };
 
-  return <div className="space-y-6">
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-[#203c48]">合同管理 · 外包履约台账</p><h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">外包合同管理</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">统一维护渣土车运输、附属工程外包、机械租赁、材料供应等外包合同。实际运费、分包结算和租赁费用仍由各业务台账按真实业务办理。</p></div><Button onClick={openCreate}><Plus className="mr-1.5 h-4 w-4" />新建外包合同</Button></div>
-    <Card className="border-[#d8e3e0]"><CardContent className="p-4"><Label>合同项目范围</Label><Select value={projectId} onValueChange={setProjectId}><SelectTrigger className="mt-1 max-w-xl"><SelectValue placeholder="选择已授权项目" /></SelectTrigger><SelectContent>{projects.map(project => <SelectItem key={project.id} value={String(project.id)}>{project.name}</SelectItem>)}</SelectContent></Select><p className="mt-2 text-xs leading-5 text-slate-500">新建按钮始终可点击；未选择项目或当前岗位无维护权限时，系统会给出明确提示，不再无响应。</p></CardContent></Card>
-    <Card className="border-amber-200 bg-amber-50/50"><CardHeader className="pb-3"><CardTitle className="flex items-center gap-2 text-base text-amber-950"><FilePenLine className="h-4 w-4" />常用外包合同草案</CardTitle><CardDescription className="text-amber-900/70">以下为业务编辑草案，不是正式法律意见；签署前请由项目法务或律师结合项目所在地法律、招标文件和双方真实约定审阅。</CardDescription></CardHeader><CardContent className="grid gap-3 lg:grid-cols-3">{contractTemplates.map(template => <button type="button" key={template.id} onClick={() => { if (!projectId) { toast.error("请先选择合同项目范围，再套用合同草案"); return; } if (capabilities.data && !capabilities.data.canMaintain) { toast.error("当前岗位仅可查看合同台账"); return; } setForm({ ...blank(projectId), ...template.values }); setDialogOpen(true); }} className="rounded-xl border border-amber-200 bg-white p-4 text-left transition hover:border-[#1f5956] hover:shadow-sm"><p className="font-semibold text-[#203c48]">{template.title}</p><p className="mt-2 text-xs leading-5 text-slate-500">{template.detail}</p><span className="mt-3 inline-block text-xs font-medium text-[#1f5956]">套用并补全 →</span></button>)}</CardContent></Card>
-    <FullContractTemplates onApply={applyFullTemplate} />
-    {!projectId ? <Card><CardContent className="py-12 text-center text-sm text-slate-500">请选择项目，以查看或维护该项目的外包合同。</CardContent></Card> : <><section className="grid gap-3 md:grid-cols-3"><Card><CardContent className="p-4"><p className="text-xs text-slate-500">合同总数</p><p className="mt-1 text-2xl font-semibold text-[#203c48]">{rows.length}</p></CardContent></Card><Card><CardContent className="p-4"><p className="text-xs text-slate-500">执行中合同</p><p className="mt-1 text-2xl font-semibold text-emerald-700">{rows.filter(row => row.status === "active").length}</p></CardContent></Card><Card><CardContent className="p-4"><p className="text-xs text-slate-500">执行中合同金额</p><p className="mt-1 text-2xl font-semibold text-[#203c48]">¥{formatAmount(activeAmount)}</p></CardContent></Card></section><Card className="border-[#d8e3e0]"><CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0"><div><CardTitle className="text-base">合同台账</CardTitle><CardDescription>草稿合同可编辑；执行中合同可暂停、到期或关闭。合同状态不替代运输、分包、机械台账的实际结算状态。</CardDescription></div><Button size="sm" variant="outline" onClick={() => contracts.refetch()}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />刷新</Button></CardHeader><CardContent><div className="overflow-x-auto rounded-xl border border-[#e1e8e4]"><Table className="min-w-[1120px] text-xs"><TableHeader className="bg-[#edf1ed]"><TableRow><TableHead>合同编号</TableHead><TableHead>类型 / 相对方</TableHead><TableHead>计价方式</TableHead><TableHead>单价 / 合同额</TableHead><TableHead>有效期</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{rows.length ? rows.map(row => <TableRow key={row.id}><TableCell className="font-medium text-[#203c48]">{row.contractNo}</TableCell><TableCell><p>{contractTypeLabel[row.contractType]}</p><p className="mt-1 text-slate-500">{row.counterpartyName}</p></TableCell><TableCell>{pricingLabel[row.pricingMethod]}{row.unit ? ` / ${row.unit}` : ""}</TableCell><TableCell><p>{row.unitPrice ? `¥${Number(row.unitPrice).toFixed(2)}` : "—"}</p><p className="mt-1 text-slate-500">总 ¥{Number(row.contractAmount).toFixed(2)}</p></TableCell><TableCell>{row.startDate ? formatChinaDate(row.startDate) : "—"} 至 {row.endDate ? formatChinaDate(row.endDate) : "—"}</TableCell><TableCell><Badge variant="outline">{statusLabel[row.status]}</Badge></TableCell><TableCell className="text-right"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => openEdit(row)} disabled={!capabilities.data?.canMaintain || !["draft", "suspended"].includes(row.status)}>编辑</Button>{row.status === "draft" ? <Button size="sm" onClick={() => transition.mutate({ id: row.id, projectId: Number(projectId), targetStatus: "active" })} disabled={!capabilities.data?.canMaintain}>启用</Button> : null}{row.status === "active" ? <Button size="sm" variant="outline" onClick={() => transition.mutate({ id: row.id, projectId: Number(projectId), targetStatus: "suspended" })} disabled={!capabilities.data?.canMaintain}>暂停</Button> : null}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={7} className="h-24 text-center text-slate-500">当前项目暂无外包合同，可使用上方草案快速建立运输、附属工程或机械租赁合同。</TableCell></TableRow>}</TableBody></Table></div></CardContent></Card></>}
-    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl xl:max-w-6xl"><DialogHeader><DialogTitle>{form.id ? "编辑外包合同" : "新建外包合同"}</DialogTitle><DialogDescription>合同台账保存关键商务摘要。此处提供的文字为业务草案，签署前应由项目法务或律师审阅；实际结算仍需在运输、分包、机械或财务模块按真实业务办理。</DialogDescription></DialogHeader><form className="space-y-4" onSubmit={event => { event.preventDefault(); save.mutate({ id: form.id, projectId: Number(form.projectId), contractType: form.contractType, counterpartyName: form.counterpartyName.trim(), counterpartyContact: form.counterpartyContact.trim() || null, pricingMethod: form.pricingMethod, unit: form.unit.trim() || null, unitPrice: form.unitPrice ? Number(form.unitPrice) : null, contractAmount: Number(form.contractAmount), startDate: form.startDate || null, endDate: form.endDate || null, contractSummary: form.contractSummary.trim() || null, remarks: form.remarks.trim() || null }); }}><div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3"><p className="text-xs font-semibold text-amber-950">套用合同草案</p><div className="mt-2 flex flex-wrap gap-2">{contractTemplates.map(template => <Button key={template.id} type="button" size="sm" variant="outline" onClick={() => applyTemplate(template.id)}>{template.title}</Button>)}</div></div><div className="grid gap-4 md:grid-cols-2"><div><Label>合同类型</Label><Select value={form.contractType} onValueChange={value => setForm(current => ({ ...current, contractType: value as ContractType }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(contractTypeLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div><Label>合同相对方</Label><Input className="mt-1" value={form.counterpartyName} onChange={event => setForm(current => ({ ...current, counterpartyName: event.target.value }))} placeholder="输入施工队、运输公司或机械出租方" /></div></div><div className="grid gap-4 md:grid-cols-3"><div><Label>计价方式</Label><Select value={form.pricingMethod} onValueChange={value => setForm(current => ({ ...current, pricingMethod: value as PricingMethod }))}><SelectTrigger className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(pricingLabel).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div><div><Label>计价单位</Label><Input className="mt-1" value={form.unit} placeholder="趟、方、台班等" onChange={event => setForm(current => ({ ...current, unit: event.target.value }))} /></div><div><Label>合同单价（元）</Label><Input className="mt-1" type="number" min="0" step="0.01" value={form.unitPrice} onChange={event => setForm(current => ({ ...current, unitPrice: event.target.value }))} /></div></div><div className="grid gap-4 md:grid-cols-3"><div><Label>合同金额（元）</Label><Input className="mt-1" type="number" min="0" step="0.01" value={form.contractAmount} onChange={event => setForm(current => ({ ...current, contractAmount: event.target.value }))} /></div><div><Label>开始日期</Label><Input className="mt-1" type="date" value={form.startDate} onChange={event => setForm(current => ({ ...current, startDate: event.target.value }))} /></div><div><Label>结束日期</Label><Input className="mt-1" type="date" value={form.endDate} onChange={event => setForm(current => ({ ...current, endDate: event.target.value }))} /></div></div><div><Label>联系人 / 电话（可选）</Label><Input className="mt-1" value={form.counterpartyContact} onChange={event => setForm(current => ({ ...current, counterpartyContact: event.target.value }))} /></div><div><Label>合同内容摘要</Label><Textarea className="mt-1 min-h-36" value={form.contractSummary} maxLength={1000} onChange={event => setForm(current => ({ ...current, contractSummary: event.target.value }))} /></div><div><Label>备注</Label><Textarea className="mt-1" value={form.remarks} maxLength={500} onChange={event => setForm(current => ({ ...current, remarks: event.target.value }))} /></div><DialogFooter><Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>取消</Button><Button type="submit" disabled={!form.projectId || form.counterpartyName.trim().length < 2 || !Number.isFinite(Number(form.contractAmount)) || Number(form.contractAmount) < 0 || save.isPending}>{save.isPending ? "正在保存…" : "保存合同草稿"}</Button></DialogFooter></form></DialogContent></Dialog>
-  </div>;
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-[#203c48]">
+            合同管理 · 外包履约台账
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
+            外包合同管理
+          </h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
+            统一维护渣土车运输、附属工程外包、机械租赁、材料供应等外包合同。实际运费、分包结算和租赁费用仍由各业务台账按真实业务办理。
+          </p>
+        </div>
+        <Button onClick={openCreate}>
+          <Plus className="mr-1.5 h-4 w-4" />
+          新建外包合同
+        </Button>
+      </div>
+      <Card className="border-[#d8e3e0]">
+        <CardContent className="p-4">
+          <Label>合同项目范围</Label>
+          <Select value={projectId} onValueChange={changeProject}>
+            <SelectTrigger className="mt-1 max-w-xl">
+              <SelectValue placeholder="选择已授权项目" />
+            </SelectTrigger>
+            <SelectContent>
+              {projects.map(project => (
+                <SelectItem key={project.id} value={String(project.id)}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            新建按钮始终可点击；未选择项目或当前岗位无维护权限时，系统会给出明确提示，不再无响应。
+          </p>
+        </CardContent>
+      </Card>
+      <Card className="border-amber-200 bg-amber-50/50">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base text-amber-950">
+            <FilePenLine className="h-4 w-4" />
+            常用外包合同草案
+          </CardTitle>
+          <CardDescription className="text-amber-900/70">
+            以下为业务编辑草案，不是正式法律意见；签署前请由项目法务或律师结合项目所在地法律、招标文件和双方真实约定审阅。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 lg:grid-cols-3">
+          {contractTemplates.map(template => (
+            <button
+              type="button"
+              key={template.id}
+              onClick={() => {
+                if (!projectId) {
+                  toast.error("请先选择合同项目范围，再套用合同草案");
+                  return;
+                }
+                if (capabilities.data && !capabilities.data.canMaintain) {
+                  toast.error("当前岗位仅可查看合同台账");
+                  return;
+                }
+                if (busy.current.submit || busy.current.upload) return;
+                resetSession();
+                setForm({ ...blank(projectId), ...template.values });
+                setDialogOpen(true);
+              }}
+              className="rounded-xl border border-amber-200 bg-white p-4 text-left transition hover:border-[#1f5956] hover:shadow-sm"
+            >
+              <p className="font-semibold text-[#203c48]">{template.title}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                {template.detail}
+              </p>
+              <span className="mt-3 inline-block text-xs font-medium text-[#1f5956]">
+                套用并补全 →
+              </span>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
+      <FullContractTemplates onApply={applyFullTemplate} />
+      {!projectId ? (
+        <Card>
+          <CardContent className="py-12 text-center text-sm text-slate-500">
+            请选择项目，以查看或维护该项目的外包合同。
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          <section className="grid gap-3 md:grid-cols-3">
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-slate-500">合同总数</p>
+                <p className="mt-1 text-2xl font-semibold text-[#203c48]">
+                  {rows.length}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-slate-500">执行中合同</p>
+                <p className="mt-1 text-2xl font-semibold text-emerald-700">
+                  {rows.filter(row => row.status === "active").length}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-slate-500">执行中合同金额</p>
+                <p className="mt-1 text-2xl font-semibold text-[#203c48]">
+                  ¥{formatAmount(activeAmount)}
+                </p>
+              </CardContent>
+            </Card>
+          </section>
+          <Card className="border-[#d8e3e0]">
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle className="text-base">合同台账</CardTitle>
+                <CardDescription>
+                  草稿合同可编辑；执行中合同可暂停、到期或关闭。合同状态不替代运输、分包、机械台账的实际结算状态。
+                </CardDescription>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => contracts.refetch()}
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                刷新
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto rounded-xl border border-[#e1e8e4]">
+                <Table className="min-w-[1120px] text-xs">
+                  <TableHeader className="bg-[#edf1ed]">
+                    <TableRow>
+                      <TableHead>合同编号</TableHead>
+                      <TableHead>类型 / 相对方</TableHead>
+                      <TableHead>计价方式</TableHead>
+                      <TableHead>单价 / 合同额</TableHead>
+                      <TableHead>有效期</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.length ? (
+                      rows.map(row => (
+                        <TableRow key={row.id}>
+                          <TableCell className="font-medium text-[#203c48]">
+                            {row.contractNo}
+                          </TableCell>
+                          <TableCell>
+                            <p>{contractTypeLabel[row.contractType]}</p>
+                            <p className="mt-1 text-slate-500">
+                              {row.counterpartyName}
+                            </p>
+                          </TableCell>
+                          <TableCell>
+                            {pricingLabel[row.pricingMethod]}
+                            {row.unit ? ` / ${row.unit}` : ""}
+                          </TableCell>
+                          <TableCell>
+                            <p>
+                              {row.unitPrice
+                                ? `¥${Number(row.unitPrice).toFixed(2)}`
+                                : "—"}
+                            </p>
+                            <p className="mt-1 text-slate-500">
+                              总 ¥{Number(row.contractAmount).toFixed(2)}
+                            </p>
+                          </TableCell>
+                          <TableCell>
+                            {row.startDate
+                              ? formatChinaDate(row.startDate)
+                              : "—"}{" "}
+                            至{" "}
+                            {row.endDate ? formatChinaDate(row.endDate) : "—"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">
+                              {statusLabel[row.status]}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              {row.attachmentEvidenceId ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    void viewAttachment(
+                                      row.attachmentEvidenceId!,
+                                      row.id,
+                                      row.projectId
+                                    )
+                                  }
+                                >
+                                  查看附件
+                                </Button>
+                              ) : null}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openEdit(row)}
+                                disabled={
+                                  !capabilities.data?.canMaintain ||
+                                  !["draft", "suspended"].includes(row.status)
+                                }
+                              >
+                                编辑
+                              </Button>
+                              {row.status === "draft" ? (
+                                <Button
+                                  size="sm"
+                                  onClick={() =>
+                                    transition.mutate({
+                                      id: row.id,
+                                      projectId: Number(projectId),
+                                      targetStatus: "active",
+                                    })
+                                  }
+                                  disabled={!capabilities.data?.canMaintain}
+                                >
+                                  启用
+                                </Button>
+                              ) : null}
+                              {row.status === "active" ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    transition.mutate({
+                                      id: row.id,
+                                      projectId: Number(projectId),
+                                      targetStatus: "suspended",
+                                    })
+                                  }
+                                  disabled={!capabilities.data?.canMaintain}
+                                >
+                                  暂停
+                                </Button>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell
+                          colSpan={7}
+                          className="h-24 text-center text-slate-500"
+                        >
+                          当前项目暂无外包合同，可使用上方草案快速建立运输、附属工程或机械租赁合同。
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={open => {
+          if (!open) closeForm();
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl xl:max-w-6xl">
+          <DialogHeader>
+            <DialogTitle>
+              {form.id ? "编辑外包合同" : "新建外包合同"}
+            </DialogTitle>
+            <DialogDescription>
+              合同台账保存关键商务摘要。此处提供的文字为业务草案，签署前应由项目法务或律师审阅；实际结算仍需在运输、分包、机械或财务模块按真实业务办理。
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={event => {
+              event.preventDefault();
+              void submitContract();
+            }}
+          >
+            <fieldset disabled={uploading || submitting} className="space-y-4">
+              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                <p className="text-xs font-semibold text-amber-950">
+                  套用合同草案
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {contractTemplates.map(template => (
+                    <Button
+                      key={template.id}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => applyTemplate(template.id)}
+                    >
+                      {template.title}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <Label>合同类型</Label>
+                  <Select
+                    value={form.contractType}
+                    onValueChange={value =>
+                      setForm(current => ({
+                        ...current,
+                        contractType: value as ContractType,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(contractTypeLabel).map(
+                        ([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        )
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>合同相对方</Label>
+                  <Input
+                    className="mt-1"
+                    value={form.counterpartyName}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        counterpartyName: event.target.value,
+                      }))
+                    }
+                    placeholder="输入施工队、运输公司或机械出租方"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <Label>计价方式</Label>
+                  <Select
+                    value={form.pricingMethod}
+                    onValueChange={value =>
+                      setForm(current => ({
+                        ...current,
+                        pricingMethod: value as PricingMethod,
+                      }))
+                    }
+                  >
+                    <SelectTrigger className="mt-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(pricingLabel).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>计价单位</Label>
+                  <Input
+                    className="mt-1"
+                    value={form.unit}
+                    placeholder="趟、方、台班等"
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        unit: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>合同单价（元）</Label>
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.unitPrice}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        unitPrice: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <Label>合同金额（元）</Label>
+                  <Input
+                    className="mt-1"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.contractAmount}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        contractAmount: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>开始日期</Label>
+                  <Input
+                    className="mt-1"
+                    type="date"
+                    value={form.startDate}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        startDate: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>结束日期</Label>
+                  <Input
+                    className="mt-1"
+                    type="date"
+                    value={form.endDate}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        endDate: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div>
+                <Label>联系人 / 电话（可选）</Label>
+                <Input
+                  className="mt-1"
+                  value={form.counterpartyContact}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      counterpartyContact: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <Label>合同内容摘要</Label>
+                <Textarea
+                  className="mt-1 min-h-36"
+                  value={form.contractSummary}
+                  maxLength={1000}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      contractSummary: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <Label>备注</Label>
+                <Textarea
+                  className="mt-1"
+                  value={form.remarks}
+                  maxLength={500}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      remarks: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-2 rounded-xl border p-3">
+                <Label htmlFor="contract-attachment">
+                  合同附件照片（JPG/PNG，单张不超过 8MB）
+                </Label>
+                <Input
+                  id="contract-attachment"
+                  type="file"
+                  accept="image/jpeg,image/png"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    void uploadAttachment(file);
+                  }}
+                />
+                <p className="text-xs text-slate-500">
+                  专用归档不进入通用影像、下载、删除或
+                  OCR。归档成功后再保存合同关联；保存失败可直接重试，无需重传。
+                </p>
+                {form.attachmentEvidenceId ? (
+                  <div>
+                    <p className="text-sm">
+                      已归档合同附件 #{form.attachmentEvidenceId}
+                      {form.attachmentName ? ` · ${form.attachmentName}` : ""}
+                      {form.attachmentUploaded
+                        ? "（待保存关联）"
+                        : "（保留原附件）"}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        void viewAttachment(form.attachmentEvidenceId!, form.id)
+                      }
+                      disabled={previewing}
+                    >
+                      站内查看合同附件
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </fieldset>
+            {uploading ? (
+              <div role="status">
+                正在归档合同附件…
+                <Button type="button" variant="outline" onClick={cancelUpload}>
+                  取消本次上传
+                </Button>
+              </div>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={submitting}
+                onClick={closeForm}
+              >
+                取消
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  !form.projectId ||
+                  form.counterpartyName.trim().length < 2 ||
+                  !Number.isFinite(Number(form.contractAmount)) ||
+                  Number(form.contractAmount) < 0 ||
+                  submitting ||
+                  uploading
+                }
+              >
+                {submitting ? "正在保存…" : "保存合同草稿"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(preview)}
+        onOpenChange={open => {
+          if (!open) {
+            previewToken.current++;
+            setPreview(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>合同附件站内查看</DialogTitle>
+            <DialogDescription>
+              {preview?.fileName ?? "合同影像"} · 受控预览，不提供下载入口
+            </DialogDescription>
+          </DialogHeader>
+          {preview ? (
+            <img
+              src={preview.url}
+              alt={preview.fileName ?? "合同附件"}
+              className="max-h-[75vh] w-full object-contain"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
 }

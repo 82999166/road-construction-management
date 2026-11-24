@@ -1,3 +1,5 @@
+import { lockBusinessEvidenceBindings } from "../services/evidenceBinding";
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { and, desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -17,7 +19,7 @@ import {
 } from "../access";
 import { getDb } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
-import { notifyOfficialAccountBusinessEventSafely } from "../services/businessNotifier";
+import { notifyOfficialAccountBusinessEventSafely as notifyOfficialAccountBusinessEventSafelyImmediate } from "../services/businessNotifier";
 import { encryptSecret, maskSecret } from "../services/secretVault";
 
 const moneySchema = z.number().finite().min(0).max(999999999999.99);
@@ -60,16 +62,10 @@ function roundMoney(value: number) {
 }
 
 /** 生成分包批次号，避免客户端编号在多人并行分配工程量时冲突。 */
-function createPackageNo() {
-  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  return `SP-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 /** 分包付款结算单独立编号，禁止客户端使用包件号或人工编号覆盖历史付款链。 */
-function createSubcontractSettlementNo() {
-  const dateText = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  return `SPAY-${dateText}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-}
+
 
 /** 分包既服务于计量也服务于财务结算，两类受授权部门均可进入，具体状态操作仍按岗位收紧。 */
 async function assertSubcontractAccess(
@@ -410,7 +406,7 @@ export const subcontractRouter = router({
     }),
 
   savePackage: protectedProcedure
-    .input(packageInput)
+    .input(z.intersection(packageInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertSubcontractAccess(ctx);
@@ -426,6 +422,14 @@ export const subcontractRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "subcontract:savePackage", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertSubcontractAccess(ctx);
+if (!canMaintainSubcontractDraft(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "项目经理或施工负责人方可维护分包草稿",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
 
       let existing: typeof subcontractPackages.$inferSelect | undefined;
       if (input.id) {
@@ -555,7 +559,7 @@ export const subcontractRouter = router({
             )
           );
       } else {
-        const packageNo = createPackageNo();
+        const packageNo = await newBusinessDocumentNumber(db, "SP", { kind: "user", userId: user.id }, input.projectId, input);
         await db.insert(subcontractPackages).values({
           ...values,
           packageNo,
@@ -589,6 +593,8 @@ export const subcontractRouter = router({
         subcontractAmount,
         marginAmount,
       };
+
+      });
     }),
 
   transitionPackage: protectedProcedure
@@ -761,7 +767,7 @@ export const subcontractRouter = router({
     }),
 
   createPaymentSettlement: protectedProcedure
-    .input(settlementDraftInput)
+    .input(z.intersection(settlementDraftInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
       const roleCodes = await assertSubcontractAccess(ctx);
@@ -777,11 +783,23 @@ export const subcontractRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "subcontract:createPaymentSettlement", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertSubcontractAccess(ctx);
+if (!canSettleSubcontract(roleCodes))
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "仅会计或财务负责人可建立分包应付结算单",
+        });
+await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
+      const binding = await lockBusinessEvidenceBindings(db, { projectId: input.projectId, bindings: [{ field: "invoiceEvidenceId", id: input.invoiceEvidenceId, allowedSourceTypes: ["financial_invoice"], sourceId: "invoice_original_upload" }], actorId: user.id, module: "subcontract", targetType: "subcontract_payment_settlement", targetId: "new" });
+      const freshRoleCodes = await assertSubcontractAccess(ctx);
+      if (!canSettleSubcontract(freshRoleCodes)) throw new TRPCError({ code: "FORBIDDEN", message: "仅会计或财务负责人可建立分包应付结算单" });
+      await assertProjectInCurrentScope(ctx, input.projectId);
       const [pkg] = await db
         .select()
         .from(subcontractPackages)
         .where(eq(subcontractPackages.id, input.packageId))
-        .limit(1);
+        .limit(1).for("update");
       if (!pkg || pkg.projectId !== input.projectId)
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -844,8 +862,9 @@ export const subcontractRouter = router({
       const netPayableAmount = roundMoney(
         grossPayableAmount - input.manualDeductionAmount
       );
-      const settlementNo = createSubcontractSettlementNo();
+      let settlementNo = "";
       await db.transaction(async tx => {
+        settlementNo = await newBusinessDocumentNumber(tx, "SS", { kind: "user", userId: user.id }, input.projectId, input);
         await tx.insert(subcontractPaymentSettlements).values({
           settlementNo,
           projectId: input.projectId,
@@ -870,6 +889,7 @@ export const subcontractRouter = router({
           status: "draft",
           createdBy: user.id,
         });
+        await binding.retain(settlementNo);
         await tx.insert(auditLogs).values({
           userId: user.id,
           module: "subcontract",
@@ -894,6 +914,8 @@ export const subcontractRouter = router({
         grossPayableAmount,
         netPayableAmount,
       };
+
+      });
     }),
 
   transitionPaymentSettlement: protectedProcedure
@@ -1043,3 +1065,5 @@ export const subcontractRouter = router({
       };
     }),
 });
+
+const notifyOfficialAccountBusinessEventSafely = afterBusinessDocumentCommit(notifyOfficialAccountBusinessEventSafelyImmediate);

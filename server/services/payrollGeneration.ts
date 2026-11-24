@@ -1,3 +1,4 @@
+import { newBusinessDocumentNumber } from "./businessDocumentCreation";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   attendanceRecords,
@@ -287,6 +288,7 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
   const bankAccountMasked = worker?.bankAccountEncrypted ? decryptSecret(worker.bankAccountEncrypted) : null;
   try {
     await tx.insert(payrollStatements).values({
+      documentNo: await newBusinessDocumentNumber(tx, "PY", input.source === "schedule" ? { kind: "system" } : { kind: "user", userId: input.actorUserId }, profile.projectId, input, `worker:${profile.laborWorkerId}:period:${input.period}`),
       workerId: profile.laborWorkerId!,
       projectId: profile.projectId!,
       period: input.period,
@@ -298,7 +300,7 @@ export async function generatePayrollDraftForEmployeeProfile(input: { employeePr
     });
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
-    if (/duplicate|unique/i.test(code)) return { status: "skipped" as const, reason: "已有同项目同期间工资条", preview };
+    // 编号及工资失败必须回滚整个事务；不吞掉duplicate后提交已耗号码。
     throw error;
   }
   await tx.insert(auditLogs).values({

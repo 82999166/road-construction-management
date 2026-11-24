@@ -1,4 +1,5 @@
 import { EngineeringWatermarkPreview } from "@/components/EngineeringWatermarkPreview";
+import { EvidenceAssociationSummary, canRequestEvidenceDeletion, evidenceAssociationLabel } from "@/components/EvidenceAssociationSummary";
 import { createEngineeringWatermarkedImage } from "@/lib/engineeringWatermark";
 import { formatWatermarkCoordinates } from "@/lib/watermarkCoordinates";
 import { formatRecognizedAmount } from "@shared/numberFormat";
@@ -46,7 +47,7 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import React, { ChangeEvent, useEffect, useMemo, useState } from "react";
+import React, { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { useAuth } from "../_core/hooks/useAuth";
@@ -130,6 +131,7 @@ export function EvidenceWorkspace({
     fileName: string;
   } | null>(null);
   const [deletionReason, setDeletionReason] = useState("");
+  const deletionSubmittingRef = useRef(false);
   const projectOptions = trpc.evidence.projectOptions.useQuery(undefined, {
     enabled: isAuthenticated,
     retry: false,
@@ -193,6 +195,8 @@ export function EvidenceWorkspace({
     enabled: isAuthenticated && Boolean(selectedProjectId),
     retry: false,
   });
+  const deletionCandidateRecord = evidence.data?.find(item => item.id === deleteCandidate?.id);
+  const canDeleteCandidate = !evidence.isError && !evidence.isFetching && canRequestEvidenceDeletion(deletionCandidateRecord);
   const upload = trpc.evidence.upload.useMutation({
     onError: error =>
       toast.error(
@@ -226,6 +230,7 @@ export function EvidenceWorkspace({
       toast.error(
         getUserFacingErrorMessage(error, "现场影像删除失败，请稍后重试")
       ),
+    onSettled: () => { deletionSubmittingRef.current = false; },
   });
 
   if (loading || !isAuthenticated || projectOptions.isLoading)
@@ -349,11 +354,7 @@ export function EvidenceWorkspace({
       setFiles([]);
       setPreviewUrls([]);
       await evidence.refetch();
-      toast.success(
-        sourceId.trim()
-          ? `${results.length} 张现场影像已归档，将随关联业务单据一并提交主管审核`
-          : `${results.length} 张现场影像已归档，请在业务单据中关联后提交审核`
-      );
+      toast.success(`${results.length} 张现场影像已归档；来源标记不等于业务关联或审核，请按台账状态到真实业务单据中核验后提交`);
       if (sourceType === "purchase")
         results
           .filter(result => result.id)
@@ -637,7 +638,7 @@ export function EvidenceWorkspace({
                   <div>
                     <h2 className="text-base font-semibold">最近取证</h2>
                     <p className="mt-0.5 text-xs text-[#9b8170]">
-                      仅显示取证摘要；照片随关联单据在主管审核、业务详情和归档记录中查看。
+                      仅显示取证摘要与真实来源状态；照片查看和审核以原业务单据及权限为准。
                     </p>
                   </div>
                   <CheckCircle2 className="h-5 w-5 text-[#b87333]" />
@@ -680,11 +681,11 @@ export function EvidenceWorkspace({
                       return (
                         <Card
                           key={item.id}
-                          className="border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.07)]"
+                          className="min-w-0 border-0 bg-white shadow-[0_6px_18px_rgba(71,42,30,.07)] [overflow-wrap:anywhere]"
                         >
                           <CardContent className="space-y-2.5 p-3.5">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
                                 <p className="text-sm font-semibold text-[#5f3625]">
                                   {sourceLabel} · 取证记录 #{item.id}
                                 </p>
@@ -694,25 +695,15 @@ export function EvidenceWorkspace({
                                 </p>
                               </div>
                               <span
-                                className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${item.sourceId ? "bg-[#e5f4e9] text-[#30714b]" : "bg-[#f9eddf] text-[#8a4b25]"}`}
+                                className={`max-w-full rounded-full px-2 py-1 text-[10px] font-semibold ${item.sourceAssociationStatus === "referenced" ? "bg-[#e5f4e9] text-[#30714b]" : "bg-[#f9eddf] text-[#8a4b25]"}`}
                               >
-                                {item.sourceId ? "随单审核" : "待关联单据"}
+                                {evidenceAssociationLabel(item.sourceAssociationStatus)}
                               </span>
                             </div>
                             <p className="text-xs leading-5 text-[#634838]">
                               {item.description}
                             </p>
-                            <div className="rounded-lg bg-[#f9f4ed] px-2.5 py-2 text-[10px] leading-4 text-[#735645]">
-                              <p>
-                                关联业务：
-                                {item.sourceId
-                                  ? `${sourceLabel} · ${item.sourceId}`
-                                  : "暂未关联，后续可在业务单据中关联后提交"}
-                              </p>
-                              <p className="mt-1">
-                                影像查看：主管审核、业务详情与归档记录
-                              </p>
-                            </div>
+                            <EvidenceAssociationSummary record={item} />
                             {item.ocrResult ? (
                               <div className="rounded-lg bg-[#f9eddf] p-2 text-[10px] leading-4 text-[#704b38]">
                                 <p className="flex items-center gap-1 font-semibold text-[#905027]">
@@ -738,12 +729,13 @@ export function EvidenceWorkspace({
                                 {runOcr.isPending ? "正在识别…" : "票据 OCR"}
                               </Button>
                             ) : null}
-                            {item.canDelete ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-7 w-full border-[#e8c2bc] px-2 text-[10px] text-[#a44336] hover:bg-[#fff2f0]"
+                                disabled={!canRequestEvidenceDeletion(item) || evidence.isFetching || evidence.isError || removeEvidence.isPending}
                                 onClick={() => {
+                                  if (!canRequestEvidenceDeletion(item) || evidence.isFetching || evidence.isError || removeEvidence.isPending || deletionSubmittingRef.current) return;
                                   setDeletionReason("");
                                   setDeleteCandidate({
                                     id: item.id,
@@ -754,7 +746,6 @@ export function EvidenceWorkspace({
                                 <Trash2 className="mr-1 h-3 w-3" />
                                 删除取证记录
                               </Button>
-                            ) : null}
                           </CardContent>
                         </Card>
                       );
@@ -768,20 +759,21 @@ export function EvidenceWorkspace({
         <AlertDialog
           open={Boolean(deleteCandidate)}
           onOpenChange={open => {
-            if (!open && !removeEvidence.isPending) {
+            if (!open && !removeEvidence.isPending && !deletionSubmittingRef.current) {
               setDeleteCandidate(null);
               setDeletionReason("");
             }
           }}
         >
-          <AlertDialogContent className="border-[#ead9c8] bg-[#fffaf5] text-[#3b2118]">
+          <AlertDialogContent className="min-w-0 max-h-[90dvh] overflow-y-auto overflow-x-hidden border-[#ead9c8] bg-[#fffaf5] text-[#3b2118] [overflow-wrap:anywhere] sm:max-w-3xl lg:max-w-3xl">
             <AlertDialogHeader>
               <AlertDialogTitle>确认受控删除现场影像？</AlertDialogTitle>
               <AlertDialogDescription>
                 “{deleteCandidate?.fileName || "该照片"}
-                ”会从日常影像台账中隐藏，原对象键、内容指纹和删除原因将保留用于审计追溯。已关联业务单据的影像不可删除。
+                ”会从日常影像台账中隐藏，原对象键、内容指纹和删除原因将保留用于审计追溯。有当前/历史引用或未核验来源标记的影像均不可删除。
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {!canDeleteCandidate ? <p role="alert" className="text-sm text-[#a44336]">当前记录已不可删除：{deletionCandidateRecord?.deletionBlockedReason || "项目、权限或来源状态已变化，请关闭后刷新核对"}</p> : null}
             <div>
               <Label>删除原因</Label>
               <Textarea
@@ -800,15 +792,19 @@ export function EvidenceWorkspace({
                 className="bg-[#a44336] text-white hover:bg-[#843328]"
                 disabled={
                   !deleteCandidate ||
+                  !canDeleteCandidate ||
                   removeEvidence.isPending ||
                   deletionReason.trim().length < 5
                 }
-                onClick={() => {
-                  if (deleteCandidate)
+                onClick={event => {
+                  event.preventDefault();
+                  if (deleteCandidate && canDeleteCandidate && !removeEvidence.isPending && !deletionSubmittingRef.current && deletionReason.trim().length >= 5) {
+                    deletionSubmittingRef.current = true;
                     removeEvidence.mutate({
                       id: deleteCandidate.id,
                       deletionReason: deletionReason.trim(),
                     });
+                  }
                 }}
               >
                 {removeEvidence.isPending ? "正在受控删除…" : "确认受控删除"}

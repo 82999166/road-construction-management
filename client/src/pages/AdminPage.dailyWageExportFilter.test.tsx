@@ -6,7 +6,7 @@ describe("临时日结分类 Excel 筛选数据范围", () => {
     const source = readFileSync(new URL("./AdminPage.tsx", import.meta.url), "utf8");
     expect(source).toContain("getActiveDailyWageWorkbookFilter");
     expect(source).toContain('sheet.name === "临时日结"');
-    expect(source).toContain("sheet.rows.filter(matchesDailyWageFilter)");
+    expect(source).toMatch(/sheet\.rows\.filter\(row\s*=>\s*matchesDailyWageFilter\(row,\s*sheet\.headers\)\s*\)/);
     expect(source).toContain("日结日期起");
     expect(source).toContain("日结人员/班组");
     expect(source).toContain("日结状态");

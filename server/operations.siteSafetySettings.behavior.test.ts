@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { getTableColumns, getTableName, sql, type SQL } from "drizzle-orm";
@@ -15,7 +17,7 @@ const mock = vi.hoisted(() => ({
   risk: vi.fn(),
   map: vi.fn(),
 }));
-vi.mock("./db", () => ({ getDb: async () => mock.db }));
+vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mock.db) }));
 vi.mock("./access", async original => ({
   ...(await original<typeof import("./access")>()),
   assertDepartmentBusinessAccess: async () => {},
@@ -70,6 +72,12 @@ class SqlFixture {
   writes: { table: string; values: Row; affectedRows?: number }[] = [];
   sql: string[] = [];
   failNextClosure = false;
+  private gate = Promise.resolve();
+  async transaction(fn: any) {
+    const previous = this.gate; let release!: () => void; this.gate = new Promise(resolve => { release = resolve; });
+    await previous; const before = structuredClone(this.rows), writes = this.writes.length;
+    try { return await fn(this); } catch (error) { this.rows = before; this.writes.length = writes; throw error; } finally { release(); }
+  }
   select(projection?: any) {
     return { from: (table: any) => this.query(table, projection) };
   }
@@ -129,6 +137,7 @@ class SqlFixture {
         limit = value;
         return builder;
       },
+      for: () => builder,
       then: (resolve: any, reject: any) =>
         Promise.resolve()
           .then(() => {
@@ -136,7 +145,7 @@ class SqlFixture {
             if (limit !== undefined) rows = rows.slice(0, limit);
             return rows.map(row =>
               structuredClone(
-                projection
+                projection?.count ? { count: rows.length } : projection
                   ? Object.fromEntries(
                       Object.entries(projection).map(([key, column]: any) => [
                         key,
@@ -203,9 +212,11 @@ class SqlFixture {
           }
           return [{ insertId: first, affectedRows: values.length }];
         };
+        let committed: any; const once = async () => committed ??= await commit();
         return {
-          then: (resolve: any, reject: any) => commit().then(resolve, reject),
-          onDuplicateKeyUpdate: async () => commit(),
+          $returningId: async () => (await once()).map((r: any) => ({ id: r.insertId })),
+          then: (resolve: any, reject: any) => once().then(resolve, reject),
+          onDuplicateKeyUpdate: async () => once(),
         };
       },
     };
@@ -255,6 +266,7 @@ const combinations = [
 function fixture(withTrip = false, invoiceMode = "nfc_card") {
   const state = new SqlFixture();
   state.rows = {
+    projects: [{ id: 10, status: "active" }],
     users: [{ id: 1, name: "安全设置测试管理员" }],
     transport_vehicles: [
       {
@@ -335,7 +347,7 @@ function fixture(withTrip = false, invoiceMode = "nfc_card") {
       },
     ],
     evidence_records: [
-      { id: 302, projectId: 10, sourceType: "transport", sourceId: null },
+      { id: 302, projectId: 10, sourceType: "transport", sourceId: null, status: "active", mimeType: "image/jpeg" },
     ],
     transport_reader_devices: [
       {
@@ -1220,15 +1232,29 @@ describe("修复后拍照定位、幂等与核验保护", () => {
     expect(state.writes).toHaveLength(count);
     expect(trip(state).unloadConfirmedAt).toBeNull();
   });
-  it("条件闭环锁失败不返回成功，且已插入未绑定事件重试仍冲突", async () => {
+  it("条件闭环锁失败原子回滚，不保留伪事件或回执；独立历史未绑定事件重试仍冲突", async () => {
     const state = fixture(true); const c = caller(); await setPolicy(c, combinations[3]);
     state.failNextClosure = true;
     const input = photoInput({ latitude: null, longitude: null });
+    const before = structuredClone(state.rows), writeCount = state.writes.length;
     await expect(c.confirmPlatePhotoUnload(input)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(state.rows).toEqual(before);
+    expect(state.writes).toHaveLength(writeCount);
+    // A fresh attempt is legal after full rollback; repeated zero-write must still reject.
+    state.failNextClosure = true;
     await expect(c.confirmPlatePhotoUnload(input)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(state.rows).toEqual(before);
     expect(trip(state).unloadConfirmedAt).toBeNull();
     expect(trip(state).activeVehicleTransitKey).toBe("vehicle:10:11");
     expect(state.rows.notification_records).toHaveLength(0);
+    state.failNextClosure = false;
+    const payloadFingerprint = createHash("sha256").update(JSON.stringify({ source: "photo-unload", tripId: 51, projectId: 10, unloadEvidenceId: input.unloadEvidenceId, latitude: input.latitude ?? null, longitude: input.longitude ?? null, occurredAt: new Date(input.occurredAt).toISOString() })).digest("hex");
+    state.rows.transport_card_events.push({ id: 100, tripId: 51, projectId: 10, eventType: "unload", source: "manual_review", idempotencyKey: input.idempotencyKey, payloadFingerprint, validationStatus: "accepted" });
+    await expect(c.confirmPlatePhotoUnload(input)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(trip(state).unloadConfirmedAt).toBeNull();
+    expect(state.rows.transport_card_events).toHaveLength(1);
+
+
   });
   it("提示警告不能直接核验：主管必须填写核对依据，审核前不产生付款事实", async () => {
     const state = fixture(true); const c = caller();

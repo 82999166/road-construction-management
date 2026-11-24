@@ -15,9 +15,11 @@ describe("移动 NFC 自动开票服务端", () => {
     expect(source).toContain("dispatchBlockReason");
   });
 
-  it("运单号以日期、时间、秒为主体，同秒才追加序号", () => {
+  it("运单号由真实事务分配模块、北京时间、可信操作者和四位序号", () => {
     const source = readFileSync(new URL("./routers/operations.ts", import.meta.url), "utf8");
-    expect(source).toContain("secondKey");
-    expect(source).toContain("String(latestTripSecondSequence).padStart(2, \"0\")");
+    expect(source).toMatch(/newBusinessDocumentNumber\(db, "TR", \{ kind: "user", userId: (?:input\.userId|resolved\.user\.id|user\.id)/);
+    const allocator = readFileSync(new URL("./services/businessDocumentNumber.ts", import.meta.url), "utf8");
+    expect(allocator).toContain("createDrizzleBusinessDocumentNumberAdapter");
+    expect(allocator).toContain("TRANSACTION_REQUIRED");
   });
 });

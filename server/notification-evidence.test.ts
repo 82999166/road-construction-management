@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectPermissionsMockDb } from "./services/projectPermissions.mockDb";
+import { auditLogIntegrityEvents, auditLogs, evidenceRecords, projects } from "../drizzle/schema";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 /** 所有外部基础设施均使用 Mock，测试不读取真实影像、不调用模型也不向企业微信发送网络请求。 */
@@ -44,6 +46,16 @@ function createSelectDb(rows: unknown[]) {
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
   };
 }
+
+class OcrFixtureDb extends ProjectPermissionsMockDb {
+  constructor() { super(); (this as any).sqlite.function("regexp", (pattern: string, value: unknown) => new RegExp(pattern, "i").test(String(value ?? "")) ? 1 : 0); }
+  insert(table: any): any { return { values: (input: any) => ({
+    $returningId: async () => [{ id: Number((await super.insert(table).values(input))[0].insertId) }],
+    then: (ok: any, fail: any) => super.insert(table).values(input).then(ok, fail),
+  }) }; }
+}
+const ocrStores: OcrFixtureDb[] = [];
+afterEach(() => ocrStores.splice(0).forEach(db => db.close()));
 
 describe("消息、影像与企业微信通知安全边界", () => {
   beforeEach(() => {
@@ -111,7 +123,10 @@ describe("消息、影像与企业微信通知安全边界", () => {
   });
 
   it("票据 OCR 仅处理已授权项目的影像，并强制将模型结果标记为人工复核", async () => {
-    const db = createSelectDb([{ id: 88, projectId: 2, fileKey: "evidence/2/receipt.jpg", mimeType: "image/jpeg" }]);
+    const db = new OcrFixtureDb(); ocrStores.push(db);
+    db.seed(projects, { id: 2, status: "active" });
+    db.seed(evidenceRecords, { id: 88, projectId: 2, uploadedBy: 9, status: "active", sourceType: "site_photo", sourceId: null, fileKey: "evidence/2/receipt.jpg", mimeType: "image/jpeg" });
+    vi.spyOn(db, "update"); vi.spyOn(db, "transaction");
     vi.mocked(getDb).mockResolvedValue(db as never);
     vi.mocked(storageGetSignedUrl).mockResolvedValue("https://storage.example/signed-receipt.jpg" as never);
     vi.mocked(invokeLLM).mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ documentType: "收据", issuer: "", documentNo: "", issueDate: "", amount: "", currency: "", summary: "", confidence: 0.42, requiresManualReview: false }) } }] } as never);
@@ -122,7 +137,11 @@ describe("消息、影像与企业微信通知安全边界", () => {
     expect(invokeLLM).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 700 }));
     expect(result.ocrResult.requiresManualReview).toBe(true);
     expect(result.ocrResult.documentType).toBe("收据");
-    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(db.update).toHaveBeenCalledTimes(2); // OCR CAS 与审计链锚点推进
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.rows(evidenceRecords)[0]).toMatchObject({ status: "active", ocrResultJson: expect.stringContaining('"requiresManualReview":true') });
+    expect(db.rows(auditLogs)[0]).toMatchObject({ module: "evidence", targetId: "88" });
+    expect(db.rows(auditLogIntegrityEvents)).toHaveLength(1);
   });
 
   it("公众号通知仅使用已发布的 AppID、加密 AppSecret 和模板标识，缺少任何必要项均不可用", async () => {

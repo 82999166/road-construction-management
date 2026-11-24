@@ -1,4 +1,7 @@
+import { BusinessDocumentCreationMockDb } from "./services/businessDocumentCreation.mockDb";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getTableName } from "drizzle-orm";
 import { createHash } from "crypto";
 import { readFileSync } from "node:fs";
 import type { TrpcContext } from "./_core/context";
@@ -88,22 +91,28 @@ function createProjectOptionsDb(rows: unknown[]) {
 /** 支持运输保存流程按车辆、影像与运价规则的读取顺序返回不同数据。 */
 function createSelectDbSequence(...responses: unknown[][]) {
   let queryIndex = 0;
+  const previous = new Map<string, unknown[]>();
+  const evidence = responses.flat().filter((row: any) => row.sourceType !== undefined).map((row: any) => ({ status: "active", mimeType: "image/jpeg", sourceId: null, ...row }));
   return {
-    select: vi.fn(() => {
-      const rows = responses[queryIndex++] ?? [];
-      return {
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            orderBy: vi.fn(async () => rows),
-            limit: vi.fn(async () => rows),
-            then: (
-              resolve: (value: unknown[]) => unknown,
-              reject: (reason: unknown) => unknown
-            ) => Promise.resolve(rows).then(resolve, reject),
-          })),
-        })),
-      };
-    }),
+    select: vi.fn((projection?: any) => ({ from: vi.fn((table: any) => {
+      const name = getTableName(table); let rows: unknown[], locked = false;
+      // Binder current reads must not consume the next business response.
+      if (name === "projects") rows = [{ id: 10, status: "active" }];
+      else if (name === "evidence_records") {
+        rows = evidence;
+        if ((responses[queryIndex] ?? []).some((row: any) => row.sourceType !== undefined)) queryIndex++;
+      } else if (name === "audit_log_chain_state" || name === "audit_log_integrity_events") rows = previous.get(name) ?? [];
+      else { rows = responses[queryIndex++] ?? []; }
+      const query: any = {
+        where: vi.fn(() => query), orderBy: vi.fn(() => query), limit: vi.fn(() => query),
+        for: vi.fn(() => { locked = true; return query; }),
+        then: (ok: any, fail: any) => Promise.resolve().then(() => {
+          if (locked && name === "transport_vehicles" && previous.has(name)) { queryIndex--; rows = previous.get(name)!; }
+          previous.set(name, rows);
+          return rows;
+        }).then(ok, fail),
+      }; return query;
+    }) })),
   };
 }
 
@@ -130,7 +139,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("机械台账列表在读取前强制校验调用方的项目数据范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+    setDbFixture(createSelectDb([]) as never);
 
     await expect(
       machineryRouter
@@ -145,7 +154,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("机械成本汇总仅返回当前项目内未作废的真实成本，并在读取前校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDb([
         {
           machineId: 7,
@@ -191,7 +200,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("会计机械月度明细只读取当前项目与期间的审计快照，并在读取前校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDb([
         {
           id: 91,
@@ -227,7 +236,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("单机分析仅汇总当前项目的日作业、维修和柴油凭证，并以柴油台账优先避免油料重复计入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence(
         [
           {
@@ -327,7 +336,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("保存机械仅加班合法输入时服务端核算加班金额并快照驾驶员，不恢复台班", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -378,7 +387,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("已结算机械日作业不可回退，且状态流转仍校验项目范围", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["FINANCE_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([
         { id: 93, projectId: 10, machineId: 7, status: "settled" },
       ]),
@@ -408,7 +417,7 @@ describe("机械与运输 tRPC 路由", () => {
       projectIds: [88],
       organizationIds: [],
     });
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createProjectOptionsDb([
         {
           id: 88,
@@ -482,7 +491,7 @@ describe("机械与运输 tRPC 路由", () => {
         loadFactor: "0.9",
       },
     ]);
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     const result = await transportRouter
       .createCaller(createAuthContext())
@@ -497,7 +506,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("运输管理角色可为车辆卡绑定预填驾驶员电话，但车辆查询绝不返回电话加密密文", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDb([
         {
           id: 11,
@@ -528,7 +537,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("单车分析只汇总当前项目的运输、柴油和维修记录，并按柴油金额计算占运输收入比例", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence(
         [
           {
@@ -665,7 +674,7 @@ describe("机械与运输 tRPC 路由", () => {
       ),
       insert: vi.fn(() => ({ values })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     const result = await transportRouter
       .createCaller(createAuthContext())
@@ -740,7 +749,7 @@ describe("机械与运输 tRPC 路由", () => {
       ),
       insert: vi.fn(() => ({ values })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     const result = await transportRouter
       .createCaller(createAuthContext())
@@ -760,7 +769,7 @@ describe("机械与运输 tRPC 路由", () => {
         endLongitude: null,
       });
 
-    expect(result.tripNo).toMatch(/^TR-10-\d{14}-\d{2}$/);
+    expect(result.tripNo).toMatch(/^TR\d{14}0001(?!0000)\d{4}$/);
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({ tripNo: result.tripNo })
     );
@@ -775,7 +784,7 @@ describe("机械与运输 tRPC 路由", () => {
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(machineCostDb as never);
+    setDbFixture(machineCostDb as never);
 
     await expect(
       machineryRouter
@@ -797,7 +806,7 @@ describe("机械与运输 tRPC 路由", () => {
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(tripDb as never);
+    setDbFixture(tripDb as never);
 
     await expect(
       transportRouter
@@ -827,7 +836,7 @@ describe("机械与运输 tRPC 路由", () => {
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue(monthlyStatementDb as never);
+    setDbFixture(monthlyStatementDb as never);
 
     await expect(
       machineryRouter
@@ -857,7 +866,7 @@ describe("机械与运输 tRPC 路由", () => {
       }),
     }));
     const auditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -919,7 +928,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("机械与运输正向流转同时留下审计和公众号业务深链", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     const machineAuditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([{ id: 22, projectId: 10, status: "draft" }]),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
@@ -952,7 +961,7 @@ describe("机械与运输 tRPC 路由", () => {
 
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const tripAuditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([
         { id: 32, projectId: 10, vehicleId: 11, status: "draft" },
       ]),
@@ -990,7 +999,7 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["MACHINERY_MANAGER"]);
     const machineAuditValues = vi.fn(async () => undefined);
     const machineUpdateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([{ id: 41, projectId: 10, status: "draft" }]),
       update: vi.fn(() => ({
         set: vi.fn(() => ({ where: machineUpdateWhere })),
@@ -1010,7 +1019,7 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const tripAuditValues = vi.fn(async () => undefined);
     const tripUpdateWhere = vi.fn(async () => [{ affectedRows: 0 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([
         { id: 42, projectId: 10, vehicleId: 11, status: "draft" },
       ]),
@@ -1030,7 +1039,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("新建运输票据必须同时配置装土点和卸土点，避免无法闭环的单地点票据", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence([
         {
           id: 11,
@@ -1071,7 +1080,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("车牌直拍票据必须关联现场影像、直接进入待核验并向主管投递核验提醒", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const inserted: unknown[] = [];
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -1165,7 +1174,7 @@ describe("机械与运输 tRPC 路由", () => {
       })
     ).resolves.toMatchObject({
       success: true,
-      tripNo: "TR-PLATE-001",
+      tripNo: expect.stringMatching(/^TR\d{14}0001(?!0000)\d{4}$/),
       vehiclePlateNo: "湘A12345",
       dailyVehicleTripOrdinal: 2,
     });
@@ -1173,13 +1182,14 @@ describe("机械与运输 tRPC 路由", () => {
     expect(inserted).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          tripNo: "TR-PLATE-001",
+          tripNo: expect.stringMatching(/^TR\d{14}0001(?!0000)\d{4}$/),
           invoiceMode: "plate_photo",
           evidenceId: 301,
           status: "submitted",
           routeSnapshot: expect.objectContaining({
             invoiceMode: "plate_photo",
             platePhotoEvidenceId: 301,
+            externalTripNo: "TR-PLATE-001",
           }),
         }),
       ])
@@ -1187,14 +1197,14 @@ describe("机械与运输 tRPC 路由", () => {
     expect(mockNotifyOfficialAccountBusinessEventSafely).toHaveBeenCalledWith(
       expect.objectContaining({
         eventCode: "transport_plate_photo_ticket_submitted",
-        targetId: "TR-PLATE-001",
+        targetId: expect.stringMatching(/^TR\d{14}0001(?!0000)\d{4}$/),
       })
     );
   });
 
   it("车牌直拍票据仍不允许误送入 NFC 装卸刷卡状态机，但可走拍照卸土接口", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence([
         {
           id: 62,
@@ -1244,7 +1254,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("运输日汇总按车辆拆分 NFC 与直拍票据数量，并保留运费与待核验数量", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence(
         [
           {
@@ -1302,7 +1312,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("地点无需配置现场管理员即可由具备运输权限的用户保存", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insert = vi.fn(() => ({ values: vi.fn(async () => undefined) }));
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence([{ id: 71 }]),
       insert,
     } as never);
@@ -1324,7 +1334,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("运输负责人可读取项目级单次刷卡闭环设置，缺省值保持关闭", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([]) as never);
+    setDbFixture(createSelectDb([]) as never);
 
     await expect(
       transportRouter
@@ -1349,7 +1359,7 @@ describe("机械与运输 tRPC 路由", () => {
       where: vi.fn(async () => undefined),
     }));
     const auditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([{ id: 900, version: 2 }]),
       update: vi.fn(() => ({ set: settingUpdate })),
       insert: vi.fn(() => ({ values: auditValues })),
@@ -1479,7 +1489,7 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     const result = await transportRouter
       .createCaller(createAuthContext())
@@ -1639,7 +1649,7 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     const result = await transportRouter
       .createCaller(createAuthContext())
@@ -1713,7 +1723,7 @@ describe("机械与运输 tRPC 路由", () => {
       ),
       insert: vi.fn(() => ({ values: insertValues })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     await expect(
       transportRouter.createCaller(createAuthContext()).recordLoadEvent(input)
@@ -1753,7 +1763,7 @@ describe("机械与运输 tRPC 路由", () => {
       insert: vi.fn(() => ({ values: insertValues })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: updateWhere })) })),
     };
-    vi.mocked(getDb).mockResolvedValue(db as never);
+    setDbFixture(db as never);
 
     await expect(
       transportRouter.createCaller(createAuthContext()).recordUnloadEvent({
@@ -1794,7 +1804,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("司机柴油扣款明细仅投影本人车辆的有效运输扣油记录和加油机表数", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["DRIVER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence(
         [
           { id: 11, plateNo: "川A12345", driverUserId: 1 },
@@ -1910,7 +1920,7 @@ describe("机械与运输 tRPC 路由", () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
     const updateWhere = vi.fn(async () => [{ affectedRows: 1 }]);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -1964,7 +1974,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("车辆射频卡绑定只保存 UID 指纹、司机电话密文与掩码，并在实体写入前保持待写入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -2015,7 +2025,7 @@ describe("机械与运输 tRPC 路由", () => {
     const updateSet = vi.fn(() => ({
       where: vi.fn(async () => [{ affectedRows: 1 }]),
     }));
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -2088,7 +2098,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("待写入车辆卡可以生成首次写卡任务，载荷仅临时返回且数据库只保存摘要", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -2167,7 +2177,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("兼容历史上被提前标记启用但从未成功写入的车辆卡执行首次写入", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const insertValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -2211,7 +2221,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("首次写入与补写严格区分：已写入卡不能再次 issue，待写入卡不能 rewrite", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence([
         {
           id: 23,
@@ -2234,7 +2244,7 @@ describe("机械与运输 tRPC 路由", () => {
       message: expect.stringContaining("补写"),
     });
 
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence([
         {
           id: 24,
@@ -2260,7 +2270,7 @@ describe("机械与运输 tRPC 路由", () => {
 
   it("同一车辆卡存在处理中写卡任务时拒绝重复生成任务", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(
+    setDbFixture(
       createSelectDbSequence(
         [
           {
@@ -2301,7 +2311,7 @@ describe("机械与运输 tRPC 路由", () => {
       update: vi.fn(() => ({ set: updateSet })),
       insert: vi.fn(() => ({ values: insertValues })),
     };
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDbSequence(
         [
           {
@@ -2338,6 +2348,7 @@ describe("机械与运输 tRPC 路由", () => {
         async (callback: (client: typeof tx) => Promise<unknown>) =>
           callback(tx)
       ),
+      update: tx.update,
       insert: vi.fn(() => ({ values: insertValues })),
     } as never);
 
@@ -2375,7 +2386,7 @@ describe("机械与运输 tRPC 路由", () => {
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([
         {
           id: 404,
@@ -2387,6 +2398,7 @@ describe("机械与运输 tRPC 路由", () => {
           executionMode: "manual_confirmation",
         },
       ]),
+      update: tx.update, insert: tx.insert,
       transaction: vi.fn(
         async (callback: (client: typeof tx) => Promise<unknown>) =>
           callback(tx)
@@ -2416,7 +2428,7 @@ describe("机械与运输 tRPC 路由", () => {
       })),
       insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     };
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       ...createSelectDb([
         {
           id: 405,
@@ -2428,6 +2440,7 @@ describe("机械与运输 tRPC 路由", () => {
           executionMode: "manual_confirmation",
         },
       ]),
+      update: failedTx.update, insert: failedTx.insert,
       transaction: vi.fn(
         async (callback: (client: typeof failedTx) => Promise<unknown>) =>
           callback(failedTx)
@@ -2452,7 +2465,7 @@ describe("机械与运输 tRPC 路由", () => {
   it("本地硬件测试只登记项目范围内的读写结果和 UID 指纹摘要，不会签发或激活正式车辆卡", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["TRANSPORT_MANAGER"]);
     const auditValues = vi.fn(async () => undefined);
-    vi.mocked(getDb).mockResolvedValue({
+    setDbFixture({
       insert: vi.fn(() => ({ values: auditValues })),
     } as never);
 
@@ -2482,3 +2495,39 @@ describe("机械与运输 tRPC 路由", () => {
     );
   });
 });
+
+function setDbFixture(database: any) {
+  const auditSql = new BusinessDocumentCreationMockDb();
+  const insert = database.insert?.bind(database), update = database.update?.bind(database), select = database.select?.bind(database);
+  const chainTable = (table: any) => ["audit_log_chain_state", "audit_log_integrity_events"].includes(getTableName(table));
+  database.insert = (table: any) => chainTable(table) ? auditSql.insert(table) : { values: (data: any) => {
+    if (getTableName(table) === "audit_logs" && data.action === "retain_evidence_binding_pointers") return auditSql.insert(table).values(data);
+    return insert(table).values(data);
+  } };
+  if (update) database.update = (table: any) => chainTable(table) ? auditSql.update(table) : update(table);
+  else database.update = (table: any) => { if (chainTable(table)) return auditSql.update(table); throw new Error("fixture missing business update"); };
+  if (select) database.select = (...args: any[]) => ({ from: (table: any) => chainTable(table) ? auditSql.select(...args).from(table) : select(...args).from(table) });
+  if (!database.select) { vi.mocked(getDb).mockResolvedValue(withNumberingFixture(database) as never); return; }
+  const original = database.select.bind(database);
+  // Newly added project lock must not consume a legacy business-table response.
+  function lockable(chain: any): any {
+    return new Proxy(chain, { get(target, key) {
+      if (key === "then") return typeof target.then === "function" ? target.then.bind(target) : undefined;
+      if (key === "for" && typeof target.for !== "function") return () => lockable(target);
+      const value = target[key]; return typeof value === "function" ? (...args: any[]) => {
+        const result = value.apply(target, args); return result && typeof result === "object" ? lockable(result) : result;
+      } : value;
+    } });
+  }
+  database.select = (...args: any[]) => ({ from: (table: any) => {
+    if (getTableName(table) === "projects" && (!args[0] || Object.keys(args[0]).length === 1)) {
+      const query: any = { where: () => query, limit: () => query, for: () => query, then: (ok: any, fail: any) => Promise.resolve([{ id: 10, status: "active" }]).then(ok, fail) }; return query;
+    }
+    return lockable(original(...args).from(table));
+  } });
+  if (database.transaction) {
+    const transact = database.transaction.bind(database);
+    database.transaction = (callback: any) => transact((tx: any) => callback(Object.assign(Object.create(database), tx)));
+  }
+  vi.mocked(getDb).mockResolvedValue(withNumberingFixture(database) as never);
+}

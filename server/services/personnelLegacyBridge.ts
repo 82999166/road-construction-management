@@ -1,3 +1,5 @@
+import { newBusinessDocumentNumber } from "./businessDocumentCreation";
+import type { BusinessDocumentNumberTransaction } from "./businessDocumentNumber";
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { randomUUID } from "node:crypto";
@@ -121,7 +123,7 @@ export async function adoptLegacy(db: BridgeDb, input: { sourceType: LegacySourc
     const phoneEncrypted = worker?.phoneEncrypted ?? userProfile?.phoneEncrypted ?? null;
     const bankAccountEncrypted = worker?.bankAccountEncrypted ?? userProfile?.bankAccountEncrypted ?? null;
     const values: typeof personnelPeople.$inferInsert = {
-      personNo: `P-${randomUUID()}`, name: worker?.realName ?? accounts.find(u => u.id === userId)?.name ?? `历史员工档案 #${input.sourceId}`,
+      personNo: await newBusinessDocumentNumber(db as BusinessDocumentNumberTransaction, "PN", { kind: "user", userId: input.actorUserId }, profile?.projectId ?? worker?.projectId, { requestKey: `legacy:${input.sourceType}:${input.sourceId}` }), name: worker?.realName ?? accounts.find(u => u.id === userId)?.name ?? `历史员工档案 #${input.sourceId}`,
       affiliation, employmentStatus: profile?.employmentStatus ?? (worker?.attendanceStatus === "left" ? "left" : "active"),
       secondaryPositionIds: [], projectId: profile?.projectId ?? worker?.projectId ?? null,
       entryDate: legacyDate(profile?.joinedAt ?? worker?.entryDate), exitDate: legacyDate(profile?.leftAt ?? worker?.exitDate),

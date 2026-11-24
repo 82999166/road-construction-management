@@ -1,3 +1,4 @@
+import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
 import { and, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -19,7 +20,7 @@ import {
 } from "../access";
 import { getDb } from "../db";
 import { chinaBusinessDate } from "../services/chinaBusinessTime";
-import { notifyRefuelCompletedSafely } from "../services/refuelCompletionNotifier";
+import { notifyRefuelCompletedSafely as notifyRefuelCompletedSafelyImmediate } from "../services/refuelCompletionNotifier";
 import {
   lockMachineFuelLedger,
   assertNoDuplicateMachineFuel,
@@ -151,6 +152,7 @@ export const dieselRouter = router({
         records: rows.slice(0, 30).map(row => ({
           id: row.id,
           recordNo: row.recordNo,
+          machineCostSourceId: row.machineCostSourceId,
           assetType: row.assetType,
           assetId: row.assetType === "vehicle" ? row.vehicleId : row.machineId,
           supplyMethod: row.supplyMethod,
@@ -267,6 +269,7 @@ export const dieselRouter = router({
       const records = rows.map(row => ({
         id: row.id,
         recordNo: row.recordNo,
+          machineCostSourceId: row.machineCostSourceId,
         assetType: row.assetType,
         assetLabel:
           row.assetType === "vehicle"
@@ -357,7 +360,7 @@ export const dieselRouter = router({
    */
   mobileCreateRefuel: protectedProcedure
     .input(
-      z.object({
+      z.intersection(z.object({
         projectId: z.number().int().positive(),
         assetType: z.enum(["vehicle", "machine"]),
         assetId: z.number().int().positive(),
@@ -376,7 +379,7 @@ export const dieselRouter = router({
         receiptNo: z.string().trim().max(128).nullable().optional(),
         evidenceId: z.number().int().positive(),
         remarks: z.string().trim().max(500).nullable().optional(),
-      })
+      }), z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() }))
     )
     .mutation(async ({ ctx, input }) => {
       const user = requireAuthenticatedUser(ctx);
@@ -423,6 +426,14 @@ export const dieselRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "数据库连接暂不可用",
         });
+
+      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "diesel:mobileCreateRefuel", projectId: input.projectId, input , revalidate: async () => {
+        if (!(await getRoleOperationPermissionDecision(ctx, "DIESEL", "create")).allowed)
+          throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予柴油领用登记权限" });
+        if (input.deductFromFreight && !(await getRoleOperationPermissionDecision(ctx, "DIESEL", "settle")).allowed)
+          throw new TRPCError({ code: "FORBIDDEN", message: "运输扣油需额外授予柴油扣油结算权限" });
+        await assertProjectInCurrentScope(ctx, input.projectId);
+      }}, async db => {
       const [project, evidence, asset] = await Promise.all([
         db
           .select({ id: projects.id, status: projects.status })
@@ -500,7 +511,7 @@ export const dieselRouter = router({
         appliedUnitPrice = Number(activePrice.pricePerLiter);
       }
       const amount = Number((input.liters * appliedUnitPrice).toFixed(2));
-      const recordNo = `DS${input.projectId}${Date.now().toString().slice(-8)}`;
+      let recordNo = "";
       let recordId = 0;
       await db.transaction(async tx => {
         if (input.assetType === "machine") {
@@ -556,6 +567,7 @@ export const dieselRouter = router({
             message: `检测到 ${DUPLICATE_REFUEL_WINDOW_MILLISECONDS / 60_000} 分钟内同一资源相同加油量的记录（${duplicateRefuelRecord.recordNo}），为避免重复入账，本次未保存`,
           });
         }
+        recordNo = await newBusinessDocumentNumber(tx, "DS", { kind: "user", userId: user.id }, input.projectId, input);
         const result = await tx.insert(dieselRefuelRecords).values({
           projectId: input.projectId,
           assetType: input.assetType,
@@ -598,6 +610,7 @@ export const dieselRouter = router({
           });
         if (input.assetType === "machine") {
           await tx.insert(machineCostRecords).values({
+            documentNo: await newBusinessDocumentNumber(tx, "MC", { kind: "user", userId: user.id }, input.projectId, input),
             machineId: input.assetId,
             projectId: input.projectId,
             costType: "fuel",
@@ -637,5 +650,9 @@ export const dieselRouter = router({
         amount,
         appliedUnitPrice,
       };
+
+      });
     }),
 });
+
+const notifyRefuelCompletedSafely = afterBusinessDocumentCommit(notifyRefuelCompletedSafelyImmediate);

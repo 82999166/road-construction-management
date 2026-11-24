@@ -21,7 +21,7 @@ describe("外包合同管理入口与草案", () => {
     expect(source).toContain('import { formatChinaDate, toDeviceDateInput } from "@/lib/businessTime"');
     expect(source).toContain("startDate: row.startDate ? toDeviceDateInput(row.startDate) : \"\"");
     expect(source).toContain("formatChinaDate(row.startDate)");
-    expect(source).toContain("{statusLabel[row.status]}</Badge>");
+    expect(source).toMatch(/\{statusLabel\[row\.status\]\}\s*<\/Badge>/);
     expect(source).not.toContain("statusLabel[row.status] ?? row.status");
   });
 });

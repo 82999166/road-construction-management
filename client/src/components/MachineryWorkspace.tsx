@@ -1,5 +1,6 @@
 import { formatQuantity } from "@shared/numberFormat";
 import { useEffect, useMemo, useState } from "react";
+import { StoredDocumentNumber, documentNumberText } from "./StoredDocumentNumber";
 import { trpc } from "@/lib/trpc";
 import { BusinessWorkspaceNavigation } from "@/components/BusinessWorkspaceNavigation";
 import {
@@ -210,6 +211,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
     JSON.stringify([projectId, period, filterMachineId])
   );
   const monthlyHeaders = [
+    "正式单号",
     "期间",
     "机械",
     "状态",
@@ -221,6 +223,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
     "签字",
   ];
   const monthlyExportRows = filteredStatements.map(row => [
+    documentNumberText(row),
     row.period,
     (machines.data ?? []).find(machine => machine.id === row.machineId)?.name ||
       `机械 #${row.machineId}`,
@@ -651,6 +654,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                     )?.name || `机械 #${row.machineId}`}{" "}
                     · {row.period} · {machineryStatus(row.status)}
                   </p>
+                  <StoredDocumentNumber record={row} />
                   <p className="text-xs text-muted-foreground">
                     月结应付 {machineryMoney(row.machineShareAmount)} · 原产值{" "}
                     {machineryMoney(row.totalOutput)} · 工资核对{" "}
@@ -981,6 +985,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                       {row.serviceProvider || "未登记服务单位"} ·{" "}
                       {machineryMoney(row.amount)} ·{" "}
                       {machineryStatus(row.status)}
+                      <StoredDocumentNumber record={row} />
                     </div>
                   ))}
                   <FinancePagination
@@ -1003,6 +1008,7 @@ export default function MachineryWorkspace(props: MachineryWorkspaceProps) {
                     {row.period} · {machineryStatus(row.status)} · 月结应付{" "}
                     {machineryMoney(row.machineShareAmount)} · 签字{" "}
                     {row.signatureName || "未签"}
+                    <StoredDocumentNumber record={row} />
                   </div>
                 ))}
                 <FinancePagination

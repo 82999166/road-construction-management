@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 import { getTableName, type SQL } from "drizzle-orm";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
+import { isBusinessDocumentNumber } from "../shared/businessDocumentNumber";
 import { purchasingRouter } from "./routers/finance";
 const mock = vi.hoisted(() => ({ db: null as any, roles: ["ALL"], userId: 1 }));
 vi.mock("./db", () => ({ getDb: async () => mock.db }));
@@ -60,39 +62,75 @@ class FakeDb {
   }
   private query(table: any) {
     const name = getTableName(table);
-    let rows = [...(this.rows[name] ?? [])];
+    let condition: SQL | undefined;
     let params: unknown[] = [];
-    const builder: any = {
-      where: (condition: SQL) => {
+    let limit = Infinity;
+    let sortById = false;
+    const currentRows = () => {
+      let result = [...(this.rows[name] ?? [])];
+      if (condition) {
         const q = new MySqlDialect().sqlToQuery(condition);
+        // Preserve each SQL parameter's position, including multi-ID IN reads.
+        const predicates: Array<(row: any) => boolean> = [];
+        let parameterIndex = 0;
+        for (const match of q.sql.matchAll(/`[^`]+`\.`([^`]+)`\s*(=\s*\?|in\s*\(([^)]*)\))/gi)) {
+          const column = match[1];
+          if (match[2].startsWith("=")) {
+            const value = q.params[parameterIndex++];
+            predicates.push(row => row[column] === value);
+          } else {
+            const size = (match[3].match(/\?/g) ?? []).length;
+            const values = q.params.slice(parameterIndex, parameterIndex + size);
+            parameterIndex += size;
+            predicates.push(row => values.includes(row[column]));
+          }
+        }
+        result = result.filter(row => predicates.every(predicate => predicate(row)));
+      }
+      if (sortById) result.sort((a, b) => a.id - b.id);
+      return result.slice(0, limit);
+    };
+    const builder: any = {
+      where: (input: SQL) => {
+        condition = input;
+        const q = new MySqlDialect().sqlToQuery(input);
         params = q.params;
-        const columns = [...q.sql.matchAll(/`[^`]+`\.`([^`]+)` = \?/g)].map(
-          m => m[1]
-        );
-        rows = rows.filter(row =>
-          columns.every((col, i) => row[col] === q.params[i])
-        );
         return builder;
       },
       limit: (n: number) => {
-        rows = rows.slice(0, n);
+        limit = n;
         return builder;
       },
-      orderBy: () => builder,
+      orderBy: (...orders: SQL[]) => {
+        if (name === "evidence_records") {
+          expect(orders.map(order => new MySqlDialect().sqlToQuery(order).sql)).toEqual(["`evidence_records`.`id` asc"]);
+          sortById = true;
+        }
+        return builder;
+      },
       for: (mode: string) => {
-        expect(name).toBe("projects");
+        expect(["projects", "evidence_records", "purchase_orders"]).toContain(name);
         expect(mode).toBe("update");
-        expect(params).toEqual([1]);
         expect(this.inTransaction).toBe(true);
+        if (name === "projects") {
+          expect(params).toEqual([1]);
+          expect(currentRows()).toHaveLength(1);
+          this.hasProjectLock = true;
+          this.locks++;
+        } else {
+          expect(this.hasProjectLock, `锁${name}前必须先锁项目`).toBe(true);
+          if (name === "evidence_records") {
+            expect(sortById).toBe(true);
+            expect(params).toEqual([...params].sort((a: any, b: any) => a - b));
+          }
+        }
         this.lockCalls.push({
           table: name,
           mode,
           params,
           inTransaction: this.inTransaction,
         });
-        this.hasProjectLock = true;
-        this.events.push("lock:projects");
-        this.locks++;
+        this.events.push(`lock:${name}`);
         return builder;
       },
       then: (resolve: any, reject: any) => {
@@ -107,7 +145,7 @@ class FakeDb {
           expect(this.hasProjectLock, `读取${name}前必须先锁项目行`).toBe(true);
           this.events.push(`read:${name}`);
         }
-        return Promise.resolve(rows).then(resolve, reject);
+        return Promise.resolve(currentRows().map(row => ({ ...row }))).then(resolve, reject);
       },
     };
     return builder;
@@ -138,7 +176,8 @@ class FakeDb {
       set: (patch: any) => ({
         where: async (condition: SQL) => {
           const rows = await this.query(table).where(condition);
-          rows.forEach((row: any) => Object.assign(row, patch));
+          const ids = new Set(rows.map((row: any) => row.id));
+          (this.rows[name] ?? []).filter(row => ids.has(row.id)).forEach(row => Object.assign(row, patch));
           this.writes.push({ table: name, data: patch });
           return [{ affectedRows: rows.length }];
         },
@@ -215,14 +254,14 @@ function stock(extra = {}) {
   };
 }
 beforeEach(() => {
-  mock.db = new FakeDb();
+  mock.db = withNumberingFixture(new FakeDb());
   mock.roles = ["ALL"];
   mock.userId = 1;
 });
 describe("采购仓储真实路由行为（模拟DB，不连接实际库）", () => {
   it("无订单入库须负责人授权原因与有效证据，失败无落库", async () => {
     mock.db.rows.evidence_records = [
-      { id: 1, projectId: 1, sourceType: "purchase", status: "active" },
+      { id: 1, projectId: 1, sourceType: "purchase", sourceId: "small_direct_document", status: "active" },
     ];
     mock.roles = ["WAREHOUSE_MANAGER"];
     await expect(
@@ -245,12 +284,16 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       costRuleVersion: "moving_weighted_v2",
       exceptionReason: "期初库存核验入库",
     });
-    expect(mock.db.audits).toHaveLength(1);
+    const transactionNo = mock.db.rows.inventory_transactions[0].transactionNo;
+    expect(isBusinessDocumentNumber(transactionNo)).toBe(true);
+    expect(transactionNo).toMatch(/^IV\d{14}0001\d{4}$/);
+    expect(mock.db.audits).toHaveLength(2);
+    expect(mock.db.audits.some((audit: any) => audit.action === "retain_evidence_binding_pointers")).toBe(true);
   });
   it("逐单订单超收被拦截，成功实际收齐才更新订单", async () => {
     mock.db.rows.purchase_orders = [order()];
     mock.db.rows.evidence_records = [
-      { id: 1, projectId: 1, sourceType: "purchase", status: "active" },
+      { id: 1, projectId: 1, sourceType: "purchase", sourceId: "small_direct_document", status: "active" },
     ];
     await expect(
       caller().saveInventoryTransaction({
@@ -269,7 +312,12 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       quantity: 10,
     });
     expect(mock.db.rows.purchase_orders[0].status).toBe("received");
-    expect(mock.db.locks).toBe(2);
+    expect(mock.db.rows.purchase_orders[0].orderNo).toBe("PO-1");
+    expect(mock.db.locks).toBe(6); // 每次授权复核、binding项目锁与原库存锁，共用原事务。
+    expect(mock.db.lockCalls.map((lock: any) => lock.table)).toEqual([
+      "projects", "projects", "evidence_records", "projects",
+      "projects", "projects", "evidence_records", "projects",
+    ]);
   });
   it("并发领用在项目锁事务中防超领且不采信输入单价", async () => {
     mock.db.rows.inventory_transactions = [stock()];
@@ -290,9 +338,12 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
     expect(calls.filter(r => r.status === "fulfilled")).toHaveLength(1);
     expect(mock.db.rows.inventory_transactions).toHaveLength(2);
     expect(mock.db.rows.inventory_transactions[1].amount).toBe("70");
-    expect(mock.db.lockCalls).toHaveLength(2);
-    expect(mock.db.events.slice(0, 3)).toEqual([
+    expect(mock.db.lockCalls).toHaveLength(6);
+    expect(mock.db.events.filter((event: string) => event === "transaction:start")).toHaveLength(2);
+    expect(mock.db.events.slice(0, 5)).toEqual([
       "transaction:start",
+      "lock:projects",
+      "lock:projects",
       "lock:projects",
       "read:inventory_transactions",
     ]);
@@ -367,7 +418,7 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       order({ status: "draft", hasInvoice: false }),
     ];
     mock.db.rows.evidence_records = [
-      { id: 1, projectId: 2, sourceType: "purchase", status: "active" },
+      { id: 1, projectId: 2, sourceType: "purchase", sourceId: "small_direct_invoice", status: "active" },
     ];
     const bind = {
       projectId: 1,
@@ -376,12 +427,17 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       attachmentKind: "invoice" as const,
       reason: "历史原始发票补传",
     };
-    await expect(caller().bindOrderEvidence(bind)).rejects.toThrow("附件失效");
+    await expect(caller().bindOrderEvidence(bind)).rejects.toMatchObject({
+      code: "BAD_REQUEST", message: expect.stringContaining("来源类型或原所属业务不符"),
+    });
+    expect(mock.db.writes).toHaveLength(0);
+    expect(mock.db.audits).toHaveLength(0);
     mock.db.rows.evidence_records = [
       {
         id: 1,
         projectId: 1,
         sourceType: "purchase",
+        sourceId: "small_direct_invoice",
         status: "active",
         watermarkJson: '{"attachmentKind":"document"}',
       },
@@ -420,13 +476,13 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       )
     );
     expect(results.every(r => r.status === "rejected")).toBe(true);
-    expect(mock.db.lockCalls).toHaveLength(2);
+    expect(mock.db.lockCalls).toHaveLength(6);
     expect(mock.db.rows.inventory_transactions).toHaveLength(0);
   });
   it("并发订单入库防超收，部分收货不覆盖订单原数量", async () => {
     mock.db.rows.purchase_orders = [order({ quantity: "99", unitPrice: "1" })];
     mock.db.rows.evidence_records = [
-      { id: 1, projectId: 1, sourceType: "purchase", status: "active" },
+      { id: 1, projectId: 1, sourceType: "purchase", sourceId: "small_direct_document", status: "active" },
     ];
     const results = await Promise.allSettled(
       [1, 2].map(() =>
@@ -440,7 +496,7 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       )
     );
     expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
-    expect(mock.db.lockCalls).toHaveLength(2);
+    expect(mock.db.lockCalls).toHaveLength(8);
     expect(mock.db.rows.purchase_orders[0]).toMatchObject({
       status: "confirmed",
       quantity: "99",
@@ -474,7 +530,7 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       amount: "30",
       originalOutboundId: 2,
     });
-    expect(mock.db.lockCalls).toHaveLength(2);
+    expect(mock.db.lockCalls).toHaveLength(6);
     for (const patch of [
       { projectId: 2 },
       { unit: "吨" },
@@ -631,7 +687,7 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       amount: "60",
       settlementStatus: "paid",
     });
-    expect(mock.db.lockCalls).toHaveLength(2);
+    expect(mock.db.lockCalls).toHaveLength(4);
   });
   it("发票绑定同时检查订单项目、active/来源/类型/本人岗位，旧引用保留审计", async () => {
     const bind = {
@@ -642,22 +698,24 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       reason: "旧发票遗失新原件补传",
     };
     mock.db.rows.purchase_orders = [order({ projectId: 2 })];
-    await expect(caller().bindOrderEvidence(bind)).rejects.toThrow(
-      "当前项目订单"
-    );
+    await expect(caller().bindOrderEvidence(bind)).rejects.toMatchObject({
+      code: "NOT_FOUND", message: "未找到当前项目业务单据",
+    });
     mock.db.rows.purchase_orders = [
       order({ status: "draft", invoiceEvidenceId: 77 }),
     ];
     for (const patch of [
       { sourceType: "site_photo" },
       { status: "deleted" },
-      { watermarkJson: "{broken" },
+      // 旧错源fixture没有专用marker；不能补invoice marker后再声称损坏metadata应拒绝。
+      { watermarkJson: "{broken", sourceId: null },
     ]) {
       mock.db.rows.evidence_records = [
         {
           id: 1,
           projectId: 1,
           sourceType: "purchase",
+          sourceId: "small_direct_invoice",
           status: "active",
           watermarkJson: '{"attachmentKind":"invoice"}',
           ...patch,
@@ -688,6 +746,13 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
     expect(mock.db.audits.at(-1)).toMatchObject({
       beforeJson: '{"evidenceId":77}',
     });
+    const retain = mock.db.audits.find((audit: any) => audit.action === "retain_evidence_binding_pointers");
+    expect(JSON.parse(retain.beforeJson)).toEqual({ evidencePointers: [{ evidenceId: 77, fileKey: null }] });
+    expect(JSON.parse(retain.afterJson)).toEqual({ evidencePointers: [{ evidenceId: 1, fileKey: null }] });
+    expect(mock.db.lockCalls.some((lock: any) => lock.table === "evidence_records" && JSON.stringify(lock.params) === "[1,77]")).toBe(true);
+    expect(mock.db.lockCalls.slice(-5).map((lock: any) => lock.table)).toEqual([
+      "projects", "projects", "evidence_records", "purchase_orders", "purchase_orders",
+    ]);
   });
   it("供应商维护super-only；原组织和信用代码不会因旧客户端缺字段丢失", async () => {
     mock.db.rows.suppliers = [
@@ -757,9 +822,11 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
     ]) {
       mock.db.rows.evidence_records = [document, { ...invoice, ...patch }];
       await expect(caller().createSmallDirectOrder(create)).rejects.toThrow(
-        "发票附件"
+        patch.watermarkJson ? "发票附件" : "来源类型或原所属业务不符"
       );
       expect(mock.db.rows.purchase_orders).toHaveLength(0);
+      expect(mock.db.writes).toHaveLength(0);
+      expect(mock.db.audits).toHaveLength(0);
     }
     mock.db.rows.evidence_records = [document, invoice];
     await caller().createSmallDirectOrder(create);
@@ -782,7 +849,7 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
     });
     mock.db.rows.inventory_transactions = [legacy];
     mock.db.rows.evidence_records = [
-      { id: 1, projectId: 1, sourceType: "purchase", status: "active" },
+      { id: 1, projectId: 1, sourceType: "purchase", sourceId: "small_direct_document", status: "active" },
     ];
     const recover = {
       ...baseStock,
@@ -809,7 +876,8 @@ describe("采购仓储真实路由行为（模拟DB，不连接实际库）", ()
       exceptionReason: recover.exceptionReason,
       costRuleVersion: "moving_weighted_v2",
     });
-    expect(mock.db.audits).toHaveLength(1);
+    expect(mock.db.audits).toHaveLength(2);
+    expect(mock.db.audits.some((audit: any) => audit.action === "retain_evidence_binding_pointers")).toBe(true);
     const result = await caller().listInventory({ projectId: 1 });
     expect(result).toMatchObject({
       balances: [{ balanceQuantity: 0, totalAmount: 0, hasLegacy: true }],

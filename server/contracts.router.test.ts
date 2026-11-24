@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
+import { BusinessDocumentCreationMockDb } from "./services/businessDocumentCreation.mockDb";
+import { projects, outsourceContracts, subcontractPackages, subcontractPaymentSettlements } from "../drizzle/schema";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 import { TRPCError } from "@trpc/server";
 
@@ -27,13 +30,17 @@ function createAuthContext(): TrpcContext {
   };
 }
 
-function createSelectDb(...responses: unknown[][]) {
-  let index = 0;
-  return {
-    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => responses[index++] ?? []), orderBy: vi.fn(async () => responses[index++] ?? []) })) })) })),
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => [{ affectedRows: 1 }]) })) })),
-    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
-  };
+const stores: BusinessDocumentCreationMockDb[] = [];
+afterEach(() => stores.splice(0).forEach(db => db.close()));
+/** 所有新增父单hint/快照读取按真实表和WHERE解析，不能消耗顺序响应。 */
+function createSelectDb(...responses: Record<string, unknown>[][]) {
+  const db = new BusinessDocumentCreationMockDb();
+  stores.push(db);
+  db.seed(projects, { id: 10, code: "P10", name: "测试项目", nodeType: "project", status: "active" });
+  for (const row of responses.flat()) {
+    db.seed(outsourceContracts, { contractNo: `CT-LEGACY-${row.id}`, contractType: "transport", counterpartyName: "运输队", pricingMethod: "trip", createdBy: 1, ...row });
+  }
+  return db;
 }
 
 describe("外包合同统一权限守卫", () => {
@@ -79,17 +86,18 @@ describe("外包合同统一权限守卫", () => {
       if (action === "void") throw new TRPCError({ code: "FORBIDDEN", message: "当前账号未被授予合同关闭权限" });
       return { departments: [], moduleCodes: ["CONTRACT"], hasAllDepartments: false };
     });
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 5, projectId: 10, status: "active" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 5, projectId: 10, status: "active" }]) as never));
     await expect(contractRouter.createCaller(createAuthContext()).transition({ id: 5, projectId: 10, targetStatus: "closed" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("关闭") });
 
     vi.mocked(assertDepartmentBusinessAccess).mockResolvedValue({ departments: [], moduleCodes: ["CONTRACT"], hasAllDepartments: false });
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 6, projectId: 10, status: "closed" }]) as never);
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 6, projectId: 10, status: "closed" }]) as never));
     await expect(contractRouter.createCaller(createAuthContext()).transition({ id: 6, projectId: 10, targetStatus: "void" })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("不允许") });
   });
 
   it("非草稿或非暂停合同内容受锁定，防止执行中合同被直接改写", async () => {
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue(["PROJECT_MANAGER"]);
-    vi.mocked(getDb).mockResolvedValue(createSelectDb([{ id: 7, projectId: 10, status: "active" }]) as never);
+    vi.mocked(getRoleOperationPermissionDecision).mockResolvedValue({ hasDetailedPermissions: true, allowed: true });
+    vi.mocked(getDb).mockResolvedValue(withNumberingFixture(createSelectDb([{ id: 7, projectId: 10, status: "active" }]) as never));
     await expect(contractRouter.createCaller(createAuthContext()).save({ id: 7, projectId: 10, contractType: "transport", counterpartyName: "运输队", pricingMethod: "trip", contractAmount: 1000 })).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("仅草稿或已暂停") });
   });
 });

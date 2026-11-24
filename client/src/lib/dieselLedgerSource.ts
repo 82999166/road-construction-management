@@ -1,8 +1,9 @@
 /** 机械成本自动归集的稳定单号；来源只依赖单号，不猜测名称、备注或资源类型。 */
 export function getDieselRecordSourceLabel(
-  recordNo: string | null | undefined
+  recordNo: string | null | undefined,
+  machineCostSourceId?: number | null
 ): "机械录入" | "柴油登记" {
-  return /^DS-MC-\d+$/.test(recordNo ?? "") ? "机械录入" : "柴油登记";
+  return machineCostSourceId != null || /^DS-MC-\d+$/.test(recordNo ?? "") ? "机械录入" : "柴油登记";
 }
 
 export const MACHINE_DIESEL_LEDGER_NOTE =

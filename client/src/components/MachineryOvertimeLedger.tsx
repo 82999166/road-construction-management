@@ -1,5 +1,6 @@
 import { formatQuantity } from "@shared/numberFormat";
 import { useMemo, useState } from "react";
+import { StoredDocumentNumber, documentNumberText } from "./StoredDocumentNumber";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +76,7 @@ export default function MachineryOvertimeLedger({
     JSON.stringify([projectId, period, machineId, effectiveDate, status])
   );
   const headers = [
+    "正式单号",
     "日期",
     "机械",
     "编号",
@@ -86,6 +88,7 @@ export default function MachineryOvertimeLedger({
     "备注",
   ];
   const exportRows = filteredRows.map(row => [
+    documentNumberText(row),
     row.date,
     row.machineName,
     row.machineCode,
@@ -192,6 +195,7 @@ export default function MachineryOvertimeLedger({
                 <tr key={row.id} className="border-t">
                   <td className="p-2">
                     {row.date}
+                    <StoredDocumentNumber record={row} />
                     <p className="text-xs text-muted-foreground">
                       {row.machineName} · {row.machineCode}
                     </p>

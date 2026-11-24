@@ -12,7 +12,7 @@ describe("运输事件自动风险扫描", () => {
   });
 
   it("覆盖手机 NFC 和双设备装土、卸土成功路径", () => {
-    expect((source.match(/triggerTransportRiskScan\(resolved\.projectId\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
-    expect((source.match(/triggerTransportRiskScan\(input\.projectId\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect((source.match(/afterBusinessDocumentCommit\(triggerTransportRiskScan\)\(resolved\.projectId\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect((source.match(/afterBusinessDocumentCommit\(triggerTransportRiskScan\)\(input\.projectId\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 });

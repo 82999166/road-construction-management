@@ -1,3 +1,4 @@
+import { withNumberingFixture } from "./services/businessDocumentNumber.fixtureAdapter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTableName } from "drizzle-orm";
 const mocks = vi.hoisted(() => ({
@@ -121,7 +122,7 @@ let db: any;
 beforeEach(() => {
   vi.clearAllMocks();
   db = database();
-  mocks.db.mockResolvedValue(db);
+  mocks.db.mockResolvedValue(withNumberingFixture(db));
   mocks.roles.mockResolvedValue(["MACHINERY_MANAGER", "FINANCE_MANAGER"]);
   mocks.scope.mockResolvedValue(undefined);
   mocks.department.mockResolvedValue(undefined);
@@ -150,13 +151,15 @@ describe("机械柴油归集真实路由", () => {
     });
     expect(db.state.machine_cost_records).toHaveLength(1);
     expect(db.state.machine_cost_records[0]).toMatchObject({
+      documentNo: expect.stringMatching(/^MC\d{14}0009(?!0000)\d{4}$/),
       dieselRefuelRecordId: 20,
       status: "draft",
       amount: "86.1",
     });
     expect(db.state.diesel_refuel_records).toHaveLength(1);
     expect(db.state.diesel_refuel_records[0]).toMatchObject({
-      recordNo: "DS-MC-10",
+      recordNo: expect.stringMatching(/^DS\d{14}0009(?!0000)\d{4}$/),
+      machineCostSourceId: 10,
       status: "draft",
       assetType: "machine",
       machineId: 13,

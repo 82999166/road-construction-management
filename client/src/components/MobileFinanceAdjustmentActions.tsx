@@ -18,15 +18,15 @@ export function canReverseFinancialRecord(roleCodes: readonly string[]) {
 }
 
 /** 自动来源流水必须返回原业务模块调整；人工未支付流水作废，已支付流水生成相反方向冲销。 */
-export function getFinancialRecordAdjustmentAction(record: { sourceType?: string | null; settlementStatus: string }) {
-  if (record.sourceType || record.settlementStatus === "void") return null;
+export function getFinancialRecordAdjustmentAction(record: { sourceType?: string | null; sourceId?: string | null; settlementStatus: string }) {
+  if (record.sourceType || record.sourceId || record.settlementStatus === "void") return null;
   if (record.settlementStatus === "paid") return "reverse" as const;
-  if (["unpaid", "partial"].includes(record.settlementStatus)) return "void" as const;
+  if (record.settlementStatus === "unpaid") return "void" as const;
   return null;
 }
 
 /** 会计可处理未支付作废；已支付冲销仅财务负责人可见，出纳不复核自己执行的支付。 */
-export function getPermittedFinancialRecordAdjustmentAction(record: { sourceType?: string | null; settlementStatus: string }, roleCodes: readonly string[]) {
+export function getPermittedFinancialRecordAdjustmentAction(record: { sourceType?: string | null; sourceId?: string | null; settlementStatus: string }, roleCodes: readonly string[]) {
   const action = getFinancialRecordAdjustmentAction(record);
   if (action === "void" && canVoidFinancialRecord(roleCodes)) return action;
   if (action === "reverse" && canReverseFinancialRecord(roleCodes)) return action;
@@ -38,6 +38,7 @@ type FinancialRecordForAdjustment = {
   recordNo: string;
   category: string;
   sourceType?: string | null;
+  sourceId?: string | null;
   settlementStatus: string;
 };
 
@@ -83,6 +84,7 @@ export function MobileFinanceAdjustmentActions({ projectId, roleCodes, record }:
     : "作废仅适用于尚未支付的人工流水；来源业务流水需回原业务模块调整。";
 
   function submit() {
+    if (isPending) return;
     const normalizedReason = reason.trim();
     if (!normalizedReason) return toast.error("请填写处理原因，以便审计追溯");
     if (action === "void") {
@@ -92,5 +94,5 @@ export function MobileFinanceAdjustmentActions({ projectId, roleCodes, record }:
     reverseRecord.mutate({ id: record.id, projectId, reversedAt: new Date().toISOString(), reason: normalizedReason });
   }
 
-  return <><Button size="sm" variant="outline" className={action === "reverse" ? "h-8 border-amber-200 text-amber-800 hover:bg-amber-50" : "h-8 border-rose-200 text-rose-700 hover:bg-rose-50"} onClick={() => setOpen(true)}>{action === "reverse" ? <><RotateCcw className="mr-1 h-3.5 w-3.5" />冲销</> : <><Ban className="mr-1 h-3.5 w-3.5" />作废</>}</Button><Dialog open={open} onOpenChange={setOpen}><DialogContent className="max-w-[calc(100%-2rem)] rounded-2xl"><DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{description}</DialogDescription></DialogHeader><div className="space-y-3"><div className="rounded-xl bg-[#fff7ed] px-3 py-2 text-sm text-[#765542]"><p className="font-medium">{record.category}</p><p className="mt-1 text-xs">单据号：{record.recordNo}</p></div><div><Label htmlFor={`financial-adjustment-reason-${record.id}`}>处理原因</Label><Textarea id={`financial-adjustment-reason-${record.id}`} className="mt-1" value={reason} onChange={event => setReason(event.target.value)} placeholder="请填写作废或冲销的业务原因" /></div></div><DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>取消</Button><Button className={action === "reverse" ? "bg-amber-700 hover:bg-amber-800" : "bg-rose-700 hover:bg-rose-800"} disabled={isPending} onClick={submit}>{action === "reverse" ? "确认冲销" : "确认作废"}</Button></DialogFooter></DialogContent></Dialog></>;
+  return <><Button size="sm" variant="outline" className={action === "reverse" ? "h-8 border-amber-200 text-amber-800 hover:bg-amber-50" : "h-8 border-rose-200 text-rose-700 hover:bg-rose-50"} onClick={() => setOpen(true)}>{action === "reverse" ? <><RotateCcw className="mr-1 h-3.5 w-3.5" />冲销</> : <><Ban className="mr-1 h-3.5 w-3.5" />作废</>}</Button><Dialog open={open} onOpenChange={next => { if (!isPending) setOpen(next); }}><DialogContent className="w-[calc(100vw-2rem)] max-w-3xl max-h-[90dvh] overflow-y-auto rounded-2xl"><DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{description}</DialogDescription></DialogHeader><div className="space-y-3"><div className="rounded-xl bg-[#fff7ed] px-3 py-2 text-sm text-[#765542]"><p className="font-medium">{record.category}</p><p className="mt-1 text-xs">单据号：{record.recordNo}</p></div><div><Label htmlFor={`financial-adjustment-reason-${record.id}`}>处理原因</Label><Textarea id={`financial-adjustment-reason-${record.id}`} className="mt-1" value={reason} onChange={event => setReason(event.target.value)} placeholder="请填写作废或冲销的业务原因" /></div></div><DialogFooter><Button variant="outline" disabled={isPending} onClick={() => setOpen(false)}>取消</Button><Button className={action === "reverse" ? "bg-amber-700 hover:bg-amber-800" : "bg-rose-700 hover:bg-rose-800"} disabled={isPending || !reason.trim()} onClick={submit}>{action === "reverse" ? "确认冲销" : "确认作废"}</Button></DialogFooter></DialogContent></Dialog></>;
 }

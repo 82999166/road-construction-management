@@ -20,6 +20,16 @@ export const machineCostSaveSchema = machineCostDraftSchema.extend({
 });
 export type MachineCostDraft = z.infer<typeof machineCostDraftSchema>;
 export type MachineCostSave = z.infer<typeof machineCostSaveSchema>;
+/** 编辑不能复用创建请求；project/machine 身份及原版本由服务端重核。 */
+export const machineCostEditDraftSchema = machineCostDraftSchema.omit({ requestId: true }).extend({
+  id: z.number().int().positive(),
+  version: z.string().regex(/^[a-f0-9]{64}$/, "请刷新费用取得有效版本"),
+});
+export const machineCostEditSaveSchema = machineCostEditDraftSchema.extend({
+  duplicateConfirmation: machineCostSaveSchema.shape.duplicateConfirmation,
+});
+export type MachineCostEditDraft = z.infer<typeof machineCostEditDraftSchema>;
+export type MachineCostEditSave = z.infer<typeof machineCostEditSaveSchema>;
 export type MachineCostDuplicateCandidate = {
   id: number;
   occurredAt: Date;

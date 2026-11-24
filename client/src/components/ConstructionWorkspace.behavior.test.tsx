@@ -1,6 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as XLSX from "@e965/xlsx";
 import {
   constructionFilterInput,
   constructionReviewDrillFilter,
@@ -467,7 +468,25 @@ describe("施工筛选、动作和输出纯行为", () => {
     expect(csv).toContain("'@SUM");
     expect(csv).toContain('"全筛选记录数","251"');
     expect(csv).toContain('"输出范围","第2批"');
-    expect(csv).toContain('"251","2026-11-04"');
+    const workbook = XLSX.read(csv, { type: "string", raw: true });
+    const rows = XLSX.utils.sheet_to_json<string[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, raw: true });
+    const headerIndex = rows.findIndex(row => row.includes("正式单号") && row.includes("日报日期"));
+    expect(headerIndex).toBeGreaterThan(-1);
+    const headers = rows[headerIndex];
+    const output = rows[headerIndex + 1];
+    const cell = (header: string) => {
+      const index = headers.indexOf(header);
+      expect(index, `真实CSV缺少表头 ${header}`).toBeGreaterThan(-1);
+      return output[index];
+    };
+    expect(output).toHaveLength(headers.length);
+    expect(cell("序号")).toBe("251");
+    expect(cell("正式单号")).toBe("历史未编统一号");
+    expect(cell("日报日期")).toBe("2026-11-04");
+    expect(cell("累计进度(%)")).toBe("25.00");
+    expect(cell("施工内容")).toBe("第一行\n第二行完整");
+    expect(cell("问题记录")).toBe("' =HYPERLINK(\"恶意\")");
+    expect(cell("审核回复")).toBe("'@SUM(1+1)");
   });
   it("输出分批大小非法时明确拒绝，250边界和空集合准确", () => {
     expect(constructionOutputBatches([])).toEqual([]);
