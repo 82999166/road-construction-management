@@ -166,11 +166,17 @@ describe("机械柴油归集真实路由", () => {
     });
     expect(mocks.sms).toHaveBeenCalledTimes(1);
   });
-  it("同机同量临近重复拒绝，事务不新增成本", async () => {
+  it("同机同量同秒重复返回不可确认冲突，事务不新增成本", async () => {
     await machineryRouter.createCaller(ctx).saveCost(input);
-    await expect(
-      machineryRouter.createCaller(ctx).saveCost(input)
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const duplicate = await machineryRouter.createCaller(ctx).saveCost(input);
+    expect(duplicate).toMatchObject({
+      success: false,
+      duplicateCheck: {
+        hardConflict: true,
+        confirmationToken: null,
+        candidates: [{ id: 10, sameInstant: true }],
+      },
+    });
     expect(db.state.machine_cost_records).toHaveLength(1);
     expect(db.state.diesel_refuel_records).toHaveLength(1);
     expect(mocks.sms).toHaveBeenCalledTimes(1);

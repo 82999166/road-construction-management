@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useGuardedMachineCost } from "@/components/MachineCostDuplicateConfirmation";
 import {
   Select,
   SelectContent,
@@ -831,7 +832,8 @@ export default function MobileMachineryPage() {
         getUserFacingErrorMessage(error, "机械管理操作未完成，请稍后重试")
       ),
   });
-  const saveCost = trpc.machinery.saveCost.useMutation({
+  const saveCost = useGuardedMachineCost({
+    identity: JSON.stringify([projectId, machineId, costDialogOpen, costDraft, costPhotoPreview]),
     onSuccess: async data => {
       clearMobileDraft(costDraftKey);
       resetCostForm();
@@ -1129,10 +1131,11 @@ export default function MobileMachineryPage() {
         fuelCostDefault.error?.message ||
           "当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价"
       );
-    try {
+    await saveCost.prepare(async ({ assertCurrent }) => {
       let evidenceId: number | null = null;
       if (costPhotoFile) {
         const location = await getCurrentLocation();
+        assertCurrent();
         if (captureConfig.data?.location.required && !location)
           throw new Error("当前项目要求费用照片上传时读取现场定位");
         const locationAddress = location
@@ -1143,6 +1146,7 @@ export default function MobileMachineryPage() {
               })
             ).address
           : null;
+        assertCurrent();
         const capturedAt = new Date();
         const template =
           captureConfig.data?.watermark ?? DEFAULT_EVIDENCE_WATERMARK_TEMPLATE;
@@ -1178,6 +1182,9 @@ export default function MobileMachineryPage() {
           lines,
           template
         );
+        assertCurrent();
+        const base64Data = await readImageAsBase64(watermarkedFile);
+        assertCurrent();
         const upload = await evidenceUpload.mutateAsync({
           projectId: selectedProjectId,
           sourceType: "other",
@@ -1192,12 +1199,13 @@ export default function MobileMachineryPage() {
           latitude: location?.latitude ?? null,
           fileName: watermarkedFile.name,
           mimeType: "image/jpeg",
-          base64Data: await readImageAsBase64(watermarkedFile),
+          base64Data,
         });
+        assertCurrent();
         evidenceId = upload.id;
         if (!evidenceId) throw new Error("费用水印照片归档失败");
       }
-      saveCost.mutate({
+      return {
         machineId: selectedMachineId,
         projectId: selectedProjectId,
         costType: costDraft.costType,
@@ -1207,12 +1215,8 @@ export default function MobileMachineryPage() {
         occurredAt: new Date(costDraft.occurredAt).toISOString(),
         evidenceId,
         remarks: costDraft.remarks.trim() || null,
-      });
-    } catch (error) {
-      toast.error(
-        getUserFacingErrorMessage(error, "费用照片处理失败，请稍后重试")
-      );
-    }
+      };
+    });
   }
 
   /** 月结预览仅使用当前受服务端项目范围约束的结算快照，不在前端重算金额。 */
@@ -3234,6 +3238,8 @@ export default function MobileMachineryPage() {
                 ) : null}
               </div>
               <p className="rounded-lg bg-[#f9eddf] p-3 text-xs leading-5 text-[#80543d]">
+                保存前自动核对当前项目、机械及北京时间同日相近费用，数量、单价和金额按两位比较；发现疑似记录先核对，不要连续提交。
+                {costDraft.costType === "fuel" && "油料保存后自动归入柴油管理，不另行重录。"}
                 费用保存后进入原有审核与财务结算流程；水印照片若已直拍则与该费用记录安全关联。
               </p>
             </div>
@@ -3270,6 +3276,7 @@ export default function MobileMachineryPage() {
                   : "保存费用"}
               </Button>
             </DialogFooter>
+            {saveCost.confirmationDialog}
           </DialogContent>
         </Dialog>
         <Dialog

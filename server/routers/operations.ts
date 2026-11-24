@@ -14,6 +14,11 @@ import {
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { machineCostDraftSchema, machineCostSaveSchema } from "../../shared/machineCostDuplicate";
+import {
+  buildMachineCostDuplicateCheck, decideMachineCostWrite, machineCostRequestHash,
+  readMachineCostCandidates, recordMachineCostReceipt,
+} from "../services/machineCostDuplicate";
 import {
   assetMaintenanceRecords,
   auditLogs,
@@ -374,17 +379,7 @@ const machineLeaseRuleInput = z
   );
 
 /** 机械成本金额通过数量乘单价服务端计算，客户端不允许直接写入应结金额。 */
-const machineCostInput = z.object({
-  machineId: z.number().int().positive(),
-  projectId: z.number().int().positive(),
-  costType: z.enum(["fuel", "repair", "overtime", "mobilization", "other"]),
-  costName: z.string().trim().min(1, "请填写费用名称").max(128),
-  quantity: z.number().min(0).max(999999999.999),
-  unitPrice: z.number().min(0).max(999999999999.99),
-  occurredAt: isoDateTimeSchema,
-  evidenceId: z.number().int().positive().nullable().optional(),
-  remarks: z.string().trim().max(500).nullable().optional(),
-});
+const machineCostInput = machineCostSaveSchema;
 
 /**
  * 会计机械月度明细只接收模板中的原始考勤、工资和签字数据；产值、油耗、维修、总额和分成均由服务端生成快照。
@@ -6217,6 +6212,22 @@ export const machineryRouter = router({
       return { success: true, status: nextStatus };
     }),
 
+  checkCostDuplicate: protectedProcedure
+    .input(machineCostDraftSchema)
+    .mutation(async ({ ctx, input }) => {
+      const user = requireAuthenticatedUser(ctx);
+      await assertMachineryAccess(ctx);
+      await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
+      const { db } = await getScopedMachine(ctx, input.machineId, input.projectId);
+      const guideline = input.costType === "fuel"
+        ? await getEffectiveDieselGuidelinePrice(db, input.projectId, new Date(input.occurredAt)) : null;
+      if (input.costType === "fuel" && !guideline?.price)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "当前加油时间未匹配到有效柴油指导价，请先在柴油管理维护指导价" });
+      const unitPrice = guideline?.price?.pricePerLiter ?? input.unitPrice;
+      return buildMachineCostDuplicateCheck(await readMachineCostCandidates(db, input, unitPrice),
+        machineCostRequestHash(input, unitPrice, user.id));
+    }),
+
   /** 录入油料、维修、加班、进退场等成本；金额始终由服务端计算。 */
   saveCost: protectedProcedure
     .input(machineCostInput)
@@ -6269,18 +6280,26 @@ export const machineryRouter = router({
           ? guideline!.price!.pricePerLiter
           : input.unitPrice;
       const amount = roundMoney(input.quantity * appliedUnitPrice);
-      const { costId, dieselRefuelRecordId } = await db.transaction(
+      const outcome = await db.transaction(
         async tx => {
+          await lockMachineFuelLedger(tx, {
+            machineId: input.machineId, projectId: input.projectId,
+          });
+          // 等待行锁后重新检查当下授权，不沿用预检或等待前的授权结果。
+          await assertMachineryAccess(ctx);
+          await assertDepartmentBusinessAccess(ctx, "MACHINERY", "create");
+          await assertProjectInCurrentScope(ctx, input.projectId);
+          const decision = await decideMachineCostWrite(tx, input, appliedUnitPrice, user.id);
+          if (decision.kind === "confirmation")
+            return { kind: "confirmation" as const, check: decision.check };
+          if (decision.kind === "replay")
+            return { kind: "saved" as const, result: decision.result, replay: true };
           if (input.costType === "fuel") {
             if (!(input.quantity > 0))
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: "机械柴油加油量必须大于0",
               });
-            await lockMachineFuelLedger(tx, {
-              machineId: input.machineId,
-              projectId: input.projectId,
-            });
             await assertNoDuplicateMachineFuel(tx, {
               machineId: input.machineId,
               projectId: input.projectId,
@@ -6360,9 +6379,23 @@ export const machineryRouter = router({
             ),
             summary: `录入机械${input.costType}成本：${input.costName.trim()}，金额由系统核算${priceSource}${input.evidenceId ? "，已关联水印照片" : ""}`,
           });
-          return { costId, dieselRefuelRecordId };
+          if (input.duplicateConfirmation)
+            await tx.insert(auditLogs).values({
+              userId: user.id, module: "machinery", action: "confirm_distinct_cost",
+              targetType: "machine_cost", targetId: String(costId),
+              summary: `确认是不同实际业务：${input.duplicateConfirmation.reason}`,
+            });
+          const savedResult = { success: true as const, id: costId, dieselRefuelRecordId, amount,
+            unitPrice: appliedUnitPrice, guidelinePriceId: guideline?.price?.id ?? null };
+          await recordMachineCostReceipt(tx, input, decision.requestHash, user.id, savedResult);
+          return { kind: "saved" as const, result: savedResult, replay: false };
         }
       );
+      if (outcome.kind === "confirmation")
+        return { success: false as const, duplicateCheck: outcome.check };
+      if (outcome.replay) return outcome.result;
+      const costId = outcome.result.id;
+      const dieselRefuelRecordId = outcome.result.dieselRefuelRecordId;
       const [ownerProfile] = machine.ownerUserId
         ? await db
             .select({ phoneEncrypted: userProfiles.phoneEncrypted })
@@ -6401,7 +6434,7 @@ export const machineryRouter = router({
         },
       }).catch(() => undefined);
       return {
-        success: true,
+        success: true as const,
         id: costId,
         dieselRefuelRecordId,
         amount,

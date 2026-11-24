@@ -3,6 +3,7 @@ import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInpu
 import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
 import { ConstructionIssuePriorityBadge } from "@/components/ConstructionIssuePriorityBadge";
 import type { ConstructionIssuePriority } from "@shared/constructionIssuePriority";
+import { useGuardedMachineCost } from "@/components/MachineCostDuplicateConfirmation";
 import { ConstructionAssistantSettings } from "@/components/ConstructionAssistantSettings";
 import {
   DieselPriceHistory,
@@ -4897,7 +4898,8 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
-  const saveMachineCost = trpc.machinery.saveCost.useMutation({
+  const saveMachineCost = useGuardedMachineCost({
+    identity: JSON.stringify([workspaceProjectId, machineCostDialogOpen, machineCostForm]),
     onSuccess: async data => {
       await Promise.all([
         trpcUtils.machinery.listDailyOperations.invalidate(),
@@ -22571,6 +22573,7 @@ export default function AdminPage({
               <DialogTitle>录入机械成本</DialogTitle>
               <DialogDescription>
                 成本金额仅由服务端按数量乘单价计算，保存后先进入草稿状态，再由受权岗位审核、结算或作废。
+                保存前自动核对当前项目、机械及北京时间同日相近费用，数量、单价和金额按两位比较；发现疑似记录先核对，不要连续提交。
               </DialogDescription>
             </DialogHeader>
             <form
@@ -22730,6 +22733,7 @@ export default function AdminPage({
                   {saveMachineCost.isPending ? "正在保存…" : "保存成本草稿"}
                 </Button>
               </DialogFooter>
+              {saveMachineCost.confirmationDialog}
             </form>
           </DialogContent>
         </Dialog>
