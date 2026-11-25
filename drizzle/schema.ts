@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   varchar,
 } from "drizzle-orm/mysql-core";
+import type { TakeoffMeasurementRow } from "../shared/measurementTakeoff";
 
 /**
  * 基础用户表由 Manus OAuth 登录流程维护。
@@ -3377,6 +3378,9 @@ export const measurementTakeoffRecords = mysqlTable(
     measurementClaimId: bigint("measurementClaimId", { mode: "number" }),
     workItem: varchar("workItem", { length: 200 }).notNull(),
     workLocation: varchar("workLocation", { length: 200 }).notNull(),
+    workDescription: text("workDescription"),
+    measurementBasis: text("measurementBasis"),
+    measurementRows: json("measurementRows").$type<TakeoffMeasurementRow[]>(),
     unit: mysqlEnum("unit", [
       "m3",
       "m2",

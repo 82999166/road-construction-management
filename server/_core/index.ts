@@ -13,6 +13,7 @@ import { registerLocalRfidBridgeRoutes } from "../localRfidBridge";
 import { registerFullDatabaseBackupDownloadRoute } from "../fullDatabaseBackupDownloadRoute";
 import { registerVehicleDocumentPreview } from "../services/vehicleManagementLifecycle";
 import { registerPersonnelDocumentPreview } from "../services/personnelDirectory";
+import { registerTakeoffAttachmentPreview } from "../services/measurementTakeoff";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -64,6 +65,8 @@ async function startServer() {
   registerFullDatabaseBackupDownloadRoute(app);
   app.use("/api/personnel-documents", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 30, message: "人员附件预览过于频繁，请稍后再试" }));
   registerPersonnelDocumentPreview(app);
+  app.use("/api/measurement-takeoff/preview", createMemoryRateLimiter({ windowMs: 60 * 1000, max: 120, message: "收方照片预览过于频繁，请稍后再试" }));
+  registerTakeoffAttachmentPreview(app);
   registerVehicleDocumentPreview(app);
   registerSiteOperationsVideo(app);
   /**

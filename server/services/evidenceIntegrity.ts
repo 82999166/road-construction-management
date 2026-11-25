@@ -110,6 +110,8 @@ export function evidenceDeleteBlockedReason(evidence: EvidenceRow, references: E
 export function isGeneralEvidenceVisible(evidence: EvidenceRow, references: EvidenceReference[]): boolean {
   if (evidence.status !== "active" || !GENERAL_EVIDENCE_SOURCES.includes(evidence.sourceType as typeof GENERAL_EVIDENCE_SOURCES[number])) return false;
   if (references.some(ref => ref.sensitive)) return false;
+  // 收方专属待关联产物只能由收方岗位在原表单继续使用；不改变历史 takeoff-<id> 兼容。
+  if (/^takeoff-pending(?:-|$)/i.test(evidence.sourceId ?? "")) return false;
   if (/^(?:payroll|salary|settlement[-_]payment|financial|personnel|employee|insurance|tax|contract)[-_:]/i.test(evidence.sourceId ?? "")) return false;
   if (/^(?:settlement-proofs|financial-invoices|personnel-private|personnel|labor-certificates|employee-insurance|payroll|tax-documents)\//i.test(evidence.fileKey)) return false;
   if (evidence.sourceType === "other") {

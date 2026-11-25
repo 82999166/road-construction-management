@@ -1,3 +1,5 @@
+import { measurementTakeoffInput, takeoffAttachmentUploadInput, takeoffDetailInput } from "../../shared/measurementTakeoff";
+import { saveMeasurementTakeoff, uploadTakeoffAttachment, getTakeoffDetail, listTakeoffsWithVersion, getTakeoffCaptureConfig } from "../services/measurementTakeoff";
 import { lockBusinessEvidenceBindings, evidencePointerIds } from "../services/evidenceBinding";
 import { lockEvidenceProject, assertEvidenceConditionalWrite } from "../services/evidenceIntegrity";
 import { newBusinessDocumentNumber, runBusinessDocumentCreation, afterBusinessDocumentCommit, businessCreationRequestKey } from "../services/businessDocumentCreation";
@@ -1597,21 +1599,6 @@ const crossRegionConstructionTaxTransitionInput = z.object({
   taxPaymentReference: z.string().trim().max(200).nullable().optional(),
   taxPaymentEvidenceId: z.number().int().positive().nullable().optional(),
   reviewNote: z.string().trim().max(1000).nullable().optional(),
-});
-
-/** 项目部收方草稿，工程量与单价由服务端重新计算申报金额。 */
-const measurementTakeoffInput = z.object({
-  id: z.number().int().positive().optional(),
-  projectId: z.number().int().positive(),
-  measurementClaimId: z.number().int().positive().nullable().optional(),
-  workItem: z.string().trim().min(2, "请填写计量项目").max(200),
-  workLocation: z.string().trim().min(2, "请填写作业位置").max(200),
-  unit: z.enum(["m3", "m2", "m", "t", "piece", "set", "other"]),
-  quantity: z.number().gt(0, "工程量必须大于 0").max(999999999.999),
-  unitPrice: moneySchema,
-  takeoffDate: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "收方日期格式应为 YYYY-MM-DD"),
 });
 
 const measurementTakeoffTransitionInput = z.object({
@@ -3988,141 +3975,28 @@ export const measurementRouter = router({
         .orderBy(desc(measurementClaims.updatedAt));
     }),
 
-  /** 收方记录独立于计量申报维护，项目部可先保存草稿并补齐影像/签认单后再提交复核。 */
+  /** 收方记录与资料由专属service在真实项目/证据/父单锁下维护。 */
   listTakeoffs: protectedProcedure
     .input(z.object({ projectId: z.number().int().positive() }))
-    .query(async ({ ctx, input }) => {
-      await assertMeasurementAccess(ctx);
-      await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
-      if (!db) return [];
-      return db
-        .select()
-        .from(measurementTakeoffRecords)
-        .where(eq(measurementTakeoffRecords.projectId, input.projectId))
-        .orderBy(desc(measurementTakeoffRecords.updatedAt));
-    }),
+    .query(({ ctx, input }) => listTakeoffsWithVersion(ctx, input.projectId)),
+
+  captureConfig: protectedProcedure.query(({ ctx }) => getTakeoffCaptureConfig(ctx)),
 
   saveTakeoff: protectedProcedure
-    .input(z.intersection(measurementTakeoffInput, z.object({ documentRequestKey: z.string().trim().min(1).max(128).optional() })))
-    .mutation(async ({ ctx, input }) => {
-      const user = requireAuthenticatedUser(ctx);
-      const roleCodes = await assertMeasurementAccess(ctx);
-      if (!canSubmitTakeoff(roleCodes))
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "项目经理或施工管理员方可维护收方草稿",
-        });
-      await assertProjectInCurrentScope(ctx, input.projectId);
-      const db = await getDb();
-      if (!db)
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "数据库连接暂不可用",
-        });
+    .input(measurementTakeoffInput)
+    .mutation(({ ctx, input }) => saveMeasurementTakeoff(ctx, input)),
 
-      return runBusinessDocumentCreation(db, { actorId: user.id, scope: "finance:saveTakeoff", projectId: input.projectId, input , revalidate: async () => { const roleCodes = await assertMeasurementAccess(ctx);
-if (!canSubmitTakeoff(roleCodes))
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "项目经理或施工管理员方可维护收方草稿",
-        });
-await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
-      if (input.measurementClaimId) {
-        const [claim] = await db
-          .select({
-            id: measurementClaims.id,
-            projectId: measurementClaims.projectId,
-            status: measurementClaims.status,
-          })
-          .from(measurementClaims)
-          .where(eq(measurementClaims.id, input.measurementClaimId))
-          .limit(1);
-        if (!claim || claim.projectId !== input.projectId)
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "未找到当前项目的关联计量申报",
-          });
-        if (claim.status === "void")
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "已作废计量申报不可关联收方记录",
-          });
-      }
-      const declaredAmount = roundMoney(input.quantity * input.unitPrice);
-      const values = {
-        projectId: input.projectId,
-        measurementClaimId: input.measurementClaimId ?? null,
-        workItem: input.workItem,
-        workLocation: input.workLocation,
-        unit: input.unit,
-        quantity: String(input.quantity),
-        unitPrice: String(roundMoney(input.unitPrice)),
-        declaredAmount: String(declaredAmount),
-        takeoffDate: toBusinessDate(input.takeoffDate),
-      };
-      return db.transaction(async tx => {
-        await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
-        await assertProjectInCurrentScope(ctx, input.projectId);
-      let takeoffId = input.id;
-      if (input.id) {
-        const [existing] = await tx
-          .select()
-          .from(measurementTakeoffRecords)
-          .where(eq(measurementTakeoffRecords.id, input.id))
-          .limit(1);
-        if (!existing || existing.projectId !== input.projectId)
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "未找到当前项目收方记录",
-          });
-        if (!["draft", "rejected"].includes(existing.status))
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "仅草稿或被退回收方记录可修改",
-          });
-        const updateResult = await tx
-          .update(measurementTakeoffRecords)
-          .set({ ...values, status: "draft", reviewNote: null })
-          .where(
-            and(
-              eq(measurementTakeoffRecords.id, input.id),
-              eq(measurementTakeoffRecords.status, existing.status)
-            )
-          );
-        assertConditionalBusinessWrite(
-          updateResult,
-          "收方记录已被其他用户更新，请刷新后重试"
-        );
-      } else {
-        const takeoffNo = (await allocateBusinessDocumentNumber(tx, { module: BUSINESS_DOCUMENT_MODULES.measurementTakeoff, actor: { kind: "user", userId: user.id }, scope: `project:${input.projectId}:measurement-takeoff`, requestKey: businessCreationRequestKey(input) })).number;
-        await tx.insert(measurementTakeoffRecords).values({
-          ...values,
-          takeoffNo,
-          status: "draft",
-          submittedBy: user.id,
-        });
-        const [created] = await tx
-          .select({ id: measurementTakeoffRecords.id })
-          .from(measurementTakeoffRecords)
-          .where(eq(measurementTakeoffRecords.takeoffNo, takeoffNo))
-          .limit(1);
-        takeoffId = created?.id;
-      }
-      await tx.insert(auditLogs).values({
-        userId: user.id,
-        module: "measurement",
-        action: input.id ? "update_takeoff" : "create_takeoff",
-        targetType: "measurement_takeoff",
-        targetId: String(takeoffId ?? input.id ?? "draft"),
-        summary: `${input.id ? "维护" : "新建"}项目计量收方：${input.workItem}`,
-      });
-      return { success: true, takeoffId, declaredAmount };
-      });
+  uploadTakeoffAttachment: protectedProcedure
+    .input(takeoffAttachmentUploadInput)
+    .mutation(({ ctx, input }) => uploadTakeoffAttachment(ctx, input)),
 
+  getTakeoffDetail: protectedProcedure
+    .input(takeoffDetailInput)
+    .query(({ ctx, input }) => getTakeoffDetail(ctx, input)),
 
-      });
-    }),
+  getTakeoffPrint: protectedProcedure
+    .input(takeoffDetailInput)
+    .query(({ ctx, input }) => getTakeoffDetail(ctx, input, "print")),
 
   transitionTakeoff: protectedProcedure
     .input(measurementTakeoffTransitionInput)

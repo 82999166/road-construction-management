@@ -73,6 +73,10 @@ function isHighImpactBusinessMutation(path: string) {
 /** 从过程名称推导业务动作，保证前端隐藏按钮或直接 RPC 调用都绕不过角色详细操作权限。 */
 function inferBusinessOperationAction(path: string, input: unknown): BusinessOperationAction {
   const normalized = path.toLowerCase();
+  // 收方照片是新建或编辑草稿的从属资料，upload 中的 load 不代表提交复核。
+  if (path === "measurement.uploadTakeoffAttachment") {
+    return typeof input === "object" && input !== null && "takeoffId" in input && (input as { takeoffId?: unknown }).takeoffId != null ? "edit" : "create";
+  }
   if (normalized.includes("transition")) {
     const nextStatus = typeof input === "object" && input !== null
       ? String("nextStatus" in input ? (input as { nextStatus?: unknown }).nextStatus ?? "" : "targetStatus" in input ? (input as { targetStatus?: unknown }).targetStatus ?? "" : "")
@@ -135,7 +139,9 @@ const restrictOrdinaryManagerBusinessMutation = t.middleware(async opts => {
   const { canAccess: isSuperAdmin } = await getSuperAdminAccess(ctx);
   const usesDedicatedRoleGuard = ROLE_GUARDED_LABOR_MUTATIONS.has(path) || ROLE_GUARDED_SUBCONTRACT_MUTATIONS.has(path) || ROLE_GUARDED_SETTLEMENT_PAYMENT_MUTATIONS.has(path);
   const businessModule = getBusinessModuleForPath(path);
-  const operation = inferBusinessOperationAction(path, input);
+  // 此守卫在 .input() 解析器之前；仅本轮收方维护过程读取 raw input 识别父单。
+  const operationInput = path === "measurement.uploadTakeoffAttachment" || path === "measurement.saveTakeoff" ? await opts.getRawInput() : input;
+  const operation = inferBusinessOperationAction(path, operationInput);
   const detailedPermission = !isSuperAdmin && businessModule
     ? await getRoleOperationPermissionDecision(ctx, businessModule, operation)
     : null;

@@ -16,8 +16,13 @@ describe("工程计量移动端终态展示", () => {
     const source = await import("node:fs/promises").then(fs => fs.readFile(new URL("./MobileMeasurementPage.tsx", import.meta.url), "utf8"));
     expect(source).toContain("trpc.measurement.claimCapabilities.useQuery");
     expect(source).toContain("claimCapabilities.data?.canReview");
-    expect(source).toContain("关联计量申报（可选）");
-    expect(source).toContain("measurementClaimId: takeoffDraft.measurementClaimId");
+    const fields = await import("node:fs/promises").then(fs => fs.readFile(new URL("../components/TakeoffFields.tsx", import.meta.url), "utf8"));
+    const model = await import("node:fs/promises").then(fs => fs.readFile(new URL("../lib/takeoffEditorModel.ts", import.meta.url), "utf8"));
+    expect(source).toContain("<TakeoffEditor");
+    expect(source).toContain("save={input => saveTakeoff.mutateAsync(input)}");
+    expect(source).toContain('claims={(claims.data ?? []).filter(claim => claim.status !== "void")}');
+    expect(fields).toContain("关联计量申报（可选）");
+    expect(model).toContain("measurementClaimId: d.measurementClaimId ? Number(d.measurementClaimId) : null");
   });
 
   it("使用设备日期、中文状态和独立 A4 汇总打印", async () => {

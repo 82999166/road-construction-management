@@ -31,6 +31,7 @@ vi.mock("./access", async importOriginal => {
     assertProjectInCurrentScope: vi.fn(),
     assertSuperAdmin: vi.fn(),
     getEffectiveRoleCodes: vi.fn(),
+    getDepartmentModuleDataScope: vi.fn(),
     hasUserSpecificOperationPermission: vi.fn(),
   };
 });
@@ -39,6 +40,7 @@ import {
   assertProjectInCurrentScope,
   assertSuperAdmin,
   getEffectiveRoleCodes,
+  getDepartmentModuleDataScope,
   hasUserSpecificOperationPermission,
 } from "./access";
 import { getDb } from "./db";
@@ -91,7 +93,7 @@ function createSelectDbSequence(...responses: unknown[][]) {
           orderBy: vi.fn(() => builder),
           limit: vi.fn(() => builder),
           for: vi.fn((mode: string) => {
-            expect(["projects", "evidence_records", "measurement_takeoff_records", "daily_accounting_closures", "financial_records"]).toContain(
+            expect(["projects", "evidence_records", "measurement_takeoff_records", "measurement_claims", "daily_accounting_closures", "financial_records"]).toContain(
               getTableName(table)
             );
             expect(mode).toBe("update");
@@ -672,6 +674,8 @@ describe("采购、工程计量与财务 tRPC 路由", () => {
   });
 
   it("计量申报能力按岗位投影，收方不得关联跨项目或已作废申报", async () => {
+    // 新service独立校验MEASUREMENT范围；本旧路由fixture已模拟project10授权。
+    vi.mocked(getDepartmentModuleDataScope).mockResolvedValue({ userId: 1, hasAllProjects: false, projectIds: [10], organizationIds: [] });
     vi.mocked(getEffectiveRoleCodes).mockResolvedValue([
       "CONSTRUCTION_MANAGER",
     ]);

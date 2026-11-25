@@ -708,6 +708,13 @@
       "when": 1795515021541,
       "tag": "0100_watery_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "5",
+      "when": 1795596831503,
+      "tag": "0101_measurement_takeoff_details",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,5 @@
+import { TakeoffEditor } from "@/components/TakeoffEditor";
+import { TakeoffDetailDialog } from "@/components/TakeoffDetailDialog";
 import { filterFocusedTrips, filterFocusedRefuels, parseOnsiteFocus } from "@/lib/siteOperations";
 import { ConstructionWorkAreaInput } from "@/components/ConstructionWorkAreaInput";
 import { ConstructionIssuePriorityInput } from "@/components/ConstructionIssuePriorityInput";
@@ -899,16 +901,6 @@ type SubcontractPackageForm = {
   priceExceptionReason: string;
   remarks: string;
 };
-type MeasurementTakeoffForm = {
-  id?: number;
-  projectId: string;
-  workItem: string;
-  workLocation: string;
-  unit: "m3" | "m2" | "m" | "t" | "piece" | "set" | "other";
-  quantity: string;
-  unitPrice: string;
-  takeoffDate: string;
-};
 type InventoryTransactionForm = {
   projectId: string;
   transactionType: "inbound" | "outbound" | "return";
@@ -1348,15 +1340,6 @@ const EMPTY_SUBCONTRACT_PACKAGE_FORM: SubcontractPackageForm = {
   subcontractUnitPrice: "",
   priceExceptionReason: "",
   remarks: "",
-};
-const EMPTY_MEASUREMENT_TAKEOFF_FORM: MeasurementTakeoffForm = {
-  projectId: "",
-  workItem: "",
-  workLocation: "",
-  unit: "m3",
-  quantity: "",
-  unitPrice: "",
-  takeoffDate: toLocalDateInput(),
 };
 const EMPTY_INVENTORY_TRANSACTION_FORM: InventoryTransactionForm = {
   projectId: "",
@@ -2670,6 +2653,10 @@ export default function AdminPage({
     (dirty: boolean) => recordWorkspaceDirty("transport-terminals", dirty),
     [recordWorkspaceDirty]
   );
+  const onTakeoffDirtyChange = useCallback(
+    (dirty: boolean) => recordWorkspaceDirty("measurement-takeoff", dirty),
+    [recordWorkspaceDirty]
+  );
   const hasWorkspaceDraft = Object.values(workspaceDrafts).some(Boolean);
   useEffect(() => {
     if (!hasWorkspaceDraft) return;
@@ -2741,10 +2728,8 @@ export default function AdminPage({
     useState(false);
   const [subcontractPackageDialogOpen, setSubcontractPackageDialogOpen] =
     useState(false);
-  const [measurementTakeoffForm, setMeasurementTakeoffForm] =
-    useState<MeasurementTakeoffForm>(EMPTY_MEASUREMENT_TAKEOFF_FORM);
-  const [measurementTakeoffDialogOpen, setMeasurementTakeoffDialogOpen] =
-    useState(false);
+  const [measurementTakeoffEditor, setMeasurementTakeoffEditor] = useState<{ projectId: number; id?: number } | null>(null);
+  const [measurementTakeoffDetail, setMeasurementTakeoffDetail] = useState<{ projectId: number; id: number; autoPrint?: boolean } | null>(null);
   const [financeProjectId, setFinanceProjectId] = useState(() => onsiteFocus ? String(onsiteFocus.projectId) : "");
   const financeUtils = trpc.useUtils();
   const [financePaymentTarget, setFinancePaymentTarget] = useState<{
@@ -3038,6 +3023,7 @@ export default function AdminPage({
   );
   const workspaceProjectId = workspaceProjectState.projectId;
   const hasBusinessWorkspaceProject = workspaceProjectState.hasProject;
+  useEffect(() => { setMeasurementTakeoffEditor(null); setMeasurementTakeoffDetail(null); }, [workspaceProjectId, user?.id, isAuthenticated]);
   const payrollCorrectionCapabilities = trpc.labor.correctionCapabilities.useQuery(
     { projectId: workspaceProjectId || 0 },
     { enabled: canQuery && isLabor && Boolean(workspaceProjectId), retry: false }
@@ -3475,6 +3461,10 @@ export default function AdminPage({
     { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject }
   );
   const subcontractTakeoffs = trpc.measurement.listTakeoffs.useQuery(
+    workspaceProjectInput,
+    { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject }
+  );
+  const subcontractMeasurementClaims = trpc.measurement.listClaims.useQuery(
     workspaceProjectInput,
     { enabled: canQuery && isSubcontract && hasBusinessWorkspaceProject }
   );
@@ -4813,15 +4803,9 @@ export default function AdminPage({
     },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
-  const saveMeasurementTakeoff = trpc.measurement.saveTakeoff.useMutation({
-    onSuccess: async result => {
-      toast.success(
-        `项目部收方草稿已保存，申报金额 ¥${displayMoney(result.declaredAmount)}`
-      );
-      setMeasurementTakeoffDialogOpen(false);
-      setMeasurementTakeoffForm(EMPTY_MEASUREMENT_TAKEOFF_FORM);
-      await refreshSubcontractWorkspace();
-    },
+  const saveMeasurementTakeoff = trpc.measurement.saveTakeoff.useMutation();
+  const transitionMeasurementTakeoff = trpc.measurement.transitionTakeoff.useMutation({
+    onSuccess: async () => { toast.success("项目部收方状态已更新"); await refreshSubcontractWorkspace(); },
     onError: error => toast.error(getUserFacingErrorMessage(error)),
   });
   const transitionSubcontractPackage =
@@ -13286,14 +13270,12 @@ export default function AdminPage({
       );
       setSubcontractPackageDialogOpen(true);
     };
-    const openTakeoffEditor = () => {
-      setMeasurementTakeoffForm({
-        ...EMPTY_MEASUREMENT_TAKEOFF_FORM,
-        projectId: String(workspaceProjectId),
-        takeoffDate: toLocalDateInput(),
-      });
-      setMeasurementTakeoffDialogOpen(true);
+    const openTakeoffEditor = (id?: number) => {
+      if (!hasBusinessWorkspaceProject || !measurementTakeoffCapabilities.data?.canSubmit) return;
+      setMeasurementTakeoffDetail(null);
+      setMeasurementTakeoffEditor({ projectId: workspaceProjectId, id });
     };
+    const takeoffStatusLabels: Record<string, string> = { draft: "草稿", rejected: "已退回", submitted: "待复核", reviewing: "复核中", approved: "已审核", locked: "已锁定", void: "已作废" };
     const setLinkedTakeoff = (value: string) => {
       if (value === "UNLINKED") {
         setSubcontractPackageForm(current => ({
@@ -13347,7 +13329,7 @@ export default function AdminPage({
             </Button>
             <Button
               variant="outline"
-              onClick={openTakeoffEditor}
+              onClick={() => openTakeoffEditor()}
               disabled={
                 !hasBusinessWorkspaceProject ||
                 !measurementTakeoffCapabilities.data?.canSubmit
@@ -13380,6 +13362,20 @@ export default function AdminPage({
           "分包项目范围",
           "选择项目后，读取该项目施工队、已审核工程量收方和分包批次。未选择项目不会加载或展示工程量与金额数据。"
         )}
+        {measurementTakeoffEditor && measurementTakeoffEditor.projectId === workspaceProjectId && canQuery && hasBusinessWorkspaceProject ? <TakeoffEditor
+          key={`${workspaceProjectId}:${measurementTakeoffEditor.id ?? "new"}:${user?.id}`}
+          projectId={workspaceProjectId} projectName={selectedWorkspaceProject?.name ?? "—"}
+          id={measurementTakeoffEditor.id} sessionIdentity={user?.id}
+          claims={(subcontractMeasurementClaims.data ?? []).filter(claim => claim.status !== "void")}
+          save={input => saveMeasurementTakeoff.mutateAsync(input)}
+          onClose={() => setMeasurementTakeoffEditor(null)} onSaved={refreshSubcontractWorkspace}
+          onDirtyChange={onTakeoffDirtyChange}
+        /> : null}
+        {measurementTakeoffDetail && measurementTakeoffDetail.projectId === workspaceProjectId && canQuery && hasBusinessWorkspaceProject ? <TakeoffDetailDialog
+          key={`${workspaceProjectId}:${measurementTakeoffDetail.id}:${user?.id}:${measurementTakeoffDetail.autoPrint ?? false}`}
+          projectId={workspaceProjectId} id={measurementTakeoffDetail.id} sessionIdentity={user?.id}
+          autoPrint={measurementTakeoffDetail.autoPrint} onClose={() => setMeasurementTakeoffDetail(null)}
+        /> : null}
         {hasBusinessWorkspaceProject ? (
           <SubcontractPaymentSettlementManager projectId={workspaceProjectId} />
         ) : null}
@@ -13423,188 +13419,26 @@ export default function AdminPage({
                 icon={ShieldCheck}
               />
             </section>
-            <Dialog
-              open={measurementTakeoffDialogOpen}
-              onOpenChange={open => {
-                setMeasurementTakeoffDialogOpen(open);
-                if (!open)
-                  setMeasurementTakeoffForm(EMPTY_MEASUREMENT_TAKEOFF_FORM);
-              }}
-            >
-              <DialogContent className="w-[calc(100vw-3rem)] max-w-4xl xl:max-w-5xl">
-                <DialogHeader>
-                  <DialogTitle>项目部工程量收方录入</DialogTitle>
-                  <DialogDescription>
-                    保存后形成项目部收方草稿；由计量/项目负责人提交、复核后，才能在分包批次中关联分配。工程量与上游单价由服务端重新计算申报金额。
-                  </DialogDescription>
-                </DialogHeader>
-                <form
-                  className="space-y-4"
-                  onSubmit={event => {
-                    event.preventDefault();
-                    saveMeasurementTakeoff.mutate({
-                      id: measurementTakeoffForm.id,
-                      projectId: Number(measurementTakeoffForm.projectId),
-                      measurementClaimId: null,
-                      workItem: measurementTakeoffForm.workItem.trim(),
-                      workLocation: measurementTakeoffForm.workLocation.trim(),
-                      unit: measurementTakeoffForm.unit,
-                      quantity: Number(measurementTakeoffForm.quantity),
-                      unitPrice: Number(measurementTakeoffForm.unitPrice),
-                      takeoffDate: measurementTakeoffForm.takeoffDate,
-                    });
-                  }}
-                >
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="当前项目">
-                      <Input
-                        value={selectedWorkspaceProject?.name ?? ""}
-                        disabled
-                      />
-                    </Field>
-                    <Field label="收方日期">
-                      <Input
-                        type="date"
-                        value={measurementTakeoffForm.takeoffDate}
-                        onChange={event =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            takeoffDate: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="工程项目">
-                      <Input
-                        value={measurementTakeoffForm.workItem}
-                        maxLength={200}
-                        placeholder="例如：K12+340 圆管涵 C20 混凝土"
-                        onChange={event =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            workItem: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Field label="里程 / 作业位置">
-                      <Input
-                        value={measurementTakeoffForm.workLocation}
-                        maxLength={200}
-                        placeholder="例如：K12+340 左侧"
-                        onChange={event =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            workLocation: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <Field label="计量单位">
-                      <Select
-                        value={measurementTakeoffForm.unit}
-                        onValueChange={value =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            unit: value as MeasurementTakeoffForm["unit"],
-                          }))
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="m3">m³</SelectItem>
-                          <SelectItem value="m2">m²</SelectItem>
-                          <SelectItem value="m">m</SelectItem>
-                          <SelectItem value="t">t</SelectItem>
-                          <SelectItem value="piece">件</SelectItem>
-                          <SelectItem value="set">套</SelectItem>
-                          <SelectItem value="other">其他</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="工程量">
-                      <Input
-                        type="number"
-                        min="0.001"
-                        step="0.001"
-                        value={measurementTakeoffForm.quantity}
-                        placeholder="输入收方量"
-                        onChange={event =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            quantity: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Field label="业主单价（元）">
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={measurementTakeoffForm.unitPrice}
-                        placeholder="输入上游单价"
-                        onChange={event =>
-                          setMeasurementTakeoffForm(current => ({
-                            ...current,
-                            unitPrice: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <div className="rounded-xl border border-[#d8e3e0] bg-[#f5f9f8] p-4">
-                    <p className="text-xs text-slate-500">
-                      收方申报金额（服务端复算）
-                    </p>
-                    <p className="mt-1 text-xl font-semibold text-[#203c48]">
-                      ¥
-                      {displayMoney(
-                        Number(measurementTakeoffForm.quantity || 0) *
-                          Number(measurementTakeoffForm.unitPrice || 0)
-                      )}
-                    </p>
-                  </div>
-                  <DialogFooter>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => setMeasurementTakeoffDialogOpen(false)}
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      type="submit"
-                      disabled={
-                        !measurementTakeoffForm.projectId ||
-                        measurementTakeoffForm.workItem.trim().length < 2 ||
-                        measurementTakeoffForm.workLocation.trim().length < 2 ||
-                        !measurementTakeoffForm.takeoffDate ||
-                        !Number.isFinite(
-                          Number(measurementTakeoffForm.quantity)
-                        ) ||
-                        Number(measurementTakeoffForm.quantity) <= 0 ||
-                        !Number.isFinite(
-                          Number(measurementTakeoffForm.unitPrice)
-                        ) ||
-                        Number(measurementTakeoffForm.unitPrice) < 0 ||
-                        saveMeasurementTakeoff.isPending
-                      }
-                    >
-                      {saveMeasurementTakeoff.isPending
-                        ? "正在保存…"
-                        : "保存收方草稿"}
-                    </Button>
-                  </DialogFooter>
-                </form>
-              </DialogContent>
-            </Dialog>
+            <LedgerTable
+              title="项目部工程量收方台账"
+              description="PC 与手机同步维护详细内容、测量明细和现场图片；所有状态可查看详情 / A4 打印，只有草稿或退回可编辑。分包只关联已审核或已锁定收方。"
+              columns={["正式单号 / 日期", "工程项目 / 位置", "工程量 / 业主单价", "申报金额", "状态"]}
+              rows={(subcontractTakeoffs.data ?? []).map(takeoff => ({
+                id: takeoff.id,
+                cells: [<div><p>{takeoff.takeoffNo}</p><p className="text-xs text-slate-500">{toLocalDateInput(takeoff.takeoffDate)}</p></div>,
+                  <div className="whitespace-pre-wrap break-all"><p>{takeoff.workItem}</p><p className="text-xs text-slate-500">{takeoff.workLocation}</p></div>,
+                  `${displayUnitQuantity(takeoff.quantity, takeoff.unit)} ${takeoff.unit} × ¥${displayMoney(takeoff.unitPrice)}`,
+                  `¥${displayMoney(takeoff.declaredAmount)}`, takeoffStatusLabels[takeoff.status] ?? "待处理"],
+                actions: <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setMeasurementTakeoffDetail({ projectId: workspaceProjectId, id: takeoff.id })}>详情</Button>
+                  <Button size="sm" variant="outline" onClick={() => setMeasurementTakeoffDetail({ projectId: workspaceProjectId, id: takeoff.id, autoPrint: true })}>A4 打印</Button>
+                  {measurementTakeoffCapabilities.data?.canSubmit && ["draft", "rejected"].includes(takeoff.status) ? <>
+                    <Button size="sm" variant="outline" onClick={() => openTakeoffEditor(takeoff.id)}>维护草稿</Button>
+                    <Button size="sm" variant="outline" disabled={transitionMeasurementTakeoff.isPending} onClick={() => transitionMeasurementTakeoff.mutate({ projectId: workspaceProjectId, id: takeoff.id, targetStatus: "submitted", reviewNote: null })}>提交复核</Button>
+                  </> : null}
+                </div>,
+              }))}
+            />
             <Card className="border-[#d8e3e0]">
               <CardHeader className="flex flex-wrap items-start justify-between gap-3 space-y-0">
                 <div>

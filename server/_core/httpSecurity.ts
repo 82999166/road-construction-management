@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 
 const LARGE_TRPC_BODY_PROCEDURES = new Set([
   "evidence.upload",
+  "measurement.uploadTakeoffAttachment",
   "finance.uploadInvoiceEvidence",
   "labor.uploadWorkerCertificate",
   "admin.employee.uploadInsurancePolicy",

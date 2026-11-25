@@ -255,6 +255,7 @@ export const evidenceRouter = router({
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "数据库连接暂不可用" });
     const reportId = constructionReportSourceId(input.sourceType, input.sourceId);
     if (accessModule === "CONSTRUCTION" && reportId === null) throw new TRPCError({ code: "BAD_REQUEST", message: "施工照片必须从已保存的日报入口上传，不能以自由来源号宣称关联" });
+    if (/^takeoff-pending(?:-|$)/i.test(input.sourceId ?? "")) throw new TRPCError({ code: "BAD_REQUEST", message: "收方待关联照片请使用工程量收方专用上传入口" });
     if (/^(?:payroll|salary|settlement[-_]payment|financial|personnel|employee|insurance|tax|contract)[-_:]/i.test(input.sourceId ?? "")) throw new TRPCError({ code: "BAD_REQUEST", message: "专用业务附件请使用原业务上传入口" });
     await assertModuleProjectScope(ctx, db, input.projectId, accessModule);
     await assertConstructionPhotoParent(ctx, db, input);

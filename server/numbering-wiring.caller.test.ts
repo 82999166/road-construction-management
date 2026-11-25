@@ -60,6 +60,10 @@ describe("完整业务服务caller接线（真实生成器/SQL/unique，离线fi
   });
   it("计量CL和取量TO实际创建路径", async () => {
     await measurementRouter.createCaller(ctx).saveClaim({ projectId: 3, period: "2026-11", declaredAmount: 100 }); number(s.measurementClaims, "claimNo", "CL");
+    // 专属收方service读取真实模块范围；给本条ALL模拟角色补真实项目计量scope。
+    db.seed(s.systemRoles, { id: 19, code: "PROJECT_MANAGER", name: "隔离项目经理", status: "active" });
+    db.seed(s.userRoleAssignments, { userId: 9, roleId: 19, projectId: 3, organizationId: null, status: "active" });
+    db.seed(s.departmentBusinessScopes, { projectId: 3, module: "MEASUREMENT", status: "active", configuredBy: 9 });
     await measurementRouter.createCaller(ctx).saveTakeoff({ projectId: 3, takeoffDate: "2026-11-24", workLocation: "合成区段", workItem: "合成土方", unit: "m3", quantity: 10, unitPrice: 2 }); number(s.measurementTakeoffRecords, "takeoffNo", "TO");
   });
   it("人工财务FR及冲销RV保持来源链和金额，不改原单", async () => {
