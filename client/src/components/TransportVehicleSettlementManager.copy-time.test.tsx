@@ -42,7 +42,7 @@ describe("车辆运输结算中文化与日期展示", () => {
 
   it("以统一中国日期格式展示结算期间和付款日期", () => {
     expect(source.replace(/\s+/g, "").replace(/,([})\]])/g, "$1")).toContain(
-      "formatChinaDate(item.periodStart)"
+      "formatTransportBusinessDateRange(item.periodStart, item.periodEnd)"
         .replace(/\s+/g, "")
         .replace(/,([})\]])/g, "$1")
     );

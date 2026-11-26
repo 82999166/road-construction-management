@@ -3,10 +3,10 @@ import * as s from "../../drizzle/schema";
 import { siteDashboardInput, type SiteTransportDetails, type SiteTransportMetric, type SiteDashboard, type SiteProject, type SiteRisk, type SiteTransportEvent } from "../../shared/siteOperations";
 import { getTransportReviewEligibility, transportSnapshot } from "./transportWorkspace";
 import { requireSiteDb, requireSiteProject } from "./siteOperationsConfiguration";
+import { getChinaBusinessDateRange } from "../../shared/chinaBusinessDate";
 
 export function siteChinaDayRange(date: string) {
-  const start = new Date(`${date}T00:00:00+08:00`);
-  return { start, end: new Date(start.getTime() + 86400000) };
+  return getChinaBusinessDateRange(date);
 }
 /** MySQL DATE is a natural-day string, never a timezone-serialized Date object. */
 export function siteDatePredicate(column: AnyColumn, date: string) {

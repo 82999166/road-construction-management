@@ -13,6 +13,7 @@ import {
   userRoleAssignments,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { getChinaBusinessDateRange } from "../../shared/chinaBusinessDate";
 
 const DIGEST_SCOPE_KEY = "all_active_projects";
 const DIGEST_RECIPIENT_ROLES = ["PROJECT_MANAGER", "FINANCE_MANAGER", "TRANSPORT_MANAGER", "CONSTRUCTION_MANAGER", "SUPER_ADMIN"];
@@ -107,11 +108,12 @@ export async function buildProjectDailyDigest(project: { id: number; name: strin
   const db = await getDb();
   if (!db) throw new Error("database_unavailable");
   const range = toUtcDayRange(businessDate);
+  const transportRange = getChinaBusinessDateRange(businessDate);
   const [reports, financeRows, claims, trips] = await Promise.all([
     db.select({ status: constructionDailyReports.status, progressPercent: constructionDailyReports.progressPercent }).from(constructionDailyReports).where(and(eq(constructionDailyReports.projectId, project.id), eq(constructionDailyReports.reportDate, range.start))),
     db.select({ direction: financialRecords.direction, category: financialRecords.category, amount: financialRecords.amount, settlementStatus: financialRecords.settlementStatus }).from(financialRecords).where(and(eq(financialRecords.projectId, project.id), gte(financialRecords.occurredAt, range.start), lt(financialRecords.occurredAt, range.end))),
     db.select({ declaredAmount: measurementClaims.declaredAmount, approvedAmount: measurementClaims.approvedAmount, status: measurementClaims.status }).from(measurementClaims).where(and(eq(measurementClaims.projectId, project.id), gte(measurementClaims.createdAt, range.start), lt(measurementClaims.createdAt, range.end))),
-    db.select({ volumeCubicMeters: transportTrips.volumeCubicMeters, weightTons: transportTrips.weightTons, calculatedAmount: transportTrips.calculatedAmount, status: transportTrips.status, loadConfirmedAt: transportTrips.loadConfirmedAt, unloadConfirmedAt: transportTrips.unloadConfirmedAt, exceptionStatus: transportTrips.exceptionStatus }).from(transportTrips).where(and(eq(transportTrips.projectId, project.id), gte(transportTrips.startAt, range.start), lt(transportTrips.startAt, range.end))),
+    db.select({ volumeCubicMeters: transportTrips.volumeCubicMeters, weightTons: transportTrips.weightTons, calculatedAmount: transportTrips.calculatedAmount, status: transportTrips.status, loadConfirmedAt: transportTrips.loadConfirmedAt, unloadConfirmedAt: transportTrips.unloadConfirmedAt, exceptionStatus: transportTrips.exceptionStatus }).from(transportTrips).where(and(eq(transportTrips.projectId, project.id), gte(transportTrips.startAt, transportRange.start), lt(transportTrips.startAt, transportRange.end))),
   ]);
   const validFinance = financeRows.filter(row => row.settlementStatus !== "void");
   const expenseCategoryTotals = new Map<string, number>();

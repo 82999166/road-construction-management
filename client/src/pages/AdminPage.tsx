@@ -2704,16 +2704,16 @@ export default function AdminPage({
   const [transportLedgerFilter, setTransportLedgerFilter] =
     useState<TransportLedgerFilter>({
       periodMode: "day",
-      date: onsiteFocus?.businessDate || toLocalDateInput(),
+      date: onsiteFocus?.businessDate || toChinaDateInput(),
       month: toChinaMonthInput(),
-      dateFrom: toLocalDateInput(),
-      dateTo: toLocalDateInput(),
+      dateFrom: toChinaDateInput(),
+      dateTo: toChinaDateInput(),
       vehicleId: onsiteFocus?.vehicleId ? String(onsiteFocus.vehicleId) : "all",
       status: "all",
       routePresetId: "all",
     });
   /** 旧简版运输表仅作兼容渲染，完整筛选由 transportLedgerFilter 接管。 */
-  const [transportDate, setTransportDate] = useState(() => toLocalDateInput());
+  const [transportDate, setTransportDate] = useState(() => toChinaDateInput());
   const [dailyWagePaymentTarget, setDailyWagePaymentTarget] = useState<{
     id: number;
     workerName: string;

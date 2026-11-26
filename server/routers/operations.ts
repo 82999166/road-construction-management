@@ -10,13 +10,16 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   ne,
   or,
+  sql,
 } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { machineCostDraftSchema, machineCostSaveSchema, machineCostEditDraftSchema, machineCostEditSaveSchema } from "../../shared/machineCostDuplicate";
+import { getChinaBusinessDateRange, formatChinaBusinessDate } from "../../shared/chinaBusinessDate";
 import {
   buildMachineCostDuplicateCheck, decideMachineCostWrite, machineCostRequestHash,
   readMachineCostCandidates, recordMachineCostReceipt, decideMachineCostEditWrite, machineCostEditRequestHash,
@@ -1072,32 +1075,9 @@ const rfidHardwareTestInput = z.object({
   failureReason: z.string().trim().max(500).nullable().optional(),
 });
 
-/** 统一将前端日期解释为 UTC 业务日零点，避免月结边界受浏览器时区影响。 */
+/** MySQL DATE 的自然日期编码：保留 YYYY-MM-DD，不用于运输时间戳的当天筛选。 */
 function toBusinessDate(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
-}
-
-/** 运输现场日按中国标准时间划分；前端“2026-08-22”应覆盖北京时间当天零点至次日零点。 */
-function getChinaBusinessDateRange(value: string) {
-  const start = new Date(`${value}T00:00:00+08:00`);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  return { start, end };
-}
-
-function formatChinaBusinessDate(value: Date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(value);
-  const fields = Object.fromEntries(
-    parts
-      .filter(part => ["year", "month", "day"].includes(part.type))
-      .map(part => [part.type, part.value])
-  );
-  return `${fields.year}-${fields.month}-${fields.day}`;
 }
 
 /**
@@ -7528,11 +7508,11 @@ export const transportRouter = router({
         );
       if (input.startDate)
         rows = rows.filter(
-          item => String(item.usageDate).slice(0, 10) >= input.startDate!
+          item => (item.usageDate instanceof Date ? item.usageDate.toISOString().slice(0, 10) : String(item.usageDate).slice(0, 10)) >= input.startDate!
         );
       if (input.endDate)
         rows = rows.filter(
-          item => String(item.usageDate).slice(0, 10) <= input.endDate!
+          item => (item.usageDate instanceof Date ? item.usageDate.toISOString().slice(0, 10) : String(item.usageDate).slice(0, 10)) <= input.endDate!
         );
       return rows;
     }),
@@ -10048,9 +10028,7 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       if (!db) return [];
       const predicates = [eq(transportTrips.projectId, input.projectId)];
       if (input.date) {
-        const start = toBusinessDate(input.date);
-      const end = new Date(start);
-      end.setUTCDate(end.getUTCDate() + 1);
+        const { start, end } = getChinaBusinessDateRange(input.date);
         predicates.push(
           gte(transportTrips.startAt, start),
           lt(transportTrips.startAt, end)
@@ -12566,7 +12544,7 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
             settlementNo: settlementNo || (settlementNo = await newBusinessDocumentNumber(tx, "TS", { kind: "user", userId: user.id }, input.projectId, input)),
             projectId: input.projectId,
             vehicleId: input.vehicleId,
-            periodStart: start,
+            periodStart: toBusinessDate(input.periodStart),
             periodEnd: toBusinessDate(input.periodEnd),
             settlementKind: "trip",
             basisDescription: input.legacyTripIds.length
@@ -12756,6 +12734,7 @@ if (!canManageSettlement(roleCodes))
         });
 await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
       const { start } = getChinaBusinessDateRange(input.periodStart);
+      const periodStartDate = toBusinessDate(input.periodStart);
       const end = toBusinessDate(input.periodEnd);
       const { end: endExclusive } = getChinaBusinessDateRange(input.periodEnd);
       const [
@@ -12796,8 +12775,8 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
               eq(transportVehicleUsageRecords.vehicleId, input.vehicleId),
               eq(transportVehicleUsageRecords.status, "confirmed"),
               isNull(transportVehicleUsageRecords.settlementId),
-              gte(transportVehicleUsageRecords.usageDate, start),
-              lt(transportVehicleUsageRecords.usageDate, endExclusive)
+              gte(transportVehicleUsageRecords.usageDate, sql`${input.periodStart}`),
+              lte(transportVehicleUsageRecords.usageDate, sql`${input.periodEnd}`)
             )
           ),
         db
@@ -12837,9 +12816,9 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
           )
           .find(
             item =>
-              new Date(item.effectiveFrom).getTime() < endExclusive.getTime() &&
+              new Date(item.effectiveFrom).getTime() <= end.getTime() &&
               (!item.effectiveTo ||
-                new Date(item.effectiveTo).getTime() >= start.getTime())
+                new Date(item.effectiveTo).getTime() >= periodStartDate.getTime())
           );
         if (!rule)
           throw new TRPCError({
@@ -12849,7 +12828,7 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
           });
         if (rule.billingType === "monthly") {
           const effectiveStart = new Date(
-            Math.max(start.getTime(), new Date(rule.effectiveFrom).getTime())
+            Math.max(periodStartDate.getTime(), new Date(rule.effectiveFrom).getTime())
           );
           const effectiveEnd = new Date(
             Math.min(
@@ -12973,8 +12952,8 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
                 eq(transportVehicleSettlements.vehicleId, input.vehicleId),
                 eq(transportVehicleSettlements.settlementKind, "lease"),
                 ne(transportVehicleSettlements.status, "void"),
-                lt(transportVehicleSettlements.periodStart, endExclusive),
-                gte(transportVehicleSettlements.periodEnd, start)
+                lte(transportVehicleSettlements.periodStart, sql`${input.periodEnd}`),
+                gte(transportVehicleSettlements.periodEnd, sql`${input.periodStart}`)
               )
             );
           if (otherLeases.length)
@@ -12987,7 +12966,7 @@ await assertProjectInCurrentScope(ctx, input.projectId); }}, async db => {
           settlementNo: settlementNo || (settlementNo = await newBusinessDocumentNumber(tx, "TS", { kind: "user", userId: user.id }, input.projectId, input)),
           projectId: input.projectId,
           vehicleId: input.vehicleId,
-          periodStart: start,
+          periodStart: periodStartDate,
           periodEnd: end,
           settlementKind: input.settlementKind,
           basisDescription,

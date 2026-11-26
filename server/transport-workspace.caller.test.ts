@@ -5,6 +5,8 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 import { getTableColumns, getTableName, type SQL } from "drizzle-orm";
 import { MySqlDialect } from "drizzle-orm/mysql-core";
 import type { TrpcContext } from "./_core/context";
+import { getChinaBusinessDateRange } from "../shared/chinaBusinessDate";
+import { buildProjectDailyDigest } from "./services/dailyProjectDigest";
 const mock = vi.hoisted(() => ({ db: null as any, roles: ["ALL"] }));
 vi.mock("./db", () => ({ getDb: async () => withNumberingFixture(mock.db) }));
 vi.mock("./access", async original => ({
@@ -82,8 +84,17 @@ class FakeDb {
     const insert = db.prepare(
       `INSERT INTO \`${name}\` VALUES (${[0, ...columns].map(() => "?").join(",")})`
     );
+    const tableColumns = getTableColumns(table) as Record<string, any>;
     rows.forEach((row, i) =>
-      insert.run(i, ...columns.map(col => normalize(row[col])))
+      insert.run(i, ...columns.map(col => {
+        const column = tableColumns[col];
+        if (column?.getSQLType() === "date" && row[col] != null) {
+          return row[col] instanceof Date
+            ? row[col].toISOString().slice(0, 10)
+            : String(row[col]).slice(0, 10);
+        }
+        return normalize(row[col]);
+      }))
     );
     const ids = db
       .prepare(`SELECT __index FROM \`${name}\` WHERE ${q.sql}`)
@@ -1059,5 +1070,113 @@ describe("来源快照条件恢复和非按趟闭环", () => {
         [records()]
       )
     ).toBe(false);
+  });
+});
+
+
+describe("北京时间当天查询与结算完整边界", () => {
+  function seedDayEdges(day = "2026-11-04") {
+    const { start, end } = getChinaBusinessDateRange(day);
+    const instants = [
+      new Date(start.getTime() - 1),
+      start,
+      new Date(`${day}T07:39:39+08:00`),
+      new Date(`${day}T08:00:00+08:00`),
+      new Date(end.getTime() - 1000),
+      new Date(end.getTime() - 1),
+      end,
+    ];
+    instants.forEach((startAt, index) => seedTrip(index + 1, {
+      startAt,
+      loadConfirmedAt: startAt,
+      unloadConfirmedAt: new Date(startAt.getTime() + 600000),
+      endAt: new Date(startAt.getTime() + 600000),
+    }));
+  }
+  it("当天台账、日期区间、汇总与按车日结同为5趟，包含凌晨和完整末秒", async () => {
+    seedDayEdges();
+    seedTrip(8, { status: "void" });
+    seedTrip(9, { projectId: 2 });
+    const [day, period, summary, settlement] = await Promise.all([
+      caller().listTrips({ projectId: 1, date: "2026-11-04" }),
+      caller().listTrips({ projectId: 1, dateFrom: "2026-11-04", dateTo: "2026-11-04" }),
+      caller().dailySummary({ projectId: 1, date: "2026-11-04" }),
+      caller().dailyVehicleSettlementSummary({ projectId: 1, date: "2026-11-04" }),
+    ]);
+    expect(day.map(row => row.id).sort()).toEqual([2, 3, 4, 5, 6]);
+    expect(period.map(row => row.id).sort()).toEqual([2, 3, 4, 5, 6]);
+    expect(summary).toMatchObject({ tripCount: 5, amount: 500, volumeCubicMeters: 50 });
+    expect(summary.vehicleSummaries[0].ticketCount).toBe(5);
+    expect(settlement.vehicleSummaries[0]).toMatchObject({ tripCount: 5, grossFreightAmount: 500 });
+  });
+  it("当天筛选与车辆/状态/日期区间求交集，不被其他条件扩成次日", async () => {
+    seedDayEdges();
+    seedTrip(8, { vehicleId: 2 });
+    seedTrip(9, { status: "submitted" });
+    expect((await caller().listTrips({
+      projectId: 1, date: "2026-11-04", dateFrom: "2026-11-03", dateTo: "2026-11-05",
+      vehicleId: 1, status: "verified",
+    })).map(row => row.id).sort()).toEqual([2, 3, 4, 5, 6]);
+  });
+  it.each(["2024-02-29", "2026-11-30", "2026-12-31"])("%s 的日/月查询不漏第一秒且不含下一月", async day => {
+    seedDayEdges(day);
+    const listed = await caller().listTrips({ projectId: 1, date: day });
+    const month = await caller().listTrips({ projectId: 1, date: day, month: day.slice(0, 7) });
+    expect(listed.map(row => row.id).sort()).toEqual([2, 3, 4, 5, 6]);
+    expect(month.map(row => row.id).sort()).toEqual([2, 3, 4, 5, 6]);
+  });
+  it("按天结算预览与实际生成包含23:59:59.999，保存DATE不回退前一天", async () => {
+    seedDayEdges();
+    const input = { ...draft, selectionMode: "day" as const };
+    const preview = await caller().previewVehicleSettlementSelection(input);
+    expect(preview.tripIds).toEqual([2, 3, 4, 5, 6]);
+    expect(preview.dailyGroups).toEqual([{ date: "2026-11-04", tripCount: 5, grossFreightAmount: 500 }]);
+    await caller().createVehicleSettlement({ ...input, tripIds: preview.tripIds });
+    const saved = mock.db.rows.transport_vehicle_settlements[0];
+    expect(saved.periodStart.toISOString()).toBe("2026-11-04T00:00:00.000Z");
+    expect(saved.periodEnd.toISOString()).toBe("2026-11-04T00:00:00.000Z");
+    expect(mock.db.rows.transport_vehicle_settlement_items.map(row => row.tripId)).toEqual([2, 3, 4, 5, 6]);
+  });
+  it("车辆租赁DATE使用依据含结束当天、不误取前一天，结算自然日期保持不变", async () => {
+    mock.db.rows.transport_vehicles[0].ownership = "leased";
+    mock.db.rows.transport_vehicle_lease_rules = [{ id: 1, vehicleId: 1, projectId: 1, billingType: "daily", rate: "100", status: "active", effectiveFrom: new Date("2026-11-01T00:00:00Z"), effectiveTo: null }];
+    mock.db.rows.transport_vehicle_usage_records = ["2026-11-03", "2026-11-04", "2026-11-05"].map((usageDate, index) => ({ id: index + 1, projectId: 1, vehicleId: 1, usageDate: new Date(`${usageDate}T00:00:00Z`), usageType: "daily", quantity: "1", status: "confirmed", settlementId: null }));
+    const result = await caller().createNonTripVehicleSettlement({ ...draft, settlementKind: "lease", basisDescription: "车辆日租合同已确认" });
+    expect(result.grossPayableAmount).toBe(100);
+    const saved = mock.db.rows.transport_vehicle_settlements[0];
+    expect(saved.periodStart.toISOString()).toBe("2026-11-04T00:00:00.000Z");
+    expect(mock.db.rows.transport_vehicle_usage_records.map(row => Boolean(row.settlementId))).toEqual([false, true, false]);
+    await expect(caller().createNonTripVehicleSettlement({ ...draft, settlementKind: "lease", basisDescription: "车辆日租合同重复期间确认" })).rejects.toThrow();
+  });
+});
+
+
+describe("关联运输统计与自然日期隔离回归", () => {
+  it("项目日报推送运输分支与日台账一致覆盖完整北京日，构建摘要不发送通知", async () => {
+    const day = "2026-11-04";
+    const { start, end } = getChinaBusinessDateRange(day);
+    [new Date(start.getTime() - 1), start, new Date(`${day}T07:44:04+08:00`), new Date(end.getTime() - 1), end].forEach((startAt, i) => seedTrip(i + 1, { startAt }));
+    const summary = await buildProjectDailyDigest({ id: 1, name: "隔离测试项目" }, day);
+    expect(summary.transport).toMatchObject({ tripCount: 3, amount: 300, volumeCubicMeters: 30 });
+    expect(mock.db.rows.notification_records ?? []).toEqual([]);
+  });
+  it("租赁使用依据列表对DATE Date对象与日期字符串都能按首末整天筛选", async () => {
+    mock.db.rows.transport_vehicle_usage_records = [
+      { id: 1, projectId: 1, vehicleId: 1, usageDate: new Date("2026-11-03T00:00:00Z") },
+      { id: 2, projectId: 1, vehicleId: 1, usageDate: new Date("2026-11-04T00:00:00Z") },
+      { id: 3, projectId: 1, vehicleId: 1, usageDate: "2026-11-05" },
+      { id: 4, projectId: 1, vehicleId: 1, usageDate: new Date("2026-11-06T00:00:00Z") },
+    ];
+    const result = await caller().listVehicleUsageRecords({ projectId: 1, vehicleId: 1, startDate: "2026-11-04", endDate: "2026-11-05" });
+    expect(result.map(row => row.id)).toEqual([2, 3]);
+  });
+  it("月租日期含首末两天，相邻日不误报重叠，同一天再次结算被阻止", async () => {
+    mock.db.rows.transport_vehicles[0].ownership = "leased";
+    mock.db.rows.transport_vehicle_lease_rules = [{ id: 1, vehicleId: 1, projectId: 1, billingType: "monthly", rate: "3000", status: "active", effectiveFrom: new Date("2026-11-01T00:00:00Z"), effectiveTo: new Date("2026-11-30T00:00:00Z") }];
+    const first = await caller().createNonTripVehicleSettlement({ ...draft, periodStart: "2026-11-03", periodEnd: "2026-11-04", settlementKind: "lease", basisDescription: "原月租合同两日依据" });
+    expect(first.grossPayableAmount).toBe(200);
+    const adjacent = await caller().createNonTripVehicleSettlement({ ...draft, periodStart: "2026-11-05", periodEnd: "2026-11-05", settlementKind: "lease", basisDescription: "原月租合同相邻日依据" });
+    expect(adjacent.grossPayableAmount).toBe(100);
+    await expect(caller().createNonTripVehicleSettlement({ ...draft, periodStart: "2026-11-04", periodEnd: "2026-11-04", settlementKind: "lease", basisDescription: "原月租合同重复日期依据" })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

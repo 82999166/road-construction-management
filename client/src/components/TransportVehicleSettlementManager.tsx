@@ -41,6 +41,7 @@ import { trpc } from "@/lib/trpc";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { getBusinessStatusLabel } from "@/components/BusinessStatusBadge";
 import { formatChinaDate, toChinaDateInput } from "@/lib/businessTime";
+import { formatTransportBusinessDate, formatTransportBusinessDateRange, TRANSPORT_BUSINESS_DAY_NOTICE } from "@/lib/transportBusinessTime";
 import VehicleSettlementSelection from "@/components/VehicleSettlementSelection";
 import { SettlementPaymentDialog } from "@/components/SettlementPaymentDialog";
 import { VehicleSettlementProfileDialog } from "@/components/VehicleSettlementProfileDialog";
@@ -280,8 +281,8 @@ export default function TransportVehicleSettlementManager({
   const exportHeaders = [
     "结算单",
     "车辆",
-    "开始日期",
-    "结束日期",
+    "开始时间（北京时间，含起始日）",
+    "结束时间（北京时间，含23:59:59秒内全部毫秒）",
     "趟数",
     "运费基数",
     "柴油扣款",
@@ -296,8 +297,8 @@ export default function TransportVehicleSettlementManager({
   const outputRows = settlementRows.map(row => [
     row.settlementNo,
     row.vehicle?.plateNo ?? `车辆#${row.vehicleId}`,
-    formatChinaDate(row.periodStart),
-    formatChinaDate(row.periodEnd),
+    `${formatTransportBusinessDate(row.periodStart)} 00:00:00`,
+    `${formatTransportBusinessDate(row.periodEnd)} 23:59:59`,
     row.tripCount,
     money(row.grossFreightAmount),
     money(row.fuelDeductionAmount),
@@ -453,7 +454,7 @@ export default function TransportVehicleSettlementManager({
                 渣土车运费汇总与合并结算
               </CardTitle>
               <CardDescription className="mt-1">
-                每趟记录运费，按一天、日期范围或指定趟数合并生成一张结算单；按北京时间业务日归集。收款方式属于本次结算付款，不固定绑定在车辆档案；付款完成后不能作废。
+                每趟记录运费，按一天、日期范围或指定趟数合并生成一张结算单；{TRANSPORT_BUSINESS_DAY_NOTICE}收款方式属于本次结算付款，不固定绑定在车辆档案；付款完成后不能作废。
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -493,7 +494,7 @@ export default function TransportVehicleSettlementManager({
             </div>
           </div>
           <div className="max-w-[220px]">
-            <Label>统计日期</Label>
+            <Label>统计日期（北京时间整日）</Label>
             <Input
               className="mt-1"
               type="date"
@@ -717,8 +718,7 @@ export default function TransportVehicleSettlementManager({
                           </p>
                         </TableCell>
                         <TableCell>
-                          {formatChinaDate(item.periodStart)} 至{" "}
-                          {formatChinaDate(item.periodEnd)}
+                          {formatTransportBusinessDateRange(item.periodStart, item.periodEnd)}
                           <p className="mt-1 text-slate-500">
                             {item.tripCount} 趟
                           </p>

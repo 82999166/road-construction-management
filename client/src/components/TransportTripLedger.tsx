@@ -42,6 +42,7 @@ import {
   printColumnGroup,
 } from "@/lib/reportPrintLayout";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatTransportBusinessDateRange, formatTransportBusinessMonthRange, TRANSPORT_BUSINESS_DAY_NOTICE } from "@/lib/transportBusinessTime";
 import { formatAmount, formatQuantity } from "@shared/numberFormat";
 import { getUserFacingErrorMessage } from "@/lib/userFacingError";
 import { ProtectedImagePreview } from "@/components/ProtectedImagePreview";
@@ -285,11 +286,11 @@ export default function TransportTripLedger({
   }, [activeTrips]);
   const periodDescription =
     filter.periodMode === "day"
-      ? `日期 ${filter.date || "未选择"}`
+      ? formatTransportBusinessDateRange(filter.date, filter.date)
       : filter.periodMode === "month"
-        ? `月份 ${filter.month || "未选择"}`
+        ? formatTransportBusinessMonthRange(filter.month)
         : filter.periodMode === "custom"
-          ? `${filter.dateFrom || "开始"} 至 ${filter.dateTo || "结束"}`
+          ? formatTransportBusinessDateRange(filter.dateFrom, filter.dateTo)
           : "全部历史";
   /** “全部状态”打印仍默认排除作废单；若管理员明确筛选“已作废”，则只打印作废单，避免作废金额混入正常运费。 */
   const printableTrips = trips;
@@ -396,6 +397,7 @@ export default function TransportTripLedger({
                 当前显示 {projectName}{" "}
                 的真实业务数据。详情只显示装卸中文地址，不显示经纬度；金额、柴油扣款、状态和结算均以服务端快照为准。
               </CardDescription>
+              <p className="mt-1 text-xs text-muted-foreground">{TRANSPORT_BUSINESS_DAY_NOTICE}</p>
             </div>
             <CurrentFilterPrintActions
               disabled={!printableTrips.length}
@@ -425,6 +427,7 @@ export default function TransportTripLedger({
                     "净结算",
                     "状态",
                     "异常",
+                    "统计范围（北京时间）",
                   ],
                   printableTrips.map(item => [
                     item.tripNo,
@@ -458,6 +461,7 @@ export default function TransportTripLedger({
                           anomaly.label ?? "未命名异常"
                       )
                       .join("；") ?? "",
+                    periodDescription,
                   ])
                 )
               }

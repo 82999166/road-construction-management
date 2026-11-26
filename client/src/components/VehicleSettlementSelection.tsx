@@ -11,6 +11,7 @@ import {
   openA4PrintDocument,
 } from "@/lib/a4Print";
 import { formatChinaDateTime } from "@/lib/businessTime";
+import { formatTransportBusinessDateRange, TRANSPORT_BUSINESS_DAY_NOTICE } from "@/lib/transportBusinessTime";
 import {
   addInclusiveSettlementDays,
   inclusiveSettlementDayCount,
@@ -81,6 +82,7 @@ export function VehicleSettlementSelection({
   const [days, setDays] = useState(() =>
     actualDays === undefined ? "" : String(actualDays)
   );
+  const periodDescription = formatTransportBusinessDateRange(periodStart, periodEnd);
   const [outputError, setOutputError] = useState("");
   useEffect(() => {
     setDays(actualDays === undefined ? "" : String(actualDays));
@@ -143,7 +145,7 @@ export function VehicleSettlementSelection({
       openA4PrintDocument({
         title: "渣土车结算生成前预览",
         orientation: "portrait",
-        bodyHtml: `<h1>渣土车结算生成前预览</h1><p class="sub">车牌 ${html(plateNo)} · ${html(modeLabels[mode])} · ${html(periodStart)} 至 ${html(periodEnd)}（起止当天均包含）${mode === "trip_count" ? ` · 最早 ${html(tripCount)} 趟` : ""}</p><p>${html(previewNotice)}</p><p>可结算 ${html(visiblePreview.availableCount)} 趟 · 本次选取 ${html(visiblePreview.selectedCount)} 趟 · 运费基数 ¥${html(money(visiblePreview.grossFreightAmount))}</p>${visiblePreview.reason ? `<p>${html(visiblePreview.reason)}</p>` : ""}<h2>完整逐趟明细（${visiblePreview.rows.length} 条）</h2><table><thead><tr><th>序号</th><th>运单号</th><th>业务时间（北京时间）</th><th>数量</th><th>单价</th><th>运费基数</th></tr></thead><tbody>${rows}</tbody></table><h2>完整逐日汇总（${visiblePreview.dailyGroups.length} 天）</h2><table><thead><tr><th>日期</th><th>选取趟数</th><th>运费基数</th></tr></thead><tbody>${groups}</tbody></table>`,
+        bodyHtml: `<h1>渣土车结算生成前预览</h1><p class="sub">车牌 ${html(plateNo)} · ${html(modeLabels[mode])} · ${html(periodDescription)}${mode === "trip_count" ? ` · 最早 ${html(tripCount)} 趟` : ""}</p><p>${html(previewNotice)}</p><p>可结算 ${html(visiblePreview.availableCount)} 趟 · 本次选取 ${html(visiblePreview.selectedCount)} 趟 · 运费基数 ¥${html(money(visiblePreview.grossFreightAmount))}</p>${visiblePreview.reason ? `<p>${html(visiblePreview.reason)}</p>` : ""}<h2>完整逐趟明细（${visiblePreview.rows.length} 条）</h2><table><thead><tr><th>序号</th><th>运单号</th><th>业务时间（北京时间）</th><th>数量</th><th>单价</th><th>运费基数</th></tr></thead><tbody>${rows}</tbody></table><h2>完整逐日汇总（${visiblePreview.dailyGroups.length} 天）</h2><table><thead><tr><th>日期</th><th>选取趟数</th><th>运费基数</th></tr></thead><tbody>${groups}</tbody></table>`,
       });
       setOutputError("");
     } catch {
@@ -168,7 +170,7 @@ export function VehicleSettlementSelection({
         [
           "生成前预览",
           plateNo,
-          `${periodStart} 至 ${periodEnd}`,
+          periodDescription,
           "",
           "",
           "",
@@ -235,6 +237,8 @@ export function VehicleSettlementSelection({
         <p className="text-xs leading-relaxed text-muted-foreground">
           {previewNotice}
         </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{TRANSPORT_BUSINESS_DAY_NOTICE}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">结算范围：{periodDescription}</p>
       </div>
       <fieldset disabled={busy} className="min-w-0 space-y-3">
         <legend className="mb-2 text-sm font-medium">结算选取方式</legend>

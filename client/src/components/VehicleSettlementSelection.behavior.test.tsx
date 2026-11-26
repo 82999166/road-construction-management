@@ -256,6 +256,10 @@ describe("VehicleSettlementSelection 真实组件行为", () => {
     expect(document.bodyHtml).toContain("生成前预览");
     await click("导出完整预览 CSV");
     const csv = output.csv.mock.calls[0][2] as unknown[][];
+    const expectedRange = "北京时间 2024-02-29 00:00:00 至 2024-02-29 23:59:59（含该秒内全部毫秒）";
+    expect(text()).toContain(expectedRange);
+    expect(document.bodyHtml).toContain(expectedRange);
+    expect(csv[0][2]).toBe(expectedRange);
     expect(csv.filter(row => row[0] === "逐趟明细")).toHaveLength(51);
     expect(csv.filter(row => row[0] === "逐日汇总")).toHaveLength(2);
     await act(async () => {
